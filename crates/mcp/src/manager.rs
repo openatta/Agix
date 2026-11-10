@@ -205,11 +205,13 @@ impl McpManager {
     /// their results come out of the returned [`LateConnects`], one by one,
     /// for [`Self::absorb`]. `None` waits for all of them.
     pub async fn connect_all_within(
-        servers: HashMap<String, McpServerConfig>,
+        mut servers: HashMap<String, McpServerConfig>,
         subprocess_env: base::interface::exec::local::SubprocessEnv,
         auth: Option<Arc<crate::oauth::McpAuth>>,
         wait: Option<Duration>,
     ) -> (Self, Option<LateConnects>) {
+        let sharing = sharing_a_segment(&servers);
+        servers.retain(|name, _| !sharing.iter().any(|f| &f.name == name));
         let elicitation_cell: Arc<Mutex<Option<ElicitationCallback>>> = Arc::new(Mutex::new(None));
         let cache = Arc::new(Mutex::new(McpOutputCache::new()));
         let announcements = crate::notify::Announcements::new();
@@ -235,7 +237,7 @@ impl McpManager {
             denied: Vec::new(),
             pending: Vec::new(),
             connecting,
-            failed: Vec::new(),
+            failed: sharing,
             batch: Arc::new(()),
         };
         if servers.is_empty() {
@@ -472,6 +474,25 @@ impl McpManager {
     /// sign-in replaces it as pending; on any other failure the existing
     /// connection, if any, stays and a warning is logged.
     pub async fn add_server(&mut self, name: &str, cfg: &McpServerConfig) {
+        let segment = crate::naming::server_segment(name);
+        let taken: Vec<&str> = self
+            .configs
+            .keys()
+            .map(String::as_str)
+            .chain(self.clients.iter().map(|c| c.server_name()))
+            .filter(|other| *other != name && crate::naming::server_segment(other) == segment)
+            .collect();
+        if !taken.is_empty() {
+            let error = segment_taken(&segment, &taken);
+            warn!(server = %name, %error, "MCP server not connected");
+            self.failed.retain(|f| f.name != name);
+            self.failed.push(FailedServer {
+                name: name.to_string(),
+                transport: cfg.transport_kind(),
+                error,
+            });
+            return;
+        }
         self.configs.insert(name.to_string(), cfg.clone());
         self.connecting.retain(|c| c.name != name);
         let link = ServerLink {
@@ -930,6 +951,49 @@ impl McpManager {
     }
 }
 
+/// The servers of `servers` whose tools would go by the same
+/// `mcp__<segment>__` as another's, each refused: which of them the name
+/// belongs to cannot be told, and a permission rule written for one would
+/// reach the other's tools.
+fn sharing_a_segment(servers: &HashMap<String, McpServerConfig>) -> Vec<FailedServer> {
+    let mut by_segment: HashMap<String, Vec<&str>> = HashMap::new();
+    for name in servers.keys() {
+        by_segment
+            .entry(crate::naming::server_segment(name))
+            .or_default()
+            .push(name);
+    }
+    let mut refused: Vec<FailedServer> = by_segment
+        .iter()
+        .filter(|(_, names)| names.len() > 1)
+        .flat_map(|(segment, names)| {
+            names.iter().map(move |name| {
+                let others: Vec<&str> = names.iter().copied().filter(|n| n != name).collect();
+                FailedServer {
+                    name: name.to_string(),
+                    transport: servers[*name].transport_kind(),
+                    error: segment_taken(segment, &others),
+                }
+            })
+        })
+        .collect();
+    for f in &refused {
+        warn!(server = %f.name, error = %f.error, "MCP server not connected");
+    }
+    refused.sort_by(|a, b| a.name.cmp(&b.name));
+    refused
+}
+
+fn segment_taken(segment: &str, others: &[&str]) -> String {
+    let mut others: Vec<String> = others.iter().map(|o| format!("`{o}`")).collect();
+    others.sort();
+    format!(
+        "not connected: its tools would be named mcp__{segment}__…, as those of {} would; \
+         rename one of them",
+        others.join(", ")
+    )
+}
+
 /// What a server's tools are offered as: one adapter per tool, named among
 /// the server's others by [`crate::naming::tool_names`].
 fn server_adapters(
@@ -1173,6 +1237,53 @@ mod tests {
         );
         let m = McpManager::connect_all(servers).await;
         assert_eq!(m.server_count(), 0); // 失败仍跳过
+    }
+
+    fn missing_command() -> McpServerConfig {
+        McpServerConfig::Stdio {
+            command: "/nonexistent/agix-mcp-server".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            scope: None,
+            timeouts: Default::default(),
+            working_dir: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn servers_whose_tools_would_go_by_one_prefix_are_not_connected() {
+        let hashed = crate::naming::server_segment("my.srv");
+        let servers = HashMap::from([
+            ("my.srv".to_string(), missing_command()),
+            (hashed.clone(), missing_command()),
+            ("other".to_string(), missing_command()),
+        ]);
+        let mut m = McpManager::connect_all(servers).await;
+        let error_of = |m: &McpManager, name: &str| {
+            m.failed()
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| f.error.clone())
+                .unwrap_or_default()
+        };
+        assert!(error_of(&m, "my.srv").contains(&hashed), "{:?}", m.failed());
+        assert!(error_of(&m, &hashed).contains("my.srv"), "{:?}", m.failed());
+        assert!(!error_of(&m, "other").contains("mcp__"), "{:?}", m.failed());
+
+        let late = format!("{}x", "y".repeat(45));
+        let late_segment = crate::naming::server_segment(&late);
+        m.add_server(&late_segment, &missing_command()).await;
+        m.add_server(&late, &missing_command()).await;
+        assert!(
+            error_of(&m, &late).contains(&late_segment),
+            "{:?}",
+            m.failed()
+        );
+        assert!(
+            !error_of(&m, &late_segment).contains("mcp__"),
+            "the server already there keeps its place: {:?}",
+            m.failed()
+        );
     }
 
     fn adapters_of(client: &Arc<crate::client::MockMcpClient>, tool: &str) -> Vec<Arc<dyn Tool>> {

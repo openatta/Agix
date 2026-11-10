@@ -421,7 +421,9 @@ impl McpServerConfig {
     /// must not be able to send `$GITHUB_TOKEN` to a URL of its choosing.
     ///
     /// `Err` for an `oauth` block that reads a secret from this process's
-    /// environment (`client_secret_env`, `private_key_jwt.key_env`).
+    /// environment (`client_secret_env`, `private_key_jwt.key_env`), signs
+    /// with a key file of this machine (`private_key_jwt.key_file`), or
+    /// spends the enterprise identity the host supplied (`"grant": "enterprise"`).
     pub fn confined_to_own_env(&self) -> Result<Self, String> {
         fn nothing(_: &str) -> Option<String> {
             None
@@ -484,6 +486,24 @@ impl McpServerConfig {
                              environment, which a project's own MCP servers cannot read; declare \
                              this server in the global or scene settings"
                         ));
+                    }
+                    if let Some(path) = oauth
+                        .private_key_jwt
+                        .as_ref()
+                        .and_then(|k| k.key_file.as_ref())
+                    {
+                        return Err(format!(
+                            "oauth.private_key_jwt.key_file names {}, a key on the daemon's \
+                             machine, which a project's own MCP servers cannot sign with; declare \
+                             this server in the global or scene settings",
+                            path.display()
+                        ));
+                    }
+                    if oauth.grant == OAuthGrant::Enterprise {
+                        return Err("oauth: `\"grant\": \"enterprise\"` spends the enterprise \
+                                    identity the host supplied, which a project's own MCP servers \
+                                    cannot; declare this server in the global or scene settings"
+                            .into());
                     }
                 }
                 (*url, *headers) = remote(url, headers);
@@ -920,6 +940,29 @@ mod tests {
         }))
         .unwrap();
         assert!(plain.confined_to_own_env().is_ok());
+    }
+
+    #[test]
+    fn a_confined_config_may_not_sign_with_a_local_key_nor_spend_the_enterprise_identity() {
+        for (oauth, names) in [
+            (
+                json!({"grant": "client_credentials", "client_id": "c",
+                       "private_key_jwt": {"key_file": "/home/me/.ssh/id_ecdsa", "alg": "ES256"}}),
+                "key_file",
+            ),
+            (
+                json!({"grant": "enterprise", "client_id": "c"}),
+                "enterprise",
+            ),
+        ] {
+            let cfg: McpServerConfig = serde_json::from_value(json!({
+                "type": "streamable_http", "url": "https://h.example/mcp", "oauth": oauth,
+            }))
+            .unwrap();
+            let err = cfg.confined_to_own_env().unwrap_err();
+            assert!(err.contains(names), "{err}");
+            assert!(err.contains("global or scene settings"), "{err}");
+        }
     }
 
     #[test]

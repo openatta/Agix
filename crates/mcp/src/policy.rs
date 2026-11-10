@@ -95,30 +95,41 @@ struct CompiledRule {
 
 impl CompiledRule {
     fn compile(rule: McpServerRule) -> Result<Self, String> {
-        let glob = |pattern: &str| {
+        let glob = |pattern: &str, case_insensitive: bool| {
             GlobBuilder::new(pattern)
                 .literal_separator(true)
+                .case_insensitive(case_insensitive)
                 .build()
                 .map(|g| g.compile_matcher())
                 .map_err(|e| format!("rule {rule}: invalid glob: {e}"))
         };
         let matcher = match &rule {
             McpServerRule::Name(n) => Matcher::Name(n.clone()),
-            McpServerRule::Command(pattern) => Matcher::Command(glob(pattern)?),
-            McpServerRule::Url(pattern) => Matcher::Url(glob(&normalized_url_pattern(pattern))?),
+            McpServerRule::Command(pattern) => {
+                Matcher::Command(glob(pattern, COMMANDS_IGNORE_CASE)?)
+            }
+            McpServerRule::Url(pattern) => {
+                Matcher::Url(glob(&normalized_url_pattern(pattern), false)?)
+            }
         };
         Ok(Self { rule, matcher })
     }
 
     fn admits(&self, name: &str, cfg: &McpServerConfig) -> bool {
-        !matches!(self.matcher, Matcher::Name(_)) && self.matches(name, cfg)
+        match &self.matcher {
+            Matcher::Name(_) => false,
+            Matcher::Command(_) => !climbs(cfg) && self.matches(name, cfg),
+            Matcher::Url(_) => self.matches(name, cfg),
+        }
     }
 
     fn matches(&self, name: &str, cfg: &McpServerConfig) -> bool {
         match &self.matcher {
             Matcher::Name(n) => n == name,
             Matcher::Command(m) => match cfg {
-                McpServerConfig::Stdio { command, .. } => m.is_match(expand_env_vars(command)),
+                McpServerConfig::Stdio { command, .. } => {
+                    m.is_match(command_path(&expand_env_vars(command)).0)
+                }
                 _ => false,
             },
             Matcher::Url(m) => cfg
@@ -126,6 +137,49 @@ impl CompiledRule {
                 .and_then(|url| normalized_url(&expand_env_vars(url)))
                 .is_some_and(|url| m.is_match(url)),
         }
+    }
+}
+
+/// The file systems macOS ships with ignore case, so `/TMP/x` is `/tmp/x`.
+const COMMANDS_IGNORE_CASE: bool = cfg!(target_os = "macos");
+
+/// `command` as the path it names, written one way: `.` segments and
+/// repeated `/` dropped, each `..` taking away the segment before it; and
+/// whether it had a `..`. A relative path keeps a leading `./`, which makes
+/// it a file rather than a name looked up in `PATH`.
+fn command_path(command: &str) -> (String, bool) {
+    if !command.contains('/') {
+        return (command.to_string(), false);
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    let mut climbs = false;
+    for part in command.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                climbs = true;
+                parts.pop();
+            }
+            part => parts.push(part),
+        }
+    }
+    let joined = parts.join("/");
+    let path = if command.starts_with('/') {
+        format!("/{joined}")
+    } else if joined.contains('/') {
+        joined
+    } else {
+        format!("./{joined}")
+    };
+    (path, climbs)
+}
+
+/// A command with a `..` in it is admitted by no rule: where it ends up
+/// depends on links the policy cannot see.
+fn climbs(cfg: &McpServerConfig) -> bool {
+    match cfg {
+        McpServerConfig::Stdio { command, .. } => command_path(&expand_env_vars(command)).1,
+        _ => false,
     }
 }
 
@@ -551,6 +605,35 @@ mod tests {
             g.admit("a", &stdio("/opt/mcp/bin/sub/fs")).is_err(),
             "`*` does not cross a `/`"
         );
+    }
+
+    #[test]
+    fn a_command_is_matched_as_the_path_it_names() {
+        let g = gate(r#"{"allowed_servers": [{"command": "/opt/mcp/**"}]}"#);
+        assert!(g.admit("a", &stdio("/opt/mcp/bin/fs")).is_ok());
+        assert!(g.admit("a", &stdio("/opt/mcp/./bin//fs")).is_ok());
+        for climbing in [
+            "/opt/mcp/../../tmp/evil",
+            "/opt/mcp/bin/../../../tmp/evil",
+            "/opt/mcp/bin/..",
+        ] {
+            assert!(g.admit("a", &stdio(climbing)).is_err(), "{climbing}");
+        }
+
+        let d = gate(r#"{"denied_servers": [{"command": "/tmp/**"}]}"#);
+        for hidden in ["/opt/../tmp/evil", "/tmp/./evil", "//tmp//evil"] {
+            assert!(d.admit("a", &stdio(hidden)).is_err(), "{hidden}");
+        }
+        assert!(d.admit("a", &stdio("/opt/tmp/x")).is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_macos_a_command_rule_ignores_case_as_the_file_system_does() {
+        let d = gate(r#"{"denied_servers": [{"command": "/tmp/**"}]}"#);
+        assert!(d.admit("a", &stdio("/TMP/evil")).is_err());
+        let g = gate(r#"{"allowed_servers": [{"command": "/opt/mcp/bin/fs"}]}"#);
+        assert!(g.admit("a", &stdio("/opt/MCP/bin/FS")).is_ok());
     }
 
     #[test]

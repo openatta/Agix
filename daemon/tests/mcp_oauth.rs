@@ -1331,3 +1331,18 @@ async fn an_error_callback_that_is_not_this_sign_ins_is_refused_too() {
     assert_eq!(code, 200, "{page}");
     conn.event("mcp_connected", "docs").await;
 }
+
+#[tokio::test]
+async fn a_servers_credentials_and_query_never_show_in_its_status() {
+    let d = Daemon::start(serde_json::json!({
+        "typo": http_server("http://bob:hunter2@127.0.0.1:99999/mcp?key=QUERY-SECRET"),
+    }))
+    .await;
+    let mut conn = d.connect().await;
+    let status = conn.wait_state("typo", "failed").await;
+    let shown = status.to_string();
+    assert!(shown.contains("127.0.0.1:99999/mcp"), "{shown}");
+    for secret in ["bob", "hunter2", "QUERY-SECRET"] {
+        assert!(!shown.contains(secret), "{shown}");
+    }
+}

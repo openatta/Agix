@@ -587,3 +587,78 @@ async fn a_server_added_over_rpc_is_the_projects_own() {
     assert_eq!(code, daemon::rpc::codes::INVALID_PARAMS, "{message}");
     assert!(message.contains("client_secret_env"), "{message}");
 }
+
+#[tokio::test]
+async fn a_projects_own_server_may_not_sign_with_a_local_key_or_spend_the_enterprise_identity() {
+    let d = Daemon::new();
+    let pool = d.start(None).await;
+    let remote = |oauth: serde_json::Value| serde_json::json!({"type": "streamable_http", "url": "https://mcp.example/mcp", "oauth": oauth});
+    let key_file = remote(serde_json::json!({
+        "grant": "client_credentials", "client_id": "c",
+        "private_key_jwt": {"key_file": "/home/me/.ssh/id_ecdsa", "alg": "ES256"},
+    }));
+    let enterprise = remote(serde_json::json!({"grant": "enterprise", "client_id": "c"}));
+
+    for (name, cfg, names) in [
+        ("signer", key_file.clone(), "key_file"),
+        ("ema", enterprise.clone(), "enterprise"),
+    ] {
+        let (code, message) = pool
+            .add_mcp_server(None, "code", name, cfg)
+            .await
+            .unwrap_err();
+        assert_eq!(code, daemon::rpc::codes::INVALID_PARAMS, "{message}");
+        assert!(message.contains(names), "{message}");
+    }
+
+    let mut events = pool.subscribe_events();
+    std::fs::create_dir_all(d.root().join(".agix")).unwrap();
+    std::fs::write(
+        d.root().join(".agix").join("settings.json"),
+        serde_json::json!({"mcp_servers": {"signer": key_file, "ema": enterprise}}).to_string(),
+    )
+    .unwrap();
+    pool.reload_settings(None, "code").await;
+    let refused = failed_events(&mut events, 2).await;
+    assert_eq!(refused[0].0, "ema", "{refused:?}");
+    assert!(refused[0].1.contains("enterprise"), "{refused:?}");
+    assert_eq!(refused[1].0, "signer", "{refused:?}");
+    assert!(refused[1].1.contains("key_file"), "{refused:?}");
+}
+
+#[tokio::test]
+async fn two_servers_whose_tools_would_share_a_name_are_neither_started() {
+    let d = Daemon::new();
+    let hashed = mcp::naming::server_segment("my.srv");
+    d.configure(d.root(), &["my.srv", &hashed, "kept"]);
+    let pool = d.start(None).await;
+    d.wait_for_spawn("kept").await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let failed = loop {
+        let failed: std::collections::BTreeMap<String, String> = pool
+            .mcp_status()
+            .await
+            .iter()
+            .filter(|s| s["state"] == "failed")
+            .map(|s| {
+                (
+                    s["name"].as_str().unwrap().to_string(),
+                    s["error"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        let both = failed.contains_key("my.srv") && failed.contains_key(&hashed);
+        if both || tokio::time::Instant::now() > deadline {
+            break failed;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(failed["my.srv"].contains(&hashed), "{failed:?}");
+    assert!(failed[&hashed].contains("my.srv"), "{failed:?}");
+    assert!(
+        d.spawned().iter().all(|n| n == "kept"),
+        "started: {:?}",
+        d.spawned()
+    );
+}

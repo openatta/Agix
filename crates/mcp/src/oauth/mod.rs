@@ -36,7 +36,7 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::config::{expand_env_vars, EnterpriseIdp, McpOAuthConfig, McpServerConfig};
-use crate::error::McpError;
+use crate::error::{without_url_secrets, McpError};
 use crate::policy::McpPolicyGate;
 
 pub use callback::LoopbackCallback;
@@ -127,13 +127,13 @@ pub type AuthListener = Arc<dyn Fn(AuthEvent) + Send + Sync>;
 #[derive(Debug, thiserror::Error)]
 pub enum AuthFlowError {
     /// The request itself is wrong: no such server, flow or redirect.
-    #[error("{0}")]
+    #[error("{}", without_url_secrets(.0))]
     Invalid(String),
     /// The MCP policy does not allow the authorization server.
-    #[error("{0}")]
+    #[error("{}", without_url_secrets(.0))]
     Denied(String),
     /// The authorization server, or the exchange with it, failed.
-    #[error("{0}")]
+    #[error("{}", without_url_secrets(.0))]
     Failed(String),
 }
 
@@ -337,6 +337,7 @@ impl Shared {
     }
 
     fn fail(&self, server: &str, key: &str, error: String) {
+        let error = without_url_secrets(&error);
         self.with_entry(key, |e| {
             e.state = AuthState::Failed;
             e.error = Some(error.clone());
@@ -636,7 +637,7 @@ impl McpAuth {
             issuer: entry.issuer,
             scopes,
             expires_at,
-            error: entry.error,
+            error: entry.error.as_deref().map(without_url_secrets),
         })
     }
 
