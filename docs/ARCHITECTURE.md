@@ -901,6 +901,16 @@ token——子进程环境里没有 `AGIX_DAEMON_TOKEN`。要在 Linux 上把这
 `network_mode: deny_all` 或 `allowlist`(两者在 bwrap 上都是整个断网),或者不开 TCP /
 WebSocket、只用 unix socket。
 
+**沙箱不按域名放行。** `network_mode: allowlist` 对 `WebFetch` / `Ping` 是"只去
+`sandbox.allowed_domains` 列出的主机",对沙箱里的 `Bash` / `Monitor` 命令则两个后端都做不到:
+sandbox-exec 的 profile 里远端主机只能写 `*` 或 `localhost`,写了别的域名 profile 编译不过,
+每条命令都起不来;bwrap 只有 `--unshare-net`。所以 macOS 上 allowlist 是 `(deny network*)`,
+名单里有 `localhost` 或回环地址时再放开回环(连得到本机所有监听回环的服务,daemon 自己的端口
+除外);Linux 上整个断网,命令只有自己网络命名空间里的回环。名单里的域名两边都连不上,后端报
+`Partial`,`unmet` 里列出这些域名:`sandbox.require_enforcement` 打开时每条沙箱命令都被拒,
+无人值守的自动放行要求 `Full`,也不放行。`daemon.doctor` 的 `sandbox.network_allowlist` 在名单里
+有回环以外的条目时报 degraded。按域名放行得另起一个本机代理,现在没有。
+
 **已知的缺口。** 上面两道合起来,只有"命令在沙箱外、又 `setsid` 离开了 daemon 起的进程组"这一种
 情况挡不住:lineage 按进程组认,`setsid` 之后认不出来;沙箱本来能拦 connect,可这时根本没有沙箱。
 没有沙箱的情况有三种:Linux 上没装 bwrap、Windows、设置里开了 `dangerously_disable_sandbox`。

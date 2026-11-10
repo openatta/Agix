@@ -8,7 +8,8 @@
 //! and outside it the daemon refuses a connection from its own descendant.
 //! The host's connection works throughout. Inside the sandbox the state
 //! root's settings, where provider keys are written, and its MCP OAuth tokens
-//! are not readable either.
+//! are not readable either, and under a network allowlist the command runs
+//! with the network shut.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -154,13 +155,17 @@ struct Daemon {
 
 impl Daemon {
     async fn start(sandboxed: bool) -> Self {
+        Self::start_with(json!({"dangerously_disable_sandbox": !sandboxed})).await
+    }
+
+    async fn start_with(sandbox: serde_json::Value) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (home, work) = (dir.path().join("home"), dir.path().join("work"));
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(work.join(".agix")).unwrap();
         let global = json!({
             "project_trust": {"default": "untrusted"},
-            "sandbox": {"dangerously_disable_sandbox": !sandboxed},
+            "sandbox": sandbox,
         });
         std::fs::write(home.join("settings.json"), global.to_string()).unwrap();
         // Where `config.setProvider` puts a key; any value stands in for one,
@@ -347,4 +352,51 @@ async fn a_sandboxed_command_cannot_read_the_keys_the_daemon_keeps() {
         "the scratchpad was not read: {shown}"
     );
     assert!(!shown.contains(SECRET), "the command read a key: {shown}");
+}
+
+/// An allowlist of domains no backend can filter by: the command still runs,
+/// with the network shut — a local port the allowlist does not name among
+/// it — and doctor says the domains are out of a sandboxed command's reach.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_runs_under_an_allowlist_of_domains_with_the_network_shut() {
+    if !sandbox_runs() {
+        return;
+    }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            drop(conn);
+        }
+    });
+    let daemon = Daemon::start_with(json!({
+        "network_mode": "allowlist",
+        "allowed_domains": ["registry.npmjs.org"],
+    }))
+    .await;
+    let command = format!(
+        "echo ran-$((40+2)); (exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null \
+         && echo reached-$((1+1)) || echo shut-$((2+2))"
+    );
+    let shown = daemon.command_shows(&command).await;
+    assert!(shown.contains("ran-42"), "the command did not run: {shown}");
+    assert!(
+        shown.contains("shut-4"),
+        "127.0.0.1:{port} was reached: {shown}"
+    );
+
+    let doctor = daemon.ok("daemon.doctor", json!({})).await;
+    let check = doctor["health"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "sandbox.network_allowlist")
+        .cloned()
+        .unwrap_or_else(|| panic!("no sandbox.network_allowlist check: {doctor}"));
+    assert_eq!(check["status"], "degraded", "{check}");
+    assert_eq!(
+        check["details"]["unreachable_from_the_sandbox"],
+        json!(["registry.npmjs.org"]),
+        "{check}"
+    );
 }

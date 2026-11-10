@@ -1,7 +1,8 @@
 //! Doctor checks that report the daemon's safety posture: settings and build
 //! facts that are legitimate but that an operator should have seen written
 //! down — a permission mode that never asks, hooks that fail open, unattended
-//! commands with an open network, a build whose panics end the process.
+//! commands with an open network, a network allowlist the OS sandbox cannot
+//! honour, a build whose panics end the process.
 
 use base::context::config::NetworkModeConfig;
 use base::interface::health::{CheckResult, HealthCheck};
@@ -143,6 +144,56 @@ impl HealthCheck for UnattendedNetworkCheck {
     }
 }
 
+/// `network_mode: allowlist` reads as "these domains and nothing else", and
+/// for a sandboxed command it is "nothing else": neither OS backend filters
+/// by domain.
+pub struct NetworkAllowlistCheck(Arc<Settings>);
+
+impl NetworkAllowlistCheck {
+    pub fn new(settings: Arc<Settings>) -> Self {
+        Self(settings)
+    }
+}
+
+impl HealthCheck for NetworkAllowlistCheck {
+    fn name(&self) -> &str {
+        "sandbox.network_allowlist"
+    }
+
+    fn check(&self) -> CheckResult {
+        let sandbox = &self.0.sandbox;
+        if sandbox.network_mode != NetworkModeConfig::Allowlist {
+            return CheckResult::ok("sandbox.network_mode is not allowlist");
+        }
+        let unreachable: Vec<&str> = sandbox
+            .allowed_domains
+            .iter()
+            .map(String::as_str)
+            .filter(|d| !base::interface::exec::names_loopback(d))
+            .collect();
+        let details = serde_json::json!({
+            "unreachable_from_the_sandbox": unreachable,
+            "require_enforcement": sandbox.require_enforcement,
+        });
+        if unreachable.is_empty() {
+            return CheckResult::ok("the allowlist names only localhost").with_details(details);
+        }
+        let refused = if sandbox.require_enforcement {
+            "; with sandbox.require_enforcement on, every sandboxed command is refused"
+        } else {
+            ""
+        };
+        CheckResult::degraded(format!(
+            "sandbox.network_mode is allowlist, but the OS sandbox cannot filter by domain: a \
+             sandboxed Bash / Monitor command reaches none of {} (macOS lets through only \
+             localhost, and only when the allowlist names it; Linux cuts the network \
+             entirely){refused}. WebFetch and Ping do follow the allowlist",
+            unreachable.join(", ")
+        ))
+        .with_details(details)
+    }
+}
+
 pub struct PanicStrategyCheck;
 
 impl PanicStrategyCheck {
@@ -204,6 +255,41 @@ mod tests {
                 settings_with(|s| s.sandbox.unattended_requires_network_policy = true),
                 unattended()
             ),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn an_allowlist_of_domains_is_flagged_as_unreachable_from_the_sandbox() {
+        let allowlist = |domains: &[&str], require: bool| {
+            NetworkAllowlistCheck::new(settings_with(|s| {
+                s.sandbox.network_mode = NetworkModeConfig::Allowlist;
+                s.sandbox.allowed_domains = domains.iter().map(|d| d.to_string()).collect();
+                s.sandbox.require_enforcement = require;
+            }))
+            .check()
+        };
+        let r = allowlist(&["registry.npmjs.org", "localhost"], false);
+        assert_eq!(r.status.label(), "degraded", "{r:?}");
+        assert!(r.summary.contains("registry.npmjs.org"), "{r:?}");
+        assert!(!r.summary.contains("refused"), "{r:?}");
+        assert_eq!(
+            r.details["unreachable_from_the_sandbox"],
+            serde_json::json!(["registry.npmjs.org"])
+        );
+        let r = allowlist(&["registry.npmjs.org"], true);
+        assert!(
+            r.summary.contains("every sandboxed command is refused"),
+            "{r:?}"
+        );
+        assert_eq!(allowlist(&["localhost"], true).status.label(), "ok");
+        assert_eq!(
+            NetworkAllowlistCheck::new(settings_with(|s| {
+                s.sandbox.allowed_domains = vec!["registry.npmjs.org".into()];
+            }))
+            .check()
+            .status
+            .label(),
             "ok"
         );
     }

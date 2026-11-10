@@ -212,6 +212,16 @@ pub fn domain_key(entry: &str) -> String {
     }
 }
 
+/// Whether a `sandbox.allowed_domains` entry names this machine's loopback:
+/// `localhost` or a loopback address.
+pub fn names_loopback(entry: &str) -> bool {
+    let key = domain_key(entry);
+    key == "localhost"
+        || key
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// The one answer to "may a destination chosen from outside reach this", for
 /// a model-directed fetch and an HTTP hook alike.
 pub fn is_internal_address(ip: std::net::IpAddr) -> bool {
@@ -273,7 +283,24 @@ pub fn carried_v4(ip: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_internal_address;
+    use super::{is_internal_address, names_loopback};
+
+    #[test]
+    fn localhost_and_the_loopback_addresses_name_the_loopback() {
+        for entry in [
+            "localhost",
+            "LOCALHOST.",
+            "127.0.0.1",
+            "127.1.2.3",
+            "::1",
+            "[::1]",
+        ] {
+            assert!(names_loopback(entry), "{entry}");
+        }
+        for entry in ["example.com", "localhost.example.com", "10.0.0.1", "*", ""] {
+            assert!(!names_loopback(entry), "{entry}");
+        }
+    }
 
     #[test]
     fn every_spelling_of_this_machine_and_the_networks_behind_it_is_internal() {

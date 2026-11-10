@@ -498,7 +498,7 @@
           "type": "array"
         },
         "allowed_domains": {
-          "description": "Hosts the model may reach (`WebFetch`, `Ping`, sandboxed `Bash`); a\nname also covers its subdomains. Under `network_mode: \"allowlist\"` it\nis the whole list. In every mode, a host it names may be reached at an\naddress on this machine or a private network, which a model-directed\nrequest is otherwise refused — write `127.0.0.1` here to let `WebFetch`\nreach a local server.",
+          "description": "Hosts the model may reach (`WebFetch`, `Ping`); a name also covers its\nsubdomains. Under `network_mode: \"allowlist\"` it is the whole list, but\na sandboxed `Bash` / `Monitor` command reaches none of its domains: the\nOS sandbox cannot filter by domain, and lets through only localhost\n(macOS, when listed) or nothing (Linux). In every mode, a host it\nnames may be reached at an address on this machine or a private\nnetwork, which a model-directed request is otherwise refused — write\n`127.0.0.1` here to let `WebFetch` reach a local server.",
           "items": {
             "type": "string"
           },

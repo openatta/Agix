@@ -3,9 +3,12 @@
 //! - **macOS**: `sandbox-exec -p <profile> <program> <args…>`. The profile is
 //!   TinyScheme denying writes outside the allowed subtrees; exec is not
 //!   restricted. Network defaults to open; `DenyAll` / `Allowlist` both use
-//!   `(deny network*)`, and the allowlist re-allows named domains. DNS goes
-//!   through `mDNSResponder` IPC, which `network*` does not cover, so name
-//!   resolution keeps working under both restricted modes.
+//!   `(deny network*)`. A profile names a remote host only as `*` or
+//!   `localhost`, so the allowlist re-allows localhost when it names it and
+//!   no domain at all; the domains it names are reported unmet through
+//!   `Enforcement`, as on Linux. DNS goes through `mDNSResponder` IPC, which
+//!   `network*` does not cover, so name resolution keeps working under both
+//!   restricted modes.
 //! - **Linux**: `bwrap --ro-bind / / --bind <writable> <writable> … <program>`.
 //!   No bwrap on PATH means no constraint, reported as such. `DenyAll` uses
 //!   `--unshare-net`; bwrap has no domain-level filter, so `Allowlist`
@@ -669,9 +672,14 @@ fn mac_wrap(
     policy: &SandboxPolicy,
 ) -> Confined {
     let profile = build_macos_profile(cwd, additional_writable, policy);
+    let unmet = domains_sandbox_exec_cannot_allow(policy);
     Confined {
-        enforcement: Enforcement::Full,
-        unmet: Vec::new(),
+        enforcement: if unmet.is_empty() {
+            Enforcement::Full
+        } else {
+            Enforcement::Partial
+        },
+        unmet,
         spec: ProcessSpec::new("sandbox-exec", &inner.cwd)
             .arg("-p")
             .arg(profile)
@@ -679,6 +687,26 @@ fn mac_wrap(
             .args(inner.args),
         mode: SandboxMode::MacOSSandboxExec,
     }
+}
+
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn domains_sandbox_exec_cannot_allow(policy: &SandboxPolicy) -> Vec<String> {
+    if policy.network_mode != NetworkMode::Allowlist {
+        return Vec::new();
+    }
+    let unreachable: Vec<&str> = policy
+        .allowed_domains
+        .iter()
+        .map(String::as_str)
+        .filter(|d| !base::interface::exec::names_loopback(d))
+        .collect();
+    if unreachable.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "domain allowlist: sandbox-exec can let through only localhost, so {} stays unreachable",
+        unreachable.join(", ")
+    )]
 }
 
 /// This user's `DARWIN_USER_TEMP_DIR`, resolved.
@@ -816,8 +844,7 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     }
 
     // DNS is IPC to mDNSResponder, which `network*` does not cover, so name
-    // resolution survives both restricted modes; `remote tcp` matches by
-    // hostname.
+    // resolution survives both restricted modes.
     match policy.network_mode {
         NetworkMode::Unrestricted => {}
         NetworkMode::DenyAll => {
@@ -825,11 +852,16 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         }
         NetworkMode::Allowlist => {
             s.push_str("(deny network*)\n");
-            for domain in &policy.allowed_domains {
-                s.push_str(&format!(
-                    "(allow network-outbound (remote tcp \"{}:*\"))\n",
-                    sandbox_escape(domain)
-                ));
+            // A remote address names its host only as `*` or `localhost`; a
+            // profile with `(remote tcp "example.com:*")` does not compile,
+            // and every command under it fails. The other domains are
+            // reported unmet instead.
+            if policy
+                .allowed_domains
+                .iter()
+                .any(|d| base::interface::exec::names_loopback(d))
+            {
+                s.push_str("(allow network-outbound (remote ip \"localhost:*\"))\n");
             }
         }
     }
@@ -1798,33 +1830,46 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_allowlist_network_denies_then_allows_each_domain() {
+    fn macos_allowlist_domains_stay_out_of_the_profile_and_are_reported_unmet() {
         let mut o = opts("ls", Path::new("/tmp/work"));
         o.policy.network_mode = NetworkMode::Allowlist;
-        o.policy.allowed_domains = vec!["api.example.com".into(), "registry.npmjs.org".into()];
+        o.policy.allowed_domains = vec!["api.example.com".into(), "evil\".com".into()];
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
         assert!(profile.contains("(deny network*)"), "profile:\n{profile}");
         assert!(
-            profile.contains("(allow network-outbound (remote tcp \"api.example.com:*\"))"),
+            !network_mode_rules(profile).contains("network-outbound"),
             "profile:\n{profile}"
         );
+        assert!(!profile.contains("example.com"), "profile:\n{profile}");
+        assert!(!profile.contains("evil"), "profile:\n{profile}");
+        assert_eq!(cmd.enforcement, Enforcement::Partial);
+        let unmet = cmd.unmet.join("; ");
         assert!(
-            profile.contains("(allow network-outbound (remote tcp \"registry.npmjs.org:*\"))"),
-            "profile:\n{profile}"
+            unmet.contains("api.example.com") && unmet.contains("evil\".com"),
+            "{unmet}"
         );
-        // Both allow rules must come after the deny for sandbox-exec's
-        // top-to-bottom evaluation order to actually re-permit them.
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_allowlist_naming_localhost_lets_the_loopback_through() {
+        let mut o = opts("ls", Path::new("/tmp/work"));
+        o.policy.network_mode = NetworkMode::Allowlist;
+        o.policy.allowed_domains = vec!["127.0.0.1".into()];
+        let cmd = wrap(o);
+        let profile = &cmd.spec.args[1];
         let deny_idx = profile.find("(deny network*)").unwrap();
-        let allow_idx = profile.find("(allow network-outbound").unwrap();
+        let allow_idx = profile
+            .find("(allow network-outbound (remote ip \"localhost:*\"))")
+            .unwrap_or_else(|| panic!("profile:\n{profile}"));
         assert!(allow_idx > deny_idx);
+        assert_eq!(cmd.enforcement, Enforcement::Full, "{:?}", cmd.unmet);
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_allowlist_with_no_domains_still_denies_network() {
-        // Empty allowed_domains under Allowlist == DenyAll in effect (no
-        // allow rules to re-permit anything).
         let mut o = opts("ls", Path::new("/tmp/work"));
         o.policy.network_mode = NetworkMode::Allowlist;
         o.policy.allowed_domains = vec![];
@@ -1832,17 +1877,7 @@ mod tests {
         let profile = network_mode_rules(&cmd.spec.args[1]);
         assert!(profile.contains("(deny network*)"), "profile:\n{profile}");
         assert!(!profile.contains("network-outbound"), "profile:\n{profile}");
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_network_domain_is_escaped() {
-        let mut o = opts("ls", Path::new("/tmp/work"));
-        o.policy.network_mode = NetworkMode::Allowlist;
-        o.policy.allowed_domains = vec!["evil\".com".into()];
-        let cmd = wrap(o);
-        let profile = &cmd.spec.args[1];
-        assert!(profile.contains("evil\\\".com"), "profile:\n{profile}");
+        assert_eq!(cmd.enforcement, Enforcement::Full, "{:?}", cmd.unmet);
     }
 
     #[cfg(target_os = "macos")]
@@ -2312,7 +2347,28 @@ mod tests {
             self.run(command, true)
         }
 
+        fn runs_allowing(&self, domains: &[&str], command: &str) -> bool {
+            self.run_under(
+                command,
+                SandboxPolicy {
+                    network_mode: NetworkMode::Allowlist,
+                    allowed_domains: domains.iter().map(|d| d.to_string()).collect(),
+                    ..Default::default()
+                },
+            )
+        }
+
         fn run(&self, command: &str, deny_ipc_escapes: bool) -> bool {
+            self.run_under(
+                command,
+                SandboxPolicy {
+                    deny_ipc_escapes,
+                    ..Default::default()
+                },
+            )
+        }
+
+        fn run_under(&self, command: &str, policy: SandboxPolicy) -> bool {
             let additional = vec![self.tmp.clone()];
             let confined = wrap(SandboxOptions {
                 command,
@@ -2321,8 +2377,7 @@ mod tests {
                 disable: false,
                 policy: SandboxPolicy {
                     state_root: Some(self.state_root.clone()),
-                    deny_ipc_escapes,
-                    ..Default::default()
+                    ..policy
                 },
             });
             std::process::Command::new(&confined.spec.program)
@@ -2725,6 +2780,37 @@ mod tests {
         assert!(
             s.runs(&format!("nc -z 127.0.0.1 {served}")),
             "the port stayed fenced after its fence was dropped"
+        );
+    }
+
+    /// sandbox-exec names a remote host only as `*` or `localhost`, and a
+    /// profile naming any other does not compile: an allowlist of real
+    /// domains must still run the command, with the network shut but for
+    /// what the allowlist names and the profile can say.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_allowlist_of_domains_runs_the_command_with_the_rest_of_the_network_shut() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                drop(conn);
+            }
+        });
+        let reach = format!("nc -z 127.0.0.1 {port}");
+        let domains = ["example.com", "registry.npmjs.org"];
+
+        assert!(s.runs_allowing(&domains, "true"), "the command did not run");
+        assert!(
+            !s.runs_allowing(&domains, &reach),
+            "127.0.0.1:{port}, which the allowlist does not name, was reached"
+        );
+        assert!(
+            s.runs_allowing(&["example.com", "localhost"], &reach),
+            "localhost, which the allowlist names, was refused"
         );
     }
 

@@ -33,9 +33,8 @@ pub struct SandboxPolicy {
     /// Network policy — see [`NetworkMode`].
     pub network_mode: NetworkMode,
     /// Domains allowed to make outbound connections when `network_mode` is
-    /// [`NetworkMode::Allowlist`]. Ignored otherwise. Matched literally
-    /// against the connection target's hostname (no wildcards) — see
-    /// the macOS backend's network section for the exact rule shape.
+    /// [`NetworkMode::Allowlist`]. Ignored otherwise. What each backend makes
+    /// of it is under [`NetworkMode::Allowlist`].
     pub allowed_domains: Vec<String>,
     /// Scene ids whose `~/.agix/scenes/<scene>/settings.json` the backend
     /// should protect from writes.
@@ -82,9 +81,11 @@ pub enum NetworkMode {
     /// raw socket the sandbox profile's `network*` filter covers — but no
     /// TCP/UDP connection actually reaching the network is permitted).
     DenyAll,
-    /// Outbound TCP restricted to `SandboxPolicy::allowed_domains`; DNS
-    /// resolution still works (same rationale as `DenyAll`). An empty
-    /// `allowed_domains` list under this mode is equivalent to `DenyAll`.
+    /// Outbound restricted to `SandboxPolicy::allowed_domains`. Neither
+    /// backend can filter by domain: macOS lets through localhost when the
+    /// list names it and nothing else, Linux cuts the network entirely, and
+    /// both report the domains they could not allow as unmet. DNS resolution
+    /// still works on macOS (same rationale as `DenyAll`).
     Allowlist,
 }
 
@@ -164,10 +165,10 @@ pub enum Enforcement {
     /// Everything the policy asked for.
     Full,
     /// Some of it. The backend has capabilities the policy needs and lacks
-    /// others — bwrap has no domain-level network filter, so an allowlist
-    /// there becomes "no network at all", which is stricter in one direction
-    /// and not what was asked for in the other. What is missing is listed in
-    /// [`Confined::unmet`].
+    /// others — neither backend has a domain-level network filter, so an
+    /// allowlist of domains becomes "no network" (localhost aside, on macOS),
+    /// which is stricter in one direction and not what was asked for in the
+    /// other. What is missing is listed in [`Confined::unmet`].
     Partial,
     /// None of it. The command below runs unconstrained.
     None,

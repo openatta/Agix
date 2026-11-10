@@ -667,12 +667,14 @@ pub struct SandboxConfig {
     /// project boundary.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow_write: Vec<PathBuf>,
-    /// Hosts the model may reach (`WebFetch`, `Ping`, sandboxed `Bash`); a
-    /// name also covers its subdomains. Under `network_mode: "allowlist"` it
-    /// is the whole list. In every mode, a host it names may be reached at an
-    /// address on this machine or a private network, which a model-directed
-    /// request is otherwise refused — write `127.0.0.1` here to let `WebFetch`
-    /// reach a local server.
+    /// Hosts the model may reach (`WebFetch`, `Ping`); a name also covers its
+    /// subdomains. Under `network_mode: "allowlist"` it is the whole list, but
+    /// a sandboxed `Bash` / `Monitor` command reaches none of its domains: the
+    /// OS sandbox cannot filter by domain, and lets through only localhost
+    /// (macOS, when listed) or nothing (Linux). In every mode, a host it
+    /// names may be reached at an address on this machine or a private
+    /// network, which a model-directed request is otherwise refused — write
+    /// `127.0.0.1` here to let `WebFetch` reach a local server.
     pub allowed_domains: Vec<String>,
     /// Outbound network policy for sandboxed `Bash` commands.
     #[serde(default)]

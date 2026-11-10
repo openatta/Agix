@@ -1362,6 +1362,14 @@ WebAssembly 载体整个移除。
     也能写,模型能给自己种一个带 `allowed-tools` 的 skill;现在写工具写这里要确认(无人值守即拒绝),
     沙箱里只读,`.agents` 目录项本身挪不走、不存在时建不出来(Linux 上只在 `.agents` 已存在时挡)。
     `.agents` 下别的路径与项目根的 `AGENTS.md` 不受影响。
+- **macOS 上 `network_mode: allowlist` 的沙箱命令又能跑了,但名单里的域名连不上。** 以前
+  profile 给每个域名写一条 `(remote tcp "<域名>:*")`,sandbox-exec 只认 `*` 和 `localhost`,
+  profile 编译不过,每条 `Bash` / `Monitor` 命令都报 `host must be * or localhost` 失败。现在和
+  Linux 一样不放任何域名:出站整个拒绝,名单里有 `localhost` 或回环地址时放开回环。沙箱报
+  `Partial`,`unmet` 里列出连不上的域名;所以 `sandbox.require_enforcement: true` 加上带域名的
+  allowlist 会拒绝每条沙箱命令,无人值守的会话也不会自动放行它们。命令确实要连这些域名的,
+  眼下只能回到 `unrestricted`,按域名放行留待后续版本;`daemon.doctor` 新增的
+  `sandbox.network_allowlist` 检查会指出这种配置(§6.3)。`WebFetch` / `Ping` 照旧按名单放行。
 - **项目 `.agix/` 会多一个 `.gitignore`。** 第一次往项目 `.agix/` 写 `settings.local.json`
   (`config.setProvider` 的 key、MCP headers)或录遥测时,没有 `.agix/.gitignore` 就生成一份,写着
   `settings.local.json`、`mcp.local.json`、`telemetry/`。已有的不动,缺的行也不补:以前就有

@@ -844,6 +844,13 @@ daemon 自己的会话池还有一项 `sandbox.unattended_network`:这个 daemon
                "unattended_requires_network_policy":false } }
 ```
 
+`sandbox.network_allowlist`:`sandbox.network_mode` 是 `allowlist`,而 `allowed_domains` 里有
+回环(`localhost`、`127.0.0.1`、`::1`)以外的条目时是 `degraded`——两个 OS 沙箱后端都不按域名放行,
+沙箱里的 `Bash` / `Monitor` 命令连不上这些域名(macOS 只放开名单里的回环,Linux 整个断网,
+`ARCHITECTURE.md` §6.3);`sandbox.require_enforcement` 开着时 `summary` 另外说明每条沙箱命令都会
+被拒。其余情况是 `ok`。`details` 是 `{"unreachable_from_the_sandbox": [...], "require_enforcement": false}`,
+不是 `allowlist` 时 `details` 为 `null`。
+
 #### `daemon.subscribeEvents`
 
 无参。把当前连接标记为异步通知订阅者,此后推送 §8 的 `daemon.event` 帧,直到连接

@@ -432,6 +432,9 @@ pub fn run_doctor(
         .with(Arc::new(doctor_posture::HooksFailOpenCheck::new(
             settings.clone(),
         )))
+        .with(Arc::new(doctor_posture::NetworkAllowlistCheck::new(
+            settings.clone(),
+        )))
         .with(Arc::new(doctor_posture::PanicStrategyCheck));
     for check in extra.checks() {
         checks = checks.with(check.clone());
@@ -786,12 +789,13 @@ mod tests {
                 "memory",
                 "settings.permission_mode",
                 "settings.hooks_fail_open",
+                "sandbox.network_allowlist",
                 "build.panic",
                 "acme.licence"
             ]
         );
         assert_eq!(
-            report["health"]["checks"][7]["details"]["last_ok"],
+            report["health"]["checks"][8]["details"]["last_ok"],
             "2026-08-30T11:00:00Z"
         );
     }
