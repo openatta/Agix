@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// LRU 驱逐：从 `sessions` 里移除最久未活跃的一个（若非空）。不依赖 `SessionPool`
-/// 的任何字段，拆成自由函数而非 `&self` 方法——一是本来就没用到 `self`，二是
-/// 让测试不用搭一整个 `SessionPool` 就能直接验证驱逐选中的是最旧的那个。
 /// The scenes a pool can serve: built-ins, then the host's, then the
 /// declarative scenes under `user_scenes` (`<state root>/scenes/<id>/`), then
 /// those `scene.register` added, then the plugins'. A declarative or

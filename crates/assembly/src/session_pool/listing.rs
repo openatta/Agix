@@ -381,7 +381,7 @@ impl SessionPool {
         }
 
         // Snapshot active sessions and release the lock before the disk
-        // reads below (`session_kind_and_parent` per session, plus
+        // reads below (`session_facts_and_resumable` per session, plus
         // `store.find_sessions()`) — holding `self.sessions` across that
         // much I/O would block every other pool operation for the duration.
         let active_snapshot: Vec<(String, Option<String>, Instant, Instant)> = {

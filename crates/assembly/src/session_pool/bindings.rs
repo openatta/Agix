@@ -3,10 +3,6 @@
 use super::*;
 
 impl SessionPool {
-    /// Like `session_kind_and_parent`, but returns the recorded scene
-    /// instead of the parent — `list_scenes`/`deactivate_scene`'s shared
-    /// lookup. `None` for the scene half covers "no Meta at all" the same
-    /// way `session_kind_and_parent` does for kind/parent.
     /// Merged settings for `project_root` (global → scene → project tiers),
     /// built once and cached — see the `projects` field doc comment.
     /// `None` is the global no-project tier (docs/ARCHITECTURE.md §3.2):
@@ -271,6 +267,22 @@ impl SessionPool {
         }
     }
 
+    /// Drop the cached connections whose `mcp_servers` came from `tier`, so the
+    /// next session or rebuild on those keys connects with the changed config
+    /// (a new `Authorization`, say) instead of reusing the old connection.
+    /// `keep` is a key the caller reconnects itself.
+    #[cfg(feature = "mcp")]
+    pub(super) async fn forget_mcp_built_from(
+        &self,
+        tier: &crate::watch_hub::Tier,
+        keep: Option<&ProjectSceneKey>,
+    ) {
+        self.mcp_by_project
+            .lock()
+            .await
+            .retain(|key, _| !tier_covers(tier, key) || keep == Some(key));
+    }
+
     /// This project's centrally-connected `McpManager` — the MCP
     /// counterpart to `settings_for_project`, same `None`/`Some(root)` key
     /// convention. Connects lazily and caches the result on first use
@@ -288,22 +300,6 @@ impl SessionPool {
     /// work; this only needed to stop the wrong thing from happening (a
     /// non-default project silently inheriting the default project's
     /// connections, or never connecting its own at all).
-    /// Drop the cached connections whose `mcp_servers` came from `tier`, so the
-    /// next session or rebuild on those keys connects with the changed config
-    /// (a new `Authorization`, say) instead of reusing the old connection.
-    /// `keep` is a key the caller reconnects itself.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn forget_mcp_built_from(
-        &self,
-        tier: &crate::watch_hub::Tier,
-        keep: Option<&ProjectSceneKey>,
-    ) {
-        self.mcp_by_project
-            .lock()
-            .await
-            .retain(|key, _| !tier_covers(tier, key) || keep == Some(key));
-    }
-
     #[cfg(feature = "mcp")]
     pub(super) async fn mcp_for_project(
         &self,

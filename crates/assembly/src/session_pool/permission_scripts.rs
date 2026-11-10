@@ -53,34 +53,6 @@ fn requested_permission_mode(
     clamped
 }
 
-/// Which `Permission` a new session gets.
-///
-/// Resolves a mode (`effective_permission_mode`) and builds a
-/// `RuleSetPermission` for it; with nothing configured that mode is
-/// `Default`, so an unlisted tool call raises a `kind:"prompt"` event and
-/// waits for `session.respondToPrompt`.
-///
-/// `bypassPermissions` — from settings.json (daemon-wide) or
-/// `options.permission_mode` (one session) — is the explicit opt-out, and it
-/// returns the *literal same* shared `Arc` the pool was built with, not an
-/// equivalent instance: a host that sandboxes the daemon itself gets a
-/// zero-overhead path, and the `Arc::ptr_eq` assertion in the
-/// unit test below keeps it that way.
-///
-/// Rules come from every tier, settings first — `settings.permission_rules`
-/// and the `settings.local.json` overlay, each tagged with its own
-/// `RuleSource` (see `RuleSetPermission::from_settings`) — then
-/// `options.permission_rules` appended, so a session-scoped rule is
-/// evaluated alongside the configured ones rather than replacing them.
-///
-/// An `ask` verdict from the rule engine becomes `PermissionOutcome::Prompt`;
-/// the engine raises `AgentEvent::PermissionPrompt`, `run_turn` broadcasts it
-/// to the session's subscribers, and `session.respondToPrompt` feeds the
-/// answer back in.
-///
-/// Free function (not inlined into `create()`) specifically so this decision
-/// is unit-testable without spinning up a real session.
-#[allow(clippy::too_many_arguments)]
 /// Turn `settings.scripts` into a prompt registry, or nothing.
 ///
 /// `None` when no scripts are configured, which is the overwhelming case and
@@ -220,6 +192,11 @@ pub(super) fn bind_scripts(
     (None, faults)
 }
 
+/// Which `Permission` a new session gets: a `RuleSetPermission` over every
+/// tier's rules plus `options.permission_rules`, in the resolved `mode`.
+///
+/// `bypassPermissions` with a host permission returns that very `Arc`, not an
+/// equivalent instance: a host that sandboxes the daemon itself relies on it.
 pub(super) fn resolve_session_permission(
     host: Option<&Arc<dyn Permission>>,
     tools: &Arc<base::tool::InMemoryToolRegistry>,
