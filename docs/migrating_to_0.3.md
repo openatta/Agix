@@ -1476,6 +1476,12 @@ WebAssembly 载体整个移除。
 - `session.resume` 的 `permission.prompts` 在 `bypassPermissions` 会话里不再一律是 `false`:
   managed 层有 `ask` / `deny` 规则或关掉了 bypass 时报 `true`,这样的会话仍会发 permission
   `prompt` 帧。看到 `bypassPermissions` 就不接询问的宿主,改看 `prompts`。
+- **会话原地重建之后还在 `plan` 模式里。** 设置变化(`config.reload`、设置文件被改)、换厂商的
+  `session.setModel`、`session.setPrompt` 让空闲会话在下一轮前重建引擎,以前重建出来的会话回到
+  设置里的模式(`EnterPlanMode` 进的 `plan` 悄悄失效),todo 列表、`ToolSearch` 加载过的 deferred
+  工具、读过的文件记录(`Edit` 前要先 `Read` 的依据)和 `/rewind` 的文件快照也都丢了;现在都留着。
+  `plan` 之外的模式仍取重建时的设置:`plan` 里退出回到的是新设置的模式,不在 `plan` 里的会话
+  直接换成新设置的模式。
 
 #### 方法、帧与错误
 
@@ -1643,6 +1649,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
   (旧文件缺这两个键照样读得进来);逐字段构造的要补上。新增 `DaemonServer::require_unix_socket_auth`、
   `assembly::discovery::{unix_socket_token_path, write_unix_socket_token}` 与
   `platform::sandbox::fence_secret`(登记一个沙箱里的命令一律读不到的文件)。
+- `base::context::SessionState::carry_goal_arming_from` 与 `carry_tasks_and_notices_from` 合成
+  `carry_session_state_from(&previous)`:重建引擎时把旧状态里跨回合的部分(`plan` 模式、todo、
+  已加载的 deferred 工具、后台任务、未读通知、目标的 arming、文件快照与回合号、读文件记录)搬到
+  新状态上,在新状态读回转录之后调。调旧的两个的嵌入方改调它。
 - `telemetry::RedactionPolicy` 只剩 `redact_error_messages`:`apply()` 与 `emails` / `env_vars` / `paths` /
   `ip` 四个开关(从来没有走到过)删除,`telemetry` 不再依赖 `regex`。
 - `runtime::agent::Agent::compact_now` 多一个 `&CancellationToken` 参数:它取消时摘要放弃、历史不变,

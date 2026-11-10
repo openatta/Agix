@@ -571,8 +571,7 @@ impl SessionPool {
                 return Err(format!("its transcript could not be loaded: {e}").into());
             }
             if let Some(previous) = &previous_state {
-                state.carry_goal_arming_from(previous);
-                state.carry_tasks_and_notices_from(previous);
+                state.carry_session_state_from(previous);
             }
         }
 

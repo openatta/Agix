@@ -2071,8 +2071,10 @@ daemon 自己的会话池在 `health.checks` 里还有一项 `settings.managed`,
 失效**惰性生效**:已有会话在下一次 `run_turn` 之前若空闲则原地重建,忙碌的跳过本轮
 下次再检查。**正在进行的 turn 不会被中断**;还有后台任务在跑的会话也算忙,这一轮照旧用原来的
 配置,任务都结束之后才重建,所以后台任务不会因为配置变化被停掉。重建保留会话结束了的任务
-(`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`。重建时转录
-读不出来,会话不重建、照旧在原来的引擎上跑,这次 `run_turn` 返回 `INTERNAL_ERROR`(见 `session.resume`)。
+(`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`,也保留
+`plan` 模式、todo 列表、`ToolSearch` 加载过的 deferred 工具、读过的文件记录与 `/rewind` 的文件
+快照;`plan` 之外的权限模式取新配置(在 `plan` 里的,退出后回到新配置的模式)。重建时转录读不
+出来,会话不重建、照旧在原来的引擎上跑,这次 `run_turn` 返回 `INTERNAL_ERROR`(见 `session.resume`)。
 
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
 `settings.local.json`,改动落盘后自己重读(去抖 300ms);文件内容没变的写入不算改动。监视触发的重读知道是哪一层变了,

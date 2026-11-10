@@ -470,26 +470,85 @@ impl SessionState {
             .collect()
     }
 
-    /// Take over what `previous` — this session's state before its engine
-    /// was rebuilt in place — still knows of its tasks and still had to
-    /// tell its agent: the tasks it lists, and the notices not yet read.
-    pub fn carry_tasks_and_notices_from(&self, previous: &SessionState) {
-        let tasks: Vec<(String, std::sync::Arc<RunningTask>)> = previous
-            .running_tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+    /// Take over, onto this freshly built state, what `previous` — the
+    /// session's state before its engine was rebuilt in place — holds that
+    /// outlives a turn. Called once the log has been loaded into this one.
+    ///
+    /// Plan mode stays on; the mode outside it is the one this state was
+    /// built with, so a settings change still reaches the session.
+    pub fn carry_session_state_from(&self, previous: &SessionState) {
+        let SessionState {
+            // Built from the session's settings, which a rebuild re-reads.
+            session_id: _,
+            cwd: _,
+            started_at: _,
+            additional_writable_dirs: _,
+            read_directories: _,
+            read_anywhere: _,
+            cache_directories: _,
+            unattended: _,
+            sandbox_disabled: _,
+            // Bound to the new engine and the pool's forwarders.
+            task_events: _,
+            goal_recording: _,
+            goal_events: _,
+            tools: _,
+            exec: _,
+            // Already in the log, which the resume read the goal back from.
+            unrecorded_goal_changes: _,
+            // A turn's own, and a rebuild happens between turns.
+            turn_origin: _,
+            structured_output: _,
+            permission_mode,
+            todos,
+            activated_tools,
+            running_tasks,
+            goal,
+            notices,
+            file_snapshots,
+            current_turn,
+            read_cache,
+            last_read_path,
+        } = previous;
+
+        if lock(permission_mode).current == PermissionMode::Plan {
+            self.enter_plan_mode();
+        }
+        lock(&self.todos).clone_from(&lock(todos));
+        lock(&self.activated_tools).extend(lock(activated_tools).iter().cloned());
+        let tasks: Vec<(String, std::sync::Arc<RunningTask>)> = lock(running_tasks)
             .iter()
             .map(|(id, task)| (id.clone(), task.clone()))
             .collect();
-        self.running_tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .extend(tasks);
-        let unread =
-            std::mem::take(&mut *previous.notices.lock().unwrap_or_else(|e| e.into_inner()));
-        let mut notices = self.notices.lock().unwrap_or_else(|e| e.into_inner());
-        let posted_since = std::mem::replace(&mut *notices, unread);
-        notices.extend(posted_since);
+        lock(&self.running_tasks).extend(tasks);
+        let arming = lock(goal).clone();
+        lock(&self.goal).carry_arming_from(&arming);
+        let unread = std::mem::take(&mut *lock(notices));
+        {
+            let mut notices = lock(&self.notices);
+            let posted_since = std::mem::replace(&mut *notices, unread);
+            notices.extend(posted_since);
+        }
+        // Snapshots are keyed by turn number: the counter goes with them, or
+        // the next turns would reuse numbers the registry already holds.
+        *lock(&self.file_snapshots) = std::mem::take(&mut *lock(file_snapshots));
+        let turn = *lock(current_turn);
+        {
+            let mut now = lock(&self.current_turn);
+            *now = (*now).max(turn);
+        }
+        let earlier_reads = lock(read_cache).clone();
+        {
+            let mut cache = lock(&self.read_cache);
+            for (path, entry) in earlier_reads {
+                cache.entry(path).or_insert(entry);
+            }
+        }
+        let last_read = lock(last_read_path).clone();
+        let mut last = lock(&self.last_read_path);
+        if last.is_none() {
+            *last = last_read;
+        }
     }
 
     const FINISHED_TASKS_KEPT: usize = 20;
@@ -621,13 +680,6 @@ impl SessionState {
     /// Put back the goal a session log recorded, disarmed.
     pub fn restore_goal(&self, goal: Option<super::goal::Goal>) {
         *lock(&self.goal) = super::goal::GoalSlot::restored(goal);
-    }
-
-    /// Keep the arming `previous` — this session's state before its engine
-    /// was rebuilt in place — had for the goal both hold.
-    pub fn carry_goal_arming_from(&self, previous: &SessionState) {
-        let before = lock(&previous.goal).clone();
-        lock(&self.goal).carry_arming_from(&before);
     }
 
     /// Goal changes the session log does not have yet, oldest first, for the
@@ -1068,4 +1120,61 @@ impl Drop for TaskScope {
 
 fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn todo(content: &str) -> TodoItem {
+        TodoItem {
+            content: content.into(),
+            status: TodoStatus::Pending,
+            active_form: content.into(),
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_state_keeps_what_outlives_a_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("read.txt");
+        std::fs::write(&file, "x").unwrap();
+        let before =
+            SessionState::new(dir.path().into()).with_permission_mode(PermissionMode::AcceptEdits);
+        before.enter_plan_mode();
+        before.set_todos(vec![todo("step one")]);
+        before.activate_tools(["TodoWrite".to_string()]);
+        before.bump_turn();
+        before.bump_turn();
+        before.snapshot_file(&file, "Write");
+        before.record_read(&file);
+        before.post_notice(None, "unread");
+
+        let after =
+            SessionState::new(dir.path().into()).with_permission_mode(PermissionMode::Default);
+        after.carry_session_state_from(&before);
+
+        assert_eq!(after.permission_mode(), PermissionMode::Plan);
+        assert_eq!(
+            after.exit_plan_mode(),
+            PermissionMode::Default,
+            "outside plan mode the rebuilt session runs in the mode it was built with"
+        );
+        assert_eq!(after.todos(), vec![todo("step one")]);
+        assert!(after.activated_tools().contains("TodoWrite"));
+        assert_eq!(after.current_turn(), 2);
+        assert_eq!(after.file_snapshot_turns(), vec![2]);
+        assert_eq!(after.check_read_staleness(&file), None);
+        assert!(after.is_consecutive_read(&file));
+        assert_eq!(after.take_notices(), vec!["unread".to_string()]);
+    }
+
+    #[test]
+    fn a_rebuilt_state_out_of_plan_mode_takes_the_mode_it_was_built_with() {
+        let before = SessionState::new("/tmp".into())
+            .with_permission_mode(PermissionMode::BypassPermissions);
+        let after = SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::Default);
+        after.carry_session_state_from(&before);
+        assert_eq!(after.permission_mode(), PermissionMode::Default);
+    }
 }

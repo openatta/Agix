@@ -568,7 +568,6 @@ async fn audit_a_transcript_that_fails_to_load_is_not_resumed_as_an_empty_sessio
 /// what the session was in — plan mode, its todo list, the deferred tools it
 /// loaded — is still what it is in afterwards.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_a_rebuilt_session_keeps_plan_mode_todos_and_loaded_tools() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let scratch = tempfile::tempdir()?;
