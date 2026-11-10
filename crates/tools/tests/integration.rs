@@ -2,6 +2,7 @@
 //! is one file of this directory. One file alone:
 //! `cargo test -p tools --test integration path_style::`.
 
+mod decision_matrix;
 mod edits_after_writes;
 mod execution_providers;
 mod outside_the_project;
