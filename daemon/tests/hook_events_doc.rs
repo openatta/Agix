@@ -56,23 +56,7 @@ fn the_event_table_matches_the_catalog() {
 /// failing to compile.
 #[test]
 fn the_catalog_lists_every_variant_in_declaration_order() {
-    let src = std::fs::read_to_string(repo_root().join("crates/hooks/src/config.rs"))
-        .expect("crates/hooks/src/config.rs exists");
-    let body = src
-        .split_once("pub enum HookEvent {")
-        .expect("`pub enum HookEvent` still exists")
-        .1
-        .split_once("\n}")
-        .expect("the enum closes")
-        .0;
-    let declared: Vec<String> = body
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.starts_with("//") && !line.starts_with('#'))
-        .filter_map(|line| line.strip_suffix(','))
-        .filter(|name| name.chars().all(|c| c.is_ascii_alphanumeric()))
-        .map(str::to_string)
-        .collect();
+    let declared = guards::scan::enum_variants(guards::ws(), "hooks", "HookEvent");
     let listed: Vec<String> = hooks::HookEvent::ALL.iter().map(|e| e.name()).collect();
     assert_eq!(listed, declared);
 }

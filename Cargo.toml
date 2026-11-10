@@ -128,6 +128,7 @@ daemon     = { path = "daemon" }
 rpc-client = { path = "tests/rpc_client" }
 live = { path = "tests/live" }
 mcp-oauth-mock = { path = "tests/fixtures/mcp_oauth_mock" }
+guards = { path = "tests/guards" }
 
 # Debug builds keep line tables for the workspace and no debug info for
 # dependencies: backtraces still name file and line, and with well over a

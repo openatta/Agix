@@ -1379,7 +1379,7 @@ thinking 签名。每一条排除都在它被做出的地方给出理由,因为�
 ## 载体不变量
 
 扩展只有两种:编译进宿主的 Rust,和 QuickJS 脚本。前两条由 `tests/guards/tests/deps.rs`
-读 `cargo metadata` 检查,第三条由 `daemon/tests/carrier_invariants.rs` 守,在下面几条不再成立时失败:
+读 `cargo metadata` 检查,第三条由 `tests/guards/tests/sources.rs` 守,在下面几条不再成立时失败:
 
 1. **没有 WebAssembly 运行时。** 工作区里没有任何 crate 依赖 wasmtime 一类的运行时;
    需要它的宿主在 Rust 接口上自己做。

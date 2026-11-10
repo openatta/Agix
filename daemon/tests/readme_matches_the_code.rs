@@ -49,35 +49,6 @@ fn claims(text: &str, claim: &str, derived_from: &str) {
     );
 }
 
-/// Variant names of `pub enum <name>`, by source scan.
-fn variants(src: &str, name: &str) -> Vec<String> {
-    let head = format!("pub enum {name} {{");
-    let body = src
-        .split_once(&head)
-        .unwrap_or_else(|| panic!("`{head}` still exists"))
-        .1;
-    let body = body.split_once("\n}").expect("the enum closes").0;
-
-    body.lines()
-        .filter_map(|line| {
-            let indent = line.len() - line.trim_start().len();
-            if indent != 4 {
-                return None;
-            }
-            let trimmed = line.trim();
-            let name: String = trimmed
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric())
-                .collect();
-            let rest = &trimmed[name.len()..];
-            let starts_upper = name.chars().next().is_some_and(|c| c.is_ascii_uppercase());
-            let ends_a_variant =
-                rest.starts_with(',') || rest.starts_with(" {") || rest.starts_with('(');
-            (starts_upper && ends_a_variant).then_some(name)
-        })
-        .collect()
-}
-
 /// Numbers the README spells out, because prose reads better that way.
 fn spelled(n: usize) -> String {
     const TENS: [&str; 10] = [
@@ -102,17 +73,10 @@ fn spelled_zh(n: usize) -> String {
 
 #[test]
 fn the_workspace_is_the_size_the_readme_says() {
-    let manifest = read("Cargo.toml");
-    let members: Vec<&str> = manifest
-        .split_once("members = [")
-        .expect("the workspace still lists members")
-        .1
-        .split_once(']')
-        .expect("the member list closes")
-        .0
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix('"'))
-        .filter_map(|l| l.split('"').next())
+    let members: Vec<&str> = guards::ws()
+        .packages()
+        .iter()
+        .map(|p| p.dir.as_str())
         .collect();
 
     let crates = members.iter().filter(|m| m.starts_with("crates/")).count();
@@ -193,7 +157,7 @@ fn the_extension_surface_is_the_size_the_readme_says() {
 
 #[test]
 fn the_hook_and_telemetry_counts_are_the_enums() {
-    let hook_events = variants(&read("crates/hooks/src/config.rs"), "HookEvent").len();
+    let hook_events = guards::scan::enum_variants(guards::ws(), "hooks", "HookEvent").len();
     let event_types = telemetry::EventPayload::KINDS.len();
     let readme = readme();
 
@@ -294,37 +258,23 @@ fn every_tool_in_the_table_exists() {
     }
 }
 
-/// Names from every `fn name(&self) -> &str { "…" }` in the workspace.
+/// What each `impl Tool for X`'s `fn name` returns, in production code: a
+/// literal, or a constant holding one.
 fn tool_names_in_source() -> Vec<String> {
-    const SIGNATURE: &str = "fn name(&self) -> &str {";
-    let mut out = Vec::new();
-    let mut stack = vec![repo_root().join("crates")];
-
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                let Ok(src) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                for hit in src.split(SIGNATURE).skip(1) {
-                    let Some(open) = hit.find('"') else { continue };
-                    // Only a literal on the same or next line is the name; a
-                    // body that computes one has no name to collect here.
-                    if hit[..open].contains('}') {
-                        continue;
-                    }
-                    if let Some(name) = hit[open + 1..].split('"').next() {
-                        out.push(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    out
+    use guards::scan::{self, Returned};
+    let consts: std::collections::BTreeMap<String, String> =
+        guards::par_flat_map(guards::ws().production(), |f| {
+            scan::str_consts(f, guards::View::Prod)
+        })
+        .into_iter()
+        .collect();
+    guards::par_flat_map(guards::ws().production(), |f| {
+        scan::trait_fn_returns(f, guards::View::Prod, "Tool", "name")
+    })
+    .into_iter()
+    .filter_map(|r| match r {
+        Returned::Literal(name) => Some(name),
+        Returned::Const(id) => consts.get(&id).cloned(),
+    })
+    .collect()
 }

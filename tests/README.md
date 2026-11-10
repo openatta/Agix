@@ -296,7 +296,7 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 不是安静地挂着；一轮确实要更久时用 `AGIX_TEST_TURN_TIMEOUT_SECS` 放宽。
 
 **测试进程不碰你的 `~/.agix`。** 每个测试自己拿 tempdir 当状态根；
-`daemon/tests/home_is_never_discovered.rs` 保证没有哪个 crate 会自己去找 `$HOME`。
+`tests/guards/tests/sources.rs` 保证没有哪个 crate 会自己去找 `$HOME`。
 跑测试之后 `~/.agix` 里不该多出任何东西——如果多了，那是 bug。同理，起子进程的测试
 要自己给子进程一个 cwd：daemon 的「项目」就是它的工作目录，继承下来的那个是仓库本身。
 

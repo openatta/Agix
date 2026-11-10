@@ -166,6 +166,85 @@ pub fn cfg_feature_uses(f: &SourceFile, v: View, feature: &str) -> Vec<Hit> {
         .collect()
 }
 
+/// What a trait method's body is, when it is nothing but one string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Returned {
+    Literal(String),
+    /// A lone identifier, to be looked up among [`str_consts`].
+    Const(String),
+}
+
+/// What each `fn <fn_name>` returns in an `impl <trait_name> for` block whose
+/// body is a string literal or a lone identifier.
+pub fn trait_fn_returns(f: &SourceFile, v: View, trait_name: &str, fn_name: &str) -> Vec<Returned> {
+    struct Impls<'a> {
+        trait_name: &'a str,
+        fn_name: &'a str,
+        out: Vec<Returned>,
+    }
+    impl<'ast> Visit<'ast> for Impls<'_> {
+        fn visit_item_impl(&mut self, imp: &'ast syn::ItemImpl) {
+            let is_trait = imp
+                .trait_
+                .as_ref()
+                .and_then(|(_, path, _)| path.segments.last())
+                .is_some_and(|s| s.ident == self.trait_name);
+            if is_trait {
+                for item in &imp.items {
+                    let syn::ImplItem::Fn(func) = item else {
+                        continue;
+                    };
+                    if func.sig.ident != self.fn_name {
+                        continue;
+                    }
+                    if let [syn::Stmt::Expr(body, None)] = func.block.stmts.as_slice() {
+                        match body {
+                            Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(s),
+                                ..
+                            }) => self.out.push(Returned::Literal(s.value())),
+                            Expr::Path(p) => {
+                                if let Some(id) = p.path.get_ident() {
+                                    self.out.push(Returned::Const(id.to_string()));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            visit::visit_item_impl(self, imp);
+        }
+    }
+    let mut impls = Impls {
+        trait_name,
+        fn_name,
+        out: Vec::new(),
+    };
+    impls.visit_file(&f.tree(v));
+    impls.out
+}
+
+/// Every `const NAME: &str = "..."` in the file, at any depth.
+pub fn str_consts(f: &SourceFile, v: View) -> Vec<(String, String)> {
+    #[derive(Default)]
+    struct Consts(Vec<(String, String)>);
+    impl<'ast> Visit<'ast> for Consts {
+        fn visit_item_const(&mut self, c: &'ast syn::ItemConst) {
+            if let Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &*c.expr
+            {
+                self.0.push((c.ident.to_string(), s.value()));
+            }
+        }
+    }
+    let mut consts = Consts::default();
+    consts.visit_file(&f.tree(v));
+    consts.0
+}
+
 /// The variants of the one enum called `name` in `krate`'s library.
 pub fn enum_variants(ws: &Workspace, krate: &str, name: &str) -> Vec<String> {
     ws.package(krate);

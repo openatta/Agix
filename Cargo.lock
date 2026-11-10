@@ -690,6 +690,7 @@ dependencies = [
  "base",
  "compaction",
  "futures",
+ "guards",
  "hex",
  "history",
  "hooks",
