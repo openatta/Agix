@@ -509,9 +509,7 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
     let registry = agent_tool
         .inner
         .team_registry
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
+        .get()
         .expect("team_enabled_agent_tool sets a registry");
     let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
         Arc::new(crate::spawner::RuntimeAgentSpawner::new(agent_tool.clone()));
@@ -548,13 +546,7 @@ async fn auto_for_a_persistent_member_is_bypass() {
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t-auto", "worker")).await;
 
-    let registry = agent_tool
-        .inner
-        .team_registry
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap();
+    let registry = agent_tool.inner.team_registry.get().unwrap();
     assert_eq!(
         registry.team_permission_mode("t-auto"),
         Some(base::interface::settings::PermissionMode::BypassPermissions)
@@ -615,13 +607,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t4", "b")).await;
 
-    let registry = agent_tool
-        .inner
-        .team_registry
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap();
+    let registry = agent_tool.inner.team_registry.get().unwrap();
     assert_eq!(
         registry.team_permission_mode("t4"),
         Some(base::interface::settings::PermissionMode::BypassPermissions),
@@ -655,13 +641,7 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t5", "a")).await;
 
-    let registry = agent_tool
-        .inner
-        .team_registry
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone()
-        .unwrap();
+    let registry = agent_tool.inner.team_registry.get().unwrap();
     assert_eq!(
         registry.team_permission_mode("t5"),
         Some(base::interface::settings::PermissionMode::Plan),

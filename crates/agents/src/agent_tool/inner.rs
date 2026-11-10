@@ -88,6 +88,38 @@ pub(super) struct Admission {
     pub(super) _slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
+/// Parent-session state wired after the `AgentTool` is built; every clone of
+/// `Inner` sees the same value.
+pub(super) struct SetLater<T>(Arc<std::sync::RwLock<T>>);
+
+impl<T: Clone> SetLater<T> {
+    pub(super) fn get(&self) -> T {
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(super) fn set(&self, value: T) {
+        *self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+    }
+}
+
+impl<T: Default> Default for SetLater<T> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<T> Clone for SetLater<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct Inner {
     pub(super) model: Arc<dyn Model>,
@@ -161,7 +193,7 @@ pub(super) struct Inner {
     /// silently skipped, matching how `parent_settings`/`task_router`
     /// absence degrades elsewhere in this struct.
     pub(super) skill_manager:
-        Arc<std::sync::RwLock<Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>>>>,
+        SetLater<Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>>>,
     /// A snapshot of the parent session's connected MCP tools, used to
     /// resolve `AgentTypeDefinition.mcp_servers` by reusing already-
     /// connected tool instances (not reconnecting). Same interior-
@@ -175,7 +207,7 @@ pub(super) struct Inner {
     /// `config.reload` reconnect in the parent session doesn't retroactively
     /// update it, an accepted scope boundary (matches `description`'s own
     /// "not kept live" doc comment on this same struct).
-    pub(super) mcp_tool_adapters: Arc<std::sync::RwLock<Vec<Arc<dyn base::tool::Tool>>>>,
+    pub(super) mcp_tool_adapters: SetLater<Vec<Arc<dyn base::tool::Tool>>>,
     /// The shared `TeamRegistry` `AgentsModule::on_session` also hands to
     /// `TeamCreate`/`TeamList`/`TeamDelete` — so persistent team members
     /// (spawned here, not through those tools) update the same state
@@ -186,7 +218,7 @@ pub(super) struct Inner {
     /// team members just don't update `TeamList`'s view in that case (they
     /// still work; `TeamList` isn't reachable either when team_enabled is
     /// off, since it isn't registered).
-    pub(super) team_registry: Arc<std::sync::RwLock<Option<Arc<team::registry::TeamRegistry>>>>,
+    pub(super) team_registry: SetLater<Option<Arc<team::registry::TeamRegistry>>>,
     /// Live persistent team members, keyed by `(team_name, member_name)`.
     /// See `AgentTool::spawn_or_message_team_member`'s doc comment for the
     /// full mechanism. Scoped to this `AgentTool` (i.e. this session) —
@@ -220,28 +252,28 @@ pub(super) struct Inner {
     /// Same interior-mutability, set-after-construction pattern as
     /// `skill_manager` — `Builder::build()` creates the `AgentTool` before it
     /// creates the session's event channel.
-    pub(super) event_tx: Arc<std::sync::RwLock<Option<runtime::agent::EventSender>>>,
+    pub(super) event_tx: SetLater<Option<runtime::agent::EventSender>>,
     /// The parent session's hook runner, so sub-agent spawns can fire
     /// `SubagentStart`/`SubagentStop`. Same set-after-construction pattern as
     /// `event_tx` — `Builder::build()` constructs the `AgentTool` before the
     /// `HookRunner` exists. `None` (tests, embedders that never wire it)
     /// fires nothing. Weak: the runner's `"agent"` hooks spawn through this
     /// tool, and a strong edge back would keep both alive past the session.
-    pub(super) hooks: Arc<std::sync::RwLock<Option<std::sync::Weak<hooks::HookRunner>>>>,
+    pub(super) hooks: SetLater<Option<std::sync::Weak<hooks::HookRunner>>>,
     /// Cancelled when the parent session ends; every persistent team
     /// member's token is a child of it.
-    pub(super) session_ended: Arc<std::sync::RwLock<tokio_util::sync::CancellationToken>>,
+    pub(super) session_ended: SetLater<tokio_util::sync::CancellationToken>,
     /// The parent session's history store, so a sub-agent's transcript is
     /// persisted and a failed sub-agent can be inspected afterwards.
     /// The sub-agent gets its own fresh session id, so it lands in its own
     /// JSONL file — the parent's transcript is never written to.
-    pub(super) history_store: Arc<std::sync::RwLock<Option<Arc<dyn HistoryStore>>>>,
+    pub(super) history_store: SetLater<Option<Arc<dyn HistoryStore>>>,
     /// The **parent agent's** `Permission` impl. Sub-agent permission checks
     /// are routed here instead of being hard-permitted, so a session
     /// that opts into a real permission handler can't be bypassed just by
     /// spawning a sub-agent. `None` means `AlwaysPermit`, for `AgentTool`s
     /// built without wiring (tests).
-    pub(super) parent_permission: Arc<std::sync::RwLock<Option<Arc<dyn Permission>>>>,
+    pub(super) parent_permission: SetLater<Option<Arc<dyn Permission>>>,
     /// The **parent agent's** pending-permission registry, so a sub-agent's
     /// `Prompt` outcome can be turned into a real, answerable question
     /// instead of an automatic refusal.
@@ -251,24 +283,23 @@ pub(super) struct Inner {
     /// front of the same host that answers the parent's own prompts, via the
     /// same `session.respondToPrompt` RPC. `None` (unwired embedders) refuses
     /// with an explanation.
-    pub(super) parent_pending_permissions:
-        Arc<std::sync::RwLock<Option<runtime::agent::PendingPermissions>>>,
+    pub(super) parent_pending_permissions: SetLater<Option<runtime::agent::PendingPermissions>>,
     /// The parent agent's scene. Sub-agents inherit it rather than
     /// always being built as `CodeScene`. `None` falls
     /// back to resolving `Settings.paths.scope` via `resolve_scene_id`, then to
     /// `CodeScene`.
-    pub(super) parent_scene: Arc<std::sync::RwLock<Option<Arc<dyn Scene>>>>,
+    pub(super) parent_scene: SetLater<Option<Arc<dyn Scene>>>,
     /// Every scene this process knows about, for resolving an agent type's
     /// `scene:` id. `None` falls back to [`builtin_scene_by_id`], which is
     /// what an embedder that never wires a registry (tests, library callers)
     /// gets — the built-in four. A host that registers
     /// scenes beyond those (the daemon, which also registers plugin scenes)
     /// wires its registry here so those ids resolve too.
-    pub(super) scene_registry: Arc<std::sync::RwLock<Option<Arc<scene::SceneRegistry>>>>,
+    pub(super) scene_registry: SetLater<Option<Arc<scene::SceneRegistry>>>,
     /// The parent's resolved instruction file (AGENTS.md / CLAUDE.md), for
     /// the case where it came from `Builder::instruction_file(..)` and so
     /// isn't visible in `Settings` — see `settings_from_parent`.
-    pub(super) instruction_file: Arc<std::sync::RwLock<Option<std::path::PathBuf>>>,
+    pub(super) instruction_file: SetLater<Option<std::path::PathBuf>>,
     /// The parent `Agent`'s own session id, so a freshly spawned sub-agent's
     /// first `Meta` line can record `parent_session_id` and thereby become
     /// discoverable via `HistoryStore::child_sessions`. Same set-after-
@@ -278,7 +309,7 @@ pub(super) struct Inner {
     /// `set_parent_session_id`) means spawned sub-agents' `Meta` lines are
     /// written with `parent_session_id: None` — they still persist, they're
     /// just not linkable back to a parent.
-    pub(super) parent_session_id: Arc<std::sync::RwLock<Option<String>>>,
+    pub(super) parent_session_id: SetLater<Option<String>>,
     /// The parent `Agent`'s own telemetry handle — sub-agents built through
     /// this `AgentTool` inherit it instead of each falling back to
     /// `Builder::build()`'s own noop default (a channel whose receiver is
@@ -287,7 +318,7 @@ pub(super) struct Inner {
     /// struct. `None` (tests, embedders that never call
     /// `set_telemetry_handle`) means spawned sub-agents get `Builder`'s
     /// usual noop fallback.
-    pub(super) telemetry_handle: Arc<std::sync::RwLock<Option<TelemetryHandle>>>,
+    pub(super) telemetry_handle: SetLater<Option<TelemetryHandle>>,
 }
 
 impl Inner {
@@ -412,18 +443,11 @@ impl Inner {
     }
 
     pub(super) fn hooks(&self) -> Option<Arc<hooks::HookRunner>> {
-        self.hooks
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(std::sync::Weak::upgrade)
+        self.hooks.get().and_then(|runner| runner.upgrade())
     }
 
     pub(super) fn session_ended(&self) -> tokio_util::sync::CancellationToken {
-        self.session_ended
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.session_ended.get()
     }
 
     pub(super) async fn fire_subagent_hook(&self, event: hooks::HookEvent, sub: &SubagentPayload) {
@@ -470,52 +494,31 @@ impl Inner {
     pub(super) fn skill_manager(
         &self,
     ) -> Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>> {
-        self.skill_manager
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.skill_manager.get()
     }
 
     pub(super) fn mcp_tool_adapters(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        self.mcp_tool_adapters
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.mcp_tool_adapters.get()
     }
 
     pub(super) fn event_tx(&self) -> Option<runtime::agent::EventSender> {
-        self.event_tx
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.event_tx.get()
     }
 
     pub(super) fn history_store(&self) -> Option<Arc<dyn HistoryStore>> {
-        self.history_store
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.history_store.get()
     }
 
     pub(super) fn instruction_file(&self) -> Option<std::path::PathBuf> {
-        self.instruction_file
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.instruction_file.get()
     }
 
     pub(super) fn parent_session_id(&self) -> Option<String> {
-        self.parent_session_id
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.parent_session_id.get()
     }
 
     pub(super) fn telemetry_handle(&self) -> Option<TelemetryHandle> {
-        self.telemetry_handle
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.telemetry_handle.get()
     }
 
     /// See `AgentTool::permission_handler` — same resolution, reachable from
@@ -540,12 +543,7 @@ impl Inner {
         task: Option<Arc<base::context::RunningTask>>,
         can_ask: bool,
     ) -> Arc<dyn Permission> {
-        if let Some(parent) = self
-            .parent_permission
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        {
+        if let Some(parent) = self.parent_permission.get() {
             return Arc::new(ParentPermission {
                 inner: if can_ask {
                     parent
@@ -553,11 +551,7 @@ impl Inner {
                     Arc::new(NoPrompt(parent))
                 },
                 event_tx: self.event_tx(),
-                pending: self
-                    .parent_pending_permissions
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
+                pending: self.parent_pending_permissions.get(),
                 timeout_secs: self.config.permission_prompt_timeout_secs,
                 own_tools: Default::default(),
                 task,
@@ -572,11 +566,7 @@ impl Inner {
         tools: &Arc<InMemoryToolRegistry>,
         mode: base::interface::settings::PermissionMode,
     ) -> Arc<dyn Permission> {
-        let wired = self
-            .parent_permission
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some();
+        let wired = self.parent_permission.get().is_some();
         if wired {
             return self.permission_handler();
         }
@@ -619,11 +609,7 @@ impl Inner {
     /// delegate's own scene contributes its tools again when it is built —
     /// inheriting them as well would register each twice.
     pub(super) fn inherited_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        let parent_scene = self
-            .parent_scene
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let parent_scene = self.parent_scene.get();
         let scene_tools: std::collections::HashSet<String> = parent_scene
             .map(|scene| {
                 scene
@@ -662,11 +648,7 @@ impl Inner {
         def: Option<&AgentTypeDefinition>,
         settings: &Settings,
     ) -> Arc<dyn Scene> {
-        let parent = self
-            .parent_scene
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let parent = self.parent_scene.get();
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {
             match self.resolve_scene_id(name) {
                 Some(requested) => {
@@ -721,12 +703,7 @@ impl Inner {
     /// would silently fall through to "unrecognized scene" and inherit the
     /// parent's instead.
     pub(super) fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn Scene>> {
-        if let Some(registry) = self
-            .scene_registry
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(registry) = self.scene_registry.get() {
             return registry.resolve(id);
         }
         builtin_scene_by_id(id)

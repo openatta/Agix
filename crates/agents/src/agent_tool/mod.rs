@@ -177,23 +177,23 @@ impl AgentTool {
                 session_agent_types: Default::default(),
                 process_groups: None,
                 modules: Vec::new(),
-                skill_manager: Arc::new(std::sync::RwLock::new(None)),
-                mcp_tool_adapters: Arc::new(std::sync::RwLock::new(Vec::new())),
-                team_registry: Arc::new(std::sync::RwLock::new(None)),
+                skill_manager: Default::default(),
+                mcp_tool_adapters: Default::default(),
+                team_registry: Default::default(),
                 team_members: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 idle_seq_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 team_spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
-                event_tx: Arc::new(std::sync::RwLock::new(None)),
-                hooks: Arc::new(std::sync::RwLock::new(None)),
+                event_tx: Default::default(),
+                hooks: Default::default(),
                 session_ended: Default::default(),
-                history_store: Arc::new(std::sync::RwLock::new(None)),
-                parent_permission: Arc::new(std::sync::RwLock::new(None)),
-                parent_pending_permissions: Arc::new(std::sync::RwLock::new(None)),
-                parent_scene: Arc::new(std::sync::RwLock::new(None)),
-                scene_registry: Arc::new(std::sync::RwLock::new(None)),
-                instruction_file: Arc::new(std::sync::RwLock::new(None)),
-                parent_session_id: Arc::new(std::sync::RwLock::new(None)),
-                telemetry_handle: Arc::new(std::sync::RwLock::new(None)),
+                history_store: Default::default(),
+                parent_permission: Default::default(),
+                parent_pending_permissions: Default::default(),
+                parent_scene: Default::default(),
+                scene_registry: Default::default(),
+                instruction_file: Default::default(),
+                parent_session_id: Default::default(),
+                telemetry_handle: Default::default(),
             }),
         }
     }
@@ -246,23 +246,23 @@ impl AgentTool {
                 session_agent_types: Default::default(),
                 process_groups: None,
                 modules: Vec::new(),
-                skill_manager: Arc::new(std::sync::RwLock::new(None)),
-                mcp_tool_adapters: Arc::new(std::sync::RwLock::new(Vec::new())),
-                team_registry: Arc::new(std::sync::RwLock::new(None)),
+                skill_manager: Default::default(),
+                mcp_tool_adapters: Default::default(),
+                team_registry: Default::default(),
                 team_members: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
                 idle_seq_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 team_spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
-                event_tx: Arc::new(std::sync::RwLock::new(None)),
-                hooks: Arc::new(std::sync::RwLock::new(None)),
+                event_tx: Default::default(),
+                hooks: Default::default(),
                 session_ended: Default::default(),
-                history_store: Arc::new(std::sync::RwLock::new(None)),
-                parent_permission: Arc::new(std::sync::RwLock::new(None)),
-                parent_pending_permissions: Arc::new(std::sync::RwLock::new(None)),
-                parent_scene: Arc::new(std::sync::RwLock::new(None)),
-                scene_registry: Arc::new(std::sync::RwLock::new(None)),
-                instruction_file: Arc::new(std::sync::RwLock::new(None)),
-                parent_session_id: Arc::new(std::sync::RwLock::new(None)),
-                telemetry_handle: Arc::new(std::sync::RwLock::new(None)),
+                history_store: Default::default(),
+                parent_permission: Default::default(),
+                parent_pending_permissions: Default::default(),
+                parent_scene: Default::default(),
+                scene_registry: Default::default(),
+                instruction_file: Default::default(),
+                parent_session_id: Default::default(),
+                telemetry_handle: Default::default(),
             }),
         }
     }
@@ -363,11 +363,7 @@ impl AgentTool {
     /// Attach the session's skill catalog so `AgentTypeDefinition.skills`
     /// (preload) can resolve.
     pub fn set_skill_catalog(&self, mgr: Arc<dyn base::interface::skill_catalog::SkillCatalog>) {
-        *self
-            .inner
-            .skill_manager
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mgr);
+        self.inner.skill_manager.set(Some(mgr));
     }
 
     /// Attach a snapshot of the parent session's connected MCP tools — same
@@ -377,11 +373,7 @@ impl AgentTool {
     /// see `Inner::mcp_tool_adapters`'s doc comment for why this takes a
     /// snapshot `Vec` rather than the live `McpManager`.
     pub fn set_mcp_tool_adapters(&self, adapters: Vec<Arc<dyn base::tool::Tool>>) {
-        *self
-            .inner
-            .mcp_tool_adapters
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = adapters;
+        self.inner.mcp_tool_adapters.set(adapters);
     }
 
     /// Attach the same shared `TeamRegistry` `AgentsModule::on_session` hands
@@ -393,11 +385,7 @@ impl AgentTool {
     /// team_enabled` is true and the scene supports teams (see
     /// `AgentsModule::on_session` in `agents/src/lib.rs`).
     pub fn set_team_registry(&self, registry: Arc<team::registry::TeamRegistry>) {
-        *self
-            .inner
-            .team_registry
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(registry);
+        self.inner.team_registry.set(Some(registry));
     }
 
     /// Attach the parent session's event channel so sub-agent activity is
@@ -406,74 +394,46 @@ impl AgentTool {
     /// `Builder::build()` creates this `AgentTool` before it creates the
     /// session's event channel.
     pub fn set_event_sender(&self, tx: runtime::agent::EventSender) {
-        *self
-            .inner
-            .event_tx
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        self.inner.event_tx.set(Some(tx));
     }
 
     /// Attach the parent session's hook runner: every delegate runs its hooks
     /// on it, and sub-agent spawns fire `SubagentStart`/`SubagentStop` there
     /// — see `Inner::hooks`.
     pub fn set_hooks(&self, runner: Arc<hooks::HookRunner>) {
-        *self
-            .inner
-            .hooks
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(&runner));
+        self.inner.hooks.set(Some(Arc::downgrade(&runner)));
     }
 
     /// The token the parent session cancels when it ends: persistent team
     /// members stop on it, mid-turn or idle.
     pub fn set_session_ended(&self, ended: tokio_util::sync::CancellationToken) {
-        *self
-            .inner
-            .session_ended
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = ended;
+        self.inner.session_ended.set(ended);
     }
 
     /// Attach the parent session's history store so sub-agent transcripts are
     /// persisted — see `Inner::history_store`.
     pub fn set_history_store(&self, store: Arc<dyn HistoryStore>) {
-        *self
-            .inner
-            .history_store
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(store);
+        self.inner.history_store.set(Some(store));
     }
 
     /// Record the parent `Agent`'s own session id, so sub-agents spawned
     /// from here can stamp `parent_session_id` on their own `Meta` line —
     /// see `Inner::parent_session_id`.
     pub fn set_parent_session_id(&self, id: String) {
-        *self
-            .inner
-            .parent_session_id
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(id);
+        self.inner.parent_session_id.set(Some(id));
     }
 
     /// Record the parent `Agent`'s own telemetry handle, so sub-agents
     /// spawned from here inherit it instead of getting `Builder::build()`'s
     /// noop default — see `Inner::telemetry_handle`.
     pub fn set_telemetry_handle(&self, handle: TelemetryHandle) {
-        *self
-            .inner
-            .telemetry_handle
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
+        self.inner.telemetry_handle.set(Some(handle));
     }
 
     /// Route sub-agent permission checks to the parent agent's `Permission`
     /// impl — see `Inner::parent_permission`.
     pub fn set_parent_permission(&self, permission: Arc<dyn Permission>) {
-        *self
-            .inner
-            .parent_permission
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(permission);
+        self.inner.parent_permission.set(Some(permission));
     }
 
     /// Route sub-agent permission *prompts* to the parent session's host
@@ -491,42 +451,26 @@ impl AgentTool {
             >,
         >,
     ) {
-        *self
-            .inner
-            .parent_pending_permissions
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pending);
+        self.inner.parent_pending_permissions.set(Some(pending));
     }
 
     /// Let sub-agents inherit the parent's scene — see
     /// `Inner::parent_scene`.
     pub fn set_scene(&self, scene: Arc<dyn Scene>) {
-        *self
-            .inner
-            .parent_scene
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(scene);
+        self.inner.parent_scene.set(Some(scene));
     }
 
     /// Let an agent type's `scene:` id resolve against every scene the host
     /// registered, not just the built-in four — see `Inner::scene_registry`.
     pub fn set_scene_registry(&self, registry: Arc<scene::SceneRegistry>) {
-        *self
-            .inner
-            .scene_registry
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(registry);
+        self.inner.scene_registry.set(Some(registry));
     }
 
     /// Let sub-agents inherit an instruction file that the parent got from
     /// `Builder::instruction_file(..)` rather than from settings.json
     /// — see `settings_from_parent`.
     pub fn set_instruction_file(&self, path: Option<std::path::PathBuf>) {
-        *self
-            .inner
-            .instruction_file
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+        self.inner.instruction_file.set(path);
     }
 }
 
@@ -601,13 +545,7 @@ impl base::tool::Tool for AgentTool {
         // `Agent` tool's own team-joining fields.
         match (&inp.team_name, &inp.name) {
             (Some(team_name), Some(name)) => {
-                if self
-                    .inner
-                    .team_registry
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .is_none()
-                {
+                if self.inner.team_registry.get().is_none() {
                     return Err(base::error::ToolError::Validation(
                         "team_name/name require team coordination to be enabled for this \
                          session (settings.execution.team_enabled)"

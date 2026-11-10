@@ -156,12 +156,7 @@ impl AgentTool {
         // via `set_team_permission_mode_if_absent` so later spawns under
         // the same `team_name` (even without repeating `permission_mode`)
         // inherit whatever was decided here — "one team, one authorization".
-        let registry = self
-            .inner
-            .team_registry
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let registry = self.inner.team_registry.get();
         let resolved_permission_mode = permission_mode
             .or_else(|| {
                 registry
