@@ -2044,8 +2044,6 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`subagent_progress.event` 里嵌套的事件走与外层同一个投影。** 不再带 `turn_id`,`kind` 与外层
   一致(`compact`、`prompt`);投影为空的嵌套事件(如子 Agent 的 `system_init`)整帧不发。协议文档
   §5.5、§7 已补。其余帧与 0.3.11 逐项相同。
-- **`turn_complete` 一定排在同一连接上 `session.run_turn` 的响应之前。** 发起方和别的订阅方都先收到
-  `turn_complete`。以前没有写成保证;依赖相反顺序(先收响应、再收 `turn_complete`)的客户端要调整。
 
 ### 嵌入方
 
