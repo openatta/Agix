@@ -558,7 +558,7 @@ mod tests {
             _: StreamParams,
             _: CancellationToken,
         ) -> Result<ModelStream, ModelError> {
-            Err(ModelError::Overloaded)
+            Err(ModelError::overloaded())
         }
     }
 

@@ -26,6 +26,7 @@
 use std::time::Duration;
 
 /// Why an attempt failed, reduced to what a backoff decision can act on.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestFailure {
     /// The provider said "too many requests".

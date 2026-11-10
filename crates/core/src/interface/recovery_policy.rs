@@ -41,16 +41,33 @@
 //! wants to allow four escalations rather than three needs no state of its
 //! own.
 
-/// Why a model call failed.
+use crate::interface::model::ModelErrorKind;
+use std::time::Duration;
+
+/// Why a model call failed: the protocol client's classification, carried
+/// over as it stands.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ModelFailure<'a> {
-    /// The provider is busy. Retrying the same request elsewhere may work.
-    Overloaded,
-    /// The provider refused because the request was too large. Retrying the
-    /// same request will fail the same way; something has to shrink first.
-    ContextTooLong { message: &'a str },
-    /// Anything else.
-    Other { message: &'a str },
+pub struct ModelFailure<'a> {
+    pub kind: ModelErrorKind,
+    pub message: &'a str,
+    /// How long the provider asked to be left alone, when it said.
+    pub retry_after: Option<Duration>,
+}
+
+impl<'a> ModelFailure<'a> {
+    pub fn new(kind: ModelErrorKind, message: &'a str) -> Self {
+        Self {
+            kind,
+            message,
+            retry_after: None,
+        }
+    }
+
+    pub fn with_retry_after(mut self, retry_after: Option<Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
 }
 
 /// What the turn should do about it.
@@ -149,15 +166,15 @@ impl DefaultRecovery {
 
 impl RecoveryPolicy for DefaultRecovery {
     fn on_failure(&self, failure: &ModelFailure<'_>) -> Recovery {
-        match failure {
-            ModelFailure::Overloaded => match &self.fallback_model {
+        match failure.kind {
+            ModelErrorKind::Overloaded => match &self.fallback_model {
                 Some(model) => Recovery::RetryWith {
                     model: model.clone(),
                 },
                 None => Recovery::Fail,
             },
-            ModelFailure::ContextTooLong { .. } => Recovery::CompactAndRetry,
-            ModelFailure::Other { .. } => Recovery::Fail,
+            ModelErrorKind::ContextTooLong => Recovery::CompactAndRetry,
+            _ => Recovery::Fail,
         }
     }
 
@@ -208,6 +225,10 @@ impl RecoveryPolicy for NeverRecover {
 mod tests {
     use super::*;
 
+    fn failure(kind: ModelErrorKind) -> ModelFailure<'static> {
+        ModelFailure::new(kind, "")
+    }
+
     fn attempt(escalations: u32, max_tokens: u32) -> RecoveryAttempt {
         RecoveryAttempt {
             output_limit_escalations: escalations,
@@ -219,14 +240,14 @@ mod tests {
     fn an_overload_switches_to_the_fallback_when_there_is_one() {
         let with = DefaultRecovery::new(Some("smaller-model".into()));
         assert_eq!(
-            with.on_failure(&ModelFailure::Overloaded),
+            with.on_failure(&failure(ModelErrorKind::Overloaded)),
             Recovery::RetryWith {
                 model: "smaller-model".into()
             }
         );
         let without = DefaultRecovery::new(None);
         assert_eq!(
-            without.on_failure(&ModelFailure::Overloaded),
+            without.on_failure(&failure(ModelErrorKind::Overloaded)),
             Recovery::Fail
         );
     }
@@ -234,9 +255,7 @@ mod tests {
     #[test]
     fn a_request_refused_for_size_is_shortened_rather_than_resent() {
         assert_eq!(
-            DefaultRecovery::new(None).on_failure(&ModelFailure::ContextTooLong {
-                message: "prompt too long"
-            }),
+            DefaultRecovery::new(None).on_failure(&failure(ModelErrorKind::ContextTooLong)),
             Recovery::CompactAndRetry
         );
     }
@@ -244,9 +263,7 @@ mod tests {
     #[test]
     fn anything_else_fails() {
         assert_eq!(
-            DefaultRecovery::new(Some("m".into())).on_failure(&ModelFailure::Other {
-                message: "connection reset"
-            }),
+            DefaultRecovery::new(Some("m".into())).on_failure(&failure(ModelErrorKind::Transport)),
             Recovery::Fail,
             "a fallback exists for overload, not for every error"
         );
@@ -305,7 +322,7 @@ mod tests {
     #[test]
     fn a_deployment_can_refuse_to_spend_anything_on_recovery() {
         assert_eq!(
-            NeverRecover.on_failure(&ModelFailure::Overloaded),
+            NeverRecover.on_failure(&failure(ModelErrorKind::Overloaded)),
             Recovery::Fail
         );
         assert_eq!(

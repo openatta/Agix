@@ -177,16 +177,16 @@ impl Model for AnthropicModel {
         let mut raw = self.inner.stream_messages(req);
         let first = tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Err(ModelError::Cancelled),
+            _ = cancel.cancelled() => return Err(ModelError::cancelled()),
             first = raw.next() => first,
         };
         let first = match first {
             Some(Ok(crate::stream::StreamEvent::Error { error })) => return Err(api_error(error)),
             Some(Ok(event)) => event,
-            Some(Err(e)) => return Err(map_error(e)),
+            Some(Err(e)) => return Err(e.into()),
             None => {
-                return Err(ModelError::Network(
-                    "the provider closed the response without sending anything".into(),
+                return Err(ModelError::stream_interrupted(
+                    "the provider closed the response without sending anything",
                 ))
             }
         };
@@ -200,7 +200,7 @@ impl Model for AnthropicModel {
             .scan(StreamState::default(), |acc, result| {
                 let events = match result {
                     Ok(event) => map_stream_event(event, acc),
-                    Err(e) => vec![Err(map_error(e))],
+                    Err(e) => vec![Err(e.into())],
                 };
                 futures::future::ready(Some(events))
             })
@@ -500,40 +500,10 @@ fn map_stream_event(
 }
 
 /// An `error` event, classified as the same error arriving as an HTTP status
-/// would be: its `type` names the status.
+/// would be: its `type` says which.
 fn api_error(error: crate::stream::ApiErrorPayload) -> ModelError {
-    let status = match error.kind.as_str() {
-        "overloaded_error" => return ModelError::Overloaded,
-        "rate_limit_error" => return ModelError::RateLimited,
-        "authentication_error" | "permission_error" => return ModelError::Auth(error.message),
-        "invalid_request_error" => 400,
-        "billing_error" => 402,
-        "not_found_error" => 404,
-        "request_too_large" => 413,
-        "timeout_error" => 504,
-        _ => 500,
-    };
-    ModelError::Api {
-        status,
-        message: error.message,
-    }
-}
-
-fn map_error(e: crate::error::AnthropicError) -> ModelError {
-    use crate::error::AnthropicError;
-    match e {
-        AnthropicError::Auth(msg) => ModelError::Auth(msg),
-        AnthropicError::RateLimited { .. } => ModelError::RateLimited,
-        AnthropicError::Overloaded { .. } => ModelError::Overloaded,
-        AnthropicError::Transport(e) => ModelError::Network(e.to_string()),
-        e @ AnthropicError::StreamInterrupted => ModelError::Network(e.to_string()),
-        AnthropicError::Server { status, body, .. } => ModelError::Api {
-            status,
-            message: body,
-        },
-        AnthropicError::Cancelled => ModelError::Cancelled,
-        other => ModelError::Internal(other.to_string()),
-    }
+    let kind = crate::error::classify(None, Some(&error.kind), &error.message);
+    ModelError::new(kind, error.message)
 }
 
 #[cfg(test)]
@@ -1332,6 +1302,7 @@ mod call_failure_tests {
     use crate::error::AnthropicError;
     use crate::mock::MockAnthropicClient;
     use crate::stream::{ApiErrorPayload, StreamEvent};
+    use base::interface::model::ModelErrorKind;
     use std::time::Duration;
 
     fn params() -> StreamParams {
@@ -1392,14 +1363,16 @@ mod call_failure_tests {
             retry_after: None,
         })]);
         let model = AnthropicModel::new(client);
-        assert!(matches!(
-            call(&model, CancellationToken::new()).await,
-            Err(ModelError::Overloaded)
-        ));
-        assert!(matches!(
-            call(&model, CancellationToken::new()).await,
-            Err(ModelError::Api { status: 400, .. })
-        ));
+        let overloaded = call(&model, CancellationToken::new()).await.err();
+        assert_eq!(
+            overloaded.map(|e| (e.kind, e.status)),
+            Some((ModelErrorKind::Overloaded, Some(529)))
+        );
+        let too_long = call(&model, CancellationToken::new()).await.err();
+        assert_eq!(
+            too_long.map(|e| (e.kind, e.status)),
+            Some((ModelErrorKind::ContextTooLong, Some(400)))
+        );
     }
 
     /// An `error` event says what kind of failure it is, as a status would
@@ -1421,18 +1394,18 @@ mod call_failure_tests {
             .expect("opened");
         assert!(matches!(
             first.next().await,
-            Some(Err(ModelError::Overloaded))
+            Some(Err(e)) if e.kind == ModelErrorKind::Overloaded
         ));
         let mut second = call(&model, CancellationToken::new())
             .await
             .expect("opened");
         assert!(matches!(
             second.next().await,
-            Some(Err(ModelError::Api { status: 400, message })) if message.contains("prompt is too long")
+            Some(Err(e)) if e.kind == ModelErrorKind::ContextTooLong && e.message.contains("prompt is too long")
         ));
         assert!(matches!(
             call(&model, CancellationToken::new()).await,
-            Err(ModelError::RateLimited)
+            Err(e) if e.kind == ModelErrorKind::RateLimited
         ));
     }
 
@@ -1461,6 +1434,6 @@ mod call_failure_tests {
         let answer = tokio::time::timeout(Duration::from_secs(5), call(&model, cancel))
             .await
             .expect("the cancel was not honoured");
-        assert!(matches!(answer, Err(ModelError::Cancelled)));
+        assert!(matches!(answer, Err(e) if e.kind == ModelErrorKind::Cancelled));
     }
 }

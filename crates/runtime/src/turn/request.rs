@@ -48,52 +48,13 @@ pub(super) fn estimate_request_overhead(
 /// and a public mirror of it that have to be kept agreeing.
 pub(super) type ModelRequest = base::interface::model_interceptor::ModelRequestView;
 
-/// Which of the recovery policy's failures a model error is. `rendered` is
-/// the error's own text, which `Other` carries.
-pub(super) fn model_failure<'a>(
-    e: &'a base::interface::model::ModelError,
-    rendered: &'a str,
-) -> base::interface::recovery_policy::ModelFailure<'a> {
-    use base::interface::model::ModelError;
-    use base::interface::recovery_policy::ModelFailure;
-    match e {
-        ModelError::Overloaded => ModelFailure::Overloaded,
-        ModelError::Api {
-            status: 413,
-            message,
-        } => ModelFailure::ContextTooLong { message },
-        ModelError::Api { status, message }
-            if (400..500).contains(status) && says_context_too_long(message) =>
-        {
-            ModelFailure::ContextTooLong { message }
-        }
-        ModelError::Internal(message) if says_context_too_long(message) => {
-            ModelFailure::ContextTooLong { message }
-        }
-        _ => ModelFailure::Other { message: rendered },
-    }
-}
-
-/// Whether a refusal's text says the request was too large for the model.
-///
-/// No provider gives this a status of its own — Anthropic, OpenAI and the
-/// relays in front of them all answer 400 with a type that covers every bad
-/// request — so the wording is the signal.
-pub(super) fn says_context_too_long(message: &str) -> bool {
-    const WORDINGS: &[&str] = &[
-        "prompt is too long",
-        "prompt too long",
-        "input is too long",
-        "context_length_exceeded",
-        "maximum context length",
-        "context length exceeded",
-        "exceeds the context window",
-        "exceeds the maximum number of tokens",
-        "too many tokens",
-        "request_too_large",
-    ];
-    let message = message.to_ascii_lowercase();
-    WORDINGS.iter().any(|w| message.contains(w))
+/// A model error as the recovery policy is shown it. The kind is the
+/// protocol client's; nothing is reclassified here.
+pub(super) fn model_failure(
+    e: &base::interface::model::ModelError,
+) -> base::interface::recovery_policy::ModelFailure<'_> {
+    base::interface::recovery_policy::ModelFailure::new(e.kind, &e.message)
+        .with_retry_after(e.retry_after)
 }
 
 /// Whether `id` is a `tool_use` of the last reply that nothing after it has
@@ -491,10 +452,7 @@ impl Agent {
         &self,
         e: &base::interface::model::ModelError,
     ) -> base::interface::recovery_policy::Recovery {
-        let rendered = e.to_string();
-        self.llm
-            .recovery_policy
-            .on_failure(&model_failure(e, &rendered))
+        self.llm.recovery_policy.on_failure(&model_failure(e))
     }
 
     /// Ask the recovery policy what a stopped-early response calls for, and

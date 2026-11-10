@@ -3,14 +3,12 @@
 //! 重试 / beta header / 多 provider 都在 HttpAnthropicClient 内部；
 //! Engine 只看 trait。
 
-use crate::error::{is_transient_status, AnthropicError};
+use crate::error::{classify, error_type, AnthropicError};
 use crate::parser::parse_sse;
 use crate::retry_after::parse_retry_after;
 use crate::stream::StreamEvent;
 use crate::types::MessagesRequest;
-use base::interface::backoff::{
-    Backoff, BackoffPolicy, FailedAttempt, LadderBackoff, RequestFailure,
-};
+use base::interface::backoff::{Backoff, BackoffPolicy, FailedAttempt, LadderBackoff};
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use futures::stream::{Stream, StreamExt};
 use platform::LocalNetwork;
@@ -30,13 +28,13 @@ pub const ANTHROPIC_API_BASE_URL: &str = "https://api.anthropic.com/";
 /// 会永远 pending，调用方（`crates/runtime/src/turn/` 的主循环）没有任何手段
 /// 感知到这一点，整个 turn 就此挂死——不报错、不超时、CPU 占用 0%，几乎无法从
 /// 外部区分"模型在正常思考"和"连接已经死了"。这个常量把这种情况转成一个明确的
-/// 、可重试的 `AnthropicError::StreamInterrupted`，而不是无限等待。
+/// 、可重试的 `AnthropicError::Timeout`，而不是无限等待。
 /// 90s 留了足够余量给正常的长 thinking 停顿（比如大 context/推理模型），比大多数
 /// LLM 单个 SSE chunk 间隔要长得多。
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// 从已解析的 SSE 事件流里读下一项，最多等 `idle_timeout`——超时说明连接静默
-/// 卡死了（见 `STREAM_IDLE_TIMEOUT` 文档），返回一个 `StreamInterrupted` 错误项
+/// 卡死了（见 `STREAM_IDLE_TIMEOUT` 文档），返回一个 `Timeout` 错误项
 /// 而不是让调用方永远 pending。抽成独立函数方便直接单测，不用起真实 HTTP。
 async fn next_with_idle_timeout<S>(
     events: &mut S,
@@ -47,7 +45,10 @@ where
 {
     match tokio::time::timeout(idle_timeout, events.next()).await {
         Ok(next) => next,
-        Err(_elapsed) => Some(Err(AnthropicError::StreamInterrupted)),
+        Err(_elapsed) => Some(Err(AnthropicError::Timeout(format!(
+            "stream idle for {}s",
+            idle_timeout.as_secs()
+        )))),
     }
 }
 
@@ -73,30 +74,25 @@ async fn classify_response(resp: HttpStream) -> Result<HttpStream, AnthropicErro
     } else {
         body
     };
-    // A relay in front of the API does not always keep the status, but it
-    // passes the body on, and the body's `error.type` says the same thing.
-    Err(match (code, error_type(&body).as_deref()) {
-        (401 | 403, _) => AnthropicError::Auth(body),
-        (429, _) | (_, Some("rate_limit_error")) => AnthropicError::RateLimited {
-            retry_after,
-            headers: anthropic_headers,
+    use base::interface::model::ModelErrorKind;
+    Err(
+        match classify(Some(code), error_type(&body).as_deref(), &body) {
+            ModelErrorKind::Auth => AnthropicError::Auth(body),
+            ModelErrorKind::RateLimited => AnthropicError::RateLimited {
+                retry_after,
+                headers: anthropic_headers,
+            },
+            ModelErrorKind::Overloaded => AnthropicError::Overloaded {
+                status: code,
+                retry_after,
+            },
+            _ => AnthropicError::Server {
+                status: code,
+                body,
+                retry_after,
+            },
         },
-        (503 | 529, _) | (_, Some("overloaded_error")) => AnthropicError::Overloaded {
-            status: code,
-            retry_after,
-        },
-        _ => AnthropicError::Server {
-            status: code,
-            body,
-            retry_after,
-        },
-    })
-}
-
-/// `error.type` of an error body shaped `{"type":"error","error":{"type":…}}`.
-fn error_type(body: &str) -> Option<String> {
-    let body: serde_json::Value = serde_json::from_str(body).ok()?;
-    Some(body.get("error")?.get("type")?.as_str()?.to_string())
+    )
 }
 
 /// 把一个还没读的响应体读成字符串。错误当作提前结束——这里只用于错误 body，
@@ -160,20 +156,6 @@ fn push_unique(v: &mut Vec<String>, s: &str) {
     }
 }
 
-/// 把 `AnthropicError` 翻译成退避策略的词汇。这里就是"哪些错误还值得再发一次"
-/// 的唯一答案——落进 `Other` 的策略一律不重试。
-fn failure_kind(e: &AnthropicError) -> RequestFailure {
-    match e {
-        AnthropicError::Transport(_) => RequestFailure::Transport,
-        AnthropicError::RateLimited { .. } => RequestFailure::RateLimited,
-        AnthropicError::Overloaded { .. } => RequestFailure::Overloaded,
-        AnthropicError::Server { status, .. } if is_transient_status(*status) => {
-            RequestFailure::Overloaded
-        }
-        _ => RequestFailure::Other,
-    }
-}
-
 /// 在首字节前重试：等多久、还试不试由 `BackoffPolicy` 决定；
 /// `retry-after` 头的解析留在本协议这一侧，作为提示交给策略。
 async fn send_with_retry(
@@ -189,24 +171,18 @@ async fn send_with_retry(
         let attempt_result =
             match tokio::time::timeout(STREAM_IDLE_TIMEOUT, send_one(inner, req)).await {
                 Ok(result) => result,
-                Err(_elapsed) => Err(AnthropicError::Transport(anyhow::anyhow!(
-                    "no response headers within the idle window"
-                ))),
+                Err(_elapsed) => Err(AnthropicError::Timeout(
+                    "no response headers within the idle window".into(),
+                )),
             };
         let e = match attempt_result {
             Ok(resp) => return Ok(resp),
             Err(e) => e,
         };
-        let server_hint = match &e {
-            AnthropicError::RateLimited { retry_after, .. }
-            | AnthropicError::Overloaded { retry_after, .. }
-            | AnthropicError::Server { retry_after, .. } => *retry_after,
-            _ => None,
-        };
         let verdict = inner.backoff.after_failure(&FailedAttempt {
             index: attempt,
-            failure: failure_kind(&e),
-            server_hint,
+            failure: e.kind().request_failure(),
+            server_hint: e.retry_after(),
         });
         match verdict {
             Backoff::GiveUp => return Err(e),
@@ -439,11 +415,11 @@ mod tests {
         assert!(matches!(first, Some(Ok(StreamEvent::MessageStop))));
 
         // 底层流之后再也不产出任何东西（模拟连接静默卡死）——第二次读应该在
-        // idle_timeout 后返回 StreamInterrupted，而不是永远 pending。
+        // idle_timeout 后返回 Timeout，而不是永远 pending。
         let second = next_with_idle_timeout(&mut events, Duration::from_secs(90)).await;
         assert!(
-            matches!(second, Some(Err(AnthropicError::StreamInterrupted))),
-            "expected StreamInterrupted after idle timeout, got: {second:?}"
+            matches!(second, Some(Err(AnthropicError::Timeout(_)))),
+            "expected Timeout after idle timeout, got: {second:?}"
         );
     }
 
@@ -460,59 +436,6 @@ mod tests {
             second.is_none(),
             "stream ended normally, expected None, got: {second:?}"
         );
-    }
-
-    /// 哪些错误还值得再发一次，用共享策略读得懂的词汇表达。`Other` 是默认策略
-    /// 一律不重试的那一类；`StreamInterrupted` 只在流中途出现，在这一类里。
-    #[test]
-    fn only_pre_stream_failures_classify_as_retryable_kinds() {
-        assert_eq!(
-            failure_kind(&AnthropicError::Transport(anyhow::anyhow!("reset"))),
-            RequestFailure::Transport
-        );
-        assert_eq!(
-            failure_kind(&AnthropicError::RateLimited {
-                retry_after: None,
-                headers: HashMap::new(),
-            }),
-            RequestFailure::RateLimited
-        );
-        assert_eq!(
-            failure_kind(&AnthropicError::Overloaded {
-                status: 529,
-                retry_after: None
-            }),
-            RequestFailure::Overloaded
-        );
-        for status in [408, 500, 502, 504] {
-            assert_eq!(
-                failure_kind(&AnthropicError::Server {
-                    status,
-                    body: String::new(),
-                    retry_after: None,
-                }),
-                RequestFailure::Overloaded,
-                "{status}"
-            );
-        }
-        for fatal in [
-            AnthropicError::Server {
-                status: 400,
-                body: String::new(),
-                retry_after: None,
-            },
-            AnthropicError::Server {
-                status: 501,
-                body: String::new(),
-                retry_after: None,
-            },
-            AnthropicError::Auth("bad key".into()),
-            AnthropicError::StreamInterrupted,
-            AnthropicError::Refused,
-            AnthropicError::Cancelled,
-        ] {
-            assert_eq!(failure_kind(&fatal), RequestFailure::Other, "{fatal}");
-        }
     }
 
     #[test]

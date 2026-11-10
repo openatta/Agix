@@ -26,11 +26,11 @@ pub mod stream;
 
 use crate::retry_after::parse_retry_after;
 use async_trait::async_trait;
-use base::interface::backoff::{
-    Backoff, BackoffPolicy, FailedAttempt, LadderBackoff, RequestFailure,
-};
+use base::interface::backoff::{Backoff, BackoffPolicy, FailedAttempt, LadderBackoff};
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
-use base::interface::model::{Model, ModelError, ModelMessage, ModelStream, StreamParams, ToolDef};
+use base::interface::model::{
+    Model, ModelError, ModelErrorKind, ModelMessage, ModelStream, StreamParams, ToolDef,
+};
 use base::prompt::PromptBlock;
 use base::provider::{ApiType, ThinkingToggle};
 use futures::stream::StreamExt;
@@ -185,7 +185,7 @@ impl Clone for Inner {
 fn chat_completions_url(base_url: &str) -> Result<Url, ModelError> {
     let trimmed = base_url.trim().trim_end_matches('/');
     if trimmed.is_empty() {
-        return Err(ModelError::Internal("base_url is empty".into()));
+        return Err(ModelError::invalid_request("base_url is empty"));
     }
     let full = if trimmed.ends_with("/chat/completions") {
         trimmed.to_string()
@@ -195,23 +195,13 @@ fn chat_completions_url(base_url: &str) -> Result<Url, ModelError> {
         format!("{trimmed}/v1/chat/completions")
     };
     Url::parse(&full)
-        .map_err(|e| ModelError::Internal(format!("invalid base_url '{base_url}': {e}")))
+        .map_err(|e| ModelError::invalid_request(format!("invalid base_url '{base_url}': {e}")))
 }
 
-/// A failed attempt: the classified error and whatever delay the server named.
-type AttemptFailure = (ModelError, Option<Duration>);
-
 /// One HTTP attempt, with the response classified into [`ModelError`].
-async fn send_once(
-    inner: &Inner,
-    req: &ChatCompletionsRequest,
-) -> Result<HttpStream, AttemptFailure> {
-    let body = serde_json::to_vec(req).map_err(|e| {
-        (
-            ModelError::Internal(format!("serializing the request: {e}")),
-            None,
-        )
-    })?;
+async fn send_once(inner: &Inner, req: &ChatCompletionsRequest) -> Result<HttpStream, ModelError> {
+    let body = serde_json::to_vec(req)
+        .map_err(|e| ModelError::protocol(format!("serializing the request: {e}")))?;
     let mut builder = HttpRequest::post(inner.endpoint.as_str())
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {}", inner.api_key));
@@ -224,7 +214,7 @@ async fn send_once(
         .net
         .open(builder.body(body), Origin::Operator)
         .await
-        .map_err(|e| (exec_error(e), None))?;
+        .map_err(exec_error)?;
 
     let code = resp.status;
     if (200..300).contains(&code) {
@@ -238,43 +228,20 @@ async fn send_once(
     } else {
         body
     };
-    let error = match code {
-        401 | 403 => ModelError::Auth(body),
-        429 => ModelError::RateLimited,
-        503 | 529 => ModelError::Overloaded,
-        _ => ModelError::Api {
-            status: code,
-            message: body,
-        },
-    };
-    Err((error, hint))
-}
-
-/// Translate a [`ModelError`] into the backoff policy's vocabulary.
-///
-/// The server's own `retry-after` hint travels beside the error, not in it.
-fn failure_kind(e: &ModelError) -> RequestFailure {
-    match e {
-        ModelError::Network(_) => RequestFailure::Transport,
-        ModelError::RateLimited => RequestFailure::RateLimited,
-        ModelError::Overloaded => RequestFailure::Overloaded,
-        ModelError::Api { status, .. } if crate::error::is_transient_status(*status) => {
-            RequestFailure::Overloaded
-        }
-        _ => RequestFailure::Other,
-    }
+    let kind = crate::error::classify(Some(code), None, &body);
+    Err(ModelError::new(kind, body)
+        .with_status(code)
+        .with_retry_after(hint))
 }
 
 /// The execution layer's three sentences in this protocol's vocabulary.
 ///
-/// A policy refusal becomes `Internal`, not `Network`: `Network` is the class
+/// A policy refusal is `Denied`, not `Transport`: `Transport` is the class
 /// the backoff policy retries, and a second request meets the same policy.
 fn exec_error(e: base::interface::exec::ExecError) -> ModelError {
     match e {
-        base::interface::exec::ExecError::Denied(m) => {
-            ModelError::Internal(format!("refused by egress policy: {m}"))
-        }
-        other => ModelError::Network(other.to_string()),
+        base::interface::exec::ExecError::Denied(m) => ModelError::new(ModelErrorKind::Denied, m),
+        other => ModelError::transport(other.to_string()),
     }
 }
 
@@ -305,19 +272,18 @@ async fn send_with_retry(
         // cover it. Same bound as the mid-stream idle timeout.
         let result = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, send_once(inner, req)).await {
             Ok(r) => r,
-            Err(_elapsed) => Err((
-                ModelError::Network("no response headers within the idle window".into()),
-                None,
+            Err(_elapsed) => Err(ModelError::timeout(
+                "no response headers within the idle window",
             )),
         };
-        let (e, server_hint) = match result {
+        let e = match result {
             Ok(resp) => return Ok(resp),
-            Err(failure) => failure,
+            Err(e) => e,
         };
         let verdict = inner.backoff.after_failure(&FailedAttempt {
             index: attempt,
-            failure: failure_kind(&e),
-            server_hint,
+            failure: e.kind.request_failure(),
+            server_hint: e.retry_after,
         });
         match verdict {
             Backoff::GiveUp => return Err(e),
@@ -362,10 +328,9 @@ impl Model for OpenAICompatibleModel {
         // - `fallback_model`: model fallback is the caller's policy, and the
         //   Anthropic adapter does not act on it either.
         if params.provider_search.is_some() {
-            return Err(ModelError::Unsupported(
+            return Err(ModelError::unsupported(
                 "this provider has no web search of its own; route `task_models.web_search` \
-                 to one that has"
-                    .into(),
+                 to one that has",
             ));
         }
         let model = if params.model.is_empty() {
@@ -395,7 +360,7 @@ impl Model for OpenAICompatibleModel {
         // from this call, where a caller's recovery looks for it.
         let resp = tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Err(ModelError::Cancelled),
+            _ = cancel.cancelled() => return Err(ModelError::cancelled()),
             resp = send_with_retry(&self.inner, &req) => resp?,
         };
         let bytes = resp
@@ -512,7 +477,9 @@ mod tests {
             )
             .await;
         match refused {
-            Err(ModelError::Unsupported(why)) => assert!(why.contains("task_models.web_search")),
+            Err(e) if e.kind == ModelErrorKind::Unsupported => {
+                assert!(e.message.contains("task_models.web_search"))
+            }
             Err(other) => panic!("{other:?}"),
             Ok(_) => panic!("a provider search went out"),
         }
@@ -530,46 +497,32 @@ mod tests {
         );
     }
 
-    /// Which failures are worth another attempt, in the vocabulary the shared
-    /// policy reads. An API-level 400 is the caller's problem and replaying it
-    /// just burns time; `Other` is what the default policy refuses outright.
+    /// The status alone decides here: Chat Completions error bodies carry no
+    /// type that the status does not already say.
     #[test]
-    fn only_pre_stream_failures_classify_as_retryable_kinds() {
-        assert_eq!(
-            failure_kind(&ModelError::RateLimited),
-            RequestFailure::RateLimited
-        );
-        assert_eq!(
-            failure_kind(&ModelError::Overloaded),
-            RequestFailure::Overloaded
-        );
-        assert_eq!(
-            failure_kind(&ModelError::Network("reset".into())),
-            RequestFailure::Transport
-        );
-        for status in [408, 500, 502, 504] {
+    fn a_refusal_is_classified_by_its_status() {
+        for (status, body, kind) in [
+            (429, "", ModelErrorKind::RateLimited),
+            (529, "", ModelErrorKind::Overloaded),
+            (502, "", ModelErrorKind::Unavailable),
+            (401, "bad key", ModelErrorKind::Auth),
+            (400, "bad request", ModelErrorKind::InvalidRequest),
+            (
+                400,
+                "This model's maximum context length is 65536 tokens",
+                ModelErrorKind::ContextTooLong,
+            ),
+            (501, "not implemented", ModelErrorKind::ServerError),
+        ] {
             assert_eq!(
-                failure_kind(&ModelError::Api {
-                    status,
-                    message: String::new(),
-                }),
-                RequestFailure::Overloaded,
+                crate::error::classify(Some(status), None, body),
+                kind,
                 "{status}"
             );
         }
-        for fatal in [
-            ModelError::Auth("bad key".into()),
-            ModelError::Api {
-                status: 400,
-                message: "bad request".into(),
-            },
-            ModelError::Api {
-                status: 501,
-                message: "not implemented".into(),
-            },
-            ModelError::Internal("boom".into()),
-        ] {
-            assert_eq!(failure_kind(&fatal), RequestFailure::Other, "{fatal:?}");
-        }
+        assert_eq!(
+            exec_error(base::interface::exec::ExecError::Denied("offline".into())).kind,
+            ModelErrorKind::Denied
+        );
     }
 }

@@ -453,7 +453,7 @@ impl SessionNamer {
     /// unnamed rather than the call going anywhere else.
     async fn name(&self, prompt: &str) -> Result<Option<String>, String> {
         use base::interface::model::{
-            CallOrigin, MessageRole, ModelContentBlock, ModelError, ModelEvent, ModelMessage,
+            CallOrigin, MessageRole, ModelContentBlock, ModelErrorKind, ModelEvent, ModelMessage,
             StreamParams,
         };
         use base::prompt::PromptBlock;
@@ -495,7 +495,7 @@ impl SessionNamer {
             .await
         {
             Ok(stream) => stream,
-            Err(ModelError::NotRecorded(_)) => return Ok(None),
+            Err(e) if e.kind == ModelErrorKind::NotRecorded => return Ok(None),
             Err(e) => return Err(format!("LLM name error: {e}")),
         };
 

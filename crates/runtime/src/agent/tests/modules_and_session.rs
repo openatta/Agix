@@ -335,10 +335,11 @@ impl Model for FailingModel {
         _params: base::interface::model::StreamParams,
         _cancel: CancellationToken,
     ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
-        Err(base::interface::model::ModelError::Api {
-            status: 503,
-            message: "simulated endpoint failure".into(),
-        })
+        Err(base::interface::model::ModelError::new(
+            base::interface::model::ModelErrorKind::Overloaded,
+            "simulated endpoint failure",
+        )
+        .with_status(503))
     }
 }
 

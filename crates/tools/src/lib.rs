@@ -259,8 +259,8 @@ mod register_builtin_tools_tests {
             _: tokio_util::sync::CancellationToken,
         ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
         {
-            Err(base::interface::model::ModelError::Unsupported(
-                "this provider has no web search of its own".into(),
+            Err(base::interface::model::ModelError::unsupported(
+                "this provider has no web search of its own",
             ))
         }
     }

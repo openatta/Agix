@@ -365,7 +365,7 @@ async fn overload_falls_back_to_the_second_model() {
         "overload_fallback",
         vec!["hi"],
         vec![
-            Reply::Fail(base::interface::model::ModelError::Overloaded),
+            Reply::Fail(base::interface::model::ModelError::overloaded()),
             Reply::Text("recovered"),
         ],
     );
@@ -547,8 +547,9 @@ async fn prompt_too_long_compacts_and_retries() {
         vec!["build up some history", "now overflow"],
         vec![
             Reply::Text("a first answer long enough to be worth dropping later"),
-            Reply::Fail(base::interface::model::ModelError::Internal(
-                "prompt too long".into(),
+            Reply::Fail(base::interface::model::ModelError::new(
+                base::interface::model::ModelErrorKind::ContextTooLong,
+                "prompt too long",
             )),
             Reply::Text("recovered after compaction"),
         ],

@@ -153,7 +153,7 @@ mod tests {
             assert!(tools.is_empty(), "a search call offers no tools of its own");
             self.asked.lock().unwrap().push(params);
             if self.refuse {
-                return Err(ModelError::Unsupported("no search here".into()));
+                return Err(ModelError::unsupported("no search here"));
             }
             Ok(Box::new(futures::stream::iter(
                 self.events.clone().into_iter().map(Ok),

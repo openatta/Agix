@@ -475,8 +475,8 @@ impl Model for DummyModel {
         // `run_sub_inner`'s `agent.run_turn(...)` to return promptly
         // (through the real error path, not a hang) so it can observe
         // the task transition to `Failed` without a full mock model.
-        Err(base::interface::model::ModelError::Internal(
-            "DummyModel does not implement streaming".into(),
+        Err(base::interface::model::ModelError::protocol(
+            "DummyModel does not implement streaming",
         ))
     }
 }

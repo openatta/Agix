@@ -32,8 +32,8 @@ impl Model for DummyModel {
         _params: base::interface::model::StreamParams,
         _cancel: tokio_util::sync::CancellationToken,
     ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
-        Err(base::interface::model::ModelError::Internal(
-            "DummyModel does not stream".into(),
+        Err(base::interface::model::ModelError::protocol(
+            "DummyModel does not stream",
         ))
     }
 }

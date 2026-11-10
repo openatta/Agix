@@ -254,7 +254,10 @@ async fn compacting_after_a_size_refusal_is_a_full_compaction() {
     );
     agent
         .compact_for_retry(
-            &base::interface::model::ModelError::Internal("prompt is too long".into()),
+            &base::interface::model::ModelError::new(
+                base::interface::model::ModelErrorKind::ContextTooLong,
+                "prompt is too long",
+            ),
             &CancellationToken::new(),
         )
         .await

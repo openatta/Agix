@@ -58,7 +58,7 @@ pub struct StreamParams {
     pub input_map: Option<InputMap>,
     /// Have the provider search the web itself during this call, reporting
     /// what it found as [`ModelEvent::SearchResults`]. A provider with no
-    /// search of its own refuses the call with [`ModelError::Unsupported`].
+    /// search of its own refuses the call with [`ModelErrorKind::Unsupported`].
     pub provider_search: Option<ProviderSearch>,
 }
 
@@ -453,28 +453,191 @@ impl Usage {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ModelError {
-    #[error("API error {status}: {message}")]
-    Api { status: u16, message: String },
-    #[error("auth error: {0}")]
-    Auth(String),
-    #[error("rate limited")]
+/// What kind of failure a model call had. Assigned once, by the protocol
+/// client that saw it; everything above reads it.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelErrorKind {
+    /// 429, or a body saying `rate_limit_error`.
     RateLimited,
-    #[error("overloaded")]
+    /// 503, 529, or a body saying `overloaded_error`.
     Overloaded,
-    #[error("network error: {0}")]
-    Network(String),
-    #[error("cancelled")]
+    /// 408, 500, 502, 504: the server side failed and the request was fine.
+    Unavailable,
+    /// Nothing usable came back: connection reset, DNS, TLS.
+    Transport,
+    /// No response headers, or no next event, within the idle window.
+    Timeout,
+    /// The stream broke off before the message ended.
+    StreamInterrupted,
+    /// The request was refused for its size.
+    ContextTooLong,
+    /// Any other 4xx.
+    InvalidRequest,
+    NotFound,
+    /// 401, 403.
+    Auth,
+    /// 402, or a body saying `billing_error`.
+    Billing,
+    /// The egress policy refused the connection.
+    Denied,
+    /// Any other 5xx.
+    ServerError,
+    /// The response could not be read: SSE framing, JSON shape.
+    Protocol,
     Cancelled,
-    #[error("internal: {0}")]
-    Internal(String),
     /// The provider cannot do what the call asked of it.
-    #[error("unsupported: {0}")]
-    Unsupported(String),
+    Unsupported,
     /// A replay was asked for a call its recording does not hold, and the
     /// call is one a replay is allowed to go without — the caller skips it
     /// rather than reporting a failure.
-    #[error("not in the recording: {0}")]
-    NotRecorded(String),
+    NotRecorded,
 }
+
+impl ModelErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimited => "rate_limited",
+            Self::Overloaded => "overloaded",
+            Self::Unavailable => "unavailable",
+            Self::Transport => "transport",
+            Self::Timeout => "timeout",
+            Self::StreamInterrupted => "stream_interrupted",
+            Self::ContextTooLong => "context_too_long",
+            Self::InvalidRequest => "invalid_request",
+            Self::NotFound => "not_found",
+            Self::Auth => "auth",
+            Self::Billing => "billing",
+            Self::Denied => "denied",
+            Self::ServerError => "server_error",
+            Self::Protocol => "protocol",
+            Self::Cancelled => "cancelled",
+            Self::Unsupported => "unsupported",
+            Self::NotRecorded => "not_recorded",
+        }
+    }
+
+    /// What a client's backoff policy is told about a request that failed
+    /// before its first byte.
+    pub fn request_failure(self) -> crate::interface::backoff::RequestFailure {
+        use crate::interface::backoff::RequestFailure;
+        match self {
+            Self::RateLimited => RequestFailure::RateLimited,
+            Self::Overloaded | Self::Unavailable => RequestFailure::Overloaded,
+            Self::Transport | Self::Timeout => RequestFailure::Transport,
+            _ => RequestFailure::Other,
+        }
+    }
+
+    /// Whether the same request, sent again a little later, may well succeed.
+    pub fn transient(self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited
+                | Self::Overloaded
+                | Self::Unavailable
+                | Self::Transport
+                | Self::Timeout
+                | Self::StreamInterrupted
+        )
+    }
+}
+
+impl std::fmt::Display for ModelErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A failed model call, as the protocol client classified it.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelError {
+    pub kind: ModelErrorKind,
+    /// The HTTP status, when the failure had one.
+    pub status: Option<u16>,
+    /// How long the provider asked to be left alone, when it said.
+    pub retry_after: Option<std::time::Duration>,
+    pub message: String,
+}
+
+impl ModelError {
+    pub fn new(kind: ModelErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            status: None,
+            retry_after: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn with_status(mut self, status: u16) -> Self {
+        self.status = Some(status);
+        self
+    }
+
+    pub fn with_retry_after(mut self, retry_after: Option<std::time::Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
+
+    pub fn cancelled() -> Self {
+        Self::new(ModelErrorKind::Cancelled, "")
+    }
+
+    pub fn rate_limited() -> Self {
+        Self::new(ModelErrorKind::RateLimited, "")
+    }
+
+    pub fn overloaded() -> Self {
+        Self::new(ModelErrorKind::Overloaded, "")
+    }
+
+    pub fn auth(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::Auth, message)
+    }
+
+    pub fn transport(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::Transport, message)
+    }
+
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::Timeout, message)
+    }
+
+    pub fn stream_interrupted(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::StreamInterrupted, message)
+    }
+
+    pub fn protocol(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::Protocol, message)
+    }
+
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::InvalidRequest, message)
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::Unsupported, message)
+    }
+
+    pub fn not_recorded(message: impl Into<String>) -> Self {
+        Self::new(ModelErrorKind::NotRecorded, message)
+    }
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.kind.as_str())?;
+        if let Some(status) = self.status {
+            write!(f, " (HTTP {status})")?;
+        }
+        if !self.message.is_empty() {
+            write!(f, ": {}", self.message)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ModelError {}

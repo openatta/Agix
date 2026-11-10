@@ -10,7 +10,7 @@
 
 use base::context::config::NetworkModeConfig;
 use base::interface::exec::{Network, Origin};
-use base::interface::model::{Model, ModelError, StreamParams};
+use base::interface::model::{Model, ModelErrorKind, StreamParams};
 use base::settings::ThinkingMode;
 use futures::StreamExt;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
@@ -114,9 +114,10 @@ async fn chat_completions_is_reachable_from_behind_an_allowlist() {
         .await;
 
     match answer {
-        Err(ModelError::Auth(body)) => assert!(
-            body.contains("served-and-denied"),
-            "the server's own answer came back: {body}"
+        Err(e) if e.kind == ModelErrorKind::Auth => assert!(
+            e.message.contains("served-and-denied"),
+            "the server's own answer came back: {}",
+            e.message
         ),
         other => panic!(
             "the request never reached the endpoint — an operator-configured \

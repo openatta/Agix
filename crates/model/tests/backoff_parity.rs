@@ -12,7 +12,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use base::interface::backoff::{Backoff, BackoffPolicy, FailedAttempt, NoBackoff, RequestFailure};
-use base::interface::model::{Model, ModelError, StreamParams};
+use base::interface::model::{Model, ModelErrorKind, StreamParams};
 use base::settings::ThinkingMode;
 use futures::StreamExt;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
@@ -133,7 +133,7 @@ async fn run_openai(policy: Arc<dyn BackoffPolicy>) -> usize {
         )
         .await;
     assert!(
-        matches!(answer, Err(ModelError::RateLimited)),
+        matches!(answer, Err(ref e) if e.kind == ModelErrorKind::RateLimited),
         "a server that only rate-limits must end in an error, got {:?}",
         answer.err()
     );

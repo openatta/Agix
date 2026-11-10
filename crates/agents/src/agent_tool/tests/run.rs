@@ -275,6 +275,6 @@ impl Model for AnswersOnlyCancellation {
         let _guard = SetOnDrop(self.dropped.clone());
         self.started.notify_one();
         cancel.cancelled().await;
-        Err(base::interface::model::ModelError::Cancelled)
+        Err(base::interface::model::ModelError::cancelled())
     }
 }

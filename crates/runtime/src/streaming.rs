@@ -368,7 +368,7 @@ where
             failure = None;
         }
         (None, None) if !cancelled => {
-            failure = Some(ModelError::Network(INCOMPLETE_STREAM.into()));
+            failure = Some(ModelError::stream_interrupted(INCOMPLETE_STREAM));
         }
         _ => {}
     }
@@ -665,7 +665,7 @@ fn inject_new_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::model::{ModelError, ModelEvent, Usage};
+    use base::interface::model::{ModelError, ModelErrorKind, ModelEvent, Usage};
     use base::interface::tool_middleware::ToolAnswer;
 
     /// Thinking blocks must survive into the transcript, with their
@@ -1387,7 +1387,7 @@ mod tests {
                 name: "Bash".into(),
                 input: serde_json::json!({"command": "make"}),
             }),
-            Err(ModelError::Network("connection reset".into())),
+            Err(ModelError::transport("connection reset")),
         ];
         let stream: base::interface::model::ModelStream = Box::new(futures::stream::iter(events));
 
@@ -1447,7 +1447,7 @@ mod tests {
             Ok(ModelEvent::TextDelta {
                 text: "half an ans".into(),
             }),
-            Err(ModelError::Overloaded),
+            Err(ModelError::overloaded()),
         ];
         let mut session = session::session::SessionManager::in_memory(None);
         let failure = run_plain(
@@ -1458,7 +1458,7 @@ mod tests {
         .await
         .expect_err("an error event is a failure");
         assert!(failure.resendable);
-        assert!(matches!(failure.error, ModelError::Overloaded));
+        assert_eq!(failure.error.kind, ModelErrorKind::Overloaded);
         assert!(session.messages().is_empty(), "{:#?}", session.messages());
     }
 
@@ -1478,7 +1478,8 @@ mod tests {
         .expect_err("a cut stream is a failure");
         assert!(failure.resendable);
         assert!(
-            matches!(&failure.error, ModelError::Network(m) if m == INCOMPLETE_STREAM),
+            failure.error.kind == ModelErrorKind::StreamInterrupted
+                && failure.error.message == INCOMPLETE_STREAM,
             "{:?}",
             failure.error
         );
@@ -1512,7 +1513,7 @@ mod tests {
                 stop_reason: "end_turn".into(),
                 usage: Usage::default(),
             }),
-            Err(ModelError::Network("stream interrupted".into())),
+            Err(ModelError::stream_interrupted("stream interrupted")),
         ];
         let mut session = session::session::SessionManager::in_memory(None);
         let done = run_plain(

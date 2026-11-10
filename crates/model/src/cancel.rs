@@ -29,7 +29,7 @@ where
             };
             match next {
                 None => {
-                    yield Err(ModelError::Cancelled);
+                    yield Err(ModelError::cancelled());
                     break;
                 }
                 Some(Some(item)) => yield item,
@@ -60,7 +60,7 @@ mod tests {
             .await
             .expect("the cancel was not honoured");
         assert!(
-            matches!(first, Some(Err(ModelError::Cancelled))),
+            matches!(first, Some(Err(ref e)) if e.kind == base::interface::model::ModelErrorKind::Cancelled),
             "{first:?}"
         );
         assert!(stream.next().await.is_none());

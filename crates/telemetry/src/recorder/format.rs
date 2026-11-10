@@ -9,7 +9,7 @@
 //! response is stored as the model events themselves rather than a parallel
 //! representation, so there is no second shape that can drift from the first.
 
-use base::interface::model::{InputMap, ModelError, ModelEvent, Usage};
+use base::interface::model::{InputMap, ModelError, ModelErrorKind, ModelEvent, Usage};
 use base::provider::ApiType;
 use base::settings::{Effort, ThinkingMode};
 use serde::{Deserialize, Serialize};
@@ -185,51 +185,38 @@ pub enum Outcome {
 /// reconstructs the original through [`RecordedError::into_model_error`], which
 /// is what lets a recorded failure — an overload that triggered the fallback
 /// model, say — replay as a failure instead of being silently skipped.
+///
+/// The status is `http_status` because the enclosing [`Outcome`] already
+/// spends `status` on its own tag.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case")]
-pub enum RecordedError {
-    Api { status: u16, message: String },
-    Auth { message: String },
-    RateLimited,
-    Overloaded,
-    Network { message: String },
-    Cancelled,
-    Internal { message: String },
-    Unsupported { message: String },
-    NotRecorded { message: String },
+pub struct RecordedError {
+    pub error: ModelErrorKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 impl From<&ModelError> for RecordedError {
     fn from(e: &ModelError) -> Self {
-        match e {
-            ModelError::Api { status, message } => Self::Api {
-                status: *status,
-                message: message.clone(),
-            },
-            ModelError::Auth(m) => Self::Auth { message: m.clone() },
-            ModelError::RateLimited => Self::RateLimited,
-            ModelError::Overloaded => Self::Overloaded,
-            ModelError::Network(m) => Self::Network { message: m.clone() },
-            ModelError::Cancelled => Self::Cancelled,
-            ModelError::Internal(m) => Self::Internal { message: m.clone() },
-            ModelError::Unsupported(m) => Self::Unsupported { message: m.clone() },
-            ModelError::NotRecorded(m) => Self::NotRecorded { message: m.clone() },
+        Self {
+            error: e.kind,
+            http_status: e.status,
+            retry_after_ms: e.retry_after.map(|d| d.as_millis() as u64),
+            message: e.message.clone(),
         }
     }
 }
 
 impl RecordedError {
     pub fn into_model_error(self) -> ModelError {
-        match self {
-            Self::Api { status, message } => ModelError::Api { status, message },
-            Self::Auth { message } => ModelError::Auth(message),
-            Self::RateLimited => ModelError::RateLimited,
-            Self::Overloaded => ModelError::Overloaded,
-            Self::Network { message } => ModelError::Network(message),
-            Self::Cancelled => ModelError::Cancelled,
-            Self::Internal { message } => ModelError::Internal(message),
-            Self::Unsupported { message } => ModelError::Unsupported(message),
-            Self::NotRecorded { message } => ModelError::NotRecorded(message),
+        let error = ModelError::new(self.error, self.message)
+            .with_retry_after(self.retry_after_ms.map(std::time::Duration::from_millis));
+        match self.http_status {
+            Some(status) => error.with_status(status),
+            None => error,
         }
     }
 }
@@ -294,28 +281,22 @@ mod tests {
     #[test]
     fn every_model_error_survives_the_round_trip() {
         let errors = [
-            ModelError::Api {
-                status: 529,
-                message: "overloaded".into(),
-            },
-            ModelError::Auth("bad token".into()),
-            ModelError::RateLimited,
-            ModelError::Overloaded,
-            ModelError::Network("timeout".into()),
-            ModelError::Cancelled,
-            ModelError::Internal("boom".into()),
-            ModelError::NotRecorded("no title call".into()),
+            ModelError::overloaded()
+                .with_status(529)
+                .with_retry_after(Some(std::time::Duration::from_millis(1500))),
+            ModelError::auth("bad token"),
+            ModelError::rate_limited(),
+            ModelError::timeout("no response headers"),
+            ModelError::cancelled(),
+            ModelError::protocol("boom"),
+            ModelError::not_recorded("no title call"),
         ];
         for error in &errors {
             let recorded = RecordedError::from(error);
             let json = serde_json::to_string(&recorded).unwrap();
             let back: RecordedError = serde_json::from_str(&json).unwrap();
             assert_eq!(recorded, back);
-            assert_eq!(
-                back.into_model_error().to_string(),
-                error.to_string(),
-                "{error:?}"
-            );
+            assert_eq!(&back.into_model_error(), error);
         }
     }
 

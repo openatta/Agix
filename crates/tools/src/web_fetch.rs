@@ -593,7 +593,7 @@ not found";
             }
             let text = self
                 .answer
-                .map_err(|e| ModelError::Unsupported(e.to_string()))?;
+                .map_err(|e| ModelError::unsupported(e.to_string()))?;
             Ok(Box::new(futures::stream::iter([
                 Ok(ModelEvent::TextDelta { text: text.into() }),
                 Ok(ModelEvent::EndTurn {

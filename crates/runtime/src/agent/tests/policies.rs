@@ -854,7 +854,7 @@ async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
             _c: CancellationToken,
         ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError>
         {
-            Err(base::interface::model::ModelError::Overloaded)
+            Err(base::interface::model::ModelError::overloaded())
         }
     }
 

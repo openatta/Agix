@@ -94,7 +94,7 @@ impl Model for Unreachable {
         _: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Err(ModelError::Auth("invalid x-api-key".into()))
+        Err(ModelError::auth("invalid x-api-key"))
     }
 }
 

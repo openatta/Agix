@@ -102,17 +102,13 @@ impl Agent {
         error: &base::interface::model::ModelError,
         started: std::time::Instant,
     ) {
-        use base::interface::model::ModelError;
-        let (error_kind, http_status) = match error {
-            ModelError::Cancelled | ModelError::NotRecorded(_) => return,
-            ModelError::Api { status, .. } => ("api", Some(*status)),
-            ModelError::Auth(_) => ("auth", None),
-            ModelError::RateLimited => ("rate_limited", None),
-            ModelError::Overloaded => ("overloaded", None),
-            ModelError::Network(_) => ("network", None),
-            ModelError::Internal(_) => ("internal", None),
-            ModelError::Unsupported(_) => ("unsupported", None),
-        };
+        use base::interface::model::ModelErrorKind;
+        if matches!(
+            error.kind,
+            ModelErrorKind::Cancelled | ModelErrorKind::NotRecorded
+        ) {
+            return;
+        }
         let _ = self
             .telemetry
             .telemetry_handle
@@ -122,8 +118,8 @@ impl Agent {
                 Some(self.current_turn_id.clone()),
                 telemetry::ApiErrorPayload {
                     model: model.to_string(),
-                    error_kind: error_kind.to_string(),
-                    http_status,
+                    error_kind: error.kind.as_str().to_string(),
+                    http_status: error.status,
                     error_message: error.to_string(),
                     latency_ms: started.elapsed().as_millis() as u64,
                 },

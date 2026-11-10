@@ -174,7 +174,7 @@ impl Model for BlockingModel {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         self.in_flight.fetch_sub(1, SeqCst);
-        Err(base::interface::model::ModelError::Internal("done".into()))
+        Err(base::interface::model::ModelError::protocol("done"))
     }
 }
 

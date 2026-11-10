@@ -740,7 +740,7 @@ impl RecorderModel {
             None => {
                 let dir = config.root.join(name);
                 let mut recording = reader::load(&dir).map_err(|e| {
-                    ModelError::Internal(format!("recorder: cannot replay {name:?}: {e}"))
+                    ModelError::protocol(format!("recorder: cannot replay {name:?}: {e}"))
                 })?;
                 if recording.damaged > 0 {
                     tracing::warn!(
@@ -753,12 +753,12 @@ impl RecorderModel {
                 // the replay instead of being skipped — an edit that silently
                 // did nothing is worse than one that says why it could not.
                 if let Some(doc) = override_doc::load(&dir)
-                    .map_err(|e| ModelError::Internal(format!("recorder: {name:?}: {e}")))?
+                    .map_err(|e| ModelError::protocol(format!("recorder: {name:?}: {e}")))?
                 {
                     let mut responses: Vec<Vec<ModelEvent>> =
                         recording.calls.iter().map(|c| c.response.clone()).collect();
                     override_doc::apply(&doc, &mut responses)
-                        .map_err(|e| ModelError::Internal(format!("recorder: {name:?}: {e}")))?;
+                        .map_err(|e| ModelError::protocol(format!("recorder: {name:?}: {e}")))?;
                     for (call, response) in recording.calls.iter_mut().zip(responses) {
                         call.response = response;
                     }
@@ -772,7 +772,7 @@ impl RecorderModel {
 
         let sessions = state.recorded_sessions.len();
         let Some(recorded_session) = state.bind(live_session) else {
-            return Err(ModelError::Internal(format!(
+            return Err(ModelError::protocol(format!(
                 "recorder: recording {name:?} holds {sessions} session(s), \
                  live run introduced another ({live_session:?})"
             )));
@@ -784,16 +784,16 @@ impl RecorderModel {
                 .filter(|c| c.request.purpose.as_deref() == purpose)
                 .count();
             return Err(match purpose {
-                Some(wanted) if may_go_unreplayed(wanted) => ModelError::NotRecorded(format!(
+                Some(wanted) if may_go_unreplayed(wanted) => ModelError::not_recorded(format!(
                     "recording {name:?} has no unreplayed {wanted:?} call for session \
                      {recorded_session:?}"
                 )),
-                Some(wanted) => ModelError::Internal(format!(
+                Some(wanted) => ModelError::protocol(format!(
                     "recorder: recording {name:?} has {same_kind} {wanted:?} call(s) for \
                      session {recorded_session:?}, live run asked for #{}",
                     same_kind + 1
                 )),
-                None => ModelError::Internal(format!(
+                None => ModelError::protocol(format!(
                     "recorder: recording {name:?} has {same_kind} conversation call(s) for \
                      session {recorded_session:?}, live run asked for #{}",
                     same_kind + 1
@@ -813,7 +813,7 @@ impl RecorderModel {
                 differences.join("\n  ")
             );
             match config.on_divergence {
-                Divergence::Strict => return Err(ModelError::Internal(report)),
+                Divergence::Strict => return Err(ModelError::protocol(report)),
                 Divergence::Warn => tracing::warn!("{report}"),
             }
         }
@@ -959,6 +959,7 @@ impl Drop for RecordingStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base::interface::model::ModelErrorKind;
     use base::interface::model::{call_purpose, CallOrigin};
     use base::prompt::BlockRole;
     use base::settings::ThinkingMode;
@@ -1000,7 +1001,7 @@ mod tests {
             _: CancellationToken,
         ) -> Result<ModelStream, ModelError> {
             if self.open_error {
-                return Err(ModelError::Overloaded);
+                return Err(ModelError::overloaded());
             }
             let events: Vec<Result<ModelEvent, ModelError>> =
                 self.events.iter().cloned().map(Ok).collect();
@@ -1210,7 +1211,7 @@ mod tests {
             .await
             .err()
             .expect("expected an error");
-        assert!(matches!(err, ModelError::Overloaded));
+        assert_eq!(err.kind, ModelErrorKind::Overloaded);
         drop(recorder);
 
         let replayer = RecorderModel::new(
@@ -1232,7 +1233,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(replayed, Err(ModelError::Overloaded)),
+            matches!(replayed, Err(ref e) if e.kind == ModelErrorKind::Overloaded),
             "a recorded overload must replay as an overload, not as a success"
         );
     }
@@ -2070,7 +2071,7 @@ mod tests {
             )
             .await
         {
-            Err(ModelError::NotRecorded(_)) => {}
+            Err(e) if e.kind == ModelErrorKind::NotRecorded => {}
             Err(e) => panic!("expected NotRecorded, got {e}"),
             Ok(_) => panic!("a title call the recording lacks was answered"),
         }
@@ -2319,7 +2320,9 @@ mod tests {
             "answer"
         );
         match ask(&replayer, "sys", aux_params("S1", call_purpose::MEMORY)).await {
-            Err(ModelError::Internal(m)) => assert!(m.contains("\"memory\""), "{m}"),
+            Err(e) if e.kind == ModelErrorKind::Protocol => {
+                assert!(e.message.contains("\"memory\""), "{}", e.message)
+            }
             Err(e) => panic!("expected an internal error, got {e}"),
             Ok(answer) => panic!("a memory call the recording lacks was answered: {answer:?}"),
         }

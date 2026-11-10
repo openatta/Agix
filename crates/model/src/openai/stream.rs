@@ -20,7 +20,7 @@
 //! ends the reply — gateways that drop both are common — but is reported as
 //! [`ModelEvent::Truncated`], since a dropped connection looks the same.
 
-use base::interface::model::{ModelError, ModelEvent, Usage};
+use base::interface::model::{ModelError, ModelErrorKind, ModelEvent, Usage};
 use bytes::Bytes;
 use eventsource_stream::Eventsource;
 use futures::stream::{Stream, StreamExt};
@@ -65,19 +65,27 @@ fn chunk_error(error: &serde_json::Value) -> ModelError {
         Some(m) => m.to_string(),
         None => error.to_string(),
     };
-    let kind = format!("{} {}", field("type"), field("code"));
-    let status = field("code").parse::<u16>().ok();
-    if kind.contains("rate_limit") || status == Some(429) {
-        ModelError::RateLimited
-    } else if kind.contains("overloaded") || matches!(status, Some(503 | 529)) {
-        ModelError::Overloaded
+    let tags = format!("{} {}", field("type"), field("code"));
+    let status = field("code")
+        .parse::<u16>()
+        .ok()
+        .filter(|s| (400..600).contains(s));
+    let kind = if tags.contains("rate_limit") {
+        ModelErrorKind::RateLimited
+    } else if tags.contains("overloaded") {
+        ModelErrorKind::Overloaded
+    } else if tags.contains("context_length") {
+        ModelErrorKind::ContextTooLong
     } else {
-        let status = match status {
-            Some(s) if (400..600).contains(&s) => s,
-            _ if kind.contains("invalid_request") || kind.contains("context_length") => 400,
-            _ => 500,
-        };
-        ModelError::Api { status, message }
+        let error_type = tags
+            .contains("invalid_request")
+            .then_some("invalid_request_error");
+        crate::error::classify(status, error_type, &message)
+    };
+    let error = ModelError::new(kind, message);
+    match status {
+        Some(status) => error.with_status(status),
+        None => error,
     }
 }
 
@@ -370,7 +378,7 @@ where
             let next = match tokio::time::timeout(idle_timeout, events.next()).await {
                 Ok(next) => next,
                 Err(_elapsed) => {
-                    yield Err(ModelError::Network(format!(
+                    yield Err(ModelError::timeout(format!(
                         "stream idle for {}s",
                         idle_timeout.as_secs()
                     )));
@@ -380,7 +388,7 @@ where
             let Some(item) = next else { break };
             match item {
                 Err(e) => {
-                    yield Err(ModelError::Network(e.to_string()));
+                    yield Err(ModelError::transport(e.to_string()));
                     return;
                 }
                 Ok(event) => {
@@ -956,8 +964,8 @@ data: {\"error\":{\"message\":\"This model's maximum context length is 65536 tok
                 busy.as_slice(),
                 [
                     Ok(ModelEvent::TextDelta { .. }),
-                    Err(ModelError::Overloaded)
-                ]
+                    Err(e)
+                ] if e.kind == ModelErrorKind::Overloaded
             ),
             "{busy:?}"
         );
@@ -966,7 +974,7 @@ data: {\"error\":{\"message\":\"This model's maximum context length is 65536 tok
                 .collect()
                 .await;
         assert!(
-            matches!(too_long.as_slice(), [Err(ModelError::Api { status: 400, message })] if message.contains("maximum context length")),
+            matches!(too_long.as_slice(), [Err(e)] if e.kind == ModelErrorKind::ContextTooLong && e.message.contains("maximum context length")),
             "{too_long:?}"
         );
     }
@@ -987,8 +995,8 @@ data: {\"error\":{\"message\":\"This model's maximum context length is 65536 tok
 
         assert!(matches!(results[0], Ok(ModelEvent::TextDelta { .. })));
         assert!(
-            matches!(results.last(), Some(Err(ModelError::Network(_)))),
-            "expected a network error after the idle window, got {results:?}"
+            matches!(results.last(), Some(Err(e)) if e.kind == ModelErrorKind::Timeout),
+            "expected a timeout after the idle window, got {results:?}"
         );
     }
 
