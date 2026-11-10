@@ -51,10 +51,12 @@ Options:
                                    [default: the number of CPU cores]
       --mcp-policy <PATH>          MCP policy file to enforce instead of the managed one
                                    [default: /Library/Application Support/Agix/mcp-policy.json
-                                   on macOS, /etc/agix/mcp-policy.json elsewhere]
+                                   on macOS, %ProgramData%\\Agix\\mcp-policy.json on Windows,
+                                   /etc/agix/mcp-policy.json elsewhere]
       --managed-settings <PATH>    Managed settings file to enforce instead of the system one
                                    [default: /Library/Application Support/Agix/managed-settings.json
-                                   on macOS, /etc/agix/managed-settings.json elsewhere]
+                                   on macOS, %ProgramData%\\Agix\\managed-settings.json on
+                                   Windows, /etc/agix/managed-settings.json elsewhere]
   -h, --help                       Print help
   -V, --version                    Print version
 ";

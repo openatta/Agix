@@ -91,7 +91,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 - token 和输出预算。
 
 **安全**
-- 固定的权限顺序:先是工具自身的检查,再是规则(deny 永远优先),再是路径安全,最后是权限模式。
+- 固定的权限顺序:先拒凭据(任何模式都拒),然后是工具自身的检查,再是规则(deny 永远优先),再是路径安全,最后是权限模式。
 - 权限模式:`default`、`acceptEdits`、`plan`、`dontAsk`、`bypassPermissions`。
 - shell 命令跑在操作系统沙箱里,git hook、git 配置、Agent 设置在里面只读;引擎自己的 git
   也在沙箱里跑。
@@ -242,8 +242,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 ### 执行与安全
 
 工具经四个契约碰到机器——`Process`、`FileSystem`、`Network`、`Sandbox`——默认是本机
-实现,测试用进程内实现。每条命令领一个进程组,停的时候整组停。权限按固定顺序裁决:工具
-自己的判定,然后规则(**deny 永远优先**,不管来自哪一层),路径安全,最后是权限模式。
+实现,测试用进程内实现。每条命令领一个进程组,停的时候整组停。权限按固定顺序裁决:先拒凭据,
+然后工具自己的判定,然后规则(**deny 永远优先**,不管来自哪一层),路径安全,最后是权限模式。
 子 Agent 的询问经父会话到达宿主。
 
 ### 扩展面
@@ -255,7 +255,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 | 途径 | 够到什么 | 代价 |
 |---|---|---|
 | **脚本**(QuickJS,默认) | 九个点:四个写提示词、两个围着工具调用、两个围着模型调用、记忆召回 | 一个 `.js` 文件加一行配置;每次调用微秒级 |
-| **插件包** | MCP 服务器、脚本、声明式场景、agent 类型 | 一个带 `plugin.toml` 的 zip;要给模型看的文本安装时全部披露 |
+| **插件包** | MCP 服务器、脚本、声明式场景、agent 类型、skill | 一个带 `plugin.toml` 的 zip;要给模型看的文本安装时全部披露 |
 | **Hooks** | 一轮里的三十个时点、四种后端:命令、提示词、HTTP、agent | 观察、改写输入、拦下工具调用、结束一轮 |
 
 另外,任何说 MCP 的东西本来就是扩展。脚本和 `RunCode` 跑在同一套内嵌 QuickJS 里:限额
@@ -379,7 +379,7 @@ let pool = daemon::assemble::pool(
 
 - 给某一个点换个做法 → 写脚本:一个 `.js` 文件加 `settings.json` 里一行
   ([`extending_quickjs.md`](extending_quickjs.md))。
-- 打包一组能力——MCP 服务器、脚本、场景、agent 类型 → 做成插件包
+- 打包一组能力——MCP 服务器、脚本、场景、agent 类型、skill → 做成插件包
   ([`plugin_packages.md`](plugin_packages.md))。
 - 在自己的构建里加工具、拦截或提示词贡献 → 写 Rust 插件(`runtime::plugin::Plugin`),交给
   builder,或经 `Assembly` 加给每个会话。同一个点上 Rust 插件和脚本都有时,Rust 先、脚本

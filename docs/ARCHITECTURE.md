@@ -656,8 +656,11 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
   daemon 的 `daemon/auth/`,项目 `.agix` 下的 `settings.local.json` / `mcp.local.json`,以及
   任何位置的 `.ssh` / `.aws` / `.gnupg`。调用里有一个字符串(路径工具的路径及其解析后的各种
   写法,shell 命令的每个词与赋值,`--flag=value` 的值)落在这里,gate 就拒绝,不问,
-  `bypassPermissions` 下也一样;`Grep` / `Glob` 搜它上层的目录时跳过它;沙箱里的命令读不到,
-  `sandbox.allow_read` 放不开。没有一个回答能让"把 token 读进模型"成为好主意,所以不询问。
+  `bypassPermissions` 下也一样;`Grep` / `Glob` 搜它上层的目录时跳过它;沙箱里的命令读不到其中
+  引擎自己的那部分(状态目录与各场景目录下的设置文件、`mcp/oauth/`、`daemon/auth/`、项目的
+  `.agix/*.local.json`,§6.3),`sandbox.allow_read` 放不开;家目录下的 `.ssh` / `.aws` / `.gnupg`
+  在 `deny_read` 的缺省名单里,沙箱挡,但可由 `allow_read` 放开;别处的这几个目录沙箱不挡,
+  只由 gate 挡住写出了路径的调用。没有一个回答能让"把 token 读进模型"成为好主意,所以不询问。
   引擎自己读进提示词或模型上下文的文件也一样:skill 的列表、正文与 `files:`,`AGENTS.md`
   及向上找到的各层,`instruction_file`,rules 的索引,agent 定义,output style,memory 的
   索引与条目,声明式 scene 的 `prompt.md`,`CLAUDE.md` 等的导入,host 传来的文件附件,都经

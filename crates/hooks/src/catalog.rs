@@ -254,7 +254,7 @@ impl HookEvent {
 /// The event table of `docs/hooks.md`.
 pub fn render_markdown() -> String {
     let mut out = String::new();
-    out.push_str("| 事件 | 何时触发 | payload(三个公共字段之外) | 回答能做什么 |\n");
+    out.push_str("| 事件 | 何时触发 | payload(四个公共字段之外) | 回答能做什么 |\n");
     out.push_str("|---|---|---|---|\n");
     for event in HookEvent::ALL {
         let spec = event.spec();

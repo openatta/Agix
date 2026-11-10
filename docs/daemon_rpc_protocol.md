@@ -372,8 +372,8 @@ glob 清单),项目自己写的忽略。三态:
 | `plan` | 只允许只读工具 |
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
-| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问。"项目内"指会话的工作目录、`sandbox.additional_directories`,读还包括 `sandbox.read_directories`(`sandbox.read_anywhere` 时不限):项目外的写入照样询问,`Read` / `Glob` / `Grep` 读项目外、只读的 `Bash` / `Monitor` 命令参数指向项目外(含 `~`、`$VAR` 这类展开不了的写法)也照样询问,与 `default` 一致(`.ssh` 一类的受保护路径仍被拒)。只读的 `Bash` / `Monitor` 命令只要跑 `git`,就还要求每一次 `git` 找到的仓库就是会话目录自己所在的那个(不能是裸仓库;`cd` 进项目自带的嵌套 `.git`、或 `cd` 到去向不明的目录再跑 `git`,都要询问),因为仓库配置(`core.fsmonitor`、`diff.external` 一类)会让 git 自己去启动程序,会话自己的仓库是用户的,项目里带来的是别人写的。`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机;MCP 工具一律询问,server 自报的 `readOnlyHint` 不算(有 allow 规则的照常放行) |
-| `bypassPermissions` | 不询问、不看任何规则 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
+| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问。"项目内"指会话的工作目录、`sandbox.additional_directories`,读还包括 `sandbox.read_directories`(`sandbox.read_anywhere` 时不限):项目外的写入照样询问,`Read` / `Glob` / `Grep` 读项目外、只读的 `Bash` / `Monitor` 命令参数指向项目外(含 `~`、`$VAR` 这类展开不了的写法)也照样询问,与 `default` 一致(`.ssh` 一类的凭据仍被拒)。项目内的 `.git`、`.agix`、`.claude`、`.agents/skills` 下的写入也照样询问(改它们等于改 agent 自己的规则)。只读的 `Bash` / `Monitor` 命令只要跑 `git`,就还要求每一次 `git` 找到的仓库就是会话目录自己所在的那个(不能是裸仓库;`cd` 进项目自带的嵌套 `.git`、或 `cd` 到去向不明的目录再跑 `git`,都要询问),因为仓库配置(`core.fsmonitor`、`diff.external` 一类)会让 git 自己去启动程序,会话自己的仓库是用户的,项目里带来的是别人写的。`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机;MCP 工具一律询问,server 自报的 `readOnlyHint` 不算(有 allow 规则的照常放行) |
+| `bypassPermissions` | 不询问、不看用户各层(设置文件、`options.permission_rules`)的规则 —— 那些规则里的 `deny`、`/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行。凭据(`.ssh` / `.aws` / `.gnupg`、状态目录里的设置与 token 等,§6.1)任何模式都拒,部署方 managed 层的 `deny` / `ask` 照样生效;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
 
 `auto`、`yolo` 是 `bypassPermissions` 的另外两种写法:在 settings.json、`options.permission_mode`、
 agent 类型的 frontmatter 里都收,解析出来就是 `bypassPermissions`,夹紧、存进会话日志、
@@ -459,7 +459,7 @@ settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 
 `deny` / `ask`——但只认真正从 managed 设置文件读进来的规则:客户端在这里写
 `"source": "policySettings"` 只改变报出时的名字,不会让它在 bypass 下生效。managed 设置关掉了
 bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会话按 `default`
-运行,`session.create` / `session.resume` 报出的 `permission.mode` 也是 `default`。
+运行,`session.resume` 报出的 `permission.mode` 也是 `default`。
 
 ### 4.7 `PermissionDecision` / `QuestionAnswer` — 回答提问
 
@@ -538,9 +538,9 @@ Unix socket 靠文件系统权限(只有 daemon 的用户能连),缺省不握手
 进程起的客户端。
 
 **`--unix-socket-auth`(缺省关)让 unix socket 也握手**,第一帧同上必须是 `daemon.auth`,拒绝
-方式也相同。token 用 `--token` / `AGIX_DAEMON_TOKEN` 给的那个(与 TCP / WebSocket 共用);没给
+方式也相同。token 取 `--token` / `AGIX_DAEMON_TOKEN` 给的那个,再没有就是 TCP / WebSocket 监听在用的那个;都没有
 就每次启动新生成一个 64 位十六进制串,写进 `~/.agix/daemon/auth/<instance>.token`(`0600`,
-目录 `0700`,沙箱里的命令读不到),路径记在实例文件的 `token_file` 里(§2),daemon 退出时删除。
+目录 `0700`,沙箱里的命令读不到),路径记在实例文件的 `token_file` 里(§2;`unix_socket_auth` 与 `token_file` 两个键只在开了这个开关、或 token 是生成的时才写),daemon 退出时删除。
 自己起 daemon 的宿主用环境变量传 token,不落盘;连别人起的 daemon 的客户端读 `token_file`。
 实例文件里 `unix_socket_auth` 为真时就要握手。这个开关补的是"命令在沙箱外又 `setsid` 离开了
 进程组"这个缺口,它挡得住什么、挡不住什么见 `ARCHITECTURE.md` §6.3。
@@ -760,8 +760,9 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 记忆存了多少,外加这个进程的几项装配事实。不做任何修复,也不发起任何网络探测 —— `HealthCheck`
 契约要求每项检查从已经握着的状态立刻回答。
 
-下面是一个全新装配、三份 settings.json 都还不存在时的完整响应,逐字段为真
-(`path` 因机器而异,其余是字面值):
+下面是一个全新装配、三份 settings.json 都还不存在时,引擎自带的八项检查与顶层字段,逐字段为真
+(`path` 因机器而异,`build.panic` 的文字随构建的 panic 策略而变,其余是字面值;daemon 自己的会话池
+与插件包、宿主另有检查,见下文):
 
 ```jsonc
 { "scene": "code",
@@ -772,7 +773,13 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
       { "name":"settings.providers", "status":"ok", "summary":"provider routing resolves" },
       { "name":"settings.hooks",     "status":"ok", "summary":"hooks configuration parses" },
       { "name":"memory",             "status":"ok", "summary":"0/200 memories",
-        "details": { "enabled":true, "count":0, "cap":200 } } ] },
+        "details": { "enabled":true, "count":0, "cap":200 } },
+      { "name":"settings.permission_mode",  "status":"ok", "summary":"permission mode asks or restricts",
+        "details": { "permission_mode":"default" } },
+      { "name":"settings.hooks_fail_open",  "status":"ok", "summary":"no hooks configured" },
+      { "name":"sandbox.network_allowlist", "status":"ok", "summary":"sandbox.network_mode is not allowlist" },
+      { "name":"build.panic",               "status":"ok", "summary":"…",
+        "details": { "panic":"…" } } ] },
   "settings_tiers": [
     { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
     { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
@@ -786,8 +793,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
   "model": { "model_name":"claude-sonnet-4-6", "api_type":"Anthropic" } }
 ```
 
-`health` 是 `HealthCheck` 契约(`docs/extension_points.md`)的报告:宿主注册的检查
-与引擎自带的四项并排出现在同一个 `checks` 里。状态是三值而不是布尔 ——
+`health` 是 `HealthCheck` 契约(`docs/extension_points.md`)的报告:引擎自带的八项
+(上面例子里的)在前,daemon 自己的会话池、插件包的检查随后,宿主注册的检查排在最后,都在同一个 `checks` 里。状态是三值而不是布尔 ——
 `degraded`("还能用,但有人该知道")与 `failing`("这块不能指望了")是两件事。
 
 `settings_tiers` / `providers` / `hooks` 是 `health.checks` 里同名检查 `details`
@@ -830,7 +837,26 @@ daemon 自己的项目的 `project.status` 结果(§6.8):
 (`summary` 列出它们),或只靠 `default: "trusted"` 信任而有这样的东西(缺省翻转后它们会停用)时
 是 `degraded`。
 
-编入了 mcp 模块的构建,`health.checks` 里还有一项 `mcp.policy`(排在最前),说明在执行
+daemon 自己的会话池在 `health.checks` 里还有一项 `settings.managed`,说明部署方的 managed
+设置(`ARCHITECTURE.md` §6.1"用户规则与部署方规则")在哪里找、找到了什么:
+
+```jsonc
+{ "name":"settings.managed", "status":"ok",
+  "summary":"managed settings from /etc/agix/managed-settings.json: 1 permission rule(s)",
+  "details": { "present":true,
+               "path":"/etc/agix/managed-settings.json",   // 查找的路径(--managed-settings 或系统路径)
+               "origin":"/etc/agix/managed-settings.json", // 这一层的来源
+               "error":null,                               // 不能执行时的原因
+               "permission_rules":[ { "tool":"Bash(curl:*)", "action":"deny" } ],
+               "disable_bypass_permissions_mode":false } }
+```
+
+系统路径上没有这个文件时是 `ok`,`details` 只有 `{ "present": false, "path": "…" }`;用 `--managed-settings` 点名的文件不存在时是 `failing`(点名的路径不会悄悄当成没有 managed 设置)。文件读不了、
+不是 JSON、有 `permission_rules` / `disable_bypass_permissions_mode` / `$schema` 以外的键、
+值的形状不对或有写不成规则的规则时是 `failing`:这时**所有工具调用都被拒绝**,任何权限模式
+都一样。
+
+编入了 mcp 模块的构建,`health.checks` 里还有一项 `mcp.policy`(排在 `settings.managed` 之后、`project.trust` 之前),说明在执行
 哪一份 MCP 策略(`ARCHITECTURE.md` §6.4):
 
 ```jsonc
@@ -849,9 +875,20 @@ daemon 自己的项目的 `project.status` 结果(§6.8):
 策略文件读不了或解析不了时这项是 `failing`,`health.status` 随之是 `failing`:这时所有
 MCP server 都被拒绝。
 
+引擎自带的另外几项是姿态检查,不看运行状态,只读设置与构建:`settings.permission_mode` 在
+`permission_mode` 是 `bypassPermissions`(含 `auto` / `yolo`)时是 `degraded`,否则 `ok`;
+`settings.hooks_fail_open` 在有 `PreToolUse` / `UserPromptSubmit` / `Stop` 的 hook 的 `on_error` 是
+`allow`(失败时放行)时是 `degraded`,`details.fail_open` 列出事件与条数;`build.panic` 说明这个
+二进制是 `panic = "abort"`(工具 panic 会结束进程)还是 `unwind`(变成那次调用的错误),总是 `ok`。
+
 插件包开着(`plugins.status` 是 `enabled`)时还有一项 `plugins.enable_state`:两层
 `enabled.json` 都读得了(或不存在)是 `ok`;有一层读不了是 `degraded`,`details` 是
 `{"tiers": [{"tier": "global", "fault": "…"}]}`——那一层的包这时全部按禁用算。
+
+`plugins.refused`:磁盘上有发现阶段挡下来、因而不会加载的插件包(披露超限、manifest 读不了等)时是
+`degraded`,`details.refused` 是 `[{name,version,reason}]`;`plugins.enable_on_install` 说明
+`plugins.enable_on_install` 设置是真是假(`plugin.install` 是否装完就启用),总是 `ok`,为真时 `summary`
+提示缺省计划在后续 0.3.x 版本改为 `false`。
 
 daemon 自己的会话池还有一项 `sandbox.unattended_network`:这个 daemon 服务的场景里有无人值守的
 (没人回答提问与权限询问),`sandbox.network_mode` 是 `unrestricted`,而
@@ -1076,8 +1113,8 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 ```
 
 `recorder` 不落盘:同一进程里的重建接着原来的回放进度,不从头重放;daemon 重启之后,
-把会话带回内存的那次调用(`session.resume`、带 `resume:true` 的 `session.subscribe`、
-自动恢复的 `session.run_turn`)在 `options` 里再给一次 `recorder` 才接着录制或回放 ——
+把会话带回内存的那次调用(`session.resume`、自动恢复的 `session.run_turn`;
+`session.subscribe` 不收 `options`)在 `options` 里再给一次 `recorder` 才接着录制或回放 ——
 这是 `options` 里唯一一项以这次调用为准的,其余仍按建会话时记下的。
 
 `recorder.mode` 取 `record` / `replay` / `rerun`;`dir` 省略时用 daemon 自己的
@@ -2029,25 +2066,6 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 会话不在内存里 → `SESSION_NOT_FOUND`(这个和 `session.close` 不一样:答一个没在跑
 的会话的提问不可能是"已经完成了")。
 
-daemon 自己的会话池在 `health.checks` 里还有一项 `settings.managed`,说明部署方的 managed
-设置(`ARCHITECTURE.md` §6.1"用户规则与部署方规则")在哪里找、找到了什么:
-
-```jsonc
-{ "name":"settings.managed", "status":"ok",
-  "summary":"managed settings from /etc/agix/managed-settings.json: 1 permission rule(s)",
-  "details": { "present":true,
-               "path":"/etc/agix/managed-settings.json",   // 查找的路径(--managed-settings 或系统路径)
-               "origin":"/etc/agix/managed-settings.json", // 这一层的来源
-               "error":null,                               // 不能执行时的原因
-               "permission_rules":[ { "tool":"Bash(curl:*)", "action":"deny" } ],
-               "disable_bypass_permissions_mode":false } }
-```
-
-没有这个文件时是 `ok`,`details` 只有 `{ "present": false, "path": "…" }`。文件读不了、
-不是 JSON、有 `permission_rules` / `disable_bypass_permissions_mode` / `$schema` 以外的键、
-值的形状不对或有写不成规则的规则时是 `failing`:这时**所有工具调用都被拒绝**,任何权限模式
-都一样。
-
 未在 `--permission-prompt-timeout`(默认 300 秒)内回答的提问**失败关闭**:权限提问按拒绝
 处理,turn 带着一条 error `tool_result` 继续;模型的提问以"用户没有回答"作为
 `AskUserQuestion` 的结果交还模型。都不会挂死。
@@ -2658,7 +2676,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `extension_entry` | `{entry}` | 宿主经 `session.appendEntry` 写了一条扩展条目(`entry` 同 `session.entries` 的条目);`turn_id` 为 `null` |
 | `subscription_dropped` | `{reason}` | 这条连接对该会话的订阅被取消了(`reason` 目前只有 `"overflow"`,§5.4);不属于任何一轮,`turn_id` 为 `null`。重新 `session.subscribe` 并追平 |
 
-`prompt`、`subagent_progress`、`team_progress`、`skills_changed` 在两轮之间也会发:
+`prompt`、`subagent_progress`、`team_progress`、`skills_changed`、`tool_progress`、`notification` 在两轮之间也会发:
 后台子 Agent 在父会话空闲时照样会问、会推进度。这时它们不属于任何一轮,`turn_id` 为 `null`。
 
 **这张表是白名单。** 引擎内部还有其它事件,但只有上面这些会被转成帧发出来。特别地:
@@ -2833,7 +2851,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |
 | -32000 | SESSION_NOT_FOUND | 会话不存在,或该方法要求它在内存里而它不在 |
 | -32002 | ENGINE_ERROR | turn 执行期错误,`message` 带引擎错误码 |
-| -32003 | UNAUTHORIZED | TCP / WebSocket 握手缺失或失败;Unix socket 上的对端是 daemon 自己起的进程(§5.1) |
+| -32003 | UNAUTHORIZED | TCP / WebSocket 握手缺失或失败,开了 `--unix-socket-auth` 时 Unix socket 也一样;Unix socket 上的对端是 daemon 自己起的进程(§5.1)。不需要握手的连接上发 `daemon.auth` 得到的是 `METHOD_NOT_FOUND`(-32601) |
 | -32004 | SCENE_NOT_FOUND | 场景未注册,或(`session.create`)未激活 |
 | -32006 | SCENE_MISMATCH | 会话记录的场景与这个 daemon 的不符 |
 | -32009 | SCENE_HAS_ACTIVE_SESSIONS | `scene.deactivate` 被内存中的会话挡住 |
@@ -2853,7 +2871,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 
 ### 9.1 `error.data` 的形状
 
-**只有四个错误码带结构化 `data`**,客户端可以依赖:
+**只有五个错误码带结构化 `data`**,客户端可以依赖:
 
 ```jsonc
 // SESSION_BUSY
@@ -2867,13 +2885,16 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 // SIDECHAIN_TERMINAL
 { "session_id": "S1c1", "parent_session_id": "S1", "final_state": "completed" }  // completed | failed
 
+// INVALID_PARAMS,只在 options.strict 为真、有 options 字段被忽略时
+{ "invalid_options": [ { "field": "permission_mode", "error": "…" } ] }
+
 // METHOD_NOT_FOUND
 { "module": "mcp" }   // 只在方法所属的模块没有编入这个构建时;未知方法没有 data
 ```
 
 其余错误码**没有 `data`**,信息全在 `message` 里 —— 包括
 `SCENE_HAS_ACTIVE_SESSIONS`(挡路的会话 id 是拼在 message 文本里的)、
-`PROJECT_NOT_FOUND`、`PROJECT_REQUIRED`、`INVALID_PARAMS`。要展示给用户就直接展示
+`PROJECT_NOT_FOUND`、`PROJECT_REQUIRED`,以及不是上面那种 `options.strict` 拒绝的 `INVALID_PARAMS`。要展示给用户就直接展示
 `message`,不要试图解析它。
 
 ---

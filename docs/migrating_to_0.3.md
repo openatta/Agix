@@ -1281,6 +1281,9 @@ WebAssembly 载体整个移除。
 
 ## 0.3.10 之后:到 0.3.11
 
+**最低 Rust 版本从 1.80 升到 1.88**(`workspace.package.rust-version`)。自己从源码构建 `agixd`
+的、把引擎当依赖编进宿主的,旧工具链直接编不过,先升级 `rustup`;只用发布出来的二进制的不受影响。
+
 ### 部署 `agixd` 的
 
 #### 权限与沙箱
@@ -1298,9 +1301,9 @@ WebAssembly 载体整个移除。
   `daemon.doctor` 的 `settings.tiers` 报 `degraded`,`settings_tiers[].ignored_values` 里的 `key`
   是 `permission_rules[0]` 这样带下标。
 - **新增 `--unix-socket-auth`(缺省关)。** 打开后 unix socket 连接也要先 `daemon.auth`:token 用
-  `--token` / `AGIX_DAEMON_TOKEN` 给的,没给就每次启动生成一个,写进
-  `~/.agix/daemon/auth/<instance>.token`(沙箱里的命令读不到),实例文件多 `unix_socket_auth` 与
-  `token_file` 两个字段。它缓解的是"沙箱外的命令 `setsid` 之后连上 socket"(没装 bwrap 的 Linux、
+  `--token` / `AGIX_DAEMON_TOKEN` 给的,再没有就是 TCP / WebSocket 监听在用的那个,都没有才每次启动生成一个,写进
+  `~/.agix/daemon/auth/<instance>.token`(沙箱里的命令读不到)。实例文件多 `unix_socket_auth` 与
+  `token_file` 两个键,只在打开了这个开关(`token_file` 只在 token 是生成的)时才写。它缓解的是"沙箱外的命令 `setsid` 之后连上 socket"(没装 bwrap 的 Linux、
   `dangerously_disable_sandbox`),细节见 `ARCHITECTURE.md` §6.3。之后的版本可能改为缺省开,
   宿主现在就该支持在 unix socket 上握手:实例文件里 `unix_socket_auth` 为真时,先发 `daemon.auth`。
 - **`daemon.doctor` 新增 `sandbox.unattended_network`。** 服务无人值守场景、`sandbox.network_mode`
@@ -1568,7 +1571,8 @@ WebAssembly 载体整个移除。
   自动压缩:连续第 n 次落空后跳过 2ⁿ 次(最多 32 次)该压缩的检查,对话比落空时又长出阈值的十分之一
   就提前再试;压缩成功清零。以前每一步都重试一遍,开了 LLM 摘要时每一步都多一次摘要调用。出错不再
   被吞掉,记一条 warn。
-- 流被截断时,参数为空或不完整的工具调用转成 `MalformedToolUse`,不再用 `{}` 去执行工具。
+- OpenAI 兼容协议的流被截断时,参数为空或不完整的工具调用转成 `MalformedToolUse`,不再用 `{}` 去执行工具
+  (Anthropic 协议的流不走这条)。
 - 服务端要求的重试等待超过 60 秒就放弃重试(以前过大的 `retry-after` 会回绕成很短的等待)。
 - 中断落在摘要请求的流上时,压缩原样放弃、对话原样留着,不再退回 Snip 丢掉两轮。
 - 回合末的记忆抽取不再在会话停下之后接着跑:引擎退出时最多等它 3 秒,过了就中止并记 warn
@@ -1622,8 +1626,6 @@ WebAssembly 载体整个移除。
 
 #### 权限与计划模式
 
-- `PermissionRule.source` 为 `policySettings` 的规则在同样具体的命中里先被报出(数值由 10 改为
-  70)。裁决不变。
 - `session.resume` 的 `permission.prompts` 在 `bypassPermissions` 会话里不再一律是 `false`:
   managed 层有 `ask` / `deny` 规则或关掉了 bypass 时报 `true`,这样的会话仍会发 permission
   `prompt` 帧。看到 `bypassPermissions` 就不接询问的宿主,改看 `prompts`。
@@ -1726,6 +1728,11 @@ WebAssembly 载体整个移除。
   `session.tasks` / `task_finished` 里是 `stopped`,通知的 `status` 是 `stopped`。常驻团队成员被停下
   时处理中的那条消息同样记 `stopped`。`stopTask` 停掉的仍不发通知。
 
+#### 其他
+
+- `config.get` 在 `tier: "effective"` 时,`settings.session_dir` 是 `null`(以前是 daemon 启动时塞进去的
+  本地数据目录)。这个字段本来就不读,见"`session_dir` 已弃用"。
+
 ### 嵌入方
 
 #### 权限与 managed 设置
@@ -1738,6 +1745,8 @@ WebAssembly 载体整个移除。
   放到已加载的设置上。
 - `DaemonConfig::managed_settings_path`:不设时读系统路径。`assemble::pool` 读一次,套到会话池
   加载的每一份设置上;已经带着 managed 层的 `config.settings` 在没有文件时保留它。
+- `RuleSource::priority()` 对 `PolicySettings` 返回 70(以前是 10):`PermissionRule.source` 为
+  `policySettings` 的规则在同样具体的命中里先被报出,裁决不变。按这个数值排序或比较的嵌入方留意。
 - `PermissionGate::with_managed(permissions::gate::ManagedPolicy)`;
   `RuleSetPermission::from_settings` 自动接上设置里的 managed 层。自己拼 gate 的嵌入方要接上
   它,否则 managed 规则只按普通规则生效、在 bypass 下不生效。
@@ -1761,6 +1770,26 @@ WebAssembly 载体整个移除。
   两边先 canonicalize 再比的是 `path_rule::is_within_root_resolved`。直接调这几个函数的要改路径,
   并选对语义(经符号链接指出根目录的路径,lexical 算在内、resolved 算在外)。Write / Edit /
   `NotebookEdit` 共用 `security::check_write_permission`。
+
+#### 其他签名与行为变化
+
+- `assembly::session_pool::ResumeError` 多了 `Busy { session_id, message }` 变体(没有
+  `#[non_exhaustive]`):对它做穷尽 `match` 的要加一支。daemon 把它报成 `SESSION_BUSY`、
+  `data.current_turn_id` 为 `null`。
+- `tools::security::canonicalize_best_effort` 搬到了 `permissions::path_rule::canonicalize_best_effort`,
+  与同批搬走的两个路径函数一起改路径。
+- `assembly::plugins::PluginSubsystem::health_check()` 返回 `Vec<Arc<dyn HealthCheck>>`(以前是
+  `Option<Arc<_>>`):插件子系统现在报 `plugins.enable_state`、`plugins.refused`、
+  `plugins.enable_on_install` 几项。拿它 `if let Some` 的改成遍历。
+- 新增的公开字段,用结构体字面量构造的要补上:`base::settings::PluginsConfig::enable_on_install`
+  (缺省 `true`)、`McpOAuthConfig::issuer`(`None`)、`plugin::manifest::PluginManifest::skills`
+  (`None`)、`plugin::disclosure::Disclosure::skills`(`Vec::new()`)、
+  `permissions::shell::Segment::written`、`assembly::DaemonConfig::managed_settings_path`(`None`)。
+- `permissions::rule::rules_from_all_tiers` 现在也含 managed 层的规则(报成 `policySettings`);
+  只想要用户各层规则的,按规则的 `source` 过滤。
+- `tools::security::read_allowed` 对凭据位置一律返回 `false`,`sandbox.read_anywhere` 开着也一样。
+- `MemoryStore` 的写入与删除要先拿记忆目录的 `DirLock`,拿不到时返回
+  `MemoryError::Io`,以前是进程内互斥、不会失败。
 
 #### 插件、工具与进度
 
@@ -1790,12 +1819,12 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 #### 子 Agent
 
-- `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
+- `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`(0.3.10 里没有这个方法,必须实现的是 `spawn_agent`):`SpawnRequest::new(prompt, cwd, cancel)`,
   再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、
   `Background { session }` 立即返回任务 id、`TeamMember { extra_tools, permission_mode, seat }`)。
   旧的 `spawn_agent`、`spawn_agent_on_model`、`spawn_agent_background`、`spawn_agent_with_tools`
   已删除,没有过渡。
-- 自己实现 `AgentSpawner` 的:`spawn` 必须实现,不再有缺省实现。`SpawnRequest` 与 `SpawnMode`
+- 自己实现 `AgentSpawner` 的:把 `spawn_agent` 改成实现 `spawn`,它没有缺省实现。`SpawnRequest` 与 `SpawnMode`
   标了 `#[non_exhaustive]`:crate 外用 `SpawnRequest::new(..)` 再按需改字段(`..SpawnRequest::new(..)`
   的结构体更新写法在 crate 外同样不可用,逐字段赋值),`match SpawnMode` 要有通配分支。
 - 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。
@@ -1849,7 +1878,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - `platform::sandbox::fence_socket` / `fence_port` / `fence_secret` 返回 `Fence`,持有期间才挡,
   丢掉就注销(`#[must_use]`);自己起监听器、写凭据文件的,把它和监听器或文件放在一起。
   `DaemonServer::bind_unix` 返回 `UnixBinding`(监听器连同它的 `Fence`),`serve_unix_listener`
-  收它,只是转手的调用方不用改;`discovery::UnixSocketTokenFile::create` 写 token 文件并登记,
+  收它。`UnixBinding` 的字段是私有的:只是把 `bind_unix` 的结果转手给 `serve_unix_listener` 的调用方
+  不用改,自己 bind socket 再交给 `serve_unix_listener` 的写法(socket activation 之类)走不通了,
+  要么改走 `bind_unix`,要么自己 accept;`discovery::UnixSocketTokenFile::create` 写 token 文件并登记,
   丢掉时先删文件再注销。
 - `MemoryStore::load_all` 最多返回 `MAX_MEMORIES` 条(最近的在前,超出时 warn),`load_index`
   最多列这么多条;要磁盘上的实数用新的 `MemoryStore::count`。记忆目录的写锁改用
@@ -1892,7 +1923,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `Some(id)` 只取消那一轮,它的消息还没进引擎时,进来就是取消的;`None` 是最近交给引擎的那一轮,
   即以前的行为。两种都不再碰已经结束的一轮(以前空闲时发它会取消刚结束那一轮的令牌,连带停掉
   它起的后台任务)。原来写 `EngineCommand::CancelTurn` 的改成 `CancelTurn { turn_id: None }`。
-- `telemetry::RedactionPolicy` 只剩 `redact_error_messages`:`apply()` 与 `emails` / `env_vars` / `paths` /
-  `ip` 四个开关(从来没有走到过)删除,`telemetry` 不再依赖 `regex`。
+- `telemetry::RedactionPolicy` 只剩 `redact_error_messages`:`apply()`、`recommended()` 与 `redact_paths` /
+  `redact_emails` / `redact_ip_addresses` / `redact_env_vars` 四个开关(从来没有走到过)删除,
+  `telemetry` 不再依赖 `regex`。写了这四个字段的结构体字面量要删掉它们。
 - `runtime::agent::Agent::compact_now` 多一个 `&CancellationToken` 参数:它取消时摘要放弃、历史不变,
   返回 `None`。不需要中断的传 `&CancellationToken::new()`。

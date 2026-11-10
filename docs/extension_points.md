@@ -132,7 +132,7 @@ impl Tool for FileTicketTool {
 - 答案取决于输入的(比如 `Bash` 按命令判断只读),照旧覆写那个方法,`spec()` 里对应的
   字段写保守的答案;包装器对这几个带输入的方法(`is_read_only`、`is_concurrency_safe`、
   `is_destructive`、`interrupt_behavior`,以及 `permission_match_content`、
-  `affected_paths`、`validate_input`、`check_permissions`、`call`)仍要逐个转发。
+  `affected_paths`、`validate_input`、`check_permissions`、`accept_edits_allows`、`call`)仍要逐个转发。
 - `spec()` 里不要调用这些能力方法:它们的缺省实现反过来读 `spec()`。
 
 #### 报进度:`call` 的 `progress`
@@ -288,11 +288,11 @@ Builder::new().permission(Arc::new(MyGate));
 它那条"未知工具"的分支就成了一个洞),`bind_session_state` 让它持续看得见会话中途
 的模式切换。两者对不需要它们的 handler 都默认是空实现。
 
-`BypassPermissions` 下 `PermissionGate` 一条规则都不看:deny 规则、凭据与 `.agix` 设置
-文件的免 bypass 名单、ask 规则、工具自己的判定都跳过,只剩输入校验("改文件前先读过"、
+`BypassPermissions` 下 `PermissionGate` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
+判定;凭据照样拒绝,部署方 managed 层的 deny / ask 照样生效;输入校验("改文件前先读过"、
 大小上限、会被读错的路径)照样拒绝,直接调用和程序里的调用一样(`ARCHITECTURE.md` §6.1)。
-`agixd` 的会话池对 `bypassPermissions` 会话也装这道 gate;宿主给了 `Assembly.permission`
-的,这样的会话改用宿主的 handler。要规则仍然算数又不想被询问,用 `acceptEdits` 或
+`agixd` 的会话池对 `bypassPermissions` 会话也装这道 gate;宿主给了 `Assembly.permission`、
+且没有 managed 层时,这样的会话改用宿主的 handler。要规则仍然算数又不想被询问,用 `acceptEdits` 或
 `dontAsk` 加 allow 规则。
 
 ### 一个 agent 怎么呈现自己 — `scene`

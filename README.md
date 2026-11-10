@@ -131,8 +131,9 @@ monitors and structured output ([table below](#tools--45-built-in)).
 - Token and output budgets.
 
 **Safety**
-- A fixed permission order: the tool's own check, then rules (a deny always
-  wins), then path safety, then the mode.
+- A fixed permission order: credentials are refused first, in every mode; then
+  the tool's own check, then rules (a deny always wins), then path safety, then
+  the mode.
 - Modes `default`, `acceptEdits`, `plan`, `dontAsk` and `bypassPermissions`.
 - An OS sandbox for shell commands, with git hooks, git config and agent
   settings read-only inside it; the engine's own git runs there too.
@@ -332,7 +333,7 @@ outside a Rust build:
 | Route | Reaches | Cost |
 |---|---|---|
 | **Scripts** (QuickJS, default) | nine points: four that write the prompt, two around a tool call, two around a model call, memory recall | a `.js` file and one line of config; microseconds per call |
-| **Plugin packages** | MCP servers, scripts, a declarative scene, agent types | a zip with a `plugin.toml`; everything it will show the model is disclosed at install |
+| **Plugin packages** | MCP servers, scripts, a declarative scene, agent types, skills | a zip with a `plugin.toml`; everything it will show the model is disclosed at install |
 | **Hooks** | Thirty named moments in a turn (`HookEvent` (30)), four backends: command, prompt, HTTP, agent | observe, rewrite an input, block a tool call, end a turn |
 
 And anything that speaks MCP is already an extension. Scripts run in the same

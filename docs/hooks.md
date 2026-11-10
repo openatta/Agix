@@ -267,7 +267,7 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
 在触发处被丢掉,拦不了也改不了。
 
 <!-- BEGIN GENERATED TABLE — see hooks::catalog::render_markdown -->
-| 事件 | 何时触发 | payload(三个公共字段之外) | 回答能做什么 |
+| 事件 | 何时触发 | payload(四个公共字段之外) | 回答能做什么 |
 |---|---|---|---|
 | `PreToolUse` | 每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算 | `tool_name`、`tool_input`、`tool_use_id` | `decision: "block"`(或 exit 2):这次调用不执行,模型收到 `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限;`decision: "approve"`:权限检查要询问时不再问人,直接放行(规则拒绝的照样拒绝,managed 层的 `ask` 照样问人;`prompt` / `agent` hook 要写 `may_approve: true`) |
 | `PostToolUse` | 工具真正跑完之后(成功或失败);被 PreToolUse、权限拦下的调用不发 | `tool_name`、`tool_input`、`tool_use_id`、`tool_result`(结果文本)、`is_error` | `decision: "block"`:结果换成 `Denied by PostToolUse hook: <message>`,同一批并发的其他调用被取消;`continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`) |
