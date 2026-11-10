@@ -15,6 +15,8 @@ pub mod process;
 pub mod process_identity;
 mod providers;
 pub mod sandbox;
+#[cfg(all(unix, feature = "testing"))]
+pub mod testing;
 
 pub use base::interface::exec::env;
 

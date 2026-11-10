@@ -45,8 +45,13 @@ http = ["dep:reqwest", "dep:rustls"]
 # the command classifier uses whether or not anything is sandboxed.
 sandbox = []
 
+# What the tests of the crates that start processes share: running a test on
+# a terminal of its own. Only dev-dependencies turn it on.
+testing = []
+
 [dev-dependencies]
 tempfile = { workspace = true }
+platform = { path = ".", features = ["testing"] }
 
 [[test]]
 name = "integration"

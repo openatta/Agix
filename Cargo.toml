@@ -94,8 +94,8 @@ async-stream = "0.3"
 # MCP
 rmcp = { version = "3.9", default-features = false, features = ["client", "transport-child-process", "client-side-sse", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "auth", "auth-client-credentials-jwt", "auth-enterprise-managed"] }
 # The process wrapper rmcp spawns stdio servers through; named directly so a
-# server can lead its own process group.
-process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "kill-on-drop"] }
+# server can lead a session of its own.
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-session", "kill-on-drop"] }
 
 # Dev
 tempfile = "3"

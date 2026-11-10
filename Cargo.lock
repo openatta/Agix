@@ -2529,6 +2529,7 @@ dependencies = [
  "base",
  "futures",
  "libc",
+ "platform",
  "reqwest",
  "rustls",
  "serde",

@@ -812,8 +812,11 @@ async fn spawn_stdio_service(
         cmd.env(k, v);
     }
     let mut cmd = process_wrap::tokio::CommandWrap::from(cmd);
+    // A session of its own, which leads a group of its own too: no
+    // controlling terminal to push input into (`TIOCSTI` on `/dev/tty`), and
+    // `orphans::list` still finds the group by the server's pid.
     #[cfg(unix)]
-    cmd.wrap(process_wrap::tokio::ProcessGroup::leader());
+    cmd.wrap(process_wrap::tokio::ProcessSession);
     cmd.wrap(process_wrap::tokio::KillOnDrop);
 
     let transport = rmcp::transport::child_process::TokioChildProcess::new(cmd).map_err(|e| {
@@ -1508,6 +1511,52 @@ done
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!orphans::listed().contains(&pid), "{:?}", orphans::listed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stdio_server_cannot_reach_the_terminal_of_the_process_running_it() {
+        platform::testing::on_a_terminal_of_its_own(
+            module_path!(),
+            "a_stdio_server_cannot_reach_the_terminal_of_the_process_running_it",
+            &[],
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let probed = dir.path().join("probed");
+                let McpServerConfig::Stdio { args, .. } = sh_server(dir.path(), Default::default())
+                else {
+                    unreachable!()
+                };
+                let cfg = McpServerConfig::Stdio {
+                    command: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        format!(
+                            "{{ {}; }} > '{}'; exec /bin/sh '{}'",
+                            platform::testing::PROBE,
+                            probed.display(),
+                            args[0]
+                        ),
+                    ],
+                    env: HashMap::new(),
+                    scope: None,
+                    timeouts: Default::default(),
+                    working_dir: None,
+                };
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    let client = StdioMcpClient::connect("sh", &cfg).await.unwrap();
+                    client.shutdown().await;
+                });
+                assert_eq!(
+                    std::fs::read_to_string(&probed).unwrap().trim(),
+                    "has-no-terminal"
+                );
+            },
+        );
     }
 
     #[test]

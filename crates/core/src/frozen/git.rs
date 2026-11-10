@@ -153,8 +153,30 @@ async fn output(git: &EngineGit, cwd: &Path, args: &[&str]) -> Option<std::proce
     crate::interface::exec::SubprocessEnv::default().apply(&mut cmd);
     cmd.args(&spec.args)
         .current_dir(&spec.cwd)
-        .envs(spec.env.iter().map(|(k, v)| (k, v)));
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
+        .kill_on_drop(true);
+    without_a_terminal(&mut cmd);
     timeout(GIT_TIMEOUT, cmd.output()).await.ok()?.ok()
+}
+
+/// Starts `cmd` in a session of its own, with no controlling terminal: a
+/// filter driver a repository names is run by git, and through `/dev/tty`
+/// could push input (`TIOCSTI`) into the daemon's terminal for the shell
+/// there to run outside any sandbox. `platform::LocalProcess` does the same
+/// for the session's commands.
+fn without_a_terminal(cmd: &mut Command) {
+    #[cfg(unix)]
+    // SAFETY: `setsid` is async-signal-safe and touches no memory.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
 }
 
 /// Check whether `cwd` is inside a git work tree.

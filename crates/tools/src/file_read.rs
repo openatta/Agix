@@ -393,16 +393,29 @@ async fn read_pdf_text(
         )));
     }
     let page_range = pages.unwrap_or("1-20");
-    // Try pdftotext first, then fall back to raw bytes
-    let output = tokio::process::Command::new("pdftotext")
+    let mut pdftotext = tokio::process::Command::new("pdftotext");
+    pdftotext
         .arg("-f")
         .arg(page_range.split('-').next().unwrap_or("1"))
         .arg("-l")
         .arg(page_range.split('-').nth(1).unwrap_or("20"))
         .arg(path)
         .arg("-") // stdout
-        .output()
-        .await;
+        .kill_on_drop(true);
+    // A session of its own, so it has no controlling terminal: the file is
+    // the model's choice, and a program that could open `/dev/tty` could push
+    // input (`TIOCSTI`) into the daemon's terminal for the shell there to run.
+    #[cfg(unix)]
+    // SAFETY: `setsid` is async-signal-safe and touches no memory.
+    unsafe {
+        pdftotext.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let output = pdftotext.output().await;
 
     match output {
         Ok(o) if o.status.success() => {
@@ -1180,6 +1193,39 @@ mod tests {
         assert!(
             text.contains("doc.pdf"),
             "expected the PDF header line, got: {text}"
+        );
+    }
+
+    /// `pdftotext` is found on `PATH`, so a script of that name standing in
+    /// for it reports whether it could open the terminal.
+    #[cfg(unix)]
+    #[test]
+    fn pdftotext_cannot_reach_the_terminal_of_the_process_running_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = TempDir::new().unwrap();
+        let fake = bin.path().join("pdftotext");
+        std::fs::write(&fake, format!("#!/bin/sh\n{}\n", platform::testing::PROBE)).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut path = std::ffi::OsString::from(bin.path());
+        if let Some(inherited) = std::env::var_os("PATH") {
+            path.push(":");
+            path.push(inherited);
+        }
+        platform::testing::on_a_terminal_of_its_own(
+            module_path!(),
+            "pdftotext_cannot_reach_the_terminal_of_the_process_running_it",
+            &[("PATH", path)],
+            || {
+                let dir = TempDir::new().unwrap();
+                let p = dir.path().join("doc.pdf");
+                std::fs::write(&p, b"%PDF-1.4\n").unwrap();
+                let text = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(read_text(&p, ctx_in(dir.path())));
+                assert!(text.contains("has-no-terminal"), "{text}");
+            },
         );
     }
 

@@ -581,7 +581,9 @@ Agent 的上下文,本来就该在一处。
 4. **一个命令是它起的整个进程组。** 本机 provider 让每个子进程领一个会话(也就领了一个
    进程组,且没有控制终端——命令没法经 `/dev/tty` 用 `TIOCSTI` 往 daemon 的终端里塞输入,
    等沙箱外的 shell 去执行),停的时候整组停;前台进程退出后输出最多再等 `OUTPUT_GRACE_AFTER_EXIT`,还被后台进程占着就
-   连它们一起停。Bash、Monitor、command hook、MCP stdio 都是这条规矩。
+   连它们一起停。Bash、Monitor、command hook 经本机 provider 起,都是这条规矩;MCP stdio
+   server 经 process-wrap 起,同样领一个会话、停的时候整组停。引擎自己跑的 git 和 `Read`
+   调的 `pdftotext` 也各领一个会话、没有控制终端,超时或取消时停掉的是它本身。
 5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
    继承宿主环境但去掉引擎自己的凭据(`ANTHROPIC_*`、`AGIX_DAEMON_TOKEN`,以及任何一层
    设置里 provider 的 `api_key_env` 指向的变量——加载设置时、读取 key 时都记下,进程内
@@ -893,7 +895,8 @@ git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙�
 不要求就和 `Bash` 一样在沙箱外跑。删除 worktree 时目录与 `.git/worktrees/` 下的那一项由
 引擎直接删,不交给 git——沙箱不许写已有 worktree 的 `.git` 链接与 `commondir`。沙箱的 git
 只给 git 目录就在项目根下 `.git` 的仓库建 worktree,别处的 git 目录沙箱护不住它的配置。
-不论进不进沙箱,这些 git 都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`。
+不论进不进沙箱,这些 git 都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`,都领一个
+自己的会话(§5 第 4 条),它跑起来的 filter driver 因此也没有控制终端;超时就被杀掉。
 `/resume @repo` 找仓库根不跑 git,只向上找 `.git`。
 
 沙箱只管命令自己的进程树,管不到它请系统服务代办的事。macOS 上实测:`open` 让
@@ -948,7 +951,9 @@ sandbox-exec 的 profile 里远端主机只能写 `*` 或 `localhost`,写了别�
 有回环以外的条目时报 degraded。按域名放行得另起一个本机代理,现在没有。
 
 命令没有控制终端:本机 provider 让它领一个新会话(§5 第 4 条),所以它打不开 `/dev/tty`,
-也就没法用 `TIOCSTI` 往 daemon 所在的终端里塞按键(CVE-2017-5226 那一类)。bwrap 不加
+也就没法用 `TIOCSTI` 往 daemon 所在的终端里塞按键(CVE-2017-5226 那一类)。不经本机 provider
+起的几种子进程也一样各领一个会话:引擎自己跑的 git(连同仓库配置让它跑的 filter driver,
+沙箱里的命令写得出这样的配置)、`Read` 调的 `pdftotext`、MCP stdio server。bwrap 不加
 `--new-session`:它会把 bwrap 的 PID 1 连同整个 PID 命名空间带出命令的进程组,停组就停不到
 命令留下的后台进程了。
 
