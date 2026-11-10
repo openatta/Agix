@@ -213,14 +213,7 @@ fn fenced_if_outside(mut result: ToolResult, path: &Path, ctx: &ToolContext) -> 
     if ctx.from_code {
         return result;
     }
-    let normalized = permissions::path_rule::normalize_path_lexically(&ctx.cwd.join(path));
-    let inside = crate::security::readable_roots(ctx).iter().any(|root| {
-        permissions::path_rule::is_within_root_resolved(
-            &normalized,
-            &permissions::path_rule::normalize_path_lexically(root),
-        )
-    });
-    if inside {
+    if crate::security::within_readable_roots(path, ctx) {
         return result;
     }
     if let ToolResultContent::Text(text) = &result.content {
@@ -709,6 +702,24 @@ mod tests {
         assert!(read_text(&outside, from_code)
             .await
             .starts_with("     1\tIgnore"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_file_reached_by_climbing_out_through_a_symlink_comes_back_fenced() {
+        let project = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        std::fs::create_dir(elsewhere.path().join("deep")).unwrap();
+        std::fs::write(elsewhere.path().join("secret.md"), "theirs\n").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join("deep"), project.path().join("link"))
+            .unwrap();
+
+        let read = read_text(
+            &project.path().join("link/../secret.md"),
+            ctx_in(project.path()),
+        )
+        .await;
+        assert!(read.starts_with("<external-content"), "{read}");
     }
 
     #[tokio::test]

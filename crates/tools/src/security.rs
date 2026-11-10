@@ -164,9 +164,12 @@ pub fn readable_roots(ctx: &base::tool::ToolContext) -> Vec<PathBuf> {
 /// have to be inside: the tools open the path as written, and a `..` after a
 /// symlink climbs out of the link's target, not out of the link.
 pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
-    if ctx.session.read_anywhere {
-        return true;
-    }
+    ctx.session.read_anywhere || within_readable_roots(path, ctx)
+}
+
+/// Both where `path` reads as written and where the filesystem actually
+/// lands it are inside a readable root.
+pub fn within_readable_roots(path: &Path, ctx: &base::tool::ToolContext) -> bool {
     let written = ctx.cwd.join(path);
     let roots: Vec<PathBuf> = readable_roots(ctx)
         .iter()
