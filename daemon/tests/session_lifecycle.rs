@@ -4087,6 +4087,60 @@ async fn settings_permission_rules_finally_reach_the_daemon() {
     srv.stop().await;
 }
 
+/// The same for a settings file: a rule in `permission_rules` that does not
+/// read is left out by itself, and the deny beside it still refuses the call.
+#[tokio::test]
+async fn a_bad_settings_rule_leaves_the_deny_rules_beside_it_in_force() {
+    let (srv, _seen) = start_scripted_server(
+        asking_bash_rounds("denied.txt"),
+        ask_settings(),
+        Duration::from_secs(1),
+    )
+    .await;
+    let project = srv._dir.path().join("ruled-project");
+    std::fs::create_dir_all(project.join(".agix")).unwrap();
+    std::fs::write(
+        project.join(".agix").join("settings.json"),
+        r#"{"memory_enabled": false, "permission_rules": [
+             {"tool": "Read", "action": "allwo"},
+             {"tool": "Bash", "action": "deny"}
+           ]}"#,
+    )
+    .unwrap();
+
+    let created = rpc(
+        &srv.sock,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "session.create", "id": 1,
+            "params": {"project_root": project}})
+        .to_string(),
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("session.create failed: {created}"))
+        .to_string();
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "session.run_turn", "id": 2,
+            "params": {"session_id": sid, "message": "make a file"}})
+        .to_string(),
+    )
+    .await;
+
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    assert!(
+        events_of_kind(&frames, "prompt").is_empty(),
+        "the deny rule was dropped with the bad one, so Bash was asked about: {frames:?}"
+    );
+    let rendered = serde_json::to_string(&events_of_kind(&frames, "tool_result")).unwrap();
+    assert!(
+        rendered.contains("Denied by permission") && !rendered.contains("no answer"),
+        "the deny rule must refuse the call itself: {rendered}"
+    );
+
+    srv.stop().await;
+}
+
 /// A rule in `options.permission_rules` that does not read is left out by
 /// itself: the deny next to it still refuses the call, without a prompt.
 #[tokio::test]

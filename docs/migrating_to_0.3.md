@@ -1293,6 +1293,10 @@ WebAssembly 载体整个移除。
   true` 让 bypass 一律按 `default` 运行。文件读不了、有别的键、值不对时拒绝所有工具调用,
   `daemon.doctor` 的 `settings.managed` 报 `failing`。没有这个文件的部署不受影响
   (`ARCHITECTURE.md` §6.1"用户规则与部署方规则")。
+- **设置文件里的 `permission_rules` 逐条读。** 以前一层里有一条规则读不出来(如
+  `"action": "allwo"`),这一层的规则全部被丢掉,deny 也跟着失效,只有一条 warn;现在只丢那一条,
+  `daemon.doctor` 的 `settings.tiers` 报 `degraded`,`settings_tiers[].ignored_values` 里的 `key`
+  是 `permission_rules[0]` 这样带下标。
 - **新增 `--unix-socket-auth`(缺省关)。** 打开后 unix socket 连接也要先 `daemon.auth`:token 用
   `--token` / `AGIX_DAEMON_TOKEN` 给的,没给就每次启动生成一个,写进
   `~/.agix/daemon/auth/<instance>.token`(沙箱里的命令读不到),实例文件多 `unix_socket_auth` 与

@@ -781,7 +781,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 
 `settings_tiers[].ignored_values` 是这一层(`settings.json` 与 `settings.local.json`)里类型
 不对、因而被丢掉的值:`{ "tier", "origin", "key", "error" }`,`key` 是点分的
-(`sandbox.network_mode`),整个对象都不对时是这个对象本身。被丢的只是这个值,同一个文件里
+(`sandbox.network_mode`),整个对象都不对时是这个对象本身;`permission_rules` 逐条读,读不出来的
+一条是 `permission_rules[0]` 这样带下标。被丢的只是这个值,同一个文件里
 其余的值和别的层照常生效。有这样的值时 `settings.tiers` 是 `degraded`,`summary` 列出
 `<层> (<键>)`。
 

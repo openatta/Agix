@@ -1118,32 +1118,33 @@ impl Settings {
                     project_layer.requires_trust.extend(gated);
                 }
                 if let Some(rules) = obj.remove("permission_rules") {
-                    match serde_json::from_value::<Vec<PermissionRule>>(rules) {
-                        Ok(rules) => {
-                            let mut kept = Vec::new();
-                            for mut rule in rules {
-                                if is_own_project(layer.tier)
-                                    && rule.action == PermissionAction::Allow
-                                {
-                                    project_layer
-                                        .requires_trust
-                                        .push(format!("permission_rules.allow({})", rule.tool));
-                                    if withhold {
-                                        continue;
-                                    }
-                                }
-                                rule.tier = Some(layer.tier);
-                                kept.push(rule);
-                            }
-                            if layer.machine_local {
-                                local_permission_rules.extend(kept);
-                            } else {
-                                permission_rules.extend(kept);
+                    let (rules, unread) = read_permission_rules(rules);
+                    for (key, error) in unread {
+                        tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "permission rule does not read, ignoring it");
+                        ignored_values.push(IgnoredValue {
+                            tier: layer.tier.name(),
+                            origin: layer.origin.clone(),
+                            key,
+                            error,
+                        });
+                    }
+                    let mut kept = Vec::new();
+                    for mut rule in rules {
+                        if is_own_project(layer.tier) && rule.action == PermissionAction::Allow {
+                            project_layer
+                                .requires_trust
+                                .push(format!("permission_rules.allow({})", rule.tool));
+                            if withhold {
+                                continue;
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, error = %e, "failed to parse permission_rules, ignoring them");
-                        }
+                        rule.tier = Some(layer.tier);
+                        kept.push(rule);
+                    }
+                    if layer.machine_local {
+                        local_permission_rules.extend(kept);
+                    } else {
+                        permission_rules.extend(kept);
                     }
                 }
             }
@@ -1338,6 +1339,28 @@ pub fn unknown_settings_keys(layer: &serde_json::Value) -> Vec<String> {
         .filter(|key| key.as_str() != "$schema" && !KNOWN.contains(key))
         .cloned()
         .collect()
+}
+
+/// One layer's `permission_rules`, rule by rule: a rule that does not read is
+/// left out by itself (`permission_rules[i]`, with why), so a mistyped allow
+/// does not take the deny rules beside it along. A value that is not a list
+/// is left out as a whole.
+fn read_permission_rules(rules: serde_json::Value) -> (Vec<PermissionRule>, Vec<(String, String)>) {
+    let serde_json::Value::Array(entries) = rules else {
+        let error = serde_json::from_value::<Vec<PermissionRule>>(rules)
+            .err()
+            .map_or_else(|| "expected a list".to_string(), |e| e.to_string());
+        return (Vec::new(), vec![("permission_rules".to_string(), error)]);
+    };
+    let mut kept = Vec::new();
+    let mut unread = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        match serde_json::from_value(entry) {
+            Ok(rule) => kept.push(rule),
+            Err(e) => unread.push((format!("permission_rules[{index}]"), e.to_string())),
+        }
+    }
+    (kept, unread)
 }
 
 /// The top-level keys of one settings file that the schema marks deprecated.
@@ -1986,6 +2009,44 @@ mod tests {
         );
         assert_eq!(settings.language.as_deref(), Some("en"));
         assert!(settings.ignored_values.is_empty());
+    }
+
+    #[test]
+    fn a_bad_permission_rule_is_left_out_alone_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"permission_rules": [
+                 {"tool": "Read", "action": "allwo"},
+                 {"tool": "Bash", "action": "deny"}
+               ]}"#,
+        )
+        .unwrap();
+        let settings = Settings::load(
+            dir.path().to_path_buf(),
+            dir.path().join("scene"),
+            dir.path().join("project"),
+            "code",
+            "m",
+        );
+        let rules: Vec<_> = settings
+            .permission_rules
+            .iter()
+            .map(|r| (r.tool.as_str(), r.action))
+            .collect();
+        assert_eq!(rules, [("Bash", PermissionAction::Deny)]);
+        assert_eq!(
+            settings.ignored_values.len(),
+            1,
+            "{:?}",
+            settings.ignored_values
+        );
+        assert_eq!(settings.ignored_values[0].key, "permission_rules[0]");
+        assert!(settings.ignored_values[0].error.contains("allwo"));
+
+        let (rules, unread) = read_permission_rules(serde_json::json!({"tool": "Bash"}));
+        assert!(rules.is_empty());
+        assert_eq!(unread[0].0, "permission_rules");
     }
 
     #[test]
