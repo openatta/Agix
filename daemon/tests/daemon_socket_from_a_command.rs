@@ -40,7 +40,11 @@ except OSError as e:
     sys.exit(0)
 request = {"jsonrpc": "2.0", "id": 1, "method": "project.trust",
            "params": {"project_root": sys.argv[2], "trusted": True}}
-s.sendall((json.dumps(request) + "\n").encode())
+# A refusal can be written and the socket closed before this request is sent.
+try:
+    s.sendall((json.dumps(request) + "\n").encode())
+except OSError:
+    pass
 print("re" + "ply:", s.makefile().readline().strip())
 "#;
 
