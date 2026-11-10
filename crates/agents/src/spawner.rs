@@ -36,6 +36,7 @@ impl AgentSpawner for RuntimeAgentSpawner {
             model,
             allowed_tools,
             mode,
+            ..
         } = request;
         let tools = self.agent_tool.sub_tools(&allowed_tools);
         let ran = match mode {
@@ -88,6 +89,12 @@ impl AgentSpawner for RuntimeAgentSpawner {
                         seat,
                     )
                     .await
+            }
+            _ => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "this spawner does not know that spawn mode",
+                )))
             }
         };
         ran.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)

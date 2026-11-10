@@ -408,14 +408,14 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
     let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
 
     let answer = spawner
-        .spawn(base::interface::agent_spawner::SpawnRequest {
-            model: Some("claude-haiku-4-5".into()),
-            ..base::interface::agent_spawner::SpawnRequest::new(
+        .spawn(
+            base::interface::agent_spawner::SpawnRequest::new(
                 "review",
                 std::path::PathBuf::from("/tmp"),
                 tokio_util::sync::CancellationToken::new(),
             )
-        })
+            .model(Some("claude-haiku-4-5".into())),
+        )
         .await
         .unwrap();
     assert_eq!(answer, "{\"ok\":true}");

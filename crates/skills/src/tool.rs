@@ -165,17 +165,13 @@ impl Tool for SkillTool {
         // one, so its `allowed-tools` grants have nowhere to go.
         if info.context.as_deref() == Some("fork") {
             if let Some(ref spawner) = self.spawner {
-                let request = SpawnRequest {
-                    agent_type: info.agent.clone(),
-                    ..SpawnRequest::new(expansion.text, ctx.cwd.clone(), ctx.cancel.clone())
-                };
+                let request =
+                    SpawnRequest::new(expansion.text, ctx.cwd.clone(), ctx.cancel.clone())
+                        .agent_type(info.agent.clone());
                 if info.background == Some(true) {
-                    let request = SpawnRequest {
-                        mode: SpawnMode::Background {
-                            session: ctx.session.clone(),
-                        },
-                        ..request
-                    };
+                    let request = request.mode(SpawnMode::Background {
+                        session: ctx.session.clone(),
+                    });
                     return match spawner.spawn(request).await {
                         Ok(task_id) => {
                             self.skill_manager.record_invocation(skill_name);

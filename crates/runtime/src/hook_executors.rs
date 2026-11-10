@@ -126,14 +126,12 @@ impl AgentHookExecutor for AgentSpawnerHookExecutor {
     ) -> Result<String, String> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
         let full_prompt = format!("{prompt}\n\nContext:\n{payload_json}");
-        let request = base::interface::agent_spawner::SpawnRequest {
-            model: model.map(str::to_string),
-            ..base::interface::agent_spawner::SpawnRequest::new(
-                full_prompt,
-                self.cwd.clone(),
-                tokio_util::sync::CancellationToken::new(),
-            )
-        };
+        let request = base::interface::agent_spawner::SpawnRequest::new(
+            full_prompt,
+            self.cwd.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .model(model.map(str::to_string));
         self.spawner.spawn(request).await.map_err(|e| e.to_string())
     }
 }

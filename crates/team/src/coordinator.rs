@@ -494,15 +494,13 @@ impl Coordinator for DefaultCoordinator {
                     async move {
                         let member_start = std::time::Instant::now();
                         let _permit = permits.acquire_owned().await.expect("semaphore closed");
-                        let request = SpawnRequest {
-                            agent_type,
-                            mode: SpawnMode::TeamMember {
+                        let request = SpawnRequest::new(prompt, cwd, cancel)
+                            .agent_type(agent_type)
+                            .mode(SpawnMode::TeamMember {
                                 extra_tools,
                                 permission_mode: Some(permission_mode),
                                 seat: Some(seat),
-                            },
-                            ..SpawnRequest::new(prompt, cwd, cancel)
-                        };
+                            });
                         let result = spawner.spawn(request).await;
                         drop(_permit);
                         let duration_ms = member_start.elapsed().as_millis() as u64;

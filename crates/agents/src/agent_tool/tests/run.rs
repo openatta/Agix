@@ -29,16 +29,16 @@ async fn spawn_background_returns_immediately_with_a_registered_task() {
 
     let start = std::time::Instant::now();
     let task_id = spawner
-        .spawn(base::interface::agent_spawner::SpawnRequest {
-            mode: base::interface::agent_spawner::SpawnMode::Background {
-                session: session.clone(),
-            },
-            ..base::interface::agent_spawner::SpawnRequest::new(
+        .spawn(
+            base::interface::agent_spawner::SpawnRequest::new(
                 "do the thing",
                 std::path::PathBuf::from("/tmp"),
                 tokio_util::sync::CancellationToken::new(),
             )
-        })
+            .mode(base::interface::agent_spawner::SpawnMode::Background {
+                session: session.clone(),
+            }),
+        )
         .await
         .expect("a background spawn itself should not error — it only registers the task");
     assert!(

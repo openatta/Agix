@@ -1565,12 +1565,11 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
 - `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
   再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、
   `Background { session }` 立即返回任务 id、`TeamMember { extra_tools, permission_mode, seat }`)。
-  `spawn_agent`、`spawn_agent_on_model`、`spawn_agent_background`、`spawn_agent_with_tools`
-  标为 `#[deprecated]`,缺省实现转到 `spawn`,照旧能调。
-- 自己实现 `AgentSpawner` 的:只按旧方法实现(`spawn_agent` + `spawn_agent_background`)的不用改,
-  `spawn` 的缺省实现会转到它们;但经 `spawn` 进来时,旧的 `spawn_agent_on_model` /
-  `spawn_agent_with_tools` 覆盖不会被走到,要模型、额外工具或权限模式的请求被拒绝。要支持这些的
-  改为实现 `spawn`。`spawn` 与旧方法都不实现的,调用会无限递归。
+  旧的 `spawn_agent`、`spawn_agent_on_model`、`spawn_agent_background`、`spawn_agent_with_tools`
+  已删除,没有过渡。
+- 自己实现 `AgentSpawner` 的:`spawn` 必须实现,不再有缺省实现。`SpawnRequest` 与 `SpawnMode`
+  标了 `#[non_exhaustive]`:crate 外用 `SpawnRequest::new(..)` 再按需改字段(`..SpawnRequest::new(..)`
+  的结构体更新写法在 crate 外同样不可用,逐字段赋值),`match SpawnMode` 要有通配分支。
 - 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。
 
 #### 执行层与 platform

@@ -206,18 +206,18 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
         agent_tool.set_scene(Arc::new(super::lifecycle::SceneWithProbe));
 
         crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
-            .spawn(SpawnRequest {
-                mode: SpawnMode::TeamMember {
-                    extra_tools: vec![Arc::new(AskingProbe { runs: runs.clone() })],
-                    permission_mode: Some(PermissionMode::BypassPermissions),
-                    seat: None,
-                },
-                ..SpawnRequest::new(
+            .spawn(
+                SpawnRequest::new(
                     "probe",
                     dir.clone(),
                     tokio_util::sync::CancellationToken::new(),
                 )
-            })
+                .mode(SpawnMode::TeamMember {
+                    extra_tools: vec![Arc::new(AskingProbe { runs: runs.clone() })],
+                    permission_mode: Some(PermissionMode::BypassPermissions),
+                    seat: None,
+                }),
+            )
             .await
             .expect("the member runs");
         let _ = std::fs::remove_dir_all(&dir);
