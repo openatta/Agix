@@ -3,8 +3,10 @@
 //!
 //! This is the cheapest tier of hook-point backend — the operator's own code,
 //! in this process, in microseconds, between "recompile the engine" and "spawn
-//! a subprocess". The contract, the per-turn quota and the wall-clock budget
-//! live in `base::interface::script`; this is only the interpreter behind them.
+//! a subprocess". The contract lives in `base::interface::script`; the per-turn
+//! quota, the wall-clock budget and the ledger are enforced by [`ScriptCarrier`]
+//! here, and the nine adapters that bind scripts to hook points are in
+//! `adapters`; this is the interpreter behind them.
 //!
 //! # A fresh runtime per call
 //!
@@ -31,6 +33,9 @@
 //! bindings at all. A script gets its input and returns its output, both as
 //! JSON. The limits bound what a script costs; they are not a security
 //! boundary against hostile code, so trust follows where a script came from.
+
+pub mod adapters;
+pub mod carrier;
 
 use std::time::{Duration, Instant};
 
@@ -212,9 +217,12 @@ pub use plugin::ScriptPlugin;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::script::{ScriptCarrier, ScriptEngine};
+    use crate::carrier::ScriptCarrier;
+    use base::interface::script::ScriptEngine;
+    use base::interface::script::{ScriptError, ScriptLimits, ScriptSource};
     use base::prompt::BlockOrigin;
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn script(code: &str) -> ScriptSource {
         ScriptSource {
@@ -406,10 +414,10 @@ pub mod bindings {
     use std::path::Path;
     use std::sync::Arc;
 
+    use crate::adapters::PromptAssemblyScript;
+    use crate::carrier::ScriptCarrier;
     use base::interface::prompt_assembly::{AssemblyCapabilities, Authority};
-    use base::interface::script::{
-        PromptAssemblyScript, ScriptCarrier, ScriptEngine, ScriptLimits, ScriptSource,
-    };
+    use base::interface::script::{ScriptEngine, ScriptLimits, ScriptSource};
     use base::prompt::BlockOrigin;
     use base::settings::ScriptBinding;
 
@@ -437,7 +445,7 @@ pub mod bindings {
         "model.message",
     ];
 
-    pub use base::interface::script_adapters::BoundScripts;
+    pub use crate::adapters::BoundScripts;
 
     /// Why a binding could not be honored.
     ///
@@ -793,15 +801,9 @@ pub mod bindings {
                 // the one that would have been assembled with nothing bound.
                 point @ ("prompt.block" | "prompt.context") => {
                     let block = if point == "prompt.block" {
-                        base::interface::script_adapters::prompt_block_from_script(
-                            carrier,
-                            &binding.entry,
-                        )
+                        crate::adapters::prompt_block_from_script(carrier, &binding.entry)
                     } else {
-                        base::interface::script_adapters::prompt_context_from_script(
-                            carrier,
-                            &binding.entry,
-                        )
+                        crate::adapters::prompt_context_from_script(carrier, &binding.entry)
                     };
                     if let Some(block) = block {
                         if out
@@ -817,10 +819,7 @@ pub mod bindings {
                 }
                 "prompt.variable" => {
                     if let Some((name, provider)) =
-                        base::interface::script_adapters::prompt_variable_from_script(
-                            carrier,
-                            &binding.entry,
-                        )
+                        crate::adapters::prompt_variable_from_script(carrier, &binding.entry)
                     {
                         if out
                             .prompt_variables
@@ -835,36 +834,31 @@ pub mod bindings {
                             .push((name, provider, authority.origin.clone()));
                     }
                 }
-                "tool.around" => staged.tool_middleware.push(Arc::new(
-                    base::interface::script_adapters::ToolAroundScript::new(
-                        carrier,
-                        &binding.entry,
-                    ),
-                )),
+                "tool.around" => {
+                    staged
+                        .tool_middleware
+                        .push(Arc::new(crate::adapters::ToolAroundScript::new(
+                            carrier,
+                            &binding.entry,
+                        )))
+                }
                 "model.request" => staged.model_interceptors.push(Arc::new(
-                    base::interface::script_adapters::ModelRequestScript::new(
-                        carrier,
-                        &binding.entry,
-                    ),
+                    crate::adapters::ModelRequestScript::new(carrier, &binding.entry),
                 )),
                 "model.message" => staged.model_interceptors.push(Arc::new(
-                    base::interface::script_adapters::ModelMessageScript::new(
-                        carrier,
-                        &binding.entry,
-                    ),
+                    crate::adapters::ModelMessageScript::new(carrier, &binding.entry),
                 )),
                 "memory.retrieval_hook" => staged.retrieval_hooks.push(Arc::new(
-                    base::interface::script_adapters::RetrievalHookScript::new(
-                        carrier,
-                        &binding.entry,
-                    ),
+                    crate::adapters::RetrievalHookScript::new(carrier, &binding.entry),
                 )),
-                "tool.result" => staged.tool_results.push(Arc::new(
-                    base::interface::script_adapters::ToolResultScript::new(
-                        carrier,
-                        &binding.entry,
-                    ),
-                )),
+                "tool.result" => {
+                    staged
+                        .tool_results
+                        .push(Arc::new(crate::adapters::ToolResultScript::new(
+                            carrier,
+                            &binding.entry,
+                        )))
+                }
                 // Unreachable: `BINDABLE_POINTS` gates this above, and the two
                 // are meant to be read together. A point added to that list
                 // and not to this match is a script bound to nothing, so it

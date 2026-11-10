@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use base::interface::script_adapters::BoundScripts;
+use crate::adapters::BoundScripts;
 use runtime::plugin::{Layer, Plugin, PluginSession, Registrar};
 
 pub struct ScriptPlugin {

@@ -5,7 +5,7 @@
 //! the prompt and hand back a different one, it registers something the
 //! assembler merges in. Nothing here can change or remove what anyone else
 //! contributed, which is why none of it takes an
-//! [`Authority`](crate::interface::prompt_assembly::Authority) — the block
+//! [`Authority`](base::interface::prompt_assembly::Authority) — the block
 //! still carries [`ScriptCarrier::origin`] so a later pass can see whose it
 //! is.
 //!
@@ -29,9 +29,9 @@
 //! mentions it, and a binding stays the same three fields everywhere.
 //!
 //! `order` is optional and defaults to
-//! [`orders::CONFIG_PROMPT_APPEND`](crate::interface::prompt_registry::orders::CONFIG_PROMPT_APPEND),
+//! [`orders::CONFIG_PROMPT_APPEND`](base::interface::prompt_registry::orders::CONFIG_PROMPT_APPEND),
 //! which puts the block after every stage the kernel contributes. See
-//! [`orders`](crate::interface::prompt_registry::orders) for the rest.
+//! [`orders`](base::interface::prompt_registry::orders) for the rest.
 //!
 //! A script that fails this call registers nothing at all. That is the only
 //! honest outcome — a block with no name is not addressable, and a block at no
@@ -75,12 +75,13 @@
 
 use std::sync::Arc;
 
-use crate::interface::prompt_registry::{
+use crate::carrier::ScriptCarrier;
+use base::interface::prompt_registry::{
     orders, ContextProvider, PromptContent, RegisteredBlock, VariableProvider,
 };
-use crate::interface::scene::ScenePromptContext;
-use crate::interface::script::{ScriptCarrier, ScriptOutcome};
-use crate::prompt::{names, BlockRole};
+use base::interface::scene::ScenePromptContext;
+use base::interface::script::ScriptOutcome;
+use base::prompt::{names, BlockRole};
 
 /// A script bound to `prompt.block`: one fixed block of the system prompt.
 ///
@@ -338,9 +339,9 @@ fn is_taken(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::prompt_registry::interpolate;
-    use crate::interface::script::{ScriptEngine, ScriptError, ScriptLimits, ScriptSource};
-    use crate::prompt::BlockOrigin;
+    use base::interface::prompt_registry::interpolate;
+    use base::interface::script::{ScriptEngine, ScriptError, ScriptLimits, ScriptSource};
+    use base::prompt::BlockOrigin;
 
     fn ctx() -> ScenePromptContext<'static> {
         use std::borrow::Cow;

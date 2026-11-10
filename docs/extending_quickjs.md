@@ -569,6 +569,6 @@ declare that capability at install
   承诺,逐条对着跑起来的会话验一遍。
 - `tests/runner/tests/script_task_profiles.rs` —— 九个点一起绑上,做一件真活儿,
   看工作目录还是不是原来那个。
-- `crates/core/src/interface/script_adapters/` —— 每个点一个适配器。每个适配器实现
+- `crates/script-host/src/adapters/` —— 每个点一个适配器。每个适配器实现
   的 JSON 契约就写在适配器自己身上,那是不会漂移的那一版。
 - `docs/extension_points.md` —— 引擎里的每一个点,以及谁可以用它。

@@ -1,8 +1,9 @@
 //! `tool.result` — what one tool result looks like before the model sees it.
 
-use crate::interface::script::{ScriptCarrier, ScriptOutcome};
-use crate::interface::tool_middleware::ToolCall;
-use crate::interface::tool_result::{ToolResultDraft, ToolResultTransformer};
+use crate::carrier::ScriptCarrier;
+use base::interface::script::ScriptOutcome;
+use base::interface::tool_middleware::ToolCall;
+use base::interface::tool_result::{ToolResultDraft, ToolResultTransformer};
 
 /// A script bound to the tool-result point.
 ///

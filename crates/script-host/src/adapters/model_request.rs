@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::interface::model_interceptor::{ModelInterceptor, ModelRequestView};
-use crate::interface::script::{ScriptCarrier, ScriptOutcome};
-use crate::settings::ThinkingMode;
+use crate::carrier::ScriptCarrier;
+use base::interface::model_interceptor::{ModelInterceptor, ModelRequestView};
+use base::interface::script::ScriptOutcome;
+use base::settings::ThinkingMode;
 
 /// A script bound to the model-request point.
 ///
@@ -219,12 +220,12 @@ impl ModelInterceptor for ModelRequestScript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::model::{StreamParams, ToolDef};
-    use crate::interface::script::{ScriptEngine, ScriptError, ScriptLimits, ScriptSource};
-    use crate::prompt::BlockOrigin;
+    use base::interface::model::{StreamParams, ToolDef};
+    use base::interface::script::{ScriptEngine, ScriptError, ScriptLimits, ScriptSource};
+    use base::prompt::BlockOrigin;
 
     /// Stands in for the interpreter at a synchronous point.
-    /// [`FnScriptEngine`](crate::interface::script::FnScriptEngine) answers
+    /// [`FnScriptEngine`](base::interface::script::FnScriptEngine) answers
     /// only the asynchronous call, and this point never makes one.
     struct Blocking<F>(F);
 
@@ -285,7 +286,7 @@ mod tests {
 
     fn request() -> ModelRequestView {
         ModelRequestView {
-            prompt_blocks: vec![crate::prompt::PromptBlock::system("be an agent").named("rules")],
+            prompt_blocks: vec![base::prompt::PromptBlock::system("be an agent").named("rules")],
             tool_defs: vec![tool("Read"), tool("Write"), tool("Bash")],
             messages: Vec::new(),
             params: StreamParams {
@@ -443,9 +444,9 @@ mod tests {
             Ok(serde_json::Value::Null)
         }));
         let mut req = request();
-        req.messages.push(crate::interface::model::ModelMessage {
-            role: crate::interface::model::MessageRole::User,
-            content: vec![crate::interface::model::ModelContentBlock::Text {
+        req.messages.push(base::interface::model::ModelMessage {
+            role: base::interface::model::MessageRole::User,
+            content: vec![base::interface::model::ModelContentBlock::Text {
                 text: "a very long conversation".into(),
             }],
         });

@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::interface::model::{ModelContentBlock, ModelMessage};
-use crate::interface::model_interceptor::ModelInterceptor;
-use crate::interface::script::{ScriptCarrier, ScriptOutcome};
+use crate::carrier::ScriptCarrier;
+use base::interface::model::{ModelContentBlock, ModelMessage};
+use base::interface::model_interceptor::ModelInterceptor;
+use base::interface::script::ScriptOutcome;
 
 /// A script bound to the model-message point.
 ///
@@ -145,12 +146,12 @@ impl ModelInterceptor for ModelMessageScript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::model::MessageRole;
-    use crate::interface::script::{ScriptEngine, ScriptError, ScriptLimits, ScriptSource};
-    use crate::prompt::BlockOrigin;
+    use base::interface::model::MessageRole;
+    use base::interface::script::{ScriptEngine, ScriptError, ScriptLimits, ScriptSource};
+    use base::prompt::BlockOrigin;
 
     /// Stands in for the interpreter at a synchronous point.
-    /// [`FnScriptEngine`](crate::interface::script::FnScriptEngine) answers
+    /// [`FnScriptEngine`](base::interface::script::FnScriptEngine) answers
     /// only the asynchronous call, and this point never makes one.
     struct Blocking<F>(F);
 

@@ -18,7 +18,7 @@
 //!
 //! **Synchronous points call synchronously.** Most hook points are `Fn` or
 //! `&self` by contract and cannot await. Those use
-//! [`ScriptCarrier::call_blocking`](super::script::ScriptCarrier::call_blocking),
+//! [`ScriptCarrier::call_blocking`](crate::carrier::ScriptCarrier::call_blocking),
 //! whose cost is one thread held for at most the script's timeout — bounded
 //! inside the interpreter rather than by a future somebody can drop.
 //!
@@ -35,6 +35,7 @@ mod bound;
 mod memory_retrieval;
 mod model_message;
 mod model_request;
+mod prompt_assembly;
 mod prompt_contributions;
 mod tool_around;
 mod tool_result;
@@ -43,6 +44,7 @@ pub use bound::BoundScripts;
 pub use memory_retrieval::RetrievalHookScript;
 pub use model_message::ModelMessageScript;
 pub use model_request::ModelRequestScript;
+pub use prompt_assembly::PromptAssemblyScript;
 pub use prompt_contributions::{
     prompt_block_from_script, prompt_context_from_script, prompt_variable_from_script,
 };

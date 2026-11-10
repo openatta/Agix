@@ -3,8 +3,9 @@
 
 use std::sync::Arc;
 
-use crate::interface::memory_contracts::{RetrievalHook, RetrievalRequest};
-use crate::interface::script::{ScriptCarrier, ScriptOutcome};
+use crate::carrier::ScriptCarrier;
+use base::interface::memory_contracts::{RetrievalHook, RetrievalRequest};
+use base::interface::script::ScriptOutcome;
 
 /// A script bound to both ends of recall.
 ///
@@ -213,8 +214,8 @@ impl RetrievalHook for RetrievalHookScript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::script::{FnScriptEngine, ScriptEngine, ScriptLimits, ScriptSource};
-    use crate::prompt::BlockOrigin;
+    use base::interface::script::{FnScriptEngine, ScriptEngine, ScriptLimits, ScriptSource};
+    use base::prompt::BlockOrigin;
     use std::collections::HashSet;
 
     /// An engine that answers with a fixed value, whatever it is asked.
@@ -228,7 +229,7 @@ mod tests {
             _e: &str,
             _i: serde_json::Value,
             _l: &ScriptLimits,
-        ) -> Result<serde_json::Value, crate::interface::script::ScriptError> {
+        ) -> Result<serde_json::Value, base::interface::script::ScriptError> {
             Ok(self.0.clone())
         }
         fn eval_blocking(
@@ -237,7 +238,7 @@ mod tests {
             _e: &str,
             _i: serde_json::Value,
             _l: &ScriptLimits,
-        ) -> Result<serde_json::Value, crate::interface::script::ScriptError> {
+        ) -> Result<serde_json::Value, base::interface::script::ScriptError> {
             Ok(self.0.clone())
         }
     }
@@ -300,7 +301,7 @@ mod tests {
                 _e: &str,
                 i: serde_json::Value,
                 _l: &ScriptLimits,
-            ) -> Result<serde_json::Value, crate::interface::script::ScriptError> {
+            ) -> Result<serde_json::Value, base::interface::script::ScriptError> {
                 self.0.lock().unwrap().push(i);
                 Ok(serde_json::Value::Null)
             }
@@ -310,7 +311,7 @@ mod tests {
                 _e: &str,
                 i: serde_json::Value,
                 _l: &ScriptLimits,
-            ) -> Result<serde_json::Value, crate::interface::script::ScriptError> {
+            ) -> Result<serde_json::Value, base::interface::script::ScriptError> {
                 self.0.lock().unwrap().push(i);
                 Ok(serde_json::Value::Null)
             }
@@ -363,7 +364,7 @@ mod tests {
     fn a_script_that_fails_leaves_recall_alone() {
         let engine: Arc<dyn ScriptEngine> =
             Arc::new(FnScriptEngine(|_: &ScriptSource, _: &str, _| async {
-                Err(crate::interface::script::ScriptError::Failed("boom".into()))
+                Err(base::interface::script::ScriptError::Failed("boom".into()))
             }));
         // `FnScriptEngine` has no blocking half, so the synchronous path
         // fails before the closure is ever reached — which is the same

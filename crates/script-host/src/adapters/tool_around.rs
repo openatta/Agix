@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::interface::script::{ScriptCarrier, ScriptOutcome};
-use crate::interface::tool_middleware::{
+use crate::carrier::ScriptCarrier;
+use base::interface::script::ScriptOutcome;
+use base::interface::tool_middleware::{
     NextDispatch, ToolAnswer, ToolCall, ToolExec, ToolMiddleware, ToolOutcome,
 };
 
@@ -183,17 +184,17 @@ impl ToolMiddleware for ToolAroundScript {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::script::{
+    use base::interface::script::{
         FnScriptEngine, ScriptEngine, ScriptError, ScriptLimits, ScriptSource,
     };
-    use crate::interface::tool_middleware::dispatch_through;
-    use crate::prompt::BlockOrigin;
+    use base::interface::tool_middleware::dispatch_through;
+    use base::prompt::BlockOrigin;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio_util::sync::CancellationToken;
 
     fn engine_returning(
         value: serde_json::Value,
-    ) -> Arc<dyn crate::interface::script::ScriptEngine> {
+    ) -> Arc<dyn base::interface::script::ScriptEngine> {
         Arc::new(FnScriptEngine(
             move |_s: &ScriptSource, _e: &str, _i: serde_json::Value| {
                 let value = value.clone();

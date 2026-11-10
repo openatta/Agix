@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use crate::interface::prompt_assembly::Authority;
-use crate::interface::prompt_registry::PromptRegistry;
+use base::interface::prompt_assembly::Authority;
+use base::interface::prompt_registry::PromptRegistry;
 
 /// What a set of bindings produced, sorted by where each piece has to be
 /// installed.
@@ -32,36 +32,36 @@ pub struct BoundScripts {
     /// a record of its own — a fresh runtime per call, nothing carried over —
     /// so whether one ran, and why it did not, is only answerable from
     /// outside. Every carrier below writes into this one.
-    pub ledger: Arc<crate::interface::script::ScriptLedger>,
+    pub ledger: Arc<base::interface::script::ScriptLedger>,
     /// Passes over the assembled prompt, with the authority each was
     /// granted by where its file lives.
     pub assembly_hooks: Vec<(
-        Arc<dyn crate::interface::prompt_assembly::AsyncAssemblyHook>,
+        Arc<dyn base::interface::prompt_assembly::AsyncAssemblyHook>,
         Authority,
     )>,
     /// Blocks the scripts contribute, each already carrying the name and
     /// the order its script asked for.
-    pub prompt_blocks: Vec<crate::interface::prompt_registry::RegisteredBlock>,
+    pub prompt_blocks: Vec<base::interface::prompt_registry::RegisteredBlock>,
     /// What `{{name}}` expands to, by name, with whose script answers it.
     pub prompt_variables: Vec<(
         String,
-        crate::interface::prompt_registry::VariableProvider,
-        crate::prompt::BlockOrigin,
+        base::interface::prompt_registry::VariableProvider,
+        base::prompt::BlockOrigin,
     )>,
     /// What a tool result may look like.
-    pub tool_results: Vec<Arc<dyn crate::interface::tool_result::ToolResultTransformer>>,
+    pub tool_results: Vec<Arc<dyn base::interface::tool_result::ToolResultTransformer>>,
     /// Both ends of memory recall.
-    pub retrieval_hooks: Vec<Arc<dyn crate::interface::memory_contracts::RetrievalHook>>,
+    pub retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
     /// A ring in front of every tool call.
-    pub tool_middleware: Vec<Arc<dyn crate::interface::tool_middleware::ToolMiddleware>>,
+    pub tool_middleware: Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>,
     /// The request on its way out and the message on its way back.
-    pub model_interceptors: Vec<Arc<dyn crate::interface::model_interceptor::ModelInterceptor>>,
+    pub model_interceptors: Vec<Arc<dyn base::interface::model_interceptor::ModelInterceptor>>,
     /// Every carrier that was built, so a turn can reset their quotas.
     ///
     /// Without this the per-turn budget is a per-session one: nothing
     /// would ever call `begin_turn`, and a script bound to a per-tool-call
     /// point would go quiet partway through a long session and stay quiet.
-    pub carriers: Vec<Arc<crate::interface::script::ScriptCarrier>>,
+    pub carriers: Vec<Arc<crate::carrier::ScriptCarrier>>,
 }
 
 impl std::fmt::Debug for BoundScripts {
@@ -149,8 +149,8 @@ impl BoundScripts {
 
     /// The prompt-side pieces, for a registry that layers them over the
     /// session's Rust registrations.
-    pub fn prompt_contributions(&self) -> crate::interface::prompt_registry::ScriptContributions {
-        crate::interface::prompt_registry::ScriptContributions {
+    pub fn prompt_contributions(&self) -> base::interface::prompt_registry::ScriptContributions {
+        base::interface::prompt_registry::ScriptContributions {
             blocks: self.prompt_blocks.clone(),
             variables: self.prompt_variables.clone(),
             assembly_hooks: Vec::new(),

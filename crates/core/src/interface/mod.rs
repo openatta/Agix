@@ -89,7 +89,6 @@ pub mod prompt_registry;
 pub mod recovery_policy;
 pub mod scene;
 pub mod script;
-pub mod script_adapters;
 pub mod skill_catalog;
 pub mod skill_provider;
 pub mod token_counter;
