@@ -173,13 +173,8 @@ async fn denied_in_status(pool: &SessionPool) -> Vec<(String, String)> {
             .mcp_status()
             .await
             .iter()
-            .filter(|s| s["state"] == "denied")
-            .map(|s| {
-                (
-                    s["name"].as_str().unwrap().to_string(),
-                    s["error"].as_str().unwrap().to_string(),
-                )
-            })
+            .filter(|s| s.state == daemon::session_pool::api::McpServerState::Denied)
+            .map(|s| (s.name.clone(), s.error.clone().unwrap()))
             .collect();
         if !denied.is_empty() || tokio::time::Instant::now() > deadline {
             let mut denied = denied;
@@ -650,13 +645,8 @@ async fn two_servers_whose_tools_would_share_a_name_are_neither_started() {
             .mcp_status()
             .await
             .iter()
-            .filter(|s| s["state"] == "failed")
-            .map(|s| {
-                (
-                    s["name"].as_str().unwrap().to_string(),
-                    s["error"].as_str().unwrap().to_string(),
-                )
-            })
+            .filter(|s| s.state == daemon::session_pool::api::McpServerState::Failed)
+            .map(|s| (s.name.clone(), s.error.clone().unwrap()))
             .collect();
         let both = failed.contains_key("my.srv") && failed.contains_key(&hashed);
         if both || tokio::time::Instant::now() > deadline {

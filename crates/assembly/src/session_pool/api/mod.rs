@@ -5,6 +5,7 @@ mod commands;
 mod daemon;
 mod error;
 mod events;
+mod mcp;
 mod scene;
 mod settings;
 mod turn;
@@ -15,6 +16,10 @@ pub use error::{Busy, BusyReason, EngineFailure, PoolError};
 pub use events::{
     emitted_outside_turns, AskKind, PendingAsk, SessionEvent, SessionFrame, SessionWatcher,
     Subscribed, WatcherId,
+};
+pub use mcp::{
+    McpAuthDone, McpAuthStarted, McpAuthState, McpAuthStatus, McpIdentity, McpReconnected,
+    McpRedirect, McpServerRef, McpServerState, McpServerStatus, McpServerWritten,
 };
 pub use scene::{SceneCapabilities, SceneDescription, SceneReload, SceneSummary, SceneTools};
 pub use settings::{

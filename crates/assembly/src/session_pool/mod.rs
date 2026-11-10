@@ -926,7 +926,7 @@ fn project_trust_report(
 /// `mcp.status` entries for the project's own servers that are not started
 /// because the project is not trusted.
 #[cfg(feature = "mcp")]
-fn untrusted_mcp_entries(settings: &Settings) -> Vec<serde_json::Value> {
+fn untrusted_mcp_entries(settings: &Settings) -> Vec<api::McpServerStatus> {
     if !settings.project_layer.trust.is_untrusted() {
         return Vec::new();
     }
@@ -939,12 +939,17 @@ fn untrusted_mcp_entries(settings: &Settings) -> Vec<serde_json::Value> {
             let transport = serde_json::from_value::<mcp::config::McpServerConfig>(cfg.clone())
                 .map(|c| c.transport_kind().to_string())
                 .unwrap_or_else(|_| "unknown".into());
-            serde_json::json!({
-                "name": name, "transport": transport, "tool_count": 0,
-                "state": "untrusted",
-                "error": "the project is not trusted; its own MCP servers start once it is (project.trust)",
-                "auth": {"state": "none"},
-            })
+            api::McpServerStatus {
+                name: name.clone(),
+                transport,
+                tool_count: 0,
+                state: api::McpServerState::Untrusted,
+                error: Some(
+                    "the project is not trusted; its own MCP servers start once it is (project.trust)"
+                        .into(),
+                ),
+                auth: api::McpAuthStatus::default(),
+            }
         })
         .collect()
 }
@@ -961,47 +966,105 @@ impl From<mcp::oauth::AuthFlowError> for PoolError {
     }
 }
 
+#[cfg(feature = "mcp")]
+impl From<mcp::oauth::AuthStatus> for api::McpAuthStatus {
+    fn from(status: mcp::oauth::AuthStatus) -> Self {
+        use mcp::oauth::AuthState;
+        Self {
+            state: match status.state {
+                AuthState::None => api::McpAuthState::None,
+                AuthState::Required => api::McpAuthState::Required,
+                AuthState::Authorizing => api::McpAuthState::Authorizing,
+                AuthState::Authorized => api::McpAuthState::Authorized,
+                AuthState::Failed => api::McpAuthState::Failed,
+            },
+            issuer: status.issuer,
+            scopes: status.scopes,
+            expires_at: status.expires_at,
+            error: status.error,
+        }
+    }
+}
+
 /// `mcp.status`'s entries: the connected servers, those waiting for a
 /// sign-in, then the denied ones. Each carries its authorization state.
 #[cfg(feature = "mcp")]
-fn mcp_status_entries(manager: &McpManager) -> Vec<serde_json::Value> {
+fn mcp_status_entries(manager: &McpManager) -> Vec<api::McpServerStatus> {
+    use api::McpServerState as State;
     let auth = |name: &str| {
         manager
             .config_of(name)
             .and_then(|cfg| manager.auth()?.status(cfg))
-            .and_then(|status| serde_json::to_value(status).ok())
-            .unwrap_or_else(|| serde_json::json!({"state": "none"}))
+            .map(api::McpAuthStatus::from)
+            .unwrap_or_default()
+    };
+    let entry = |name: &str,
+                 transport: String,
+                 tool_count: usize,
+                 state: State,
+                 error: Option<String>,
+                 auth: api::McpAuthStatus| api::McpServerStatus {
+        name: name.to_string(),
+        transport,
+        tool_count,
+        state,
+        error,
+        auth,
     };
     let connected = manager.server_statuses().into_iter().map(|s| {
-        serde_json::json!({
-            "name": s.name, "transport": s.transport, "tool_count": s.tool_count,
-            "state": if s.connected { "connected" } else { "disconnected" },
-            "auth": auth(&s.name),
-        })
+        let state = if s.connected {
+            State::Connected
+        } else {
+            State::Disconnected
+        };
+        entry(
+            &s.name,
+            s.transport.to_string(),
+            s.tool_count,
+            state,
+            None,
+            auth(&s.name),
+        )
     });
     let connecting = manager.connecting().iter().map(|c| {
-        serde_json::json!({
-            "name": c.name, "transport": c.transport, "tool_count": 0,
-            "state": "connecting", "auth": auth(&c.name),
-        })
+        entry(
+            &c.name,
+            c.transport.to_string(),
+            0,
+            State::Connecting,
+            None,
+            auth(&c.name),
+        )
     });
     let failed = manager.failed().iter().map(|f| {
-        serde_json::json!({
-            "name": f.name, "transport": f.transport, "tool_count": 0,
-            "state": "failed", "error": f.error, "auth": auth(&f.name),
-        })
+        entry(
+            &f.name,
+            f.transport.to_string(),
+            0,
+            State::Failed,
+            Some(f.error.clone()),
+            auth(&f.name),
+        )
     });
     let pending = manager.pending().iter().map(|p| {
-        serde_json::json!({
-            "name": p.name, "transport": p.transport, "tool_count": 0,
-            "state": "auth_required", "auth": auth(&p.name),
-        })
+        entry(
+            &p.name,
+            p.transport.to_string(),
+            0,
+            State::AuthRequired,
+            None,
+            auth(&p.name),
+        )
     });
     let denied = manager.denied().iter().map(|d| {
-        serde_json::json!({
-            "name": d.name, "transport": d.transport, "tool_count": 0,
-            "state": "denied", "error": d.reason, "auth": {"state": "none"},
-        })
+        entry(
+            &d.name,
+            d.transport.to_string(),
+            0,
+            State::Denied,
+            Some(d.reason.clone()),
+            api::McpAuthStatus::default(),
+        )
     });
     connected
         .chain(connecting)

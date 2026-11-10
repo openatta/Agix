@@ -799,6 +799,385 @@
       ],
       "type": "string"
     },
+    "McpAuthCancelParams": {
+      "properties": {
+        "flow_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id"
+      ],
+      "type": "object"
+    },
+    "McpAuthCompleteParams": {
+      "properties": {
+        "callback_url": {
+          "type": "string"
+        },
+        "flow_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id",
+        "callback_url"
+      ],
+      "type": "object"
+    },
+    "McpAuthDone": {
+      "properties": {
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "scopes"
+      ],
+      "type": "object"
+    },
+    "McpAuthLogoutParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "type": "object"
+    },
+    "McpAuthStartParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redirect": {
+          "$ref": "#/$defs/McpRedirectKind"
+        },
+        "redirect_uri": {
+          "default": null,
+          "description": "Only for `\"redirect\": \"external\"`, and required there.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "type": "object"
+    },
+    "McpAuthStarted": {
+      "properties": {
+        "authorize_url": {
+          "type": "string"
+        },
+        "expires_in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "flow_id": {
+          "type": "string"
+        },
+        "redirect_uri": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow_id",
+        "authorize_url",
+        "redirect_uri",
+        "expires_in"
+      ],
+      "type": "object"
+    },
+    "McpAuthState": {
+      "enum": [
+        "none",
+        "required",
+        "authorizing",
+        "authorized",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "McpAuthStatus": {
+      "description": "A server's authorization. Never carries a token.",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "description": "RFC 3339.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "issuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "state": {
+          "$ref": "#/$defs/McpAuthState"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "McpPutServerParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "config": {
+          "description": "An `McpServerConfig`, tagged by `type`; the pool validates it."
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "config"
+      ],
+      "type": "object"
+    },
+    "McpReconnected": {
+      "properties": {
+        "reconnected": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "reconnected"
+      ],
+      "type": "object"
+    },
+    "McpRedirectKind": {
+      "enum": [
+        "loopback",
+        "external"
+      ],
+      "type": "string"
+    },
+    "McpServerRef": {
+      "description": "A sign-in flow that was cancelled, or a server that was signed out of.",
+      "properties": {
+        "server": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server"
+      ],
+      "type": "object"
+    },
+    "McpServerState": {
+      "oneOf": [
+        {
+          "enum": [
+            "connected",
+            "connecting",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "disconnected",
+          "description": "Connected once and the connection has since dropped; the next request\nreconnects.",
+          "type": "string"
+        },
+        {
+          "const": "auth_required",
+          "description": "The remote server wants an OAuth sign-in (`mcp.auth.start`).",
+          "type": "string"
+        },
+        {
+          "const": "denied",
+          "description": "The MCP policy refuses it.",
+          "type": "string"
+        },
+        {
+          "const": "untrusted",
+          "description": "A server the project declares, in a project that is not trusted.",
+          "type": "string"
+        }
+      ]
+    },
+    "McpServerStatus": {
+      "properties": {
+        "auth": {
+          "$ref": "#/$defs/McpAuthStatus"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/McpServerState"
+        },
+        "tool_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "transport": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "tool_count",
+        "state",
+        "auth"
+      ],
+      "type": "object"
+    },
+    "McpServerWritten": {
+      "description": "What `mcp.addServer` / `mcp.updateServer` wrote and what is connected now.",
+      "properties": {
+        "secrets_written_to": {
+          "description": "Set when `headers` or `env` went to the `settings.local.json` beside\n`written_to`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "servers": {
+          "items": {
+            "$ref": "#/$defs/McpServerStatus"
+          },
+          "type": "array"
+        },
+        "written_to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "written_to",
+        "servers"
+      ],
+      "type": "object"
+    },
+    "McpSetIdentityParams": {
+      "description": "Exactly one of the two.",
+      "properties": {
+        "id_token": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refresh_token": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "McpStatusList": {
+      "properties": {
+        "servers": {
+          "items": {
+            "$ref": "#/$defs/McpServerStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "servers"
+      ],
+      "type": "object"
+    },
     "ModelReport": {
       "properties": {
         "api_type": {
@@ -2071,73 +2450,77 @@
     "mcp.addServer": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpPutServerParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpServerWritten"
       }
     },
     "mcp.auth.cancel": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpAuthCancelParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpServerRef"
       }
     },
     "mcp.auth.complete": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpAuthCompleteParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpAuthDone"
       }
     },
     "mcp.auth.logout": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpAuthLogoutParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpServerRef"
       }
     },
     "mcp.auth.setIdentity": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpSetIdentityParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpReconnected"
       }
     },
     "mcp.auth.start": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpAuthStartParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpAuthStarted"
       }
     },
     "mcp.status": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpStatusList"
       }
     },
     "mcp.updateServer": {
       "module": "mcp",
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpPutServerParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/McpServerWritten"
       }
     },
     "plugin.disable": {

@@ -108,7 +108,7 @@ impl SessionPool {
     /// unconnected (or not-yet-connected) project just reports no servers
     /// rather than paying for a connect attempt on a status query.
     #[cfg(feature = "mcp")]
-    pub async fn mcp_status(&self) -> Vec<serde_json::Value> {
+    pub async fn mcp_status(&self) -> Vec<api::McpServerStatus> {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let manager = self
             .mcp_by_project
@@ -322,7 +322,7 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
         config: serde_json::Value,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::McpServerWritten, PoolError> {
         self.put_mcp_server(project_root, scene_id, name, config, false)
             .await
     }
@@ -338,7 +338,7 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
         config: serde_json::Value,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::McpServerWritten, PoolError> {
         self.put_mcp_server(project_root, scene_id, name, config, true)
             .await
     }
@@ -353,7 +353,7 @@ impl SessionPool {
         name: &str,
         config: serde_json::Value,
         must_exist: bool,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::McpServerWritten, PoolError> {
         let invalid = |message: String| PoolError::InvalidRequest(message);
         if name.trim().is_empty() {
             return Err(invalid("name must not be empty".into()));
@@ -390,7 +390,7 @@ impl SessionPool {
         cfg: &mcp::config::McpServerConfig,
         config: serde_json::Value,
         must_exist: bool,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<api::McpServerWritten, String> {
         use base::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
         let settings_path = self.settings_path_of(project_root);
         let local_path = settings_path.with_file_name(SETTINGS_LOCAL_FILE);
@@ -489,14 +489,11 @@ impl SessionPool {
             None => self.emit_event(failure),
         }
 
-        let mut result = serde_json::json!({
-            "written_to": settings_path.display().to_string(),
-            "servers": entries,
-        });
-        if let Some(path) = secrets_written_to {
-            result["secrets_written_to"] = serde_json::Value::String(path);
-        }
-        Ok(result)
+        Ok(api::McpServerWritten {
+            written_to: settings_path.display().to_string(),
+            secrets_written_to,
+            servers: entries,
+        })
     }
 
     /// Report this pool's MCP authorization transitions as `daemon.event`s,
@@ -654,8 +651,8 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub async fn mcp_auth_set_identity(
         &self,
-        identity: mcp::oauth::EnterpriseIdentity,
-    ) -> Result<serde_json::Value, PoolError> {
+        identity: api::McpIdentity,
+    ) -> Result<api::McpReconnected, PoolError> {
         if self.mcp_auth.enterprise_idp().is_none() {
             return Err(PoolError::InvalidRequest(
                 "no enterprise IdP is configured: the host's Assembly::mcp_enterprise_idp or \
@@ -663,7 +660,12 @@ impl SessionPool {
                     .into(),
             ));
         }
-        self.mcp_auth.set_identity(Some(identity));
+        self.mcp_auth.set_identity(Some(match identity {
+            api::McpIdentity::IdToken(token) => mcp::oauth::EnterpriseIdentity::IdToken(token),
+            api::McpIdentity::RefreshToken(token) => {
+                mcp::oauth::EnterpriseIdentity::RefreshToken(token)
+            }
+        }));
         let reconnected = self
             .reconnect_mcp_where(|manager| {
                 manager
@@ -679,7 +681,7 @@ impl SessionPool {
                     .collect()
             })
             .await;
-        Ok(serde_json::json!({"reconnected": reconnected}))
+        Ok(api::McpReconnected { reconnected })
     }
 
     /// The configuration of the MCP server `name` on a project, for a
@@ -713,9 +715,13 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         name: &str,
-        redirect: mcp::oauth::Redirect,
+        redirect: api::McpRedirect,
         scopes: Option<Vec<String>>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::McpAuthStarted, PoolError> {
+        let redirect = match redirect {
+            api::McpRedirect::Loopback => mcp::oauth::Redirect::Loopback,
+            api::McpRedirect::External(uri) => mcp::oauth::Redirect::External(uri),
+        };
         let cfg = self
             .mcp_server_to_authorize(project_root, scene_id, name)
             .await?;
@@ -743,12 +749,12 @@ impl SessionPool {
                 }
             });
         }
-        Ok(serde_json::json!({
-            "flow_id": start.flow_id,
-            "authorize_url": start.authorize_url,
-            "redirect_uri": start.redirect_uri,
-            "expires_in": start.expires_in,
-        }))
+        Ok(api::McpAuthStarted {
+            flow_id: start.flow_id,
+            authorize_url: start.authorize_url,
+            redirect_uri: start.redirect_uri,
+            expires_in: start.expires_in,
+        })
     }
 
     #[cfg(feature = "mcp")]
@@ -769,22 +775,25 @@ impl SessionPool {
         &self,
         flow_id: &str,
         callback_url: &str,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::McpAuthDone, PoolError> {
         let done = self
             .finish_mcp_auth(flow_id, callback_url)
             .await
             .map_err(PoolError::from)?;
-        Ok(serde_json::json!({"server": done.server, "scopes": done.scopes}))
+        Ok(api::McpAuthDone {
+            server: done.server,
+            scopes: done.scopes,
+        })
     }
 
     #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_cancel(&self, flow_id: &str) -> Result<serde_json::Value, PoolError> {
+    pub async fn mcp_auth_cancel(&self, flow_id: &str) -> Result<api::McpServerRef, PoolError> {
         let server = self
             .mcp_auth
             .cancel(flow_id)
             .await
             .map_err(PoolError::from)?;
-        Ok(serde_json::json!({"server": server}))
+        Ok(api::McpServerRef { server })
     }
 
     /// `mcp.auth.logout` — revoke and forget a server's tokens, and
@@ -795,7 +804,7 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         name: &str,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::McpServerRef, PoolError> {
         let cfg = self
             .mcp_server_to_authorize(project_root, scene_id, name)
             .await?;
@@ -808,6 +817,8 @@ impl SessionPool {
         {
             self.demote_mcp_servers(&url).await;
         }
-        Ok(serde_json::json!({"server": name}))
+        Ok(api::McpServerRef {
+            server: name.to_string(),
+        })
     }
 }
