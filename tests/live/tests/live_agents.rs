@@ -453,9 +453,9 @@ async fn an_agent_types_allowed_tools_and_max_turns_bound_its_sub_agent() -> any
     Ok(())
 }
 
-/// A `default` agent type under an `acceptEdits` parent is asked about a read
-/// outside the project — and its question waits the session's prompt timeout,
-/// not a fixed one.
+/// A `default` agent type under an `acceptEdits` parent is asked about a write
+/// inside the project that the parent's mode would let through — and its
+/// question waits the session's prompt timeout, not a fixed one.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() -> anyhow::Result<()>
 {
@@ -468,18 +468,15 @@ async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() ->
         .start()
         .await?;
     let model = run.config().model_at(0).to_string();
-    let outside = run.world.root().join("outside");
-    std::fs::create_dir_all(&outside)?;
-    let notes = outside.join("notes.txt");
-    std::fs::write(&notes, format!("NOTES-{}\n", nonce()))?;
+    let stamp = format!("STAMP-{}", nonce());
     run.write_file(
         ".agix/agents/careful.md",
         &typed(
-            &format!("description: Reads one file\nmodel: {model}\npermission_mode: default"),
+            &format!("description: Writes one file\nmodel: {model}\npermission_mode: default"),
             &format!(
-                "CAREFUL-ROLE. Read {} with the Read tool and answer with its contents. If \
-                 the read is refused, answer REFUSED and stop; do not try another way.",
-                notes.display()
+                "CAREFUL-ROLE. Use the Write tool to create notes.txt in the project with the \
+                 single line {stamp}, then answer DONE. If the write is refused, answer REFUSED \
+                 and stop; do not try another way."
             ),
         ),
     )?;
@@ -507,8 +504,8 @@ async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() ->
         started.elapsed()
     );
     assert!(
-        asked.iter().any(|t| t == "Read"),
-        "the `default` sub-agent was not asked about its read: {asked:?}"
+        asked.iter().any(|t| t == "Write"),
+        "the `default` sub-agent was not asked about its write: {asked:?}"
     );
     assert!(
         started.elapsed() < Duration::from_secs(200),
