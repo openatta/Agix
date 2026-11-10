@@ -123,3 +123,101 @@ async fn an_evicted_session_s_engine_writes_its_goal_changes_as_it_stops() {
     let cold = pool.session_goal(&sid).await.unwrap();
     assert_eq!(cold["goal"]["phase"], "blocked", "{cold}");
 }
+
+/// Answers every call with a line of text, counting the turn-loop calls.
+#[derive(Default)]
+struct CountsTurnCalls {
+    turn_calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl base::interface::model::Model for CountsTurnCalls {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+
+    async fn stream(
+        &self,
+        _: Vec<base::interface::prompt::PromptBlock>,
+        _: Vec<base::interface::model::ToolDef>,
+        _: Vec<base::interface::model::ModelMessage>,
+        params: base::interface::model::StreamParams,
+        _: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::ModelEvent;
+        if params
+            .origin
+            .as_ref()
+            .is_some_and(|o| o.purpose().is_none())
+        {
+            self.turn_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let events = vec![
+            Ok(ModelEvent::TextDelta {
+                text: "working on it".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+            }),
+        ];
+        Ok(Box::new(futures::stream::iter(events)))
+    }
+}
+
+/// `session.interrupt` lands on the turn `turn_started` reported. A goal
+/// round reports it, then writes the claimed round to the log before its
+/// message reaches the engine; an interrupt in between is answered
+/// `interrupted: true`, so the round must not then run to the model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_round() {
+    let (pool, store, _dir) = pool_with_gated_goal_writes().await;
+    let model = Arc::new(CountsTurnCalls::default());
+    let mut settings = (**pool.settings.read().await).clone();
+    settings.memory_enabled = false;
+    let mut binding = ProjectBinding::build(
+        Arc::new(settings),
+        &Default::default(),
+        vec![],
+        &pool.client,
+        None,
+        &pool.credentials,
+    );
+    binding.model = model.clone();
+    pool.bindings.lock().await.insert(
+        (Some(pool.cwd().to_path_buf()), "code".to_string()),
+        Arc::new(binding),
+    );
+    let (sid, state) = session_with_a_goal(&pool).await;
+    let round = state.goal_next_round().expect("a round");
+    pool.record_goal_changes(&sid, &state).await;
+
+    let gate = store.gate.clone().lock_owned().await;
+    let _earlier_write = futures::FutureExt::now_or_never(store.writing.notified());
+    let writing = store.writing.notified();
+    tokio::pin!(writing);
+    writing.as_mut().enable();
+    let pool = Arc::new(pool);
+    let running = {
+        let pool = pool.clone();
+        let sid = sid.clone();
+        tokio::spawn(async move { pool.run_goal_round(sid, round).await })
+    };
+    writing.await;
+    assert!(
+        pool.current_turn_of(&sid).await.is_some(),
+        "the round was not reported started"
+    );
+    let interrupted = pool.interrupt_session(&sid).await.expect("the session");
+    drop(gate);
+    running.await.unwrap();
+
+    assert!(interrupted, "the interrupt found no turn");
+    assert_eq!(
+        model.turn_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the interrupt was answered true, yet the goal round it was sent for ran to the model"
+    );
+}
