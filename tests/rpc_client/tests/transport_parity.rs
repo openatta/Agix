@@ -182,6 +182,7 @@ impl base::interface::permission::Permission for AskEverythingPermission {
             prompt_id: uuid::Uuid::new_v4().to_string(),
             message: "may I?".into(),
             paths: Vec::new(),
+            managed: false,
         }
     }
 }

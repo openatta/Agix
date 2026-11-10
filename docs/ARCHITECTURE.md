@@ -720,7 +720,10 @@ bypass 是用户对自己规则的放弃。部署方——企业 IT、无人值�
 - **压过下层。** managed 的 deny / ask 与其他层的规则一起按第 1 条裁决,下层任何 allow
   都推不翻;在 `bypassPermissions`(含 `auto` / `yolo`)下,gate 仍然只拿 managed 层的规则
   判一遍:命中 deny 拒绝,命中 ask(或程序名读不出来的 shell 段)询问,其余照 bypass 放行。
-  询问在无人值守会话里就是拒绝。
+  询问在无人值守会话里就是拒绝。managed 层的询问只有人能答:`PreToolUse` hook 的 `approve` 答得了
+  别的询问,答不了它(`PermissionOutcome::Prompt.managed`;同一次调用下层也有 ask 命中时,报出的
+  仍是 managed 那条)。hook 的 approve 在无人值守转换之前生效——它是预先给的回答,不需要有人在场;
+  managed 的询问不吃它,无人值守时照样拒绝。
 - **managed 的 allow 不比别层的 allow 多什么。** 它和用户层的 allow 一样参与裁决:推不翻
   下层的 deny,也不把 bypass 之外的模式变宽。理由是第 1 条:deny 是硬边界,用户给自己写的
   deny 也应当守住;部署方要放宽的只是"少问",那用普通 allow 就够,而要"禁止"就写 deny。

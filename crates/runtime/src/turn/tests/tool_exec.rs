@@ -757,6 +757,7 @@ impl base::interface::permission::Permission for PromptTestPermission {
             prompt_id: self.prompt_id.into(),
             message: "allow?".into(),
             paths: vec![],
+            managed: false,
         }
     }
 }
@@ -936,6 +937,7 @@ impl base::interface::permission::Permission for PromptThenRecordPersistentAllow
             prompt_id: self.prompt_id.into(),
             message: "allow?".into(),
             paths: vec![],
+            managed: false,
         }
     }
     fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {

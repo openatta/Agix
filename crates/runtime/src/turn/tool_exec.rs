@@ -289,8 +289,12 @@ pub(super) async fn execute_tool_inner(
         .check(name, &input, &ctx.cwd, &ctx.session_id)
         .await;
     record_permission_decision(ctx, &tool, name, &input, &checked, check_started);
+    // Before the unattended refusal below: a hook's approve is an answer given
+    // in advance, so nobody needs to be attending for it to count.
     let checked = match checked {
-        PermissionOutcome::Prompt { .. } if hook_approved => PermissionOutcome::Permit,
+        PermissionOutcome::Prompt { managed: false, .. } if hook_approved => {
+            PermissionOutcome::Permit
+        }
         other => other,
     };
     let user_approved = matches!(checked, PermissionOutcome::Prompt { .. });
@@ -320,6 +324,7 @@ pub(super) async fn execute_tool_inner(
             prompt_id,
             message,
             paths,
+            ..
         } => {
             let permission_wait_start = std::time::Instant::now();
             fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionRequested, |i| {

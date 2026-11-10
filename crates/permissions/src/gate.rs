@@ -24,7 +24,8 @@
 //!      `Tool::leaves_plan_mode`：它照常走规则与询问）
 //!    - `DontAsk` 且没有 allow 规则命中 → deny
 //!
-//!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny）
+//!    之后第 3 步的 `Ask` 命中 → ask（`DontAsk` 下 deny）；managed 层也在问的，
+//!    报的是 managed 层那条规则（`PermissionGate::asked_by_managed`）：hook 的 approve 答不了它
 //! 6. 兑现第 2 步记下的工具自判 `Allow` → allow
 //! 7. 规则引擎的 `Allow` → allow
 //! 8. 其余 PermissionMode 分派：
@@ -200,33 +201,49 @@ impl PermissionGate {
         input: &Value,
         ctx: &ToolContext,
     ) -> PermissionDecision {
-        let hit = if self.managed.rules.is_empty() {
-            RuleHit::None
-        } else {
-            Self::rule_hit_in(&self.managed.rules, tool, input, ctx).0
-        };
-        match hit {
-            RuleHit::Deny(rule) => PermissionDecision::Deny {
+        let hit = self.managed_hit(tool, input, ctx);
+        if let RuleHit::Deny(rule) = hit {
+            return PermissionDecision::Deny {
                 message: format!("denied by managed rule: {}", format_rule_string(&rule)),
                 decision_reason: DecisionReason::Rule(rule),
-            },
-            RuleHit::Ask(rule) => PermissionDecision::Ask {
-                message: format!(
-                    "{} matches managed rule {}, which requires confirmation",
-                    tool.name(),
-                    format_rule_string(&rule)
-                ),
+            };
+        }
+        match managed_ask_of(tool, hit) {
+            Some((rule, message)) => PermissionDecision::Ask {
+                message,
                 decision_reason: Some(DecisionReason::Rule(rule)),
             },
-            RuleHit::Unclear(rule) => PermissionDecision::Ask {
-                message: unclear_message(tool.name(), &rule),
-                decision_reason: Some(DecisionReason::Rule(rule)),
-            },
-            RuleHit::Allow(_) | RuleHit::None => PermissionDecision::Allow {
+            None => PermissionDecision::Allow {
                 updated_input: None,
                 decision_reason: Some(DecisionReason::Mode(PermissionMode::BypassPermissions)),
             },
         }
+    }
+
+    fn managed_hit(&self, tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> RuleHit {
+        if self.managed.rules.is_empty() {
+            return RuleHit::None;
+        }
+        Self::rule_hit_in(&self.managed.rules, tool, input, ctx).0
+    }
+
+    /// Whether an `Ask` with this reason is the managed layer asking — one of
+    /// the rules `with_managed` gave, not merely one labelled `policySettings`.
+    pub fn asked_by_managed(&self, decision_reason: Option<&DecisionReason>) -> bool {
+        matches!(
+            decision_reason,
+            Some(DecisionReason::Rule(rule)) if self.managed.rules.rules().contains(rule)
+        )
+    }
+
+    /// The managed rule that asks about this call, and the question it asks.
+    fn managed_ask(
+        &self,
+        tool: &dyn Tool,
+        input: &Value,
+        ctx: &ToolContext,
+    ) -> Option<(PermissionRule, String)> {
+        managed_ask_of(tool, self.managed_hit(tool, input, ctx))
     }
 
     /// The rule in `rules` this call matches, and every string the rules were
@@ -363,6 +380,10 @@ impl PermissionGate {
             }
             RuleHit::None => (None, None),
         };
+        // Reported as the managed layer's whenever it is among the askers, even
+        // when a more specific rule of another layer asks too: a managed ask is
+        // one a hook's approve may not answer.
+        let rule_ask = rule_ask.map(|ask| self.managed_ask(tool, input, ctx).unwrap_or(ask));
 
         // 4. Sensitive paths — even when the tool allowed itself in step 2.
         if let Some(content) = checked_strings.iter().find(|s| is_path_bypass_immune(s)) {
@@ -679,6 +700,63 @@ mod tests {
         ctx.session = Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
         ctx.tool_use_id = "test".into();
         ctx
+    }
+
+    /// A user's more specific ask matching too must not hide that the
+    /// managed layer asks: that is what keeps a hook from answering it.
+    #[tokio::test]
+    async fn an_ask_the_managed_layer_makes_is_reported_as_its_own() {
+        let ask = |source, content: &str| PermissionRule {
+            source,
+            behavior: RuleBehavior::Ask,
+            tool_name: "X".into(),
+            rule_content: Some(content.into()),
+        };
+        let managed = ask(RuleSource::PolicySettings, "touch:*");
+        let user = ask(RuleSource::UserSettings, "touch /tmp/a");
+        let tool = FakeTool::new("X").matches("touch /tmp/a");
+        let decide = |rules: Vec<PermissionRule>, policy: Vec<PermissionRule>| {
+            let gate = PermissionGate::new(RuleSet::new(rules)).with_managed(ManagedPolicy {
+                rules: RuleSet::new(policy),
+                ..Default::default()
+            });
+            let tool = &tool;
+            async move {
+                match gate
+                    .check(tool, &json!({}), &ctx_with_mode(PermissionMode::Default))
+                    .await
+                    .unwrap()
+                {
+                    PermissionDecision::Ask {
+                        decision_reason, ..
+                    } => gate.asked_by_managed(decision_reason.as_ref()),
+                    other => panic!("expected an ask, got {other:?}"),
+                }
+            }
+        };
+
+        assert!(decide(vec![managed.clone(), user.clone()], vec![managed.clone()]).await);
+        assert!(!decide(vec![user], vec![]).await);
+
+        let bypass = PermissionGate::new(RuleSet::new(vec![managed.clone()])).with_managed(
+            ManagedPolicy {
+                rules: RuleSet::new(vec![managed]),
+                ..Default::default()
+            },
+        );
+        let d = bypass
+            .check(
+                &tool,
+                &json!({}),
+                &ctx_with_mode(PermissionMode::BypassPermissions),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(&d, PermissionDecision::Ask { decision_reason, .. }
+                if bypass.asked_by_managed(decision_reason.as_ref())),
+            "{d:?}"
+        );
     }
 
     #[tokio::test]
@@ -1502,4 +1580,22 @@ fn unclear_message(tool_name: &str, rule: &PermissionRule) -> String {
          cannot be checked against {}",
         format_rule_string(rule)
     )
+}
+
+fn managed_ask_of(tool: &dyn Tool, hit: RuleHit) -> Option<(PermissionRule, String)> {
+    match hit {
+        RuleHit::Ask(rule) => {
+            let message = format!(
+                "{} matches managed rule {}, which requires confirmation",
+                tool.name(),
+                format_rule_string(&rule)
+            );
+            Some((rule, message))
+        }
+        RuleHit::Unclear(rule) => {
+            let message = unclear_message(tool.name(), &rule);
+            Some((rule, message))
+        }
+        RuleHit::Allow(_) | RuleHit::Deny(_) | RuleHit::None => None,
+    }
 }

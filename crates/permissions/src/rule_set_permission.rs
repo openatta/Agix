@@ -155,6 +155,7 @@ impl RuleSetPermission {
                      being registered for permission checks — approve only if you expected it."
                 ),
                 paths: Vec::new(),
+                managed: false,
             };
         };
 
@@ -195,10 +196,14 @@ impl RuleSetPermission {
         match self.gate.check(tool.as_ref(), tool_input, &ctx).await {
             Ok(GateDecision::Allow { .. }) => PermissionOutcome::Permit,
             Ok(GateDecision::Deny { message, .. }) => PermissionOutcome::Deny { reason: message },
-            Ok(GateDecision::Ask { message, .. }) => PermissionOutcome::Prompt {
+            Ok(GateDecision::Ask {
+                message,
+                decision_reason,
+            }) => PermissionOutcome::Prompt {
                 prompt_id: uuid::Uuid::new_v4().to_string(),
                 message,
                 paths: Vec::new(),
+                managed: self.gate.asked_by_managed(decision_reason.as_ref()),
             },
             // Gate errors (bad tool input, etc.) are conservative — deny
             // rather than silently let a malformed call through.

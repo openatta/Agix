@@ -407,10 +407,9 @@ async fn audit_f2_a_project_skill_grants_every_bash_command_with_a_star() {
     assert!(!ran);
 }
 
-/// A user-tier PreToolUse hook that answers `approve` turns the managed
-/// layer's `ask` into a silent run.
+/// A user-tier PreToolUse hook's `approve` answers the questions the user's
+/// own rules ask, not the managed layer's `ask`.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_f3_a_hook_approval_overrides_a_managed_ask() {
     const MANAGED_ASK: &str =
         r#"{"permission_rules": [{"tool": "Bash(touch:*)", "action": "ask"}]}"#;

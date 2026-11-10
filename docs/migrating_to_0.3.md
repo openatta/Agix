@@ -1394,6 +1394,9 @@ WebAssembly 载体整个移除。
   以及短选项紧跟值的写法(`node -r./x.js`、`perl -Isub/lib`)都算;`$PWD` 按 `.` 算、`$HOME` 按绝对路径算。
   **代价**:只读项目文件当数据用的 hook(`ls src`、`prettier --check .`、`grep x README.md`)在未信任的项目
   里同样不跑。改成绝对路径,或信任这个项目。详见 `hooks.md`。
+- **`PreToolUse` hook 的 `approve` 答不了部署方 managed 层的 `ask`。** 以前用户层的一条 hook 回
+  `{"decision":"approve"}`,managed 设置要求确认的调用就直接执行了;现在这一问照样发给宿主,
+  无人值守的会话里照样拒绝。用户自己各层规则的询问,hook 照旧能答(无人值守也一样)。
 
 #### MCP
 
@@ -1598,6 +1601,10 @@ WebAssembly 载体整个移除。
   `RuleSetPermission::from_settings` 自动接上设置里的 managed 层。自己拼 gate 的嵌入方要接上
   它,否则 managed 规则只按普通规则生效、在 bypass 下不生效。
 - 有 managed 层时,`Assembly.permission` 不再替换 `bypassPermissions` 会话的 gate。
+- `PermissionOutcome::Prompt` 多了 `managed: bool`:为真时是 managed 层在问,`PreToolUse` hook 的
+  `approve` 不答它。自己实现 `Permission` 的构造 `Prompt` 时补 `managed: false`(或按
+  `PermissionGate::asked_by_managed(decision_reason)` 填);不带 `..` 解构 `Prompt` 的要加 `..`。
+  gate 在 managed 层也问的调用上,`Ask` 的 `decision_reason` 报的是 managed 那条规则。
 - 路径规整与根目录包含判断收进 `permissions::path_rule` 一份:`permissions::path_safety` 与
   `tools::security` 里各自的 `normalize_path_lexically` 删除,改用 `path_rule::normalize_path_lexically`;
   两个同名 `is_path_within_root` 按语义改名——按组件比字面的是 `path_rule::is_within_root_lexical`,

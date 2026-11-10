@@ -17,6 +17,10 @@ pub enum PermissionOutcome {
         prompt_id: String,
         message: String,
         paths: Vec<PathBuf>,
+        /// The deployment's managed layer asks this. A `PreToolUse` hook's
+        /// `approve` answers any other question, but not this one: only the
+        /// person at the session does.
+        managed: bool,
     },
 }
 

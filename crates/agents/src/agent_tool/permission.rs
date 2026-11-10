@@ -346,6 +346,7 @@ impl ParentPermission {
             prompt_id,
             message,
             paths,
+            ..
         } = outcome
         else {
             return outcome;

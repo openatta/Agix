@@ -426,6 +426,7 @@ impl base::interface::permission::Permission for AsksForAllButRunCode {
             prompt_id: "p1".into(),
             message: format!("allow {tool_name}?"),
             paths: vec![],
+            managed: false,
         }
     }
 }
@@ -949,6 +950,7 @@ impl base::interface::permission::Permission for PromptingPermission {
             prompt_id: "p1".into(),
             message: format!("allow {tool_name}?"),
             paths: vec![],
+            managed: false,
         }
     }
 }

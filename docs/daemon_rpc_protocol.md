@@ -2874,7 +2874,8 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 (§4.5)。
 
 部署方的 managed 设置(`ARCHITECTURE.md` §6.1)在这两者之上:它的 `deny` / `ask` 在
-`bypassPermissions` 下照样拒绝 / 询问;它写了 `disable_bypass_permissions_mode: true` 时,
+`bypassPermissions` 下照样拒绝 / 询问,`PreToolUse` hook 的 `approve` 也答不了它的 `ask`——这一问
+一定以 `prompt_type:"permission"` 的 `prompt` 帧发给宿主(无人值守时拒绝);它写了 `disable_bypass_permissions_mode: true` 时,
 上面两种声明都只得到 `default`。
 
 ---

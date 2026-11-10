@@ -220,7 +220,7 @@ hook 不能被换个写法绕过去,宁可多跑一次。其他工具的内容�
 
 | 字段 | 作用 |
 |---|---|
-| `decision` | `"block"`:在能拦的事件上拦下(各事件含义见下表);`"approve"`:`PreToolUse` 上替人答应——权限检查要询问的这次调用不再问人、直接放行(无人值守会话同样),权限规则拒绝的照样拒绝;别的事件上不起作用。`command` 与 `http` 的 `approve` 都算;`prompt` 与 `agent` 的只在写了 `may_approve: true` 时算 |
+| `decision` | `"block"`:在能拦的事件上拦下(各事件含义见下表);`"approve"`:`PreToolUse` 上替人答应——权限检查要询问的这次调用不再问人、直接放行(无人值守会话同样),权限规则拒绝的照样拒绝,部署方 managed 层(`ARCHITECTURE.md` §6.1"用户规则与部署方规则")的 `ask` 照样问人、无人值守时照样拒绝;别的事件上不起作用。`command` 与 `http` 的 `approve` 都算;`prompt` 与 `agent` 的只在写了 `may_approve: true` 时算 |
 | `message` | 拦下的理由——交给模型或写进结果的那句话 |
 | `continue` | `false`:在能结束一轮的事件上结束它 |
 | `updated_input` | `PreToolUse`:新的入参(整个替换);`UserPromptSubmit`:新的消息文本(JSON 字符串) |
@@ -265,7 +265,7 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
 <!-- BEGIN GENERATED TABLE — see hooks::catalog::render_markdown -->
 | 事件 | 何时触发 | payload(三个公共字段之外) | 回答能做什么 |
 |---|---|---|---|
-| `PreToolUse` | 每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算 | `tool_name`、`tool_input`、`tool_use_id` | `decision: "block"`(或 exit 2):这次调用不执行,模型收到 `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限;`decision: "approve"`:权限检查要询问时不再问人,直接放行(规则拒绝的照样拒绝;`prompt` / `agent` hook 要写 `may_approve: true`) |
+| `PreToolUse` | 每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算 | `tool_name`、`tool_input`、`tool_use_id` | `decision: "block"`(或 exit 2):这次调用不执行,模型收到 `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限;`decision: "approve"`:权限检查要询问时不再问人,直接放行(规则拒绝的照样拒绝,managed 层的 `ask` 照样问人;`prompt` / `agent` hook 要写 `may_approve: true`) |
 | `PostToolUse` | 工具真正跑完之后(成功或失败);被 PreToolUse、权限拦下的调用不发 | `tool_name`、`tool_input`、`tool_use_id`、`tool_result`(结果文本)、`is_error` | `decision: "block"`:结果换成 `Denied by PostToolUse hook: <message>`,同一批并发的其他调用被取消;`continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`) |
 | `PostToolUseFailure` | 工具调用以错误结束(工具返回错误或 panic)时,在 PostToolUse 之前;工具自己报告失败的结果(如 Bash 非零退出)不算 | `tool_name`、`tool_input`、`reason`(错误文本)、`turn_id` | 只通知,回答被丢弃 |
 | `TurnStart` | 一轮开始,UserPromptSubmit 放行之后、第一次调模型之前 | `turn_id` | 只通知,回答被丢弃 |

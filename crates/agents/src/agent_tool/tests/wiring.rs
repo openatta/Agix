@@ -556,6 +556,7 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
                 prompt_id: "p1".into(),
                 message: "run rm -rf?".into(),
                 paths: vec![],
+                managed: false,
             }
         }
     }
@@ -736,6 +737,7 @@ impl Permission for PromptsForEverything {
             prompt_id: base::id::Id::new().to_string(),
             message: "run the probe?".into(),
             paths: vec![],
+            managed: false,
         }
     }
 }
