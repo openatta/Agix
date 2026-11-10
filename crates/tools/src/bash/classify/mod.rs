@@ -352,6 +352,9 @@ fn args_forfeit_read_only(name: &str, args: &[&str]) -> bool {
 struct OptionPolicy {
     /// Long options (without `--`) that run another program or write.
     bad_long: &'static [&'static str],
+    /// Long options the command spells with a single dash (`lshw -dump`),
+    /// which would otherwise read as a cluster of short letters.
+    bad_single_dash: &'static [&'static str],
     /// Short letters that run another program or write.
     bad_short: &'static str,
     /// Short letters that take the next word as their value (so it is not
@@ -366,6 +369,7 @@ fn option_policy(name: &str) -> Option<OptionPolicy> {
     let p = |bad_long, bad_short, value_short, writes_with_two_operands| {
         Some(OptionPolicy {
             bad_long,
+            bad_single_dash: &[],
             bad_short,
             value_short,
             writes_with_two_operands,
@@ -383,8 +387,16 @@ fn option_policy(name: &str) -> Option<OptionPolicy> {
         "bat" => p(&["pager"], "", "", false),
         "sort" => p(&["output", "compress-program"], "o", "o", false),
         "shuf" => p(&["output"], "o", "o", false),
-        "tree" => p(&["output"], "o", "o", false),
-        "yq" => p(&["inplace"], "i", "", false),
+        "tree" => p(&["output"], "oR", "o", false),
+        "yq" => p(&["inplace", "in-place", "split-exp"], "is", "", false),
+        "ss" => p(&["diag"], "D", "", false),
+        "lshw" => Some(OptionPolicy {
+            bad_long: &["dump"],
+            bad_single_dash: &["dump"],
+            bad_short: "",
+            value_short: "",
+            writes_with_two_operands: false,
+        }),
         "uniq" => p(&[], "", "fsw", true),
         "xxd" => p(&[], "", "cglosR", true),
         "kubectl" => p(&["kubeconfig", "server"], "s", "olnfLc", false),
@@ -405,6 +417,10 @@ fn option_runs_or_writes(name: &str, args: &[&str]) -> bool {
                 return true;
             }
         } else if let Some(cluster) = a.strip_prefix('-').filter(|c| !c.is_empty()) {
+            let word = cluster.split('=').next().unwrap_or(cluster);
+            if p.bad_single_dash.contains(&word) {
+                return true;
+            }
             for (k, c) in cluster.char_indices() {
                 if p.bad_short.contains(c) {
                     return true;
