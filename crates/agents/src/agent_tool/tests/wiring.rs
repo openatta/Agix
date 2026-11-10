@@ -698,7 +698,7 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
     ));
     let agent_tool = test_agent_tool();
     agent_tool.set_parent_permission(parent);
-    let member = agent_tool.team_member_permission(
+    let member = agent_tool.inner.team_member_permission(
         &registry,
         base::interface::settings::PermissionMode::BypassPermissions,
     );

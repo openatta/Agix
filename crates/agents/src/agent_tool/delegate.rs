@@ -80,7 +80,6 @@ impl AgentTool {
         tools: Arc<InMemoryToolRegistry>,
         cwd: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
-        perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
         model: Option<String>,
         permission_mode: Option<base::interface::settings::PermissionMode>,
@@ -90,24 +89,32 @@ impl AgentTool {
             .inner
             .admit_team_member()
             .map_err(base::error::ToolError::Denied)?;
-        self.run_sub_admitted(
-            admission,
-            prompt,
-            tools,
-            cwd,
-            cancel,
-            perm,
-            subagent_type,
-            None,
-            SubRun {
-                model,
-                permission_mode,
-                team_member: true,
-                seat,
-                ..SubRun::default()
-            },
-        )
-        .await
+        let grant = match permission_mode {
+            Some(_) => Grant::TeamMember,
+            None => Grant::Given(self.sub_permission()),
+        };
+        self.inner
+            .run_delegate(
+                admission,
+                OneShot {
+                    prompt,
+                    tools,
+                    cwd,
+                    cancel,
+                    subagent_type,
+                    grant,
+                    parent: None,
+                    run: SubRun {
+                        model,
+                        permission_mode,
+                        team_member: true,
+                        seat,
+                        ..SubRun::default()
+                    },
+                    runs_on: RunsOn::Foreground,
+                },
+            )
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -132,7 +139,7 @@ impl AgentTool {
                     cwd,
                     cancel,
                     subagent_type,
-                    permission: perm,
+                    grant: Grant::Given(perm),
                     parent,
                     run,
                     runs_on: RunsOn::Foreground,
@@ -393,7 +400,7 @@ impl AgentTool {
                     cwd,
                     cancel,
                     subagent_type,
-                    permission,
+                    grant: Grant::Given(permission),
                     parent,
                     run,
                     runs_on: RunsOn::Background,

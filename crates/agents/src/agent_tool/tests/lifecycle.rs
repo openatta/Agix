@@ -582,7 +582,6 @@ async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() 
         Arc::new(InMemoryToolRegistry::new()),
         std::path::PathBuf::from("/tmp"),
         tokio_util::sync::CancellationToken::new(),
-        Arc::new(AlwaysPermit),
         None,
         None,
         None,

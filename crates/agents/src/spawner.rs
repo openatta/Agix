@@ -76,17 +76,12 @@ impl AgentSpawner for RuntimeAgentSpawner {
                 for t in extra_tools {
                     tools.register(t);
                 }
-                let perm = match permission_mode {
-                    Some(mode) => self.agent_tool.team_member_permission(&tools, mode),
-                    None => self.agent_tool.sub_permission(),
-                };
                 self.agent_tool
                     .run_team_member(
                         prompt,
                         tools,
                         cwd,
                         cancel,
-                        perm,
                         agent_type.as_deref(),
                         model,
                         permission_mode,

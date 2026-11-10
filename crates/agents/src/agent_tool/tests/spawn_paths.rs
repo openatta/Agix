@@ -138,3 +138,93 @@ async fn a_background_sub_agents_progress_names_the_call_that_started_it() {
     }
     assert!(progress > 0, "the sub-agent's events reach the parent");
 }
+
+/// `Probe`, leaving the decision to the session's mode.
+struct AskingProbe {
+    runs: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl base::tool::Tool for AskingProbe {
+    fn name(&self) -> &str {
+        "Probe"
+    }
+    fn input_schema(&self) -> Value {
+        serde_json::json!({})
+    }
+    async fn check_permissions(
+        &self,
+        _input: &Value,
+        _ctx: &ToolContext,
+    ) -> base::tool::PermissionDecision {
+        base::tool::PermissionDecision::ask("run the probe?")
+    }
+    async fn call(
+        &self,
+        _input: Value,
+        _ctx: ToolContext,
+        _progress: ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(base::tool::ToolResult {
+            content: ToolResultContent::Text("probed".into()),
+            is_error: false,
+            structured_content: None,
+            mcp_meta: None,
+            new_messages: None,
+        })
+    }
+}
+
+/// With no parent permission wired, a `TeamCreate` member that asks for
+/// more than its parent has is judged in the parent's mode, as a persistent
+/// member is.
+#[tokio::test]
+async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
+    use base::interface::agent_spawner::{AgentSpawner as _, SpawnMode, SpawnRequest};
+    use base::interface::settings::PermissionMode;
+    for (parent_mode, probe_runs) in [
+        (PermissionMode::Default, 0),
+        (PermissionMode::BypassPermissions, 1),
+    ] {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tools = Arc::new(InMemoryToolRegistry::new());
+        let (mut settings, dir) = parent_settings_for_test("code");
+        settings.permission_mode = parent_mode;
+        let agent_tool = AgentTool::with_parent_tools(
+            Arc::new(ProbeThenTextModel {
+                calls: Default::default(),
+            }),
+            Arc::new(EngineConfig::defaults_for("test-model")),
+            tools.clone(),
+            tools,
+            &[],
+            &[],
+        )
+        .with_settings(Arc::new(settings));
+        // Not interactive: what would be asked is refused instead.
+        agent_tool.set_scene(Arc::new(super::lifecycle::SceneWithProbe));
+
+        crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
+            .spawn(SpawnRequest {
+                mode: SpawnMode::TeamMember {
+                    extra_tools: vec![Arc::new(AskingProbe { runs: runs.clone() })],
+                    permission_mode: Some(PermissionMode::BypassPermissions),
+                    seat: None,
+                },
+                ..SpawnRequest::new(
+                    "probe",
+                    dir.clone(),
+                    tokio_util::sync::CancellationToken::new(),
+                )
+            })
+            .await
+            .expect("the member runs");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            runs.load(std::sync::atomic::Ordering::SeqCst),
+            probe_runs,
+            "parent in {parent_mode:?}"
+        );
+    }
+}

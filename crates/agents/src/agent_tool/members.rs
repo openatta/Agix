@@ -15,7 +15,7 @@ impl AgentTool {
     /// under for its entire lifetime (resolution — explicit override vs.
     /// the team's established grant vs. the safe default — happens in
     /// `spawn_or_message_team_member`, once, not here), held to the parent's
-    /// mode; see [`Self::team_member_permission`] for its rules.
+    /// mode; see `Inner::team_member_permission` for its rules.
     pub(super) async fn build_team_member_agent(
         &self,
         tools: Arc<InMemoryToolRegistry>,

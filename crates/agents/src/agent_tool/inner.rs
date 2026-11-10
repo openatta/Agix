@@ -561,6 +561,11 @@ impl Inner {
         Arc::new(AlwaysPermit)
     }
 
+    /// A team member's permission: the parent's, judged in the member's own
+    /// mode, as any sub-agent's is — the parent's deny rules and its host's
+    /// answers reach the member. With no parent wired (an `AgentTool` built
+    /// on its own) there are no rules to inherit, and the member is judged by
+    /// its mode alone.
     pub(super) fn team_member_permission(
         &self,
         tools: &Arc<InMemoryToolRegistry>,
