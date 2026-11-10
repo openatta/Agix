@@ -42,6 +42,11 @@ const ALLOWED: &[(&str, &str)] = &[
          then passes it down. Everything else receives what this decides.",
     ),
     (
+        "crates/permissions/src/dangerous.rs",
+        "judges whether a grant reaches the user's home or above — a fact \
+         about the machine the rule will run on, not a place to store things.",
+    ),
+    (
         "crates/core/src/frozen/mod.rs",
         "collects the environment snapshot — home alongside os, shell and \
          git state. A fact about the machine, put into the system prompt, \

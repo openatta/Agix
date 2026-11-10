@@ -718,7 +718,11 @@ async fn a_session_whose_engine_has_not_stopped_is_not_resumed_on_another() -> a
         error,
         Some((
             -32015,
-            Some(json!({ "session_id": session, "current_turn_id": null }))
+            Some(json!({
+                "session_id": session,
+                "reason": "previous_engine",
+                "current_turn_id": null
+            }))
         )),
         "{refused:?}"
     );
