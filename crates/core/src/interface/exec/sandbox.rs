@@ -11,7 +11,7 @@
 //! `sandbox.require_enforcement` — decides whether to refuse. A `warn!` nobody
 //! reads is not a decision.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::process::ProcessSpec;
 
@@ -98,25 +98,48 @@ pub enum NetworkMode {
 ///   避免 `cat ~/.ssh/id_rsa` 被当成"只读命令"静默放行。
 ///   两处共用一份定义，是为了不让"沙盒挡得住"和"分类器放得过"两套标准打架。
 pub fn default_deny_read() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut out = Vec::new();
-    let push = |out: &mut Vec<PathBuf>, p: &str| {
-        if let Some(home) = &home {
-            out.push(home.join(p));
-        }
-    };
-    push(&mut out, ".ssh");
-    push(&mut out, ".aws");
-    push(&mut out, ".gnupg");
-    push(&mut out, ".docker/config.json");
-    push(&mut out, ".kube");
-    push(&mut out, ".azure");
-    push(&mut out, ".config/gh");
-    push(&mut out, ".netrc");
-    push(&mut out, ".npmrc");
-    push(&mut out, ".pypirc");
-    push(&mut out, ".gem/credentials");
-    out
+    std::env::var_os("HOME")
+        .map(|home| default_deny_read_in(Path::new(&home)))
+        .unwrap_or_default()
+}
+
+/// [`default_deny_read`] for the home directory `home`.
+pub fn default_deny_read_in(home: &Path) -> Vec<PathBuf> {
+    [
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".docker/config.json",
+        ".kube",
+        ".azure",
+        ".config/gh",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".gem/credentials",
+        ".git-credentials",
+        ".config/git/credentials",
+        ".config/gcloud",
+        ".cargo/credentials",
+        ".cargo/credentials.toml",
+        ".vault-token",
+        ".terraform.d/credentials.tfrc.json",
+        ".config/glab-cli",
+        ".config/hub",
+        ".config/doctl",
+        ".oci",
+        ".boto",
+        ".s3cfg",
+        ".databrickscfg",
+        ".config/rclone",
+        ".huggingface/token",
+        ".cache/huggingface/token",
+        ".claude/.credentials.json",
+        ".codex/auth.json",
+    ]
+    .iter()
+    .map(|p| home.join(p))
+    .collect()
 }
 
 /// Which backend ran. Advisory — for logs and tests.

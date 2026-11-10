@@ -1,11 +1,14 @@
-//! A command a session runs cannot act as the daemon's host.
+//! A command a session runs cannot act as the daemon's host, nor read the
+//! keys the daemon keeps.
 //!
 //! The daemon's unix socket answers whoever reaches it, and `project.trust`,
 //! `mcp.addServer` or `session.respondToPrompt` from a model's own command
 //! would undo every other boundary. So a `Bash` call that talks JSON-RPC to
 //! the daemon gets nothing out of it: inside the OS sandbox it cannot connect,
 //! and outside it the daemon refuses a connection from its own descendant.
-//! The host's connection works throughout.
+//! The host's connection works throughout. Inside the sandbox the state
+//! root's settings, where provider keys are written, and its MCP OAuth tokens
+//! are not readable either.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,6 +24,9 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 const UNAUTHORIZED: i64 = -32003;
+
+const SECRET: &str = "sk-agix-test-secret";
+const READABLE: &str = "agix-test-notes";
 
 /// Connects to the socket in `argv[1]` and asks it to trust `argv[2]`.
 const CLIENT: &str = r#"
@@ -99,10 +105,43 @@ fn has_python() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// Whether this machine has an OS sandbox that runs. The sandboxed cases
+/// say so and skip where it has none, unless `AGIX_REQUIRE_SANDBOX` is set —
+/// CI sets it on the runner that installs bubblewrap.
+fn sandbox_runs() -> bool {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        (
+            "sandbox-exec",
+            &["-p", "(version 1)(allow default)", "true"],
+        )
+    } else if cfg!(target_os = "linux") {
+        ("bwrap", &["--ro-bind", "/", "/", "true"])
+    } else {
+        ("", &[])
+    };
+    let runs = !program.is_empty()
+        && std::process::Command::new(program)
+            .args(args)
+            .status()
+            .is_ok_and(|s| s.success());
+    if !runs {
+        assert!(
+            std::env::var_os("AGIX_REQUIRE_SANDBOX").is_none(),
+            "AGIX_REQUIRE_SANDBOX is set and no sandbox backend runs here"
+        );
+        eprintln!(
+            "skipped: no sandbox backend runs here (Linux: install bubblewrap and allow \
+             unprivileged user namespaces)"
+        );
+    }
+    runs
+}
+
 /// The socket is outside the state root, where `--socket` may put it: only
 /// the daemon having named it keeps a command off it.
 struct Daemon {
     sock: PathBuf,
+    home: PathBuf,
     work: PathBuf,
     model: Arc<MockAnthropicClient>,
     _dir: tempfile::TempDir,
@@ -119,6 +158,18 @@ impl Daemon {
             "sandbox": {"dangerously_disable_sandbox": !sandboxed},
         });
         std::fs::write(home.join("settings.json"), global.to_string()).unwrap();
+        // Where `config.setProvider` puts a key; any value stands in for one,
+        // and a provider here would take the turn away from the mock model.
+        let keys = json!({
+            "permission_rules": [{"tool": format!("Bash(echo {SECRET})"), "action": "deny"}],
+        });
+        std::fs::write(home.join("settings.local.json"), keys.to_string()).unwrap();
+        let oauth = home.join("scenes").join("code").join("mcp").join("oauth");
+        std::fs::create_dir_all(&oauth).unwrap();
+        let token = json!({ "access_token": SECRET });
+        std::fs::write(oauth.join("server.json"), token.to_string()).unwrap();
+        std::fs::create_dir_all(home.join("scratchpad")).unwrap();
+        std::fs::write(home.join("scratchpad").join("notes.md"), READABLE).unwrap();
 
         let sock = dir.path().join("agix.sock");
         let paths =
@@ -149,6 +200,7 @@ impl Daemon {
         });
         Self {
             sock,
+            home,
             work,
             model,
             _dir: dir,
@@ -191,17 +243,23 @@ impl Daemon {
             shell_quote(&self.sock.display().to_string()),
             shell_quote(&self.work.display().to_string()),
         );
-        self.model.push_turn(bash_round(&command));
-        self.model.push_turn(text_round("done"));
-        self.ok("session.run_turn", json!({"message": "call the daemon"}))
-            .await;
-        let shown = self.model.nth_request(1).expect("the model saw the result");
-        let shown = serde_json::to_string(&shown).unwrap();
+        let shown = self.command_shows(&command).await;
         let start = shown
             .find("connect failed:")
             .or_else(|| shown.find("reply:"))
             .unwrap_or_else(|| panic!("the command printed nothing: {shown}"));
         shown[start..].chars().take(400).collect()
+    }
+
+    /// Has the model run `command` and returns the request that showed it
+    /// the result.
+    async fn command_shows(&self, command: &str) -> String {
+        self.model.push_turn(bash_round(command));
+        self.model.push_turn(text_round("done"));
+        self.ok("session.run_turn", json!({"message": "run it"}))
+            .await;
+        let shown = self.model.nth_request(1).expect("the model saw the result");
+        serde_json::to_string(&shown).unwrap()
     }
 
     async fn assert_still_untrusted(&self) {
@@ -245,4 +303,28 @@ async fn the_daemon_refuses_a_command_it_started_outside_the_sandbox() {
     );
     assert!(!printed.contains("\\\"result\\\""), "{printed}");
     daemon.assert_still_untrusted().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_command_cannot_read_the_keys_the_daemon_keeps() {
+    if !sandbox_runs() {
+        return;
+    }
+    let daemon = Daemon::start(true).await;
+    let files = [
+        daemon.home.join("settings.local.json"),
+        daemon.home.join("scenes/code/mcp/oauth/server.json"),
+        daemon.home.join("scratchpad/notes.md"),
+    ];
+    let command = files
+        .iter()
+        .map(|f| format!("cat {}", shell_quote(&f.display().to_string())))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let shown = daemon.command_shows(&command).await;
+    assert!(
+        shown.contains(READABLE),
+        "the scratchpad was not read: {shown}"
+    );
+    assert!(!shown.contains(SECRET), "the command read a key: {shown}");
 }

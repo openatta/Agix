@@ -44,6 +44,12 @@
 //! confined, writing at most the git directory and `.agix/worktrees/` when it
 //! creates a worktree, and only the session's `TMPDIR` otherwise.
 //!
+//! # What a confined command may not read
+//!
+//! The policy's `deny_read` (the credential stores in the user's home, by
+//! default) less its `allow_read`, and whatever the policy says, the state
+//! root's settings files and MCP OAuth tokens, its own and every scene's.
+//!
 //! # What a confined command may not connect to
 //!
 //! The daemon it runs under: a command connected to the daemon's socket would
@@ -97,18 +103,23 @@
 //!    apps need not). launchd refuses `launchctl submit` / `bootstrap` from a
 //!    sandboxed caller. A policy with `deny_ipc_escapes` — every unattended
 //!    session's — denies `lsopen`, `user-preference-write` and
-//!    `appleevent-send`. On Linux the same policy adds `--unshare-ipc` and
-//!    hides the session bus and the systemd user manager's socket under
-//!    `$XDG_RUNTIME_DIR` (and the bus path `DBUS_SESSION_BUS_ADDRESS` names),
-//!    so `systemd-run --user` has nothing to talk to; an abstract-socket bus
-//!    is reachable unless the network is cut too. The Linux half has not been
+//!    `appleevent-send`, the keychain through `com.apple.SecurityServer`
+//!    (what `security find-generic-password` asks), and the sockets of the
+//!    user's tmux and screen sessions. On Linux the same policy adds
+//!    `--unshare-ipc` and hides the session bus and the systemd user
+//!    manager's socket under `$XDG_RUNTIME_DIR` (and the bus path
+//!    `DBUS_SESSION_BUS_ADDRESS` names), so `systemd-run --user` has nothing
+//!    to talk to, and screen's socket directory (tmux's is in `/tmp`, private
+//!    already); an abstract-socket bus is reachable unless the network is cut
+//!    too. A multiplexer on a socket of its own choosing (`tmux -S`) is not
+//!    found. The Linux half has not been
 //!    run against a real bubblewrap. With the network open, any local
 //!    service listening on a socket the command can reach (sshd, a container
 //!    daemon) is a way out under every policy.
 
 pub use base::interface::exec::{
-    default_deny_read, Confined, Enforcement, NetworkMode, ProcessSpec, Sandbox, SandboxMode,
-    SandboxPolicy,
+    default_deny_read, default_deny_read_in, Confined, Enforcement, NetworkMode, ProcessSpec,
+    Sandbox, SandboxMode, SandboxPolicy,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -242,6 +253,14 @@ const SCENE_FILES: &[&str] = &["settings.json", "scene.json", "prompt.md"];
 /// a directory there defines, so no list of names can be complete.
 #[cfg(feature = "sandbox")]
 fn protected_scene_files(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
+    scene_dirs(policy, state_root)
+        .iter()
+        .flat_map(|dir| SCENE_FILES.iter().map(move |file| dir.join(file)))
+        .collect()
+}
+
+#[cfg(feature = "sandbox")]
+fn scene_dirs(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
     let mut scenes: std::collections::BTreeSet<String> = effective_known_scenes(policy)
         .into_iter()
         .map(str::to_string)
@@ -257,12 +276,34 @@ fn protected_scene_files(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathB
     }
     scenes
         .iter()
-        .flat_map(|scene| {
-            SCENE_FILES
-                .iter()
-                .map(move |file| state_root.join("scenes").join(scene).join(file))
-        })
+        .map(|scene| state_root.join("scenes").join(scene))
         .collect()
+}
+
+/// What in the state root a command may not read: the settings files, whose
+/// provider keys and MCP headers are plain text, and the MCP OAuth tokens —
+/// of the root and of every scene. The macOS profile says the same with a
+/// pattern, which also covers the ones written while the command runs.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn state_root_secrets(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf> {
+    let holds_keys = |name: &str| {
+        let name = name.strip_prefix('.').unwrap_or(name);
+        (name.starts_with("settings") || name.starts_with("mcp.local")) && name.contains(".json")
+    };
+    let mut secrets = Vec::new();
+    for dir in std::iter::once(state_root.to_path_buf()).chain(scene_dirs(policy, state_root)) {
+        secrets.push(dir.join("mcp").join("oauth"));
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            secrets.extend(
+                entries
+                    .flatten()
+                    .filter(|e| e.file_name().to_str().is_some_and(holds_keys))
+                    .map(|e| e.path()),
+            );
+        }
+    }
+    secrets.retain(|p| p.symlink_metadata().is_ok());
+    secrets
 }
 
 #[derive(Debug, Clone)]
@@ -658,16 +699,25 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     }
 
     if !policy.deny_read.is_empty() {
-        for p in &policy.deny_read {
-            s.push_str(&format!(
-                "(deny file-read* (subpath \"{}\"))\n",
-                sandbox_escape(&p.display().to_string())
-            ));
+        for p in policy.deny_read.iter().flat_map(|p| spellings(p)) {
+            s.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", path(&p)));
         }
-        for p in &policy.allow_read {
+        for p in policy.allow_read.iter().flat_map(|p| spellings(p)) {
+            s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", path(&p)));
+        }
+    }
+    // After `allow_read`, which is for the user's own credential stores and
+    // must not reopen the engine's.
+    if let Some(root) = &roots.state_root {
+        let root = regex_escape(&root.display().to_string());
+        let config_dir = format!("^{root}/(scenes/[^/]+/)?");
+        for secret in [
+            format!(r"{config_dir}\.?(settings|mcp\.local)[^/]*\.json[^/]*$"),
+            format!("{config_dir}mcp/oauth(/|$)"),
+        ] {
             s.push_str(&format!(
-                "(allow file-read* (subpath \"{}\"))\n",
-                sandbox_escape(&p.display().to_string())
+                "(deny file-read* (regex \"{}\"))\n",
+                sandbox_escape(&secret)
             ));
         }
     }
@@ -678,6 +728,14 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         s.push_str("(deny appleevent-send)\n");
         s.push_str("(deny lsopen)\n");
         s.push_str("(deny user-preference-write)\n");
+        s.push_str("(deny mach-lookup (global-name \"com.apple.SecurityServer\"))\n");
+        for p in multiplexer_paths() {
+            s.push_str(&format!(
+                "(deny file-read* file-write* (subpath \"{0}\"))\n\
+                 (deny network-outbound (remote unix-socket (subpath \"{0}\")))\n",
+                path(&p)
+            ));
+        }
     }
 
     // DNS is IPC to mDNSResponder, which `network*` does not cover, so name
@@ -747,6 +805,65 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn sandbox_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// `path` as given and as the kernel will see it, once each.
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn spellings(path: &Path) -> Vec<PathBuf> {
+    let resolved = resolve_path(path);
+    if resolved == path {
+        vec![resolved]
+    } else {
+        vec![path.to_path_buf(), resolved]
+    }
+}
+
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if r"\.^$|?*+()[]{}".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Where the terminal multiplexers this user runs listen. Typing into one of
+/// their sessions runs a command in a shell outside the sandbox.
+#[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+fn multiplexer_paths() -> Vec<PathBuf> {
+    let uid = unsafe { libc::getuid() };
+    let tmux_dir = format!("tmux-{uid}");
+    let var = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let mut paths: Vec<PathBuf> = if cfg!(target_os = "macos") {
+        vec![
+            Path::new("/private/tmp").join(&tmux_dir),
+            "/private/tmp/screens".into(),
+        ]
+    } else {
+        vec!["/run/screen".into(), "/var/run/screen".into()]
+    };
+    paths.extend(var("TMUX_TMPDIR").map(|d| d.join(&tmux_dir)));
+    paths.extend(var("SCREENDIR"));
+    // `$TMUX` is `<socket>,<server pid>,<session>`.
+    if let Ok(tmux) = std::env::var("TMUX") {
+        paths.extend(
+            tmux.split(',')
+                .next()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
+        );
+    }
+    let mut paths: Vec<PathBuf> = paths.iter().map(|p| resolve_path(p)).collect();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
@@ -851,6 +968,17 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
     let agix = roots.cwd.join(".agix");
     for worktree in subdirs(&agix.join(PROJECT_WORKTREES_DIR)) {
         bind(args, "--ro-bind-try", &worktree.join(".git"));
+    }
+}
+
+/// Make `path` unreadable where it exists: an empty tmpfs over a directory,
+/// `/dev/null` over anything else.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn hide(args: &mut Vec<String>, path: &Path) {
+    if path.is_dir() {
+        args.extend(["--tmpfs".into(), path.display().to_string()]);
+    } else if path.exists() {
+        bind_over(args, Path::new("/dev/null"), path);
     }
 }
 
@@ -969,6 +1097,9 @@ fn linux_wrap(
         for p in protected_scene_files(policy, state_root) {
             bind(&mut args, "--ro-bind-try", &p);
         }
+        for p in state_root_secrets(policy, state_root) {
+            hide(&mut args, &p);
+        }
     }
     for socket in daemon_sockets(roots.state_root.as_deref()) {
         bind_over(&mut args, Path::new("/dev/null"), &socket);
@@ -977,31 +1108,21 @@ fn linux_wrap(
         bind_over(&mut args, Path::new("/dev/null"), &secret);
     }
 
-    // Deny-read: an empty tmpfs over a directory, /dev/null over a file.
     let allow_set: std::collections::HashSet<PathBuf> = policy.allow_read.iter().cloned().collect();
     for p in &policy.deny_read {
-        if allow_set.contains(p) || !p.exists() {
-            continue;
-        }
-        let s = p.display().to_string();
-        if p.is_dir() {
-            args.push("--tmpfs".into());
-            args.push(s);
-        } else {
-            args.push("--ro-bind-try".into());
-            args.push("/dev/null".into());
-            args.push(s);
+        if !allow_set.contains(p) {
+            hide(&mut args, p);
         }
     }
 
     if policy.deny_ipc_escapes {
         args.push("--unshare-ipc".into());
-        for bus in session_bus_paths() {
-            if bus.is_dir() {
-                args.extend(["--tmpfs".into(), bus.display().to_string()]);
-            } else if bus.exists() {
-                bind_over(&mut args, Path::new("/dev/null"), &bus);
-            }
+        // `/tmp` is the command's own tmpfs already.
+        let multiplexers = multiplexer_paths()
+            .into_iter()
+            .filter(|p| !p.starts_with("/tmp"));
+        for p in session_bus_paths().into_iter().chain(multiplexers) {
+            hide(&mut args, &p);
         }
     }
 
@@ -1863,9 +1984,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_profile_empty_deny_read_skips_read_rules_entirely() {
-        // When deny_read is empty, no file-read* deny or allow rules should
-        // appear in the profile (structural optimization).
+    fn macos_profile_empty_deny_read_denies_only_the_state_roots_secrets() {
         let o = SandboxOptions {
             command: "ls",
             cwd: Path::new("/tmp/work"),
@@ -1885,9 +2004,16 @@ mod tests {
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
+        let reads: Vec<&str> = profile
+            .lines()
+            .filter(|l| l.contains("file-read*"))
+            .collect();
+        assert_eq!(reads.len(), 2, "{reads:?}");
         assert!(
-            !profile.contains("(deny file-read*"),
-            "no deny-read rules when deny_read is empty"
+            reads
+                .iter()
+                .all(|l| l.starts_with("(deny file-read* (regex \"^") && l.contains("/\\\\.agix/")),
+            "{reads:?}"
         );
     }
 
@@ -2589,6 +2715,156 @@ mod tests {
             runs("echo x > .git/modules/sub/index && echo x > .git/modules/a/modules/b/FETCH_HEAD"),
             "a submodule's own bookkeeping must stay writable"
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[allow(clippy::unwrap_used)]
+    fn write_file(path: &Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// A command reads none of the credential stores in the user's home, nor
+    /// what in the state root holds keys — the settings files, whose
+    /// `api_key` and MCP headers are plain text, and the MCP OAuth tokens, of
+    /// the root and of every scene. Everything else in the state root, which
+    /// skills, memory and the session's own files live in, stays readable.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_sandboxed_command_reads_no_credentials_and_the_rest_of_the_state_root() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let state = dir.path().join("state");
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(project.join(".agix")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        let secret = "agix-test-secret";
+        let secrets = [
+            home.join(".git-credentials"),
+            home.join(".config/git/credentials"),
+            home.join(".config/gcloud/application_default_credentials.json"),
+            home.join(".cargo/credentials"),
+            home.join(".cargo/credentials.toml"),
+            home.join(".vault-token"),
+            home.join(".docker/config.json"),
+            home.join(".kube/config"),
+            home.join(".npmrc"),
+            home.join(".pypirc"),
+            home.join(".netrc"),
+            state.join("settings.json"),
+            state.join("settings.local.json"),
+            state.join(".settings.local.json.1234.tmp"),
+            state.join("scenes/code/settings.json"),
+            state.join("scenes/code/settings.local.json"),
+            state.join("scenes/code/mcp/oauth/server.json"),
+            state.join("scenes/triage/settings.local.json"),
+        ];
+        for path in &secrets {
+            write_file(path, secret);
+        }
+        let readable = [
+            home.join(".gitconfig"),
+            home.join(".cargo/config.toml"),
+            state.join("skills/s/SKILL.md"),
+            state.join("scenes/code/skills/t/run.sh"),
+            state.join("scenes/code/scene.json"),
+            state.join("scenes/code/scheduled_tasks.json"),
+            state.join("memory/MEMORY.md"),
+            state.join("scratchpad/notes.md"),
+            state.join("sessions/s.jsonl"),
+        ];
+        for path in &readable {
+            write_file(path, "fine");
+        }
+        let policy = SandboxPolicy {
+            deny_read: default_deny_read_in(&home),
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        let cat = |command: &str| {
+            let out = run_confined(&project, &policy, &[("HOME", &home)], command);
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            )
+        };
+
+        for command in [
+            "cat ~/.git-credentials".to_string(),
+            format!("cat '{}/settings.local.json'", state.display()),
+        ] {
+            let (ok, shown) = cat(&command);
+            assert!(!ok && !shown.contains(secret), "`{command}` read {shown:?}");
+        }
+        for path in &secrets {
+            let (ok, shown) = cat(&format!("cat '{}'", path.display()));
+            assert!(
+                !ok && !shown.contains(secret),
+                "{} was read: {shown:?}",
+                path.display()
+            );
+        }
+        for path in &readable {
+            let (ok, shown) = cat(&format!("cat '{}'", path.display()));
+            assert!(ok && shown == "fine", "{} was not read", path.display());
+        }
+        let (ok, listed) = cat(&format!("ls '{}'", state.join("scenes/code").display()));
+        assert!(ok && listed.contains("skills"), "{listed}");
+    }
+
+    /// Unattended, a command cannot have the keychain read for it through
+    /// `securityd`, the way `security find-generic-password` does, nor type
+    /// into a terminal multiplexer's session outside the sandbox. Attended,
+    /// both stay: the user approves each such command, and `git push`
+    /// through the keychain's credential helper or `codesign` need them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn unattended_a_command_cannot_reach_the_keychain_or_a_multiplexer() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let attended = SandboxPolicy {
+            state_root: Some(dir.path().join("state")),
+            ..Default::default()
+        };
+        let unattended = SandboxPolicy {
+            deny_ipc_escapes: true,
+            ..attended.clone()
+        };
+        let runs = |policy: &SandboxPolicy, command: &str| {
+            run_confined(dir.path(), policy, &[], command)
+                .status
+                .success()
+        };
+        assert!(runs(&attended, "security list-keychains"));
+        assert!(!runs(&unattended, "security list-keychains"));
+        assert!(!runs(
+            &unattended,
+            "security find-generic-password -s agix-none"
+        ));
+
+        let uid = unsafe { libc::getuid() };
+        let tmux = PathBuf::from(format!("/private/tmp/tmux-{uid}"));
+        let made = !tmux.exists();
+        if made {
+            std::fs::create_dir(&tmux).unwrap();
+        }
+        let socket = listening(tmux.join(format!("agix-test-{}", std::process::id())));
+        let nc = format!("nc -U '{}' < /dev/null", socket.display());
+        let attended_reached = runs(&attended, &nc);
+        let unattended_reached = runs(&unattended, &nc);
+        let _ = std::fs::remove_file(&socket);
+        if made {
+            let _ = std::fs::remove_dir(&tmux);
+        }
+        assert!(attended_reached, "the multiplexer socket is not reachable");
+        assert!(!unattended_reached, "an unattended command reached tmux");
     }
 }
 

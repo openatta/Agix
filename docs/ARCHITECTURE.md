@@ -783,7 +783,11 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 项目目录里的命令照样能往外连;`sandbox.unattended_requires_network_policy: true` 时自动放行另外
 要求 `sandbox.network_mode` 是 `deny_all` / `allowlist`,否则回到 allow 规则。这个开关 0.3.x 缺省
 关(保持原来的行为),计划在后续 0.3.x 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
-`Bash` 读项目外的东西只受凭据黑名单约束。`Monitor` 的脚本进同一个沙箱,
+`Bash` 读项目外的东西只受凭据黑名单约束:`sandbox.deny_read`(缺省是家目录下的凭据,
+`base::interface::exec::default_deny_read`)减去 `sandbox.allow_read`;另外不论怎么配,
+状态目录与各场景目录下的设置文件(`settings*.json`、`mcp.local.json`,明文的 `api_key` 与 MCP
+headers 在里面)和 `mcp/oauth/` 都读不到,`allow_read` 也放不开。状态目录里别的东西(skills、
+memory、scratchpad、会话记录、`scene.json`)照常可读。`Monitor` 的脚本进同一个沙箱,
 `sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
 
 沙箱里的命令能写的:工作目录、`sandbox.additional_directories` 与会话授予的目录、
@@ -826,9 +830,15 @@ LaunchServices 在沙箱外起一个应用,`defaults write` 让 `cfprefsd` 写�
 能让沙箱外的应用替它做事(Finder 本身拒绝来自沙箱进程的事件,别的应用未必);`launchctl
 submit` / `bootstrap` 则被 launchd 拒绝。无人值守会话的 `Bash` / `Monitor` 另外拒绝这几条:
 macOS profile 加 `(deny lsopen)`、`(deny user-preference-write)`、`(deny appleevent-send)`,
-Linux 上 bwrap 加 `--unshare-ipc` 并遮住 `$XDG_RUNTIME_DIR/bus`、`$XDG_RUNTIME_DIR/systemd`
-与 `DBUS_SESSION_BUS_ADDRESS` 指向的路径(抽象 socket 的总线只有断网才断得掉;Linux 这一半
-未在真机 bubblewrap 上跑过)。有人值守的会话不加:命令经人确认,`open` 打开浏览器之类照常可用。
+拒绝 `com.apple.SecurityServer` 的 mach-lookup(`security find-generic-password` 经它读钥匙串),
+并拒绝连 tmux(`/private/tmp/tmux-<uid>`、`$TMUX_TMPDIR`、`$TMUX` 指的 socket)与 screen
+(`/private/tmp/screens`、`$SCREENDIR`)的 socket——往一个 tmux 会话里敲命令就是在沙箱外跑;
+Linux 上 bwrap 加 `--unshare-ipc` 并遮住 `$XDG_RUNTIME_DIR/bus`、`$XDG_RUNTIME_DIR/systemd`、
+`DBUS_SESSION_BUS_ADDRESS` 指向的路径与 screen 的 socket 目录(`/run/screen`;tmux 的在 `/tmp`,
+本来就是命令私有的;抽象 socket 的总线只有断网才断得掉;Linux 这一半未在真机 bubblewrap 上
+跑过)。`tmux -S` 自己选的 socket 找不到。有人值守的会话不加:命令经人确认,`open` 打开浏览器
+之类照常可用;钥匙串也照常可用——`git push` 走 osxkeychain 凭据助手、`codesign`、
+`xcrun notarytool` 都要它,而钥匙串对不在 ACL 里的程序还会弹窗再问一次。
 网络敞开时,命令能连到的本机服务(sshd、容器守护进程)在任何策略下都是出口。
 
 daemon 自己是最近的那个本机服务:连上它的 socket 就是宿主,能 `mcp.addServer` 让 daemon 在沙箱

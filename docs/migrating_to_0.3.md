@@ -1317,6 +1317,12 @@ WebAssembly 载体整个移除。
   询问(无人值守的会话里 `Read` / `Glob` / `Grep` 就是拒绝,`Bash` / `Monitor` 仍按"沙箱完整
   生效即放行")。`acceptEdits` 下要免询问读的目录,写进
   `sandbox.read_directories`(或开 `sandbox.read_anywhere`)。
+- **沙箱里的命令读得到的少了。** 缺省的 `deny_read` 多了 `~/.git-credentials`、
+  `~/.config/git/credentials`、`~/.config/gcloud`、`~/.cargo/credentials{,.toml}`、`~/.vault-token`
+  等(全表见 `base::interface::exec::default_deny_read_in`),要用的用 `sandbox.allow_read` 放开;
+  状态目录与各场景目录下的 `settings*.json`、`mcp.local.json` 和 `mcp/oauth/` 一律读不到。
+  无人值守的会话另外读不了钥匙串(`security`)、连不上 tmux / screen。子模块 git 目录里的
+  `config`、`hooks/` 等和主仓库的一样只读,沙箱里的 `git submodule sync` 之类会失败(§6.3)。
 
 #### 插件
 
