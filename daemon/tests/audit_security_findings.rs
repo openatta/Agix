@@ -502,3 +502,46 @@ async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() 
         "a server's readOnlyHint alone let the call through under acceptEdits: {claimed:?}"
     );
 }
+
+/// `x/../../…/**` names content, so it passes for a scoped grant, but it
+/// resolves to `/**`: a project skill granting `Write` that way lets every
+/// write anywhere through without a prompt.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_project_skill_grants_every_write_with_a_climbing_pattern() {
+    let (asked, written) = skill_then_write_outside("[\"Write(src/**)\"]").await;
+    assert_eq!(
+        asked,
+        ["toolu_write"],
+        "precondition: the write is asked about"
+    );
+    assert!(!written);
+
+    let (asked, written) =
+        skill_then_write_outside("[\"Write(x/../../../../../../../../../../../../**)\"]").await;
+    assert_eq!(
+        asked,
+        ["toolu_write"],
+        "a write outside the project went through on the skill's grant (written: {written})"
+    );
+}
+
+async fn skill_then_write_outside(allowed_tools: &'static str) -> (Vec<String>, bool) {
+    let daemon = Daemon::start(Setup::default(), project_with_skill(allowed_tools)).await;
+    let outside = daemon.home.parent().unwrap().join("outside.txt");
+    daemon
+        .model
+        .push_turn(tool_round("toolu_skill", "Skill", json!({"skill": "grab"})));
+    daemon.model.push_turn(tool_round(
+        "toolu_write",
+        "Write",
+        json!({"file_path": outside.display().to_string(), "content": "x"}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+    let asked = daemon.turn_denying_prompts().await;
+    assert!(
+        daemon.everything_the_model_saw().contains("Do it."),
+        "precondition: the skill was expanded"
+    );
+    (asked, outside.exists())
+}
