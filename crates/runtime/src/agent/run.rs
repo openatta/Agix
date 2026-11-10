@@ -4,7 +4,7 @@ use super::*;
 
 impl Agent {
     pub fn steer_handle(&self) -> crate::steering::SteerHandle {
-        crate::steering::SteerHandle(self.steering.clone())
+        crate::steering::SteerHandle(self.channels.steering.clone())
     }
 
     /// The session's own state — its todos, tasks, permission mode — shared
@@ -16,7 +16,7 @@ impl Agent {
     /// How this session starts sub-agents, for a host that starts one itself
     /// (`AgentSpawner::start_agent`). Refuses when no module provided one.
     pub fn agent_spawner(&self) -> Arc<dyn base::interface::agent_spawner::AgentSpawner> {
-        self.agent_spawner.clone()
+        self.tooling.agent_spawner.clone()
     }
 
     /// The slash commands this session will actually resolve.
@@ -32,7 +32,7 @@ impl Agent {
     /// life of the session, so a host that has spawned the engine has no
     /// `&Agent` left to ask. Take this before spawning and keep it.
     pub fn commands(&self) -> Arc<crate::commands::CommandRegistry> {
-        Arc::clone(&self.commands)
+        Arc::clone(&self.tooling.commands)
     }
 
     /// The diagnostics registered for this session, for a host that wants to
@@ -46,7 +46,7 @@ impl Agent {
     ///
     /// [`HealthChecks::report`]: base::interface::health::HealthChecks::report
     pub fn health(&self) -> Arc<base::interface::health::HealthChecks> {
-        Arc::clone(&self.health)
+        Arc::clone(&self.policies.health)
     }
 
     /// Start the agent event loop. Runs until cancelled (caller calls `.cancel()` on the token)
@@ -56,6 +56,7 @@ impl Agent {
 
         // Emit SystemInit
         let tools: Vec<_> = self
+            .tooling
             .tools
             .list()
             .iter()
@@ -64,7 +65,7 @@ impl Agent {
                 description: t.description().to_string(),
             })
             .collect();
-        let _ = self.event_tx.send(AgentEvent::SystemInit {
+        let _ = self.channels.event_tx.send(AgentEvent::SystemInit {
             scene: self.scene.id().to_string(),
             tools,
             mcp_servers: vec![],
@@ -103,13 +104,13 @@ impl Agent {
 
         // If the previous session was interrupted while a permission prompt was
         // pending, re-inject the stored decision so the agent can continue.
-        if let Some(decision) = self.orphaned_permission.take() {
-            if !self.has_handled_orphaned_permission {
+        if let Some(decision) = self.gate.orphaned_permission.take() {
+            if !self.gate.has_handled_orphaned_permission {
                 tracing::info!(
                     ?decision,
                     "Recovering orphaned permission from previous session"
                 );
-                self.has_handled_orphaned_permission = true;
+                self.gate.has_handled_orphaned_permission = true;
                 let _ = self
                     .process_turn(
                         InputMessage::PermissionResponse {
@@ -121,9 +122,9 @@ impl Agent {
                     .await;
             }
         }
-        self.has_handled_orphaned_permission = true;
+        self.gate.has_handled_orphaned_permission = true;
 
-        if !self.skip_warmup {
+        if !self.identity.skip_warmup {
             self.warmup().await;
         }
 
@@ -144,12 +145,12 @@ impl Agent {
             // holding a receiver whose sender is dropped immediately, so any
             // stray read of it yields `None` rather than blocking forever.
             let (_closed_tx, closed_rx) = mpsc::unbounded_channel();
-            let mut raw_rx = std::mem::replace(&mut self.input_rx, closed_rx);
-            let pending = self.pending_permissions.clone();
-            let questions = self.pending_questions.clone();
-            let denials = self.permission_denial_count.clone();
-            let turn_cancel = self.current_turn_cancel.clone();
-            let steering = self.steering.clone();
+            let mut raw_rx = std::mem::replace(&mut self.channels.input_rx, closed_rx);
+            let pending = self.gate.pending_permissions.clone();
+            let questions = self.gate.pending_questions.clone();
+            let denials = self.gate.permission_denial_count.clone();
+            let turn_cancel = self.channels.current_turn_cancel.clone();
+            let steering = self.channels.steering.clone();
             tokio::spawn(async move {
                 while let Some(msg) = raw_rx.recv().await {
                     match msg {
@@ -222,7 +223,8 @@ impl Agent {
         let run_started = std::time::Instant::now();
         let exit_reason: &'static str;
         loop {
-            self.hooks
+            self.gate
+                .hooks
                 .check_rewakes(hooks::HookInput::lifecycle(
                     String::new(),
                     self.session.session_id.clone(),
@@ -239,7 +241,7 @@ impl Agent {
                 }
                 msg = fwd_rx.recv() => {
                     match msg {
-                        Some(input) if self.drive_goals && !self.claims_goal_round(&input) => {
+                        Some(input) if self.identity.drive_goals && !self.claims_goal_round(&input) => {
                             tracing::debug!("dropped a goal round that is no longer wanted");
                         }
                         Some(input) => {
@@ -249,10 +251,10 @@ impl Agent {
                             // Cancelling the session's own token still
                             // cascades into whatever turn is in flight.
                             let turn_cancel = cancel.child_token();
-                            *self.current_turn_cancel.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
+                            *self.channels.current_turn_cancel.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
                             match self.process_turn(input, turn_cancel).await {
                                 Ok(outcome) => {
-                                    if self.drive_goals {
+                                    if self.identity.drive_goals {
                                         if let Some(round) = self.goal_round_after(&outcome.stop_reason).await {
                                             if let Some(tx) = own_input.upgrade() {
                                                 let _ = tx.send(InputMessage::User {
@@ -269,7 +271,7 @@ impl Agent {
                                     break;
                                 }
                                 Err(e) => {
-                                    let _ = self.event_tx.send(AgentEvent::Error {
+                                    let _ = self.channels.event_tx.send(AgentEvent::Error {
                                         code: "turn_error".into(),
                                         message: e.to_string(),
                                         turn_id: self.current_turn_id.clone(),
@@ -300,6 +302,7 @@ impl Agent {
 
         let duration_ms = run_started.elapsed().as_millis() as i64;
         let _ = self
+            .telemetry
             .telemetry_handle
             .record(telemetry::TelemetryEvent::session_end(
                 &self.session.session_id,
@@ -308,15 +311,21 @@ impl Agent {
                 telemetry::SessionEndPayload {
                     duration_ms,
                     total_turns: self.session.turn_count,
-                    total_api_calls: self.spent.api_calls,
-                    total_tool_calls: self.spent.tool_calls,
+                    total_api_calls: self.telemetry.spent.api_calls,
+                    total_tool_calls: self.telemetry.spent.tool_calls,
                     total_permission_denials: self
+                        .gate
                         .permission_denial_count
                         .load(std::sync::atomic::Ordering::Relaxed),
-                    total_input_tokens: self.spent.usage.input_tokens.into(),
-                    total_output_tokens: self.spent.usage.output_tokens.into(),
-                    total_cache_creation: self.spent.usage.cache_creation_input_tokens.into(),
-                    total_cache_read: self.spent.usage.cache_read_input_tokens.into(),
+                    total_input_tokens: self.telemetry.spent.usage.input_tokens.into(),
+                    total_output_tokens: self.telemetry.spent.usage.output_tokens.into(),
+                    total_cache_creation: self
+                        .telemetry
+                        .spent
+                        .usage
+                        .cache_creation_input_tokens
+                        .into(),
+                    total_cache_read: self.telemetry.spent.usage.cache_read_input_tokens.into(),
                     stop_reason: exit_reason.to_string(),
                 },
             ));
@@ -341,7 +350,7 @@ impl Agent {
             base::frozen::FrozenContext::collect(
                 cwd.clone(),
                 &paths,
-                &*self.environment,
+                &*self.policies.environment,
                 &engine_git
             ),
             // 2. Fire-and-forget pre-connect GET to the API base URL (warms TCP/TLS)
@@ -369,7 +378,7 @@ impl Agent {
         // Skills directories are deliberately not rescanned here: the watcher
         // `Builder::build()` attaches to `self.skills` is already live, and
         // `build()` scanned the same directories moments ago.
-        self.frozen = Some(frozen);
+        self.prompt.frozen = Some(frozen);
         tracing::debug!("Startup warmup complete");
     }
 
@@ -391,7 +400,8 @@ impl Agent {
     /// against an active turn.
     pub async fn resume_session(&mut self, id: &str) -> Result<(), session::session::SessionError> {
         self.session.resume(id).await?;
-        self.session_context_injected = crate::turn::holds_session_context(&self.session.messages);
+        self.prompt.session_context_injected =
+            crate::turn::holds_session_context(&self.session.messages);
         let goal = self
             .session
             .latest_extension(
@@ -437,12 +447,12 @@ impl Agent {
 
     /// Access the performance collector.
     pub fn perf(&self) -> &PerfCollector {
-        &self.perf
+        &self.telemetry.perf
     }
 
     /// Access the tool registry (read-only).
     pub fn tools(&self) -> &dyn base::tool::ToolRegistry {
-        self.tools.as_ref()
+        self.tooling.tools.as_ref()
     }
 
     pub fn scene(&self) -> &Arc<dyn Scene> {
@@ -456,7 +466,7 @@ impl Agent {
 
     /// Access telemetry recorder for external event recording.
     pub fn telemetry(&self) -> &dyn TelemetryRecorder {
-        &self.telemetry_handle
+        &self.telemetry.telemetry_handle
     }
 
     /// Recorder status — None when no recording is configured.
@@ -466,26 +476,26 @@ impl Agent {
 
     /// Access the permission handler (read-only).
     pub fn permission(&self) -> &dyn Permission {
-        &*self.permission
+        &*self.gate.permission
     }
 
     /// Access the memory store (read-only).
     pub fn memory(&self) -> &MemoryStore {
-        &self.memory_store
+        &self.memory.memory_store
     }
 
     pub fn skills(&self) -> &dyn base::interface::skill_catalog::SkillCatalog {
-        self.skills.as_ref()
+        self.tooling.skills.as_ref()
     }
 
     /// Access the hooks runner (read-only).
     pub fn hooks(&self) -> &HookRunner {
-        &self.hooks
+        &self.gate.hooks
     }
 
     /// Access the MCP manager (read-only).
     pub fn mcp(&self) -> &dyn base::interface::mcp_servers::McpServers {
-        self.mcp.as_ref()
+        self.tooling.mcp.as_ref()
     }
 
     /// Compact the conversation now, whatever the budget says — the same
@@ -500,6 +510,7 @@ impl Agent {
         // cascade would then drop those rounds unsummarized.
         let rounds = compaction::grouping::group_by_api_round(self.session.messages()).len();
         let keep = self
+            .policies
             .budget_policy
             .context_budget(&self.scene.token_budget())
             .compact_keep_recent

@@ -105,7 +105,7 @@ pub(super) fn compacting_agent_and_events(
     agent
         .session
         .push_message(text_message(MessageRole::Assistant, "hi"));
-    agent.session_context_injected = true;
+    agent.prompt.session_context_injected = true;
     (agent, rx)
 }
 
@@ -122,7 +122,7 @@ pub(super) async fn compacted_with(
         )
         .await
         .expect("a compaction");
-    agent.session_context_injected
+    agent.prompt.session_context_injected
 }
 
 pub(super) fn in_plan_mode_with_a_task(agent: &Agent) {
@@ -215,7 +215,7 @@ async fn an_automatic_compaction_with_nothing_to_drop_changes_nothing() {
         .await;
     assert_eq!(outcome, Err(crate::turn::NotCompacted::NothingToDrop));
     assert_eq!(transcript_text(&agent), before);
-    assert!(agent.session_context_injected);
+    assert!(agent.prompt.session_context_injected);
     assert_eq!(compact_frames(&mut rx), 0);
 }
 
@@ -239,7 +239,7 @@ async fn a_compaction_whose_recovery_outweighs_what_it_dropped_is_not_applied() 
         .await;
     assert_eq!(outcome, Err(crate::turn::NotCompacted::NothingToDrop));
     assert_eq!(agent.session.messages().len(), before);
-    assert!(agent.session_context_injected);
+    assert!(agent.prompt.session_context_injected);
     assert_eq!(compact_frames(&mut rx), 0);
 }
 
@@ -259,7 +259,7 @@ async fn compacting_after_a_size_refusal_is_a_full_compaction() {
         )
         .await
         .expect("compacted");
-    assert!(!agent.session_context_injected);
+    assert!(!agent.prompt.session_context_injected);
     assert_eq!(compact_frames(&mut rx), 1);
 }
 
@@ -322,7 +322,7 @@ async fn automatic_compaction_leaves_room_for_the_request_overhead() {
             &format!("answer {i}: {}", "words ".repeat(50)),
         ));
     }
-    agent.request_overhead_tokens = 2_000;
+    agent.compaction.request_overhead_tokens = 2_000;
     assert!(agent.context_tokens() > 6_000);
     agent
         .compact_if_needed(&tokio_util::sync::CancellationToken::new())

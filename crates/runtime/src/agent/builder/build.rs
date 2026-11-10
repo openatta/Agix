@@ -748,99 +748,121 @@ impl Builder {
 
         Ok((
             Agent {
-                turn_starts: Arc::new(turn_starts),
                 scene,
-                model,
-                tools,
                 settings,
                 config,
-                agent_depth,
-                permission,
-                elicitation: self.elicitation.unwrap_or_else(|| {
-                    let channel = crate::elicitation::ChannelElicitation::new(
-                        event_tx.clone(),
-                        pending_permissions.clone(),
-                    );
-                    Arc::new(if self.question_prompts {
-                        channel.with_questions(pending_questions.clone())
-                    } else {
-                        channel
-                    })
-                }),
-                prompt_registry,
-                prompt_assembler: self.prompt_assembler.unwrap_or_else(|| {
-                    Arc::new(base::interface::prompt_assembler::DefaultAssembler)
-                }),
-                tool_middleware: Arc::new(tool_middleware),
-                prompt_middleware: Arc::new(prompt_middleware),
-                result_transformers: Arc::new(result_transformers),
-                turn_policy,
-                budget_policy,
-                health: Arc::new(base::interface::health::HealthChecks::from_vec(
-                    health_checks,
-                )),
-                environment,
-                recovery_policy,
-                model_interceptors: Arc::new(model_interceptors),
-                memory_retriever: self
-                    .memory_retriever
-                    .unwrap_or_else(|| Arc::new(base::interface::memory_contracts::LlmRetriever)),
-                retrieval_hooks: Arc::new(retrieval_hooks),
-                pending_permissions,
-                pending_questions,
-                current_turn_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
-                steering: Default::default(),
-                memory_store,
                 session,
                 session_state,
-                drive_goals: !self.goal_rounds_from_owner,
-                agent_spawner: Arc::new(agent_spawner),
-                _session_end: session_end,
-                perf: Arc::new(PerfCollector::new()),
-                compactor,
-                hooks,
-                mcp,
-                skills: Arc::new(skill_catalog),
-                commands: command_registry,
-                telemetry_handle,
                 current_turn_id: String::new(),
-                frozen: self.frozen, // pre-seeded or lazily computed on first turn
-                claude_md_content,
-                session_context_injected: false,
-                pending_input: None,
+                _session_end: session_end,
+                identity: Identity {
+                    agent_depth,
+                    agent_type: self.agent_type,
+                    team_seat: self.team_seat,
+                    drive_goals: !self.goal_rounds_from_owner,
+                    skip_warmup: self.skip_warmup,
+                },
+                llm: ModelRoute {
+                    model,
+                    task_router: self.task_router,
+                    recovery_policy,
+                    model_interceptors: Arc::new(model_interceptors),
+                },
+                tooling: Tooling {
+                    tools,
+                    skills: Arc::new(skill_catalog),
+                    commands: command_registry,
+                    mcp,
+                    agent_spawner: Arc::new(agent_spawner),
+                    tool_middleware: Arc::new(tool_middleware),
+                    result_transformers: Arc::new(result_transformers),
+                    mcp_shadow_warned: std::collections::HashSet::new(),
+                },
+                gate: Gate {
+                    permission,
+                    elicitation: self.elicitation.unwrap_or_else(|| {
+                        let channel = crate::elicitation::ChannelElicitation::new(
+                            event_tx.clone(),
+                            pending_permissions.clone(),
+                        );
+                        Arc::new(if self.question_prompts {
+                            channel.with_questions(pending_questions.clone())
+                        } else {
+                            channel
+                        })
+                    }),
+                    pending_permissions,
+                    pending_questions,
+                    permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                    orphaned_permission: None,
+                    has_handled_orphaned_permission: false,
+                    hooks,
+                    turn_starts: Arc::new(turn_starts),
+                },
+                prompt: PromptContext {
+                    prompt_registry,
+                    prompt_assembler: self.prompt_assembler.unwrap_or_else(|| {
+                        Arc::new(base::interface::prompt_assembler::DefaultAssembler)
+                    }),
+                    prompt_middleware: Arc::new(prompt_middleware),
+                    frozen: self.frozen, // pre-seeded or lazily computed on first turn
+                    claude_md_content,
+                    session_context_injected: false,
+                    invoked_skills: Vec::new(),
+                    announced_skills: None,
+                },
+                policies: Policies {
+                    turn_policy,
+                    budget_policy,
+                    health: Arc::new(base::interface::health::HealthChecks::from_vec(
+                        health_checks,
+                    )),
+                    environment,
+                },
+                memory: Memory {
+                    memory_store,
+                    memory_retriever: self.memory_retriever.unwrap_or_else(|| {
+                        Arc::new(base::interface::memory_contracts::LlmRetriever)
+                    }),
+                    retrieval_hooks: Arc::new(retrieval_hooks),
+                },
+                compaction: Compaction {
+                    compactor,
+                    compaction_state: compaction::reactive::CompactionState::default(),
+                    compact_warning_issued: false,
+                    tool_results_ever_cleared: false,
+                    time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig::default(),
+                    cached_mc: CachedMicroCompact::new(compaction::cached::CachedMcConfig {
+                        enabled: cached_mc_enabled,
+                        ..Default::default()
+                    }),
+                    request_overhead_tokens: 0,
+                },
+                token_budget: TokenBudget {
+                    target: None,
+                    unannounced: false,
+                    accumulated: 0,
+                    continuations: 0,
+                    last_delta: 0,
+                },
                 turn_started_at: None,
-                agent_type: self.agent_type,
-                invoked_skills: Vec::new(),
-                announced_skills: None,
-                slash_skill_grants: Vec::new(),
-                request_overhead_tokens: 0,
-                last_had_tool_uses: true, // true → first turn scans for skills
+                pending_input: None,
                 last_call_usage: None,
                 turn_truncated: false,
-                spent: SessionSpend::default(),
-                permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                compact_warning_issued: false,
-                tool_results_ever_cleared: false,
-                mcp_shadow_warned: std::collections::HashSet::new(),
-                time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig::default(),
-                cached_mc: CachedMicroCompact::new(compaction::cached::CachedMcConfig {
-                    enabled: cached_mc_enabled,
-                    ..Default::default()
-                }),
-                compaction_state: compaction::reactive::CompactionState::default(),
-                team_seat: self.team_seat,
-                orphaned_permission: None,
-                has_handled_orphaned_permission: false,
-                output_token_target: None,
-                output_token_target_unannounced: false,
+                last_had_tool_uses: true,
+                slash_skill_grants: Vec::new(),
                 repeat_guard: Default::default(),
-                accumulated_output_tokens: 0,
-                token_budget_continuation_count: 0,
-                last_delta_tokens: 0,
-                input_rx,
-                event_tx,
-                skip_warmup: self.skip_warmup,
-                task_router: self.task_router,
+                telemetry: Telemetry {
+                    telemetry_handle,
+                    perf: Arc::new(PerfCollector::new()),
+                    spent: SessionSpend::default(),
+                },
+                channels: Channels {
+                    input_rx,
+                    event_tx,
+                    current_turn_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                    steering: Default::default(),
+                },
             },
             event_rx,
             input_tx,

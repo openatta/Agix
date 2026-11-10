@@ -16,7 +16,7 @@ impl Agent {
     /// cheaper/faster model than the conversation. With no router configured
     /// it uses the conversation's own model and model name.
     pub(super) fn compaction_summarizer(&self) -> Option<compaction::llm_summary::LlmSummarizer> {
-        let (model, model_name) = match &self.task_router {
+        let (model, model_name) = match &self.llm.task_router {
             Some(router) => (
                 self.accounted(router.model_for("compact")),
                 router
@@ -24,7 +24,10 @@ impl Agent {
                     .unwrap_or(&self.settings.model.model_name)
                     .to_string(),
             ),
-            None => (self.model.clone(), self.settings.model.model_name.clone()),
+            None => (
+                self.llm.model.clone(),
+                self.settings.model.model_name.clone(),
+            ),
         };
         if model_name.is_empty() {
             return None;
@@ -40,11 +43,11 @@ impl Agent {
         // Every judgement below belongs to the compactor: what has gone stale,
         // whether to compact early, when to warn, and when the budget forces
         // it. The order they are asked in is the loop's.
-        let compactor = self.compactor.clone();
-        let cached_due = self.cached_mc.should_run();
-        let cached_keep_recent = self.cached_mc.keep_recent();
+        let compactor = self.compaction.compactor.clone();
+        let cached_due = self.compaction.cached_mc.should_run();
+        let cached_keep_recent = self.compaction.cached_mc.keep_recent();
         let ages = self.session.message_ages();
-        let time_based = self.time_based_mc_config.clone();
+        let time_based = self.compaction.time_based_mc_config.clone();
         let aging_start = std::time::Instant::now();
         let aging_from = compaction::grouping::estimate_tokens(&self.session.messages);
         let aging = compactor.age(
@@ -57,7 +60,7 @@ impl Agent {
             },
         );
         if aging.cleared() > 0 {
-            self.tool_results_ever_cleared = true;
+            self.compaction.tool_results_ever_cleared = true;
         }
         if aging.time_based.cleared > 0 {
             tracing::info!(
@@ -83,13 +86,13 @@ impl Agent {
                 cleared = aging.cached_cleared,
                 "cached micro-compact applied — pending cache_edits generated"
             );
-            self.cached_mc.record_pass(ids);
+            self.compaction.cached_mc.record_pass(ids);
         }
 
         // Enforce per-message tool result budget BEFORE compaction.
         let budget_modified = compactor.trim_tool_results(&mut self.session.messages);
         if budget_modified > 0 {
-            self.tool_results_ever_cleared = true;
+            self.compaction.tool_results_ever_cleared = true;
             tracing::debug!(modified = budget_modified, "tool result budget enforced");
         }
 
@@ -104,12 +107,12 @@ impl Agent {
                 context_limit: budget.compact_threshold,
                 keep_recent: budget.compact_keep_recent,
                 enabled: self.settings.compaction.reactive,
-                circuit_open: self.compaction_state.circuit_open,
+                circuit_open: self.compaction.compaction_state.circuit_open,
             },
         ) {
             compaction::compact::ReactiveOutcome::Compacted => {
-                self.tool_results_ever_cleared = true;
-                self.compaction_state.record_success();
+                self.compaction.tool_results_ever_cleared = true;
+                self.compaction.compaction_state.record_success();
                 let messages = self.session.messages.len();
                 self.report_compaction(
                     &CompactSummary {
@@ -128,9 +131,9 @@ impl Agent {
                 tracing::info!(context_tokens, "reactive micro-compact completed");
             }
             compaction::compact::ReactiveOutcome::NoEffect => {
-                self.compaction_state.record_failure();
+                self.compaction.compaction_state.record_failure();
                 tracing::warn!(
-                    failures = self.compaction_state.consecutive_failures,
+                    failures = self.compaction.compaction_state.consecutive_failures,
                     "reactive micro-compact had no effect"
                 );
             }
@@ -141,13 +144,13 @@ impl Agent {
         if let Some(reminder) = compactor.context_warning(&compaction::compact::BudgetState {
             context_tokens: self.context_tokens(),
             threshold,
-            warned_already: self.compact_warning_issued,
+            warned_already: self.compaction.compact_warning_issued,
         }) {
             self.session.push_message(ModelMessage {
                 role: MessageRole::User,
                 content: vec![ModelContentBlock::Text { text: reminder }],
             });
-            self.compact_warning_issued = true;
+            self.compaction.compact_warning_issued = true;
         }
         // Asked again after the reminder, not before it: the reminder is
         // itself context, and a conversation one message short of the
@@ -155,14 +158,14 @@ impl Agent {
         if !compactor.should_compact(&compaction::compact::BudgetState {
             context_tokens: self.context_tokens(),
             threshold,
-            warned_already: self.compact_warning_issued,
+            warned_already: self.compaction.compact_warning_issued,
         }) {
             return;
         }
         // The threshold is on the whole request, so the conversation gets what
         // the fixed part of it leaves. Where that is nothing, no conversation
         // could fit, and the threshold bounds the conversation by itself.
-        let room = match threshold.checked_sub(self.request_overhead_tokens) {
+        let room = match threshold.checked_sub(self.compaction.request_overhead_tokens) {
             Some(room) if room > 0 => room,
             _ if self.session.token_count() > threshold => threshold,
             _ => return,
@@ -197,7 +200,7 @@ impl Agent {
         if !self.pre_compact_hooks_allow(target, trigger).await {
             return Err(NotCompacted::Declined);
         }
-        let compactor = self.compactor.clone();
+        let compactor = self.compaction.compactor.clone();
         let messages_before = self.session.messages.len();
         // The summarizer must see what is about to be destroyed, and recovery
         // re-attaches files from reads that are about to be dropped.
@@ -260,22 +263,22 @@ impl Agent {
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to compact messages, continuing with full context");
                     let tokens = self.context_tokens() as u64;
-                    let _ =
-                        self.telemetry_handle
-                            .record(telemetry::TelemetryEvent::compact_action(
-                                &self.session.session_id,
-                                self.session.turn_count,
-                                Some(self.current_turn_id.clone()),
-                                telemetry::CompactActionPayload {
-                                    strategy: "error".into(),
-                                    before_tokens: tokens,
-                                    after_tokens: tokens,
-                                    before_message_count: messages_before,
-                                    after_message_count: messages_before,
-                                    success: false,
-                                    latency_ms: compact_start.elapsed().as_millis() as u64,
-                                },
-                            ));
+                    let _ = self.telemetry.telemetry_handle.record(
+                        telemetry::TelemetryEvent::compact_action(
+                            &self.session.session_id,
+                            self.session.turn_count,
+                            Some(self.current_turn_id.clone()),
+                            telemetry::CompactActionPayload {
+                                strategy: "error".into(),
+                                before_tokens: tokens,
+                                after_tokens: tokens,
+                                before_message_count: messages_before,
+                                after_message_count: messages_before,
+                                success: false,
+                                latency_ms: compact_start.elapsed().as_millis() as u64,
+                            },
+                        ),
+                    );
                     return Err(NotCompacted::Failed(e.to_string()));
                 }
             },
@@ -299,7 +302,7 @@ impl Agent {
             return Err(NotCompacted::NothingToDrop);
         }
         if result.strategy == compaction::compact::CompactStrategy::MicroCompact {
-            self.tool_results_ever_cleared = true;
+            self.compaction.tool_results_ever_cleared = true;
         }
         let messages_after = compacted.len();
         if let Err(e) = self
@@ -321,7 +324,7 @@ impl Agent {
         };
         self.report_compaction(&summary, result.projection.as_ref(), compact_start);
         // The warning can fire again once the budget fills up again.
-        self.compact_warning_issued = false;
+        self.compaction.compact_warning_issued = false;
 
         // Two pieces of context are injected once per session, as
         // `<system-reminder>` user messages, and are therefore ordinary
@@ -332,8 +335,8 @@ impl Agent {
         // recovery above. Resetting both re-injects nothing here; it makes the
         // next turn's injection paths eligible again. A strategy that kept the
         // opening message keeps the flag.
-        self.session_context_injected = holds_session_context(&self.session.messages);
-        if let Some(ref mut frozen) = self.frozen {
+        self.prompt.session_context_injected = holds_session_context(&self.session.messages);
+        if let Some(ref mut frozen) = self.prompt.frozen {
             frozen.already_surfaced.clear();
         }
 
@@ -354,10 +357,12 @@ impl Agent {
         );
 
         if self
+            .gate
             .hooks
             .has_hooks_for(hooks::config::HookEvent::PostCompact)
         {
             let _ = self
+                .gate
                 .hooks
                 .run(
                     hooks::config::HookEvent::PostCompact,
@@ -393,12 +398,14 @@ impl Agent {
         trigger: CompactTrigger,
     ) -> bool {
         if !self
+            .gate
             .hooks
             .has_hooks_for(hooks::config::HookEvent::PreCompact)
         {
             return true;
         }
         let hook_result = self
+            .gate
             .hooks
             .run(
                 hooks::config::HookEvent::PreCompact,
@@ -455,12 +462,13 @@ impl Agent {
         // `compaction` crate does not depend on `skills`. A name that no
         // longer resolves still gets a record, so it is mentioned by name.
         let invoked_skills = self
+            .prompt
             .invoked_skills
             .iter()
             .map(|name| compaction::compact::InvokedSkillRecord {
                 name: name.clone(),
-                content: self.skills.body(name),
-                last_seq: self.skills.last_invoked_seq(name),
+                content: self.tooling.skills.body(name),
+                last_seq: self.tooling.skills.last_invoked_seq(name),
             })
             .collect();
         let mut activated_tools: Vec<String> =
@@ -500,7 +508,7 @@ impl Agent {
         projection: Option<&compaction::compact::SnipProjection>,
         started: std::time::Instant,
     ) {
-        let _ = self.event_tx.send(AgentEvent::CompactAction {
+        let _ = self.channels.event_tx.send(AgentEvent::CompactAction {
             strategy: summary.strategy.clone(),
             messages_before: summary.messages_before,
             messages_after: summary.messages_after,
@@ -512,6 +520,7 @@ impl Agent {
             tokens_after: summary.tokens_after,
         });
         let _ = self
+            .telemetry
             .telemetry_handle
             .record(telemetry::TelemetryEvent::compact_action(
                 &self.session.session_id,

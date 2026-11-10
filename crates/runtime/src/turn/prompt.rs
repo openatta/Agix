@@ -223,7 +223,7 @@ impl Agent {
     /// Per-server and total length are already bounded by
     /// `McpManager::server_instructions()` — see that method's doc comment.
     pub(super) fn build_mcp_instructions(&self) -> String {
-        let instructions = self.mcp.instructions();
+        let instructions = self.tooling.mcp.instructions();
         if instructions.is_empty() {
             return String::new();
         }
@@ -249,7 +249,7 @@ impl Agent {
     /// a single heavily-used skill degraded exactly as much as one never
     /// invoked.
     pub(super) fn build_skills_text(&self) -> String {
-        let skills = self.skills.list();
+        let skills = self.tooling.skills.list();
         // Filter out skills with disable_model_invocation: true
         let llm_skills: Vec<_> = skills
             .iter()
@@ -281,7 +281,7 @@ impl Agent {
         let names: Vec<&str> = llm_skills.iter().map(|s| s.name.as_str()).collect();
         let counts: Vec<u32> = names
             .iter()
-            .map(|n| self.skills.invocation_count(n))
+            .map(|n| self.tooling.skills.invocation_count(n))
             .collect();
         let entry_lens: Vec<usize> = combined.iter().map(|c| c.len()).collect();
         let keeps_description = select_skills_keeping_description(
@@ -332,7 +332,7 @@ impl Agent {
     /// of a file the walk already canonicalized under a different name.
     pub(super) fn build_instruction_context(&self) -> String {
         let mut sections: Vec<(String, String)> = Vec::new();
-        if let Some(ref frozen) = self.frozen {
+        if let Some(ref frozen) = self.prompt.frozen {
             for entry in &frozen.memory_blocks {
                 if entry.content.trim().is_empty() {
                     continue;
@@ -340,7 +340,7 @@ impl Agent {
                 sections.push((entry.path.display().to_string(), entry.content.clone()));
             }
         }
-        if let Some(ref own) = self.claude_md_content {
+        if let Some(ref own) = self.prompt.claude_md_content {
             let already = sections.iter().any(|(_, c)| c.trim() == own.trim());
             if !already && !own.trim().is_empty() {
                 sections.push((
@@ -382,17 +382,17 @@ impl Agent {
         let facts = {
             let ctx = build_prompt_context(
                 &self.settings,
-                self.frozen.as_ref(),
+                self.prompt.frozen.as_ref(),
                 None,
                 None,
                 &model,
-                self.tool_results_ever_cleared,
-                &*self.environment,
+                self.compaction.tool_results_ever_cleared,
+                &*self.policies.environment,
             );
             self.scene.build_session_context(&ctx)
         };
         let instructions = self.build_instruction_context();
-        let today = chrono_now(&*self.environment);
+        let today = chrono_now(&*self.policies.environment);
 
         let mut text = String::from(SESSION_CONTEXT_OPENING);
         if !facts.is_empty() {
@@ -413,7 +413,7 @@ impl Agent {
             role: MessageRole::User,
             content: vec![ModelContentBlock::Text { text }],
         });
-        self.session_context_injected = true;
+        self.prompt.session_context_injected = true;
 
         if !instructions.is_empty() {
             let bytes = instructions.len();
@@ -422,13 +422,14 @@ impl Agent {
             })
             .await;
         }
-        if self.agent_depth == 0 {
+        if self.identity.agent_depth == 0 {
             let loaded: Vec<std::path::PathBuf> = self
+                .prompt
                 .frozen
                 .iter()
                 .flat_map(|f| f.memory_blocks.iter().map(|e| e.path.clone()))
                 .collect();
-            if let Err(e) = self.hooks.watch_files(&loaded) {
+            if let Err(e) = self.gate.hooks.watch_files(&loaded) {
                 tracing::warn!(error = %e, "could not watch the instruction files for FileChanged");
             }
         }
@@ -456,11 +457,18 @@ impl Agent {
         };
         let mut seen_names = HashSet::new();
         let tool_names: String = self
+            .tooling
             .tools
             .list()
             .iter()
             .map(|t| t.name().to_string())
-            .chain(self.mcp.tools().into_iter().map(|t| t.name().to_string()))
+            .chain(
+                self.tooling
+                    .mcp
+                    .tools()
+                    .into_iter()
+                    .map(|t| t.name().to_string()),
+            )
             .filter(|n| seen_names.insert(n.clone()))
             .collect::<Vec<_>>()
             .join(",");
@@ -471,31 +479,31 @@ impl Agent {
         };
         let mut ctx = build_prompt_context(
             &self.settings,
-            self.frozen.as_ref(),
+            self.prompt.frozen.as_ref(),
             mcp_ref,
             skills_ref,
             effective_model,
-            self.tool_results_ever_cleared,
-            &*self.environment,
+            self.compaction.tool_results_ever_cleared,
+            &*self.policies.environment,
         );
         ctx.available_tools = tools_ref;
-        let blocks =
-            self.prompt_assembler
-                .assemble(&base::interface::prompt_assembler::AssemblyRequest {
-                    registry: self.prompt_registry.as_ref(),
-                    scene: self.scene.as_ref(),
-                    settings: &self.settings,
-                    memory_store: &self.memory_store,
-                    ctx: &ctx,
-                    skills_text: skills_ref,
-                    mcp_instructions: mcp_ref,
-                });
+        let blocks = self.prompt.prompt_assembler.assemble(
+            &base::interface::prompt_assembler::AssemblyRequest {
+                registry: self.prompt.prompt_registry.as_ref(),
+                scene: self.scene.as_ref(),
+                settings: &self.settings,
+                memory_store: &self.memory.memory_store,
+                ctx: &ctx,
+                skills_text: skills_ref,
+                mcp_instructions: mcp_ref,
+            },
+        );
         // Passes that have to await something — a script carrier, most of
         // all. Kept out of `assemble_prompt_with` so assembly stays a
         // synchronous function for every caller that registers none.
         base::interface::prompt_assembly::run_async_assembly_hooks(
             blocks,
-            &self.prompt_registry.async_assembly_hooks(),
+            &self.prompt.prompt_registry.async_assembly_hooks(),
             &ctx,
         )
         .await
@@ -523,7 +531,8 @@ impl Agent {
         // Remember what this request costs *before* any conversation content,
         // so the next turn's compaction check can include it — see
         // `request_overhead_tokens` and `context_tokens`.
-        self.request_overhead_tokens = estimate_request_overhead(&prompt_blocks, &tool_defs);
+        self.compaction.request_overhead_tokens =
+            estimate_request_overhead(&prompt_blocks, &tool_defs);
         let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
         (prompt_blocks, tool_defs, messages)
     }

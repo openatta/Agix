@@ -71,7 +71,7 @@ impl Agent {
                     .set_turn_origin(base::context::goal::TurnOrigin::from_turn_id(&turn_id));
                 self.current_turn_id = turn_id;
                 self.session.set_turn_id(Some(self.current_turn_id.clone()));
-                let _ = self.event_tx.send(AgentEvent::TurnStart {
+                let _ = self.channels.event_tx.send(AgentEvent::TurnStart {
                     turn_id: self.current_turn_id.clone(),
                 });
                 if let Some(sc) = crate::commands::parse_slash_command(&content) {
@@ -88,10 +88,12 @@ impl Agent {
                     // daemon's path): that catalog predates this session's MCP
                     // connections, and it also lets prompts picked up by a
                     // later `refresh_prompts` be invocable immediately.
-                    let mcp_command: Option<String> = match self.commands.resolve(&sc.name) {
+                    let mcp_command: Option<String> = match self.tooling.commands.resolve(&sc.name)
+                    {
                         Some(crate::commands::Command::McpPrompt { command, .. }) => Some(command),
                         Some(_) => None,
                         None => self
+                            .tooling
                             .mcp
                             .has_prompt_command(&sc.name)
                             .then(|| sc.name.clone()),
@@ -104,7 +106,11 @@ impl Agent {
                         // a broken MCP server must not fail the user's turn,
                         // it must produce something the model can read and
                         // explain to the user.
-                        let invocation = self.mcp.invoke_prompt_command(&command, &sc.args).await;
+                        let invocation = self
+                            .tooling
+                            .mcp
+                            .invoke_prompt_command(&command, &sc.args)
+                            .await;
                         if invocation.is_error {
                             tracing::warn!(
                                 command = %command,
@@ -121,13 +127,19 @@ impl Agent {
                             .await;
                     }
 
-                    if let Some(cmd) = self.commands.resolve(&sc.name) {
+                    if let Some(cmd) = self.tooling.commands.resolve(&sc.name) {
                         match cmd {
                             crate::commands::Command::Prompt { entry } => {
                                 let ctx = self.skill_invocation_context(cancel.clone());
                                 let expansion = self
+                                    .tooling
                                     .commands
-                                    .run_prompt_command(&entry, &sc, &ctx, self.permission.as_ref())
+                                    .run_prompt_command(
+                                        &entry,
+                                        &sc,
+                                        &ctx,
+                                        self.gate.permission.as_ref(),
+                                    )
                                     .await;
                                 self.slash_skill_grants = expansion.grants;
                                 return self
@@ -164,7 +176,7 @@ impl Agent {
                                     "cost" => self.handle_cost_command(),
                                     _ => format!("Unknown local command: {}", sc.name),
                                 };
-                                let _ = self.event_tx.send(AgentEvent::TextDelta {
+                                let _ = self.channels.event_tx.send(AgentEvent::TextDelta {
                                     text: result_text,
                                     turn_id: self.current_turn_id.clone(),
                                 });
@@ -187,10 +199,10 @@ impl Agent {
                     .then(|| find_token_budget_directive(&content))
                     .flatten();
                 let processed_content = if let Some((target, range)) = directive {
-                    self.output_token_target = Some(target);
-                    self.output_token_target_unannounced = true;
-                    self.accumulated_output_tokens = 0;
-                    self.token_budget_continuation_count = 0;
+                    self.token_budget.target = Some(target);
+                    self.token_budget.unannounced = true;
+                    self.token_budget.accumulated = 0;
+                    self.token_budget.continuations = 0;
                     tracing::info!(target, "Token budget directive parsed — set output target");
                     strip_token_budget_directive(&content, range)
                 } else {
@@ -226,8 +238,8 @@ impl Agent {
                 // (tests, embedders driving the engine themselves), sharing
                 // one implementation so the two paths can't diverge.
                 resolve_permission_response(
-                    &self.pending_permissions,
-                    &self.permission_denial_count,
+                    &self.gate.pending_permissions,
+                    &self.gate.permission_denial_count,
                     prompt_id,
                     decision,
                 );
@@ -235,7 +247,7 @@ impl Agent {
             }
             InputMessage::QuestionResponse { prompt_id, answer } => {
                 crate::elicitation::resolve_question_response(
-                    &self.pending_questions,
+                    &self.gate.pending_questions,
                     &prompt_id,
                     answer,
                 );
@@ -260,7 +272,7 @@ impl Agent {
                     }
                     EngineCommand::SetSessionId => {
                         self.session.set_session_id(content);
-                        let _ = self.event_tx.send(AgentEvent::SessionChanged {
+                        let _ = self.channels.event_tx.send(AgentEvent::SessionChanged {
                             session_id: self.session.session_id.clone(),
                         });
                         Ok(TurnOutcome::default())
@@ -273,16 +285,18 @@ impl Agent {
                         let mut settings = (*self.settings).clone();
                         settings.model.model_name = content.clone();
                         self.settings = Arc::new(settings);
-                        let _ = self.event_tx.send(AgentEvent::System {
+                        let _ = self.channels.event_tx.send(AgentEvent::System {
                             message: format!("model set to {content}"),
                         });
                         Ok(TurnOutcome::default())
                     }
                     EngineCommand::RefreshMcp => {
-                        self.mcp.refresh_tools().await;
-                        sync_mcp_adapters(self.tools.as_ref(), self.mcp.as_ref(), |n| {
-                            self.scene.permits_tool(n)
-                        });
+                        self.tooling.mcp.refresh_tools().await;
+                        sync_mcp_adapters(
+                            self.tooling.tools.as_ref(),
+                            self.tooling.mcp.as_ref(),
+                            |n| self.scene.permits_tool(n),
+                        );
                         Ok(TurnOutcome::default())
                     }
                     // `CancelTurn` is handled by the input demultiplexer, not
@@ -308,7 +322,7 @@ impl Agent {
         event: hooks::HookEvent,
         build: impl FnOnce(hooks::HookInput) -> hooks::HookInput,
     ) {
-        if !self.hooks.has_hooks_for(event) {
+        if !self.gate.hooks.has_hooks_for(event) {
             return;
         }
         let input = build(hooks::HookInput::lifecycle(
@@ -317,7 +331,7 @@ impl Agent {
             self.settings.paths.project_root().display().to_string(),
             hook_permission_mode(self.session_state.permission_mode()),
         ));
-        let _ = self.hooks.run(event, &input).await;
+        let _ = self.gate.hooks.run(event, &input).await;
     }
 
     /// Run a full turn from a user message.
@@ -336,16 +350,19 @@ impl Agent {
         self.last_call_usage = None;
         self.turn_truncated = false;
         self.session_state.take_structured_output();
-        crate::steering::lock(&self.steering).open();
+        crate::steering::lock(&self.channels.steering).open();
         let outcome = self
             .run_user_turn_inner(content, attachments, cancel, origin)
             .await;
-        let undelivered = crate::steering::lock(&self.steering).close();
+        let undelivered = crate::steering::lock(&self.channels.steering).close();
         if !undelivered.is_empty() {
-            let _ = self.event_tx.send(AgentEvent::UserMessagesReturned {
-                messages: undelivered,
-                turn_id: self.current_turn_id.clone(),
-            });
+            let _ = self
+                .channels
+                .event_tx
+                .send(AgentEvent::UserMessagesReturned {
+                    messages: undelivered,
+                    turn_id: self.current_turn_id.clone(),
+                });
         }
         self.finish_turn(outcome).await
     }
@@ -366,7 +383,7 @@ impl Agent {
         let last = last && !delivered;
         loop {
             let queued = {
-                let mut q = crate::steering::lock(&self.steering);
+                let mut q = crate::steering::lock(&self.channels.steering);
                 if last {
                     q.take_or_close()
                 } else {
@@ -391,15 +408,18 @@ impl Agent {
                             },
                             history::entry::MessageOrigin::Steer,
                         );
-                        let _ = self.event_tx.send(AgentEvent::UserMessageDelivered {
-                            message_id: m.message_id,
-                            content,
-                            turn_id: self.current_turn_id.clone(),
-                        });
+                        let _ = self
+                            .channels
+                            .event_tx
+                            .send(AgentEvent::UserMessageDelivered {
+                                message_id: m.message_id,
+                                content,
+                                turn_id: self.current_turn_id.clone(),
+                            });
                         delivered = true;
                     }
                     PromptScreen::Blocked(message) => {
-                        let _ = self.event_tx.send(AgentEvent::UserMessageRefused {
+                        let _ = self.channels.event_tx.send(AgentEvent::UserMessageRefused {
                             message_id: m.message_id,
                             content: m.content,
                             message,
@@ -443,12 +463,12 @@ impl Agent {
             PromptScreen::Pass(content) => content,
             blocked => return blocked,
         };
-        let attachments = if self.prompt_middleware.is_empty() {
+        let attachments = if self.prompt.prompt_middleware.is_empty() {
             Vec::new()
         } else {
             describe_attachments(attachments).await
         };
-        for middleware in self.prompt_middleware.iter() {
+        for middleware in self.prompt.prompt_middleware.iter() {
             let call = base::interface::prompt_middleware::PromptCall {
                 session_id: &self.session.session_id,
                 turn_id: &self.current_turn_id,
@@ -480,7 +500,11 @@ impl Agent {
         content: String,
         delivery: PromptDelivery,
     ) -> PromptScreen {
-        if !self.hooks.has_hooks_for(hooks::HookEvent::UserPromptSubmit) {
+        if !self
+            .gate
+            .hooks
+            .has_hooks_for(hooks::HookEvent::UserPromptSubmit)
+        {
             return PromptScreen::Pass(content);
         }
         let prompt_input = hooks::HookInput {
@@ -493,6 +517,7 @@ impl Agent {
             ..Default::default()
         };
         let hook_result = self
+            .gate
             .hooks
             .run(hooks::HookEvent::UserPromptSubmit, &prompt_input)
             .await;
@@ -528,7 +553,7 @@ impl Agent {
             self.session_state.goal_disarm();
         }
         self.record_goal_changes().await;
-        if let Some(seat) = self.team_seat.clone() {
+        if let Some(seat) = self.identity.team_seat.clone() {
             let stop_reason = match &outcome {
                 Ok(o) => o.stop_reason.clone(),
                 Err(_) => "error".into(),
@@ -549,10 +574,12 @@ impl Agent {
             .await;
         }
         if let Ok(o) = &outcome {
-            self.spent.usage = self.spent.usage.plus(o.total_usage);
-            self.spent.api_calls = self.spent.api_calls.saturating_add(o.api_calls);
-            self.spent.tool_calls = self.spent.tool_calls.saturating_add(o.tool_calls);
-            let _ = self.event_tx.send(AgentEvent::TurnComplete {
+            self.telemetry.spent.usage = self.telemetry.spent.usage.plus(o.total_usage);
+            self.telemetry.spent.api_calls =
+                self.telemetry.spent.api_calls.saturating_add(o.api_calls);
+            self.telemetry.spent.tool_calls =
+                self.telemetry.spent.tool_calls.saturating_add(o.tool_calls);
+            let _ = self.channels.event_tx.send(AgentEvent::TurnComplete {
                 stop_reason: o.stop_reason.clone(),
                 api_calls: o.api_calls,
                 tool_calls: o.tool_calls,

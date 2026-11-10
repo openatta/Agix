@@ -265,17 +265,17 @@ impl Agent {
         /// advertise a guide when the scene has filtered the fetcher out.
         const TOOL_SEARCH_NAME: &str = "ToolSearch";
         let mut pool: BTreeMap<String, Arc<dyn base::tool::Tool>> = BTreeMap::new();
-        for t in self.mcp.tools() {
+        for t in self.tooling.mcp.tools() {
             pool.insert(t.name().to_string(), t);
         }
         // MCP adapters also sit in `self.tools`, because dispatch looks them up
         // there; only a non-MCP entry can shadow one. Built-ins win.
-        for t in self.tools.list() {
+        for t in self.tooling.tools.list() {
             if t.source().starts_with("mcp:") {
                 continue;
             }
             let name = t.name().to_string();
-            if pool.contains_key(&name) && self.mcp_shadow_warned.insert(name.clone()) {
+            if pool.contains_key(&name) && self.tooling.mcp_shadow_warned.insert(name.clone()) {
                 tracing::warn!(
                     tool = %name,
                     "built-in tool shadows an MCP tool of the same name; the MCP tool is not exposed to the model"
@@ -343,7 +343,7 @@ impl Agent {
     ) -> Arc<dyn base::interface::model::Model> {
         Arc::new(telemetry::model::TelemetryModel::new(
             model,
-            self.telemetry_handle.clone(),
+            self.telemetry.telemetry_handle.clone(),
             self.settings.model.model_name.clone(),
         ))
     }
@@ -372,7 +372,7 @@ impl Agent {
                 thinking_mode: self.settings.model.thinking_mode.clone(),
                 effort: self.settings.model.effort,
                 fallback_model: self.settings.model.fallback_model.clone(),
-                cache_edits: self.cached_mc.consume_pending_edits(),
+                cache_edits: self.compaction.cached_mc.consume_pending_edits(),
                 origin,
                 input_map,
                 provider_search: None,
@@ -435,11 +435,12 @@ impl Agent {
         // per chunk — see `base::interface::model_interceptor`.
         let mut request = request;
         base::interface::model_interceptor::intercept_request(
-            &self.model_interceptors,
+            &self.llm.model_interceptors,
             &mut request,
         );
         open_conversation_with_user_blocks(&mut request);
-        self.model
+        self.llm
+            .model
             .stream(
                 request.prompt_blocks,
                 request.tool_defs,
@@ -466,13 +467,14 @@ impl Agent {
     /// Zero on the very first turn, before any prompt has been assembled —
     /// which is fine, a session's first turn is never near its budget.
     pub(crate) fn context_tokens(&self) -> usize {
-        self.session.token_count() + self.request_overhead_tokens
+        self.session.token_count() + self.compaction.request_overhead_tokens
     }
 
     /// What the scene asked for, after the deployment's budget policy has had
     /// its say.
     pub(crate) fn context_budget(&self) -> base::interface::budget_policy::ContextBudget {
-        self.budget_policy
+        self.policies
+            .budget_policy
             .context_budget(&self.scene.token_budget())
     }
 
@@ -486,7 +488,8 @@ impl Agent {
         e: &base::interface::model::ModelError,
     ) -> base::interface::recovery_policy::Recovery {
         let rendered = e.to_string();
-        self.recovery_policy
+        self.llm
+            .recovery_policy
             .on_failure(&model_failure(e, &rendered))
     }
 
@@ -506,7 +509,7 @@ impl Agent {
         effective_max_tokens: &mut u32,
     ) -> bool {
         use base::interface::recovery_policy::StopRecovery;
-        let decision = self.recovery_policy.on_early_stop(
+        let decision = self.llm.recovery_policy.on_early_stop(
             stop_reason,
             &base::interface::recovery_policy::RecoveryAttempt {
                 output_limit_escalations: *max_tokens_recovery,

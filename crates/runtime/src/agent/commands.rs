@@ -5,7 +5,7 @@ use super::*;
 impl Agent {
     /// `/help` — list all available slash commands.
     pub(crate) fn handle_help_command(&self) -> String {
-        let commands = self.commands.list();
+        let commands = self.tooling.commands.list();
         if commands.is_empty() {
             return "No commands registered.".into();
         }
@@ -19,7 +19,7 @@ impl Agent {
 
     /// `/skills` — list all available skills.
     pub(crate) fn handle_skills_command(&self) -> String {
-        let skills = self.skills.list();
+        let skills = self.tooling.skills.list();
         if skills.is_empty() {
             return "No skills loaded.".into();
         }
@@ -36,14 +36,15 @@ impl Agent {
         if let Err(e) = self.session.clear().await {
             tracing::warn!(error = %e, "failed to record /clear in the transcript");
         }
-        self.session_context_injected = false;
-        self.invoked_skills.clear();
-        self.announced_skills = None;
-        self.permission_denial_count
+        self.prompt.session_context_injected = false;
+        self.prompt.invoked_skills.clear();
+        self.prompt.announced_skills = None;
+        self.gate
+            .permission_denial_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        self.output_token_target = None;
-        self.accumulated_output_tokens = 0;
-        self.token_budget_continuation_count = 0;
+        self.token_budget.target = None;
+        self.token_budget.accumulated = 0;
+        self.token_budget.continuations = 0;
     }
 
     /// `/cost` — show estimated session API cost.
@@ -52,7 +53,7 @@ impl Agent {
             usage,
             api_calls,
             tool_calls,
-        } = self.spent;
+        } = self.telemetry.spent;
         format!(
             "Since this session was loaded: {api_calls} model calls, {tool_calls} tool calls; \
              {} input tokens, {} output tokens, {} written to and {} read from the prompt \

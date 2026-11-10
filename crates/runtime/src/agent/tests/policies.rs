@@ -608,6 +608,7 @@ fn the_settings_compaction_numbers_reach_the_sessions_context_budget() {
         .build()
         .expect("build should succeed");
     let budget = agent
+        .policies
         .budget_policy
         .context_budget(&agent.scene.token_budget());
     assert_eq!(budget.compact_threshold, 1234);

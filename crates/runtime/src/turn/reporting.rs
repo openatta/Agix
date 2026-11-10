@@ -75,6 +75,7 @@ impl Agent {
     ) {
         let tid = self.current_turn_id.clone();
         let _ = self
+            .telemetry
             .telemetry_handle
             .record(telemetry::TelemetryEvent::turn_complete(
                 &self.session.session_id,
@@ -85,6 +86,7 @@ impl Agent {
                     api_calls,
                     tool_calls,
                     permission_denials: self
+                        .gate
                         .permission_denial_count
                         .load(std::sync::atomic::Ordering::Relaxed),
                     last_tool_name: None,
@@ -112,6 +114,7 @@ impl Agent {
             ModelError::Unsupported(_) => ("unsupported", None),
         };
         let _ = self
+            .telemetry
             .telemetry_handle
             .record(telemetry::TelemetryEvent::api_error(
                 &self.session.session_id,
@@ -129,24 +132,25 @@ impl Agent {
 
     pub(super) fn record_slash_command(&self, command: &crate::commands::SlashCommand) {
         use crate::commands::Command;
-        let kind = match self.commands.resolve(&command.name) {
+        let kind = match self.tooling.commands.resolve(&command.name) {
             Some(Command::Local { .. }) => "local",
             Some(Command::Prompt { .. }) => "prompt",
             Some(Command::McpPrompt { .. }) => "mcp_prompt",
-            None if self.mcp.has_prompt_command(&command.name) => "mcp_prompt",
+            None if self.tooling.mcp.has_prompt_command(&command.name) => "mcp_prompt",
             None => "unknown",
         };
-        let _ = self
-            .telemetry_handle
-            .record(telemetry::TelemetryEvent::slash_command_used(
-                &self.session.session_id,
-                self.session.turn_count,
-                Some(self.current_turn_id.clone()),
-                telemetry::SlashCommandUsedPayload {
-                    command: command.name.clone(),
-                    kind: kind.to_string(),
-                    has_arg: !command.args.trim().is_empty(),
-                },
-            ));
+        let _ =
+            self.telemetry
+                .telemetry_handle
+                .record(telemetry::TelemetryEvent::slash_command_used(
+                    &self.session.session_id,
+                    self.session.turn_count,
+                    Some(self.current_turn_id.clone()),
+                    telemetry::SlashCommandUsedPayload {
+                        command: command.name.clone(),
+                        kind: kind.to_string(),
+                        has_arg: !command.args.trim().is_empty(),
+                    },
+                ));
     }
 }

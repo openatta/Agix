@@ -352,7 +352,7 @@ async fn an_mcp_adapter_is_advertised_once_and_not_reported_as_shadowed() {
     assert_eq!(matching.len(), 1);
     assert_eq!(matching[0].source.as_deref(), Some("mcp:test-server"));
     assert!(
-        agent.mcp_shadow_warned.is_empty(),
+        agent.tooling.mcp_shadow_warned.is_empty(),
         "the dispatch copy of an MCP adapter is not a builtin shadowing it"
     );
 }
@@ -475,7 +475,7 @@ async fn rebuilt_prompt_still_carries_skills_and_scene_skeleton() {
             0
         }
     }
-    agent.skills = Arc::new(OneSkill(base::frozen::SkillEntry {
+    agent.tooling.skills = Arc::new(OneSkill(base::frozen::SkillEntry {
         name: "release-checklist".into(),
         description: "Runs the pre-release checklist".into(),
         user_invocable: true,

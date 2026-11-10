@@ -25,11 +25,14 @@ async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
 
     let harnix = build(Arc::new(scene::harnix::HarnixScene));
     for absent in ["CronCreate", "NotebookEdit", "EnterWorktree"] {
-        assert!(harnix.tools.get(absent).is_none(), "{absent} in harnix");
+        assert!(
+            harnix.tooling.tools.get(absent).is_none(),
+            "{absent} in harnix"
+        );
     }
     for present in ["Read", "ToolSearch", "mcp__srv__do-thing"] {
         assert!(
-            harnix.tools.get(present).is_some(),
+            harnix.tooling.tools.get(present).is_some(),
             "{present} missing in harnix"
         );
     }
@@ -59,7 +62,7 @@ async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
         }
     }
     let narrow = build(Arc::new(ReadOnly));
-    assert_eq!(narrow.tools.names(), vec!["Read".to_string()]);
+    assert_eq!(narrow.tooling.tools.names(), vec!["Read".to_string()]);
 }
 
 #[tokio::test]
@@ -116,9 +119,9 @@ async fn build_registers_what_a_rust_plugin_registers() {
         .expect("build should succeed");
 
     assert!(
-        agent.tools.get("Exported").is_some(),
+        agent.tooling.tools.get("Exported").is_some(),
         "{:?}",
-        agent.tools.names()
+        agent.tooling.tools.names()
     );
     assert!(agent.health().report().find("plugin.check").is_some());
 }
@@ -142,7 +145,7 @@ async fn a_host_can_supply_the_standing_instructions_without_a_file() {
         .expect("build should succeed");
 
     assert_eq!(
-        agent.claude_md_content.as_deref(),
+        agent.prompt.claude_md_content.as_deref(),
         Some("Always run the linter.")
     );
 }
@@ -182,6 +185,7 @@ pub(super) fn registered_tools(
         .skip_warmup(true);
     let (agent, _rx, _tx) = configure(builder).build().expect("build should succeed");
     agent
+        .tooling
         .tools
         .list()
         .iter()
@@ -226,6 +230,7 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
         .expect("build should succeed");
 
     let resident: Vec<String> = agent
+        .tooling
         .tools
         .list()
         .iter()
@@ -253,7 +258,7 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
 
     // Registered after the seeding copy.
     for late in ["CronCreate", "WebSearch"] {
-        let t = agent.tools.get(late).expect(late);
+        let t = agent.tooling.tools.get(late).expect(late);
         assert!(t.is_deferred(), "{late} must be deferred");
         let schema = serde_json::to_string(&t.input_schema()).unwrap();
         assert!(
@@ -265,11 +270,11 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
     }
 
     // The way back to every deferred schema must never itself be deferred.
-    assert!(!agent.tools.get("ToolSearch").unwrap().is_deferred());
+    assert!(!agent.tooling.tools.get("ToolSearch").unwrap().is_deferred());
 
     // Duplicate entries would shadow the wrapped instance, since `get`
     // returns the first name match.
-    let mut names = agent.tools.names();
+    let mut names = agent.tooling.tools.names();
     names.sort();
     let before = names.len();
     names.dedup();
@@ -314,6 +319,7 @@ async fn every_registered_tool_has_a_deferral_policy() {
         .collect();
 
     let unclassified: Vec<String> = agent
+        .tooling
         .tools
         .names()
         .into_iter()
@@ -373,10 +379,14 @@ async fn scene_extra_tools_are_registered_and_follow_the_deferred_policy() {
         .build()
         .expect("build should succeed");
 
-    let probe = agent.tools.get("Probe").expect("scene tool registered");
+    let probe = agent
+        .tooling
+        .tools
+        .get("Probe")
+        .expect("scene tool registered");
     assert!(!probe.is_deferred(), "not named in deferred_tools");
 
-    let second = agent.tools.get("SecondProbe").expect("registered");
+    let second = agent.tooling.tools.get("SecondProbe").expect("registered");
     assert!(
         second.is_deferred(),
         "a scene's own tool must obey its own deferred policy"
@@ -543,9 +553,9 @@ async fn build_registers_web_search_and_the_other_bridged_tools() {
         "ExitWorktree",
     ] {
         assert!(
-            agent.tools.get(expected).is_some(),
+            agent.tooling.tools.get(expected).is_some(),
             "{expected} should be registered, found: {:?}",
-            agent.tools.names()
+            agent.tooling.tools.names()
         );
     }
 
@@ -584,6 +594,7 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
         .expect("build should succeed");
 
     let deferred = agent
+        .tooling
         .tools
         .get("GoalCreate")
         .expect("GoalCreate still registered");
@@ -599,7 +610,7 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
     );
 
     // Read is not in the deferred list — untouched.
-    let read = agent.tools.get("Read").unwrap();
+    let read = agent.tooling.tools.get("Read").unwrap();
     assert!(!read.is_deferred());
     assert!(!read.input_schema()["properties"]
         .as_object()
@@ -615,6 +626,7 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
     // actually find something, or the name is advertised with no way to
     // get the schema back.
     let found = agent
+        .tooling
         .tools
         .get("ToolSearch")
         .expect("ToolSearch rebound onto the session registry")
@@ -675,6 +687,7 @@ async fn each_session_gets_an_independent_tool_registry_not_a_shared_mutated_one
     );
     assert_eq!(
         agent1
+            .tooling
             .tools
             .list()
             .iter()
@@ -685,6 +698,7 @@ async fn each_session_gets_an_independent_tool_registry_not_a_shared_mutated_one
     );
     assert_eq!(
         agent2
+            .tooling
             .tools
             .list()
             .iter()
@@ -777,6 +791,7 @@ async fn every_registered_tool_is_visible_to_the_permission_handler() {
     // Sanity: `build()` really did register tools the template lacks —
     // otherwise this test would pass vacuously.
     let session_names: Vec<String> = agent
+        .tooling
         .tools
         .list()
         .iter()

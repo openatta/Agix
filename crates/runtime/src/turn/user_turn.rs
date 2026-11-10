@@ -34,7 +34,7 @@ impl Agent {
         // per-session one wearing a per-turn name — and a script bound to a
         // point that fires per tool call goes quiet in the middle of a long
         // session with nothing to say why.
-        for turn_start in self.turn_starts.iter() {
+        for turn_start in self.gate.turn_starts.iter() {
             turn_start();
         }
 
@@ -81,6 +81,7 @@ impl Agent {
         // (`self.session.turn_count` isn't incremented until the very end of
         // this function, see `increment_turn()`).
         let _ = self
+            .telemetry
             .telemetry_handle
             .record(telemetry::TelemetryEvent::turn_start(
                 &self.session.session_id,
@@ -91,30 +92,32 @@ impl Agent {
                     is_retry: false,
                 },
             ));
-        let _ = self
-            .telemetry_handle
-            .record(telemetry::TelemetryEvent::user_prompt_submit(
-                &self.session.session_id,
-                self.session.turn_count,
-                Some(self.current_turn_id.clone()),
-                telemetry::UserPromptSubmitPayload {
-                    char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
-                    attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
-                },
-            ));
+        let _ =
+            self.telemetry
+                .telemetry_handle
+                .record(telemetry::TelemetryEvent::user_prompt_submit(
+                    &self.session.session_id,
+                    self.session.turn_count,
+                    Some(self.current_turn_id.clone()),
+                    telemetry::UserPromptSubmitPayload {
+                        char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
+                        attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
+                    },
+                ));
 
         // A skill's `allowed_tools` (see `SkillTool::call`) pre-approves
         // tools only for the rest of the turn it was invoked in — clear
         // whatever the *previous* turn injected before this new user
         // message starts a fresh one. No-op if nothing was injected, or on
         // `Permission` implementations without a backing rule engine.
-        self.permission.clear_temporary_allows();
+        self.gate.permission.clear_temporary_allows();
         for (tool, pattern) in std::mem::take(&mut self.slash_skill_grants) {
-            self.permission
+            self.gate
+                .permission
                 .add_temporary_allow(&tool, pattern.as_deref());
         }
 
-        let _timer = self.perf.start_timer("turn", "total");
+        let _timer = self.telemetry.perf.start_timer("turn", "total");
         let mut api_calls: u32 = 0;
         let mut tool_calls: u32 = 0;
         let mut structured_output_calls: u32 = 0;
@@ -132,13 +135,18 @@ impl Agent {
         // by whoever watches the skill directories, so the diff is against
         // what this session was last shown, not against the catalog as it
         // stood a moment ago.
-        let changed = self.skills.reload_changed();
+        let changed = self.tooling.skills.reload_changed();
         if changed > 0 {
             tracing::debug!(count = changed, "Skills reloaded from file changes");
         }
-        let skills_now: std::collections::HashSet<String> =
-            self.skills.list().iter().map(|s| s.name.clone()).collect();
-        if let Some(skills_before) = self.announced_skills.replace(skills_now.clone()) {
+        let skills_now: std::collections::HashSet<String> = self
+            .tooling
+            .skills
+            .list()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        if let Some(skills_before) = self.prompt.announced_skills.replace(skills_now.clone()) {
             // Surface the diff as a system-reminder in the conversation itself,
             // not just a rebuilt static "## Available Skills" list — a model
             // mid-session tends to trust what it already said over a change
@@ -181,7 +189,7 @@ impl Agent {
                 // earlier is now wrong — but a host cannot read the
                 // conversation, and its slash-command view resolves through
                 // the catalog that just changed underneath it.
-                let _ = self.event_tx.send(AgentEvent::SkillsChanged {
+                let _ = self.channels.event_tx.send(AgentEvent::SkillsChanged {
                     added: added.iter().map(|n| (*n).clone()).collect(),
                     removed: removed.iter().map(|n| (*n).clone()).collect(),
                     turn_id: self.current_turn_id.clone(),
@@ -191,14 +199,19 @@ impl Agent {
 
         // Compute frozen context lazily on first turn. Includes git status,
         // branch, platform, etc.
-        let collected_this_turn = self.frozen.is_none();
+        let collected_this_turn = self.prompt.frozen.is_none();
         let engine_git = engine_git_from(&self.config, &self.session.session_id);
         if collected_this_turn {
             let cwd = self.settings.paths.project_root();
             let paths = base::paths::ConfigPaths::from_settings(&self.settings.paths);
-            self.frozen = Some(
-                base::frozen::FrozenContext::collect(cwd, &paths, &*self.environment, &engine_git)
-                    .await,
+            self.prompt.frozen = Some(
+                base::frozen::FrozenContext::collect(
+                    cwd,
+                    &paths,
+                    &*self.policies.environment,
+                    &engine_git,
+                )
+                .await,
             );
         }
 
@@ -211,12 +224,12 @@ impl Agent {
         // the point of the type. Skipped on the turn that just collected —
         // that snapshot is seconds old.
         if !collected_this_turn {
-            if let Some(ref mut frozen) = self.frozen {
+            if let Some(ref mut frozen) = self.prompt.frozen {
                 frozen.refresh_git_status(&engine_git).await;
             }
         }
 
-        if !self.session_context_injected {
+        if !self.prompt.session_context_injected {
             self.inject_session_context().await;
         }
 
@@ -225,7 +238,7 @@ impl Agent {
         // Called once per
         // turn, and the git slice it reads was refreshed just above, so the
         // status shown is this turn's, not the session's opening snapshot.
-        if let Some(ref frozen) = self.frozen {
+        if let Some(ref frozen) = self.prompt.frozen {
             let ctx = base::interface::scene::ReminderContext {
                 cwd: std::borrow::Cow::Owned(
                     self.settings
@@ -258,19 +271,20 @@ impl Agent {
             if !self.settings.memory_enabled {
                 None
             } else {
-                let store = self.memory_store.clone();
-                let model = self.model.clone();
+                let store = self.memory.memory_store.clone();
+                let model = self.llm.model.clone();
                 let query = content.clone();
                 let already_surfaced: HashSet<String> = self
+                    .prompt
                     .frozen
                     .as_ref()
                     .map(|f| f.already_surfaced.clone())
                     .unwrap_or_default();
-                let recent_tools = self.tools.names();
+                let recent_tools = self.tooling.tools.names();
                 let model_name = self.settings.model.model_name.clone();
                 let session_id = self.session.session_id.clone();
-                let retriever = Arc::clone(&self.memory_retriever);
-                let hooks = Arc::clone(&self.retrieval_hooks);
+                let retriever = Arc::clone(&self.memory.memory_retriever);
+                let hooks = Arc::clone(&self.memory.retrieval_hooks);
                 Some(tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
                     async move {
                         let memories = tokio::task::spawn_blocking(move || store.load_all())
@@ -309,9 +323,9 @@ impl Agent {
         let mut skill_prefetch: Option<
             tokio_util::task::AbortOnDropHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>,
         > = {
-            let skills = self.skills.clone();
+            let skills = self.tooling.skills.clone();
             let local_dir = self.settings.paths.local_data_dir.clone();
-            let invoked_skills: Vec<String> = self.invoked_skills.clone();
+            let invoked_skills: Vec<String> = self.prompt.invoked_skills.clone();
             // Only scan when the previous turn produced tool calls that may
             // have written files that could reveal new skills — skip on
             // non-write turns. Runs on the first turn too (`last_had_tool_uses`
@@ -356,7 +370,7 @@ impl Agent {
             block: 0,
             range: Some((0, content.len())),
         }];
-        if let Some(resources) = self.mcp.resolve_resource_refs(&content).await {
+        if let Some(resources) = self.tooling.mcp.resolve_resource_refs(&content).await {
             let from = content.len();
             content.push_str(&resources);
             spans.push(base::interface::model::InputSpan {
@@ -383,8 +397,8 @@ impl Agent {
         self.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
         self.turn_started_at = Some(std::time::Instant::now());
         self.session.push_message_from(message, origin);
-        if std::mem::take(&mut self.output_token_target_unannounced) {
-            if let Some(target) = self.output_token_target {
+        if std::mem::take(&mut self.token_budget.unannounced) {
+            if let Some(target) = self.token_budget.target {
                 self.session.push_message(ModelMessage {
                     role: MessageRole::User,
                     content: vec![ModelContentBlock::Text {
@@ -440,6 +454,7 @@ impl Agent {
                 };
             let relevant: Vec<base::interface::memory::DurableMemory> = {
                 let surfaced: &std::collections::HashSet<String> = self
+                    .prompt
                     .frozen
                     .as_ref()
                     .map(|f| &f.already_surfaced)
@@ -453,13 +468,13 @@ impl Agent {
             };
             if !relevant.is_empty() {
                 // Mark injected memories as surfaced to avoid repeated injection.
-                if let Some(ref mut frozen) = self.frozen {
+                if let Some(ref mut frozen) = self.prompt.frozen {
                     for m in &relevant {
                         frozen.already_surfaced.insert(m.name.clone());
                     }
                 }
                 {
-                    let store = self.memory_store.clone();
+                    let store = self.memory.memory_store.clone();
                     let names: Vec<String> = relevant.iter().map(|m| m.name.clone()).collect();
                     tokio::task::spawn_blocking(move || {
                         if let Err(e) = store.record_recalled(&names) {
@@ -520,6 +535,7 @@ impl Agent {
                 ));
             }
             if let base::interface::turn_policy::TurnStep::Stop { reason } = self
+                .policies
                 .turn_policy
                 .before_model_call(&base::interface::turn_policy::TurnProgress {
                     api_calls,
@@ -562,7 +578,7 @@ impl Agent {
             // 2. Assemble the request
             let step = api_calls;
             api_calls += 1;
-            let _ = self.event_tx.send(AgentEvent::StepStart {
+            let _ = self.channels.event_tx.send(AgentEvent::StepStart {
                 step,
                 turn_id: self.current_turn_id.clone(),
             });
@@ -574,7 +590,7 @@ impl Agent {
                 )
                 .with_lineage(
                     self.session.parent_session_id().map(str::to_string),
-                    self.agent_type.clone(),
+                    self.identity.agent_type.clone(),
                 ),
             );
             let request = self
@@ -595,26 +611,26 @@ impl Agent {
             //    because compacting, rebuilding a request and sending it are
             //    things only this loop can sequence.
             let call_started = std::time::Instant::now();
-            let tools = Arc::clone(&self.tools);
-            let tools_for_safety = Arc::clone(&self.tools);
+            let tools = Arc::clone(&self.tooling.tools);
+            let tools_for_safety = Arc::clone(&self.tooling.tools);
             let cwd = self.settings.paths.project_root();
             let local_settings_path = self.settings.paths.local_settings_file();
             let session_id = self.session.session_id.clone();
             let turn_no = self.session.turn_count;
-            let th = self.telemetry_handle.clone();
+            let th = self.telemetry.telemetry_handle.clone();
             let tid = self.current_turn_id.clone();
             let cancel_for_exec = cancel.clone();
-            let agent_depth_for_exec = self.agent_depth;
-            let hooks_for_exec = Arc::clone(&self.hooks);
+            let agent_depth_for_exec = self.identity.agent_depth;
+            let hooks_for_exec = Arc::clone(&self.gate.hooks);
             let discontinued = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let discontinued_for_exec = Arc::clone(&discontinued);
-            let events_for_exec = self.event_tx.clone();
+            let events_for_exec = self.channels.event_tx.clone();
             let config_for_exec = Arc::clone(&self.config);
-            let permission_for_exec = Arc::clone(&self.permission);
+            let permission_for_exec = Arc::clone(&self.gate.permission);
             let session_state_for_exec = Arc::clone(&self.session_state);
-            let elicitation_for_exec = Arc::clone(&self.elicitation);
-            let tool_middleware_for_exec = Arc::clone(&self.tool_middleware);
-            let result_transformers_for_exec = Arc::clone(&self.result_transformers);
+            let elicitation_for_exec = Arc::clone(&self.gate.elicitation);
+            let tool_middleware_for_exec = Arc::clone(&self.tooling.tool_middleware);
+            let result_transformers_for_exec = Arc::clone(&self.tooling.result_transformers);
             let tool_images: Arc<std::sync::Mutex<Vec<PendingToolImage>>> =
                 Arc::new(std::sync::Mutex::new(Vec::new()));
             let tool_images_for_exec = Arc::clone(&tool_images);
@@ -660,13 +676,13 @@ impl Agent {
                         crate::streaming::execute_stream(
                             stream,
                             &mut self.session,
-                            &self.event_tx,
+                            &self.channels.event_tx,
                             self.current_turn_id.clone(),
                             execute_tool.clone(),
                             is_concurrency_safe.clone(),
                             cancel.clone(),
-                            &self.model_interceptors,
-                            self.model.provenance(),
+                            &self.llm.model_interceptors,
+                            self.llm.model.provenance(),
                         )
                         .await
                     }
@@ -732,7 +748,7 @@ impl Agent {
                         .await
                     }
                 };
-                let _ = self.event_tx.send(AgentEvent::StepStart {
+                let _ = self.channels.event_tx.send(AgentEvent::StepStart {
                     step,
                     turn_id: self.current_turn_id.clone(),
                 });
@@ -758,7 +774,7 @@ impl Agent {
             if let Err(e) = self.session.persist().await {
                 tracing::warn!(error = %e, "failed to persist session");
             }
-            let _ = self.event_tx.send(AgentEvent::StepEnd {
+            let _ = self.channels.event_tx.send(AgentEvent::StepEnd {
                 step,
                 stop_reason: stop_reason.clone(),
                 usage,
@@ -772,6 +788,7 @@ impl Agent {
             // cost can be computed from, and the only one that says which model
             // the spending went to when a turn switched models partway.
             let _ = self
+                .telemetry
                 .telemetry_handle
                 .record(telemetry::TelemetryEvent::api_request(
                     &self.session.session_id,
@@ -823,7 +840,7 @@ impl Agent {
             // `FrozenContext` git snapshot (branch/status/log) is now stale
             // — refresh just that slice.
             if has_tool_uses && Self::included_git_mutating_bash_call(self.this_step()) {
-                if let Some(ref mut frozen) = self.frozen {
+                if let Some(ref mut frozen) = self.prompt.frozen {
                     frozen
                         .refresh_git(&engine_git_from(&self.config, &self.session.session_id))
                         .await;
@@ -860,6 +877,7 @@ impl Agent {
                 .get(messages_before_step..)
                 .map_or(0, count_structured_output_calls);
             if let base::interface::turn_policy::TurnStep::Stop { reason } = self
+                .policies
                 .turn_policy
                 .after_model_call(&base::interface::turn_policy::TurnProgress {
                     api_calls,
@@ -890,7 +908,7 @@ impl Agent {
             {
                 let spend = base::interface::budget_policy::Spend::from(turn_usage);
                 let total_tokens_used = spend.total_tokens();
-                match self.budget_policy.on_usage(&spend) {
+                match self.policies.budget_policy.on_usage(&spend) {
                     base::interface::budget_policy::Spending::WithinBudget => {}
                     base::interface::budget_policy::Spending::Warn { reminder, limit } => {
                         tracing::warn!(
@@ -898,7 +916,7 @@ impl Agent {
                             budget = limit,
                             "approaching token budget limit; injecting continue reminder"
                         );
-                        let _ = self.telemetry_handle.record(
+                        let _ = self.telemetry.telemetry_handle.record(
                             telemetry::TelemetryEvent::budget_enforced(
                                 &self.session.session_id,
                                 self.session.turn_count,
@@ -917,7 +935,7 @@ impl Agent {
                     }
                     base::interface::budget_policy::Spending::Exhausted { limit } => {
                         tracing::warn!(total_tokens_used, budget = limit, "token budget exceeded");
-                        let _ = self.telemetry_handle.record(
+                        let _ = self.telemetry.telemetry_handle.record(
                             telemetry::TelemetryEvent::budget_enforced(
                                 &self.session.session_id,
                                 self.session.turn_count,
@@ -960,8 +978,8 @@ impl Agent {
                                 content: vec![ModelContentBlock::Text { text: skills_text }],
                             });
                             for name in &new_names {
-                                if !self.invoked_skills.contains(name) {
-                                    self.invoked_skills.push(name.clone());
+                                if !self.prompt.invoked_skills.contains(name) {
+                                    self.prompt.invoked_skills.push(name.clone());
                                 }
                             }
                         }
@@ -973,7 +991,7 @@ impl Agent {
                 {
                     let file_paths = Self::extract_tool_file_paths(self.messages_this_turn());
                     if !file_paths.is_empty() {
-                        let activated = self.skills.activate_for_paths(&file_paths);
+                        let activated = self.tooling.skills.activate_for_paths(&file_paths);
                         if !activated.is_empty() {
                             let names: Vec<&str> =
                                 activated.iter().map(|s| s.name.as_str()).collect();
@@ -988,18 +1006,20 @@ impl Agent {
                                 content: vec![ModelContentBlock::Text { text: skills_text }],
                             });
                             for s in &activated {
-                                if !self.invoked_skills.contains(&s.name) {
-                                    self.invoked_skills.push(s.name.clone());
+                                if !self.prompt.invoked_skills.contains(&s.name) {
+                                    self.prompt.invoked_skills.push(s.name.clone());
                                 }
                             }
                         }
                     }
                 }
 
-                self.mcp.refresh_if_changed().await;
-                sync_mcp_adapters(self.tools.as_ref(), self.mcp.as_ref(), |n| {
-                    self.scene.permits_tool(n)
-                });
+                self.tooling.mcp.refresh_if_changed().await;
+                sync_mcp_adapters(
+                    self.tooling.tools.as_ref(),
+                    self.tooling.mcp.as_ref(),
+                    |n| self.scene.permits_tool(n),
+                );
                 if !cancel.is_cancelled() {
                     self.deliver_queued_user_messages(false).await;
                 }
@@ -1017,7 +1037,7 @@ impl Agent {
             }
 
             // 7. Stop hooks: end the turn, send the model back, or let it stop.
-            if self.hooks.has_hooks_for(hooks::HookEvent::Stop) {
+            if self.gate.hooks.has_hooks_for(hooks::HookEvent::Stop) {
                 let stop_hook_input = hooks::HookInput {
                     hook_event_name: "Stop".into(),
                     session_id: self.session.session_id.to_string(),
@@ -1027,6 +1047,7 @@ impl Agent {
                     ..Default::default()
                 };
                 let hook_result = self
+                    .gate
                     .hooks
                     .run(hooks::HookEvent::Stop, &stop_hook_input)
                     .await;
@@ -1076,32 +1097,34 @@ impl Agent {
             // 8. Token budget continuation mode.
             // Continue while accumulated output < 90% of target AND not diminishing
             // (≥3 continuations, both this & previous delta < 500). No hard cap.
-            if let Some(target) = self.output_token_target {
-                self.accumulated_output_tokens = self
-                    .accumulated_output_tokens
+            if let Some(target) = self.token_budget.target {
+                self.token_budget.accumulated = self
+                    .token_budget
+                    .accumulated
                     .saturating_add(usage.output_tokens as u64);
 
                 let this_delta = usage.output_tokens as u64;
                 if let base::interface::budget_policy::OutputTarget::KeepGoing { nudge } = self
+                    .policies
                     .budget_policy
                     .on_output_target(&base::interface::budget_policy::OutputProgress {
-                        accumulated: self.accumulated_output_tokens,
+                        accumulated: self.token_budget.accumulated,
                         target,
-                        continuations: self.token_budget_continuation_count,
+                        continuations: self.token_budget.continuations,
                         this_delta,
-                        last_delta: self.last_delta_tokens,
+                        last_delta: self.token_budget.last_delta,
                     })
                 {
-                    self.token_budget_continuation_count += 1;
-                    self.last_delta_tokens = this_delta;
+                    self.token_budget.continuations += 1;
+                    self.token_budget.last_delta = this_delta;
                     self.session.push_message(ModelMessage {
                         role: MessageRole::User,
                         content: vec![ModelContentBlock::Text { text: nudge }],
                     });
                     tracing::info!(
-                        accumulated = self.accumulated_output_tokens,
+                        accumulated = self.token_budget.accumulated,
                         target,
-                        continuation = self.token_budget_continuation_count,
+                        continuation = self.token_budget.continuations,
                         "Token budget continuation — injecting nudge"
                     );
                     continue;
@@ -1109,17 +1132,17 @@ impl Agent {
 
                 // Budget met (≥90%) or diminishing returns — clear budget state.
                 let threshold = (target as f64 * 0.9) as u64;
-                let budget_met = self.accumulated_output_tokens >= threshold;
+                let budget_met = self.token_budget.accumulated >= threshold;
                 tracing::info!(
-                    accumulated = self.accumulated_output_tokens,
+                    accumulated = self.token_budget.accumulated,
                     target,
                     budget_met,
                     "Token budget session complete"
                 );
-                self.output_token_target = None;
-                self.accumulated_output_tokens = 0;
-                self.token_budget_continuation_count = 0;
-                self.last_delta_tokens = 0;
+                self.token_budget.target = None;
+                self.token_budget.accumulated = 0;
+                self.token_budget.continuations = 0;
+                self.token_budget.last_delta = 0;
             }
 
             // The model has answered; a message the user sent meanwhile is
@@ -1148,14 +1171,14 @@ impl Agent {
             // the static prompt injection).
             if self.settings.memory_enabled {
                 let session_messages = self.session.messages().to_vec();
-                let store = self.memory_store.clone();
+                let store = self.memory.memory_store.clone();
                 // `task_models.memory` lets an app point this background
                 // extraction call at a different vendor/model than the main
                 // conversation — same TaskRouter mechanism already proven
                 // for the "subagent" task type (see
                 // `AgentTool::Inner::model_for_subagent`). No override
                 // configured → falls back to the main model.
-                let (model, model_name) = match &self.task_router {
+                let (model, model_name) = match &self.llm.task_router {
                     Some(router) => (
                         self.accounted(router.model_for("memory")),
                         router
@@ -1163,10 +1186,13 @@ impl Agent {
                             .unwrap_or(&self.settings.model.model_name)
                             .to_string(),
                     ),
-                    None => (self.model.clone(), self.settings.model.model_name.clone()),
+                    None => (
+                        self.llm.model.clone(),
+                        self.settings.model.model_name.clone(),
+                    ),
                 };
                 let prompt_intro = self.scene.memory_extraction_prompt();
-                let environment = self.environment.clone();
+                let environment = self.policies.environment.clone();
                 let session_id = self.session.session_id.clone();
                 tokio::spawn(async move {
                     extract_memories_after_turn(
