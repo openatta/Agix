@@ -520,13 +520,17 @@ impl SessionPool {
         // below rebuilds from disk.
         if is_default {
             let default_model = self.settings.read().await.model.model_name.clone();
-            let reloaded = Arc::new(self.with_managed_layer(Settings::load(
+            let (global_root, config_root, local_dir, scene) = (
                 self.paths.global_root(),
                 self.paths.config_root(),
                 self.paths.project_root().join(".agix"),
-                self.scene.id(),
-                &default_model,
-            )));
+                self.scene.id().to_string(),
+            );
+            let loaded = off_the_runtime(move || {
+                Settings::load(global_root, config_root, local_dir, &scene, &default_model)
+            })
+            .await;
+            let reloaded = Arc::new(self.with_managed_layer(loaded));
             *self.settings.write().await = reloaded;
         }
 
