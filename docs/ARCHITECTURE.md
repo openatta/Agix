@@ -512,9 +512,9 @@ Agent 的上下文,本来就该在一处。
   daemon 默认不装,大内容照样写在日志行里
 
 **一个会话连同它的侧链可以在同一时刻截下来**(`HistoryStore::snapshot_lineage`)。
-`JsonlHistoryStore` 在 append 共用的那把锁下量一遍父会话项目目录里每份日志的长度,放锁后
-各自读到量下的位置——append 一次写完整的一行,所以量到的总是行尾;锁只占一次列目录加
-stat 的时间,读盘不挡写入。走的是 `Meta` 里的父子关系,只沿 `session_kind: sidechain`
+`JsonlHistoryStore` 不持任何锁:先量一遍父会话项目目录里每份日志的长度,再各自读到量下的
+位置,读的时候截到最后一个整行——append 一次写完整的一行,量到的位置若落在写了一半的行
+里,那一行不算。一个 append 慢的会话不会挡住另一个会话的快照。走的是 `Meta` 里的父子关系,只沿 `session_kind: sidechain`
 往下走,分叉只记 id。默认实现一个接一个地 `load`,不是同一时刻,自己实现 store 的要覆盖它。
 `session.export` 就站在这上面:快照加上图片本体、两种 RPC 视图和一份带版本的清单写成
 一个归档,这份布局也是将来 `session.import` 要读的格式(`daemon_rpc_protocol.md` 的
@@ -761,6 +761,11 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
    下的配置目录(`hooks`、`agents`、`skills` …)对写工具是"要确认",不是"拒写";沙箱里的
    命令没法逐次确认,所以对它们是拒写(§6.3)。两边用同一份名单
    (`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}`)。
+
+   **这个不对称是有意的。** 写工具改引擎配置目录是确认,沙箱里的 Bash 写同一处是硬拒,
+   理由有两条:无人值守时确认本来就会变成拒绝,所以硬拒只是把这个结果提前;交互时用户
+   看得见 Write / Edit 具体要改哪个文件、改成什么,而 Bash 的写入藏在一条命令里,
+   用户批准的是命令,看不见它最后写了什么。
 
 `sandbox.allow_write` 给拒绝规则开例外,`sandbox.deny_write` 加自己的名字,
 与读侧的 `allow_read` / `deny_read` 对称。**例外只解除拒绝规则,不解除项目边界**——

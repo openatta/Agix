@@ -1317,12 +1317,72 @@ WebAssembly 载体整个移除。
   询问(无人值守的会话里 `Read` / `Glob` / `Grep` 就是拒绝,`Bash` / `Monitor` 仍按"沙箱完整
   生效即放行")。`acceptEdits` 下要免询问读的目录,写进
   `sandbox.read_directories`(或开 `sandbox.read_anywhere`)。
+- **Bash 只读通道收窄(免确认的命令变少)。** 主机由参数决定、或会按项目文件选二进制的查询不再免确认:
+  `brew` 整个移出(`brew list` 也读 `HOMEBREW_*`),`npm view` / `npm list`、`node --version`、
+  `pip list` / `pip show`、`git remote show` 移出(`git remote` 只认光秃秃的、`-v`、`get-url`)。
+  asdf / nvm / volta / pyenv 下 `node --version` 这类是按项目文件选二进制的 shim,与 `cargo --version`
+  同理。危险变量的识别加了前缀 `HOMEBREW_`、`SSH_`,后缀 `BROWSER`、`EDITOR`,以及 `VISUAL`;
+  `HOMEBREW_BROWSER=./x.sh brew info …`、`SSH_ASKPASS=./x git remote show …` 这类以前在 `default` /
+  `plan` 下零确认就会起项目里的脚本。依赖这些命令免确认的会话,为它们写 allow 规则。
+  另有四处同方向的收紧:`yq -s` / `--split-exp` / `--in-place`、`tree -R`、`ss -D`、`lshw -dump`
+  这些能写文件的选项不再算只读;`Bash(ls:*)` 这样的 allow 规则不再放行 `PATH=. ls`
+  (带危险变量的命令按原文比 allow,deny / ask 仍按实际启动的程序比);deny 规则穿透
+  `watch`、`script -c`、`parallel`、`arch` 四个 wrapper(`watch 'rm -rf b'` 不再绕得过 `Bash(rm:*)`)。
+- **unix socket 每次 accept 校验对端 uid**,与 daemon 的 euid 不同就丢弃连接(以前只靠
+  bind 之后的 chmod,umask 决定那一刻的权限)。同一用户下的宿主不受影响。
 - **沙箱里的命令读得到的少了。** 缺省的 `deny_read` 多了 `~/.git-credentials`、
   `~/.config/git/credentials`、`~/.config/gcloud`、`~/.cargo/credentials{,.toml}`、`~/.vault-token`
   等(全表见 `base::interface::exec::default_deny_read_in`),要用的用 `sandbox.allow_read` 放开;
   状态目录与各场景目录下的 `settings*.json`、`mcp.local.json` 和 `mcp/oauth/` 一律读不到。
   无人值守的会话另外读不了钥匙串(`security`)、连不上 tmux / screen。子模块 git 目录里的
   `config`、`hooks/` 等和主仓库的一样只读,沙箱里的 `git submodule sync` 之类会失败(§6.3)。
+
+#### hooks
+
+- **未信任的项目里,用户层 command hook 不把项目里的文件交给程序。** 命令里只要有一个相对词指向
+  hook 工作目录(或命令里 `cd` 去的目录)下已存在的文件或目录,这个 hook 就不跑,按 `on_error` 处理
+  (缺省 warn、放行):`python3 scripts/check.py`、`node .`、`awk -f x.awk`、`sh < x.sh`,
+  `.`、`./`、`..` 这样指向目录的词,展开到项目文件的未加引号的 glob / 花括号(`sh scripts/check.s?`),
+  以及短选项紧跟值的写法(`node -r./x.js`、`perl -Isub/lib`)都算;`$PWD` 按 `.` 算、`$HOME` 按绝对路径算。
+  **代价**:只读项目文件当数据用的 hook(`ls src`、`prettier --check .`、`grep x README.md`)在未信任的项目
+  里同样不跑。改成绝对路径,或信任这个项目。详见 `hooks.md`。
+
+#### MCP
+
+- **stdio MCP server 的相对路径按声明它的那一层解析,不再看 daemon 从哪里启动。** 全局层的
+  server 在全局配置目录启动、场景层的在场景配置目录、插件的在插件包根目录、项目层的(含
+  `mcp.addServer` / `mcp.updateServer` 写进去的)在项目根;相对的 `command`(`./bin/x`)与参数里的
+  相对路径(`node server.js`)都在那里解析,子进程的工作目录也是它。信任与否行为相同。以前已信任
+  的项目里它们继承 daemon 的工作目录,而那不一定是这个会话的项目;0.3.10 起未信任的项目里一律用
+  全局配置目录。**迁移**:写了相对路径、靠 daemon 在某个目录启动才找得到的 server,把文件放到
+  声明它的那一层的目录下,或改成绝对路径。哪一层给了 server 的 `command` 就按哪一层算,项目层只
+  覆盖 `env` 的全局 server 仍在全局目录启动。
+- **MCP 配置与 OAuth 的几条收紧(P-4),下面加粗的会让原来能连的配置连不上。**
+  - **`client_secret_env` 现在要配了 `oauth.issuer`、或配了 `allowed_authorization_servers` 且放行了
+    该授权服务器,密钥才会发送**;否则 `mcp.auth.start` 报 `MCP_SERVER_DENIED` / `INVALID_PARAMS`,
+    刷新、吊销与 `client_credentials` / enterprise 的令牌请求不带密钥。动态注册得到的密钥只发给注册时的
+    issuer。用 `client_secret_env` 的 server,补上 `oauth.issuer`。
+  - **两个 server 名映射到同一个 `mcp__<段>__` 工具名前缀时,两个都不启动**,在 `mcp.status` 里以 failed
+    列出并点名对方(不改成都加哈希,那会让已经写好的权限规则失效)。给其中一个改名。
+  - **command 规则先对 `command` 做词法规整(去 `.` 段与重复的 `/`,`..` 折算上一级),含 `..` 的不命中
+    任何 `allowed_servers` 的 command 规则**(`denied_servers` 按折算后的路径照拦);macOS 上 command
+    规则不分大小写。
+  - **MCP 连接只跟随同源重定向**,跨源的 3xx 原样交回、配置的 headers 不再跨源带出去;非回环 server 的
+    主机名解析不得落到回环与保留地址(私网照常)。
+  - **错误信息、日志和 `mcp.status`(含 `auth.error`)里的 URL 不再带 userinfo、query 与 fragment。**
+    靠这些字段读 URL 里 `?key=` 的宿主要另外保存。
+  - 项目层的 server 同样不许用 `private_key_jwt.key_file`(本机私钥)和 `"grant": "enterprise"`(宿主
+    交来的企业身份),与 `client_secret_env` / `key_env` 一样以 `mcp_connect_failed` 拒绝,
+    `mcp.addServer` 报 `INVALID_PARAMS`。
+  - 刷新令牌的刷新跨进程排队(`<哈希>.lock` 上的 `flock`),登出不会被在途的刷新写回;配了固定
+    `Authorization` 头的 server 收到 401 不再把同 URL 的 OAuth 条目设成 required。
+  - 内部地址的 IPv6 写法补齐(SIIT、`64:ff9b:1::/48`、Teredo 携带的 IPv4),公网 MCP server 的 OAuth
+    发现不能再被引到 `169.254.169.254` 这类地址上。
+- 一个 MCP server 连不上不再卡住别的项目:会话池的 MCP manager 缓存改为每个(项目, 场景)一把锁,
+  `mcp.addServer` / `updateServer`、登录后重连、令牌失效降级只挡同一对;以前一个不应答的 server 能让所有
+  项目的建会话、`mcp.status` 等到它的启动超时(约 90 秒)。
+- `RUST_LOG=debug` 不再把 rmcp 的授权日志(授权码、令牌)落盘:`rmcp::transport::auth` 固定在 `info`,
+  用户显式写了这个 target 才放开。
 
 #### 插件
 
@@ -1344,37 +1404,73 @@ WebAssembly 载体整个移除。
   (`plugin_packages.md`「包里的 skill」)。以前把包里的 skill 拷进实例 skill 目录的宿主,改成在
   manifest 里声明之后删掉拷贝,否则磁盘那份会遮住包里的。
 
+#### 设置文件
+
 - **`session_dir` 已弃用。** 它从来不读(transcript 总在状态目录下),现在设置文件里写了它,加载时
   每个写了它的文件记一条 warn;settings schema 里标了 `deprecated`。删掉这一行即可,行为不变。
   计划在之后的版本里删除这个字段。
 
-- 启动时还不存在的 agent 类型目录(项目第一次建出 `.agix/agents/`,全局、场景层同理)里后来写进的
-  类型能用上了:下一次有请求用到这一对配置(建会话、`commands.list` 等)时按新出现的目录重载,
-  运行中的会话在下一轮之前重建,这个目录此后也被监视。以前只有显式 `config.reload` 或重启才看得到。
+#### 工具
+
+- **`NotebookEdit` 输入解析失败时改为询问**(以前放行;`validate_input` 先拦住非法输入,所以此前没有
+  可利用的路径,现在不再依赖那个先后)。它的拒绝消息少了 `path safety: ` 前缀,与 Write / Edit 一致;
+  按这段文字匹配拒绝原因的宿主改匹配后半。
+- **`Read` / `Glob` / `Grep` 经符号链接后接 `..` 读到项目外时,现在要询问**(`link/../secret` 以前被
+  词法规整成 `<项目>/secret` 而免询问,实际打开的是链接指向目录的上一级);读到项目外的 `Read` 结果
+  也同样加上外部内容的围栏。`acceptEdits` 与 `default` 一致。
+- 外部内容围栏的收尾标签转义不再区分大小写,带空白的变体也转义。
+- `ExitPlanMode` 的结果不再对模型说 `allowed_prompts` "已获批准"(它从来没加过规则):现在写明每次调用仍然
+  询问。
+
+#### 模型、回合与压缩
+
 - 自动压缩一次没能缩小对话(无可丢弃、`PreCompact` hook 拒绝、压缩器出错)之后,接下来的几步不再
   自动压缩:连续第 n 次落空后跳过 2ⁿ 次(最多 32 次)该压缩的检查,对话比落空时又长出阈值的十分之一
   就提前再试;压缩成功清零。以前每一步都重试一遍,开了 LLM 摘要时每一步都多一次摘要调用。出错不再
   被吞掉,记一条 warn。
-- **stdio MCP server 的相对路径按声明它的那一层解析,不再看 daemon 从哪里启动。** 全局层的
-  server 在全局配置目录启动、场景层的在场景配置目录、插件的在插件包根目录、项目层的(含
-  `mcp.addServer` / `mcp.updateServer` 写进去的)在项目根;相对的 `command`(`./bin/x`)与参数里的
-  相对路径(`node server.js`)都在那里解析,子进程的工作目录也是它。信任与否行为相同。以前已信任
-  的项目里它们继承 daemon 的工作目录,而那不一定是这个会话的项目;0.3.10 起未信任的项目里一律用
-  全局配置目录。**迁移**:写了相对路径、靠 daemon 在某个目录启动才找得到的 server,把文件放到
-  声明它的那一层的目录下,或改成绝对路径。哪一层给了 server 的 `command` 就按哪一层算,项目层只
-  覆盖 `env` 的全局 server 仍在全局目录启动。
+- 流被截断时,参数为空或不完整的工具调用转成 `MalformedToolUse`,不再用 `{}` 去执行工具。
+- 服务端要求的重试等待超过 60 秒就放弃重试(以前过大的 `retry-after` 会回绕成很短的等待)。
+- 中断落在摘要请求的流上时,压缩原样放弃、对话原样留着,不再退回 Snip 丢掉两轮。
+- 回合末的记忆抽取不再在会话停下之后接着跑:引擎退出时最多等它 3 秒,过了就中止并记 warn
+  (短于会话池等旧引擎的 5 秒宽限)。
+- 启动时还不存在的 agent 类型目录(项目第一次建出 `.agix/agents/`,全局、场景层同理)里后来写进的
+  类型能用上了:下一次有请求用到这一对配置(建会话、`commands.list` 等)时按新出现的目录重载,
+  运行中的会话在下一轮之前重建,这个目录此后也被监视。以前只有显式 `config.reload` 或重启才看得到。
+
+#### 会话与存储
+
+- `append` 被取消时,history 写完这一行才放锁(以前锁随 future 先放掉,下一次 `append` 会把还在写的
+  半行当崩溃残行截掉,transcript 中间出现坏行);落盘改为先 fsync 再 rename,cron 存储的空文件当作空列表。
+
+#### 遥测
+
+- 遥测文件写入不跟随符号链接(`O_NOFOLLOW`,不再 chmod 链接目标);OTLP 导出带 10 秒超时,关停时
+  `shutdown_all` 与 exporter 的 flush 各有 10 秒上限,第二次 Ctrl-C / SIGTERM 直接退出(130)。
+
+#### 子 Agent 与团队
+
+- 后台子 Agent 与常驻团队成员的调用记录也带 `parent_session_id` 与 `agent_type`(以前只有前台委派写);
+  `TeamCreate` 的成员与常驻成员一样按收紧后的模式拿权限。
 
 ### RPC 客户端
 
-- `daemon.doctor` 的 `health.checks` 多一项 `settings.managed`(查找的路径、是否存在、来源与
-  内容);`config.get` 的回答多一个 `managed` 字段(`tier: "effective"` 时为 managed 层,否则
-  `null`)。
+#### 权限与计划模式
+
 - `PermissionRule.source` 为 `policySettings` 的规则在同样具体的命中里先被报出(数值由 10 改为
   70)。裁决不变。
 - `session.resume` 的 `permission.prompts` 在 `bypassPermissions` 会话里不再一律是 `false`:
   managed 层有 `ask` / `deny` 规则或关掉了 bypass 时报 `true`,这样的会话仍会发 permission
   `prompt` 帧。看到 `bypassPermissions` 就不接询问的宿主,改看 `prompts`。
 
+#### 方法、帧与错误
+
+- `daemon.doctor` 的 `health.checks` 多一项 `settings.managed`(查找的路径、是否存在、来源与
+  内容);`config.get` 的回答多一个 `managed` 字段(`tier: "effective"` 时为 managed 层,否则
+  `null`)。
+- `daemon.doctor` 报三项安全姿态:`settings.permission_mode`(会话缺省是 `bypassPermissions` / `auto` /
+  `yolo`)、`settings.hooks_fail_open`(`PreToolUse` / `UserPromptSubmit` / `Stop` 上 `on_error` 缺省放行的
+  hook)、`build.panic`(构建为 abort,工具 panic 的兜底不生效)。另外 `sandbox.unattended_network`
+  的告警见"部署 `agixd` 的"。
 - **新增帧:一行不是合法 JSON 时,服务端回
   `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
   (unix socket、TCP、WebSocket 都是),连接不断。以前这样的行被静默丢弃。宿主的读循环要容得下
@@ -1387,19 +1483,24 @@ WebAssembly 载体整个移除。
   `session.resume` 的 `options` 里写 `"strict": true`,读不出来的字段或值报 `INVALID_PARAMS`,
   `error.data.invalid_options` 与 `ignored_options` 同形;缺省不变。计划中的"缺省严格"就是把它
   变成缺省,现在打开它就能提前发现拼错的字段。
-
 - `session.resume`、`session.run_turn` 调回一个刚被关闭或驱逐的会话时,它上一个引擎若在 5 秒宽限期
   内还没停下(卡在一个不理会取消的 hook 里之类),返回 `SESSION_BUSY`(`data` 为
   `{session_id, current_turn_id: null}`),稍后重试即可。以前只记一条 warn 就照常起新引擎,两个引擎
   会写同一份转录。
-
 - **新增帧 `tool_progress`**(能力位 `tool_progress`):运行中的工具调用报的进度,
   `{tool_use_id,name,message,progress?,total?,dropped}`,落在这次调用的 `tool_use` 与 `tool_result`
   之间。每次调用每秒至多一帧,`dropped` 是合并掉的条数;不进 transcript,不保证送达。内建工具里
   目前只有 `Bash` 报(每行输出一次,`progress` 是行数);子 Agent 的包在 `subagent_progress` 里
   (协议 §7.3)。不认识它的客户端照约定忽略即可。
+- 后台 `Agent` 调用起的子 Agent,`subagent_progress` 帧里的 `parent_tool_use_id` 与引擎事件的
+  `parent_session_id` 不再是空值(以前是 `null` / 空,`AgentSpawned` 遥测的 `parent_turn` 也记成 0)。
+- 新增机器可读的 JSON-RPC 描述 `docs/schemas/rpc.schema.json`:方法名、`session.event` / `daemon.event` 的
+  `kind`、错误码表与请求 / 响应 / 错误帧,已有强类型的 params(目前只有 `session.startAgent`)带 schema,
+  其余标"未类型化"。由 `cargo test -p assembly write_rpc_schema -- --ignored` 生成,可以拿去生成客户端。
 
 ### 嵌入方
+
+#### 权限与 managed 设置
 
 - `base::interface::config_source::Tier` 多了 `Managed`;`ConfigSource` 给出的 `Tier::Managed`
   层由 `Settings::load_from` 按 managed 层读(只认上面两个键),不进普通合并。对 `Tier` 做
@@ -1413,11 +1514,38 @@ WebAssembly 载体整个移除。
   `RuleSetPermission::from_settings` 自动接上设置里的 managed 层。自己拼 gate 的嵌入方要接上
   它,否则 managed 规则只按普通规则生效、在 bypass 下不生效。
 - 有 managed 层时,`Assembly.permission` 不再替换 `bypassPermissions` 会话的 gate。
+- 路径规整与根目录包含判断收进 `permissions::path_rule` 一份:`permissions::path_safety` 与
+  `tools::security` 里各自的 `normalize_path_lexically` 删除,改用 `path_rule::normalize_path_lexically`;
+  两个同名 `is_path_within_root` 按语义改名——按组件比字面的是 `path_rule::is_within_root_lexical`,
+  两边先 canonicalize 再比的是 `path_rule::is_within_root_resolved`。直接调这几个函数的要改路径,
+  并选对语义(经符号链接指出根目录的路径,lexical 算在内、resolved 算在外)。Write / Edit /
+  `NotebookEdit` 共用 `security::check_write_permission`。
+
+#### 插件、工具与进度
+
 - 插件作者:`runtime::plugin::Registrar::admit_tools(pattern)` 让插件自己登记的工具穿过场景的
   `tools` 白名单(`mini`、`harnix` 这类场景以前会把它们全部拿掉);场景的 `disallowed_tools` 仍然
   优先,pattern 碰不到内建工具和别的插件的工具。只新增:不调它的插件、现有场景的意思都不变。
   被场景策略拿掉的工具现在记一条 `debug` 日志。为此包装每个 `Scene` 的宿主可以改用它
   (`plugin_development.md`「场景的工具白名单」)。
+- **工具作者:推荐实现 `Tool::spec()`(B19a 第一步)。** `ToolSpec` 收进与调用输入无关的描述与能力
+  (`name`、`description`、`source`、`read_only`、`concurrency_safe`、`destructive`、`deferred`、
+  `callable_from_code`、`permission_content_kind` ……),一个方法替代逐个覆写十几个能力方法;按输入判断的
+  (`is_read_only(input)` 一类)照旧再覆写。**旧方法仍然可用,没有 deprecate**:现有的 `impl Tool` 一个不用
+  改,行为不变;`spec()` 缺省从旧方法读出,旧方法缺省取 `spec()` 的字段。包另一个 `Tool` 的包装器只需转发
+  `spec()`(再按需改字段),写法见 `extension_points.md`「实现一个工具」。
+
+**工具进度接通了。** 以前每次工具调用拿到的 `ProgressSender` 是空的,`send` 什么也不做;现在
+引擎给每次调用一个真的,报的进度成为 `AgentEvent::ToolProgress { tool_use_id, name, message,
+progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
+
+- 对 `AgentEvent` 做穷尽 `match` 的要加一支。
+- 已经调 `progress.send(..)` 的工具不用改。要报计数的用新的 `progress.update(ProgressUpdate {..})`;
+  `ProgressCallback` 多了带缺省实现的 `on_update`,只实现 `on_progress` 的照旧能编译。`Bash` 报的
+  每一行不再带结尾的换行。
+- 写法见 `extension_points.md`「报进度」。
+
+#### 子 Agent
 
 - `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
   再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、
@@ -1429,6 +1557,8 @@ WebAssembly 载体整个移除。
   `spawn_agent_with_tools` 覆盖不会被走到,要模型、额外工具或权限模式的请求被拒绝。要支持这些的
   改为实现 `spawn`。`spawn` 与旧方法都不实现的,调用会无限递归。
 - 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。
+
+#### 执行层与 platform
 
 **本机执行层搬进 `platform`。** 执行层的本机实现、崩溃钩子与进程身份从 `base` 搬进新的
 `platform` crate。依赖方向是 `platform → base`,`base` 不能反过来重新导出 `platform` 的东西,
@@ -1462,10 +1592,11 @@ WebAssembly 载体整个移除。
   `SessionState::exec()`,没绑过的(自己拼 `SessionState`、不经 `Builder` 的)仍用本机,与以前相同。
   自己实现 `Permission` 并构造 `ToolContext` 的照此改。
 
+#### 设置、daemon 与遥测
+
 - `base::settings::Settings::session_dir` 标了 `#[deprecated]`:结构体字面量里写 `session_dir: None`
   会出 deprecation warning(`-D warnings` 下是错误)。改用 `..Settings::defaults_for(..)` 补齐,或者在
   那个函数上 `#[allow(deprecated)]`,等字段删除时再去掉。新增 `base::settings::deprecated_settings_keys`。
-
 - `base::settings::Settings` 多了 `mcp_server_dirs: HashMap<String, PathBuf>`(不从配置读,`serde`
   跳过;`Settings::load` 填写每个 `mcp_servers` 条目的 `command` 来自哪一层的目录):用结构体字面量
   构造 `Settings` 的要补 `mcp_server_dirs: Default::default()`。表里没有的 server 由会话池放在全局
@@ -1474,12 +1605,5 @@ WebAssembly 载体整个移除。
   (旧文件缺这两个键照样读得进来);逐字段构造的要补上。新增 `DaemonServer::require_unix_socket_auth`、
   `assembly::discovery::{unix_socket_token_path, write_unix_socket_token}` 与
   `platform::sandbox::fence_secret`(登记一个沙箱里的命令一律读不到的文件)。
-**工具进度接通了。** 以前每次工具调用拿到的 `ProgressSender` 是空的,`send` 什么也不做;现在
-引擎给每次调用一个真的,报的进度成为 `AgentEvent::ToolProgress { tool_use_id, name, message,
-progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
-
-- 对 `AgentEvent` 做穷尽 `match` 的要加一支。
-- 已经调 `progress.send(..)` 的工具不用改。要报计数的用新的 `progress.update(ProgressUpdate {..})`;
-  `ProgressCallback` 多了带缺省实现的 `on_update`,只实现 `on_progress` 的照旧能编译。`Bash` 报的
-  每一行不再带结尾的换行。
-- 写法见 `extension_points.md`「报进度」。
+- `telemetry::RedactionPolicy` 只剩 `redact_error_messages`:`apply()` 与 `emails` / `env_vars` / `paths` /
+  `ip` 四个开关(从来没有走到过)删除,`telemetry` 不再依赖 `regex`。
