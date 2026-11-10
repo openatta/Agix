@@ -10,6 +10,10 @@
 //! Globs follow gitignore conventions: `*` stays within one path segment,
 //! `**` crosses any number of them. A pattern with no glob characters names
 //! a file or a directory, and a directory covers everything beneath it.
+//!
+//! The path primitives this rests on — lexical normalization, physical
+//! resolution, and the two kinds of root containment — live here too, and
+//! are the only copies: the write policy and the tools use these.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -31,7 +35,7 @@ impl ResolvedPath {
         let primary = absolutize(Path::new(raw), cwd);
         let mut aliases = Vec::new();
         if let Some(expanded) = expand_home(raw) {
-            aliases.push(normalize(&expanded));
+            aliases.push(normalize_path_lexically(&expanded));
         }
         for real in [
             resolve_physically(&primary),
@@ -55,7 +59,9 @@ impl ResolvedPath {
 /// gitignore reads the same way).
 pub fn resolve_pattern(pattern: &str, cwd: &Path) -> String {
     if let Some(expanded) = expand_home(pattern) {
-        return normalize(&expanded).to_string_lossy().into_owned();
+        return normalize_path_lexically(&expanded)
+            .to_string_lossy()
+            .into_owned();
     }
     if starts_with_glob(pattern) {
         if pattern.contains('/') {
@@ -102,9 +108,9 @@ fn starts_with_glob(s: &str) -> bool {
 
 fn absolutize(p: &Path, cwd: &Path) -> PathBuf {
     if p.is_absolute() {
-        normalize(p)
+        normalize_path_lexically(p)
     } else {
-        normalize(&cwd.join(p))
+        normalize_path_lexically(&cwd.join(p))
     }
 }
 
@@ -144,10 +150,13 @@ pub fn resolve_physically(path: &Path) -> PathBuf {
             return out;
         }
     }
-    normalize(path)
+    normalize_path_lexically(path)
 }
 
-fn normalize(p: &Path) -> PathBuf {
+/// `p` with `.` dropped and each `..` taking off the component before it,
+/// without touching the filesystem — so it does not know a `..` after a
+/// symlink climbs out of the link's target ([`resolve_physically`] does).
+pub fn normalize_path_lexically(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -159,6 +168,41 @@ fn normalize(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// `p` resolved by the OS; when it does not exist, its parent resolved with
+/// the file name put back, and failing that `p` as given.
+pub fn canonicalize_best_effort(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| {
+        if let Some(parent) = p.parent() {
+            let parent_ok = parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf());
+            parent_ok.join(p.file_name().unwrap_or_default())
+        } else {
+            p.to_path_buf()
+        }
+    })
+}
+
+/// Whether `target` is `root` or beneath it, comparing whole components as
+/// written (`/a/b2` is not under `/a/b`). Nothing is resolved: a caller
+/// holding a spelling that may pass through a symlink resolves both sides
+/// first, or asks [`is_within_root_resolved`].
+pub fn is_within_root_lexical(target: &Path, root: &Path) -> bool {
+    let tcomp: Vec<_> = target.components().collect();
+    let rcomp: Vec<_> = root.components().collect();
+    if tcomp.len() < rcomp.len() {
+        return false;
+    }
+    tcomp.iter().zip(rcomp.iter()).all(|(a, b)| a == b)
+}
+
+/// Whether `path` is `root` or beneath it once both go through
+/// [`canonicalize_best_effort`]: a symlink out of `root` counts as outside,
+/// and `/tmp/x` is inside `/private/tmp` on macOS.
+pub fn is_within_root_resolved(path: &Path, root: &Path) -> bool {
+    canonicalize_best_effort(path).starts_with(canonicalize_best_effort(root))
 }
 
 #[cfg(test)]
@@ -239,6 +283,24 @@ mod tests {
         assert!(matches("/a/**", Path::new("/a/b/c")));
         assert!(matches("**/.env", Path::new("/proj/deep/.env")));
         assert!(matches("**/.env", Path::new("/.env")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lexical_containment_trusts_the_spelling_and_resolved_follows_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (proj, outside) = (root.join("proj"), root.join("outside"));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, proj.join("link")).unwrap();
+        let through_link = proj.join("link/x");
+
+        assert!(is_within_root_lexical(&through_link, &proj));
+        assert!(!is_within_root_resolved(&through_link, &proj));
+        assert!(!is_within_root_lexical(&root.join("proj2/x"), &proj));
+        assert!(!is_within_root_resolved(&root.join("proj2/x"), &proj));
+        assert!(is_within_root_resolved(&proj.join("new/file"), &proj));
     }
 
     #[test]

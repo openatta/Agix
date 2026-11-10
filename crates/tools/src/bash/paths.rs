@@ -39,9 +39,9 @@ pub(super) fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
     let roots = crate::security::readable_roots(ctx);
     let inside = |arg: &str, base: &Path| {
         ResolvedPath::new(arg, base).all().all(|p| {
-            roots
-                .iter()
-                .any(|root| p.starts_with(root) || crate::security::is_path_within_root(p, root))
+            roots.iter().any(|root| {
+                p.starts_with(root) || permissions::path_rule::is_within_root_resolved(p, root)
+            })
         })
     };
     let reaches_only_inside = |operand: &Operand, base: &Path| {

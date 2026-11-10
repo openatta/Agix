@@ -207,11 +207,11 @@ fn fenced_if_outside(mut result: ToolResult, path: &Path, ctx: &ToolContext) -> 
     if ctx.from_code {
         return result;
     }
-    let normalized = crate::security::normalize_path_lexically(&ctx.cwd.join(path));
+    let normalized = permissions::path_rule::normalize_path_lexically(&ctx.cwd.join(path));
     let inside = crate::security::readable_roots(ctx).iter().any(|root| {
-        crate::security::is_path_within_root(
+        permissions::path_rule::is_within_root_resolved(
             &normalized,
-            &crate::security::normalize_path_lexically(root),
+            &permissions::path_rule::normalize_path_lexically(root),
         )
     });
     if inside {

@@ -449,7 +449,7 @@ async fn build_bundled_files_injection(
                 ));
             }
         };
-        if !permissions::path_safety::is_path_within_root(&real_path, &canonical_skill_dir) {
+        if !permissions::path_rule::is_within_root_lexical(&real_path, &canonical_skill_dir) {
             return Err(format!(
                 "Skill '{skill_name}' declares bundled file `{relative}` which resolves \
                  outside the skill's own folder ({}): {} — rejected.",

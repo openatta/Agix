@@ -6,6 +6,8 @@ use std::path::{Component, Path, PathBuf};
 use base::paths::{ENGINE_CONFIG_FILES, ENGINE_CONFIG_ROOTS};
 use unicode_normalization::UnicodeNormalization;
 
+use crate::path_rule::is_within_root_lexical;
+
 /// 默认黑名单（路径任意位置含这些段则拒）。可被 `WritePolicy::with_extra_blacklist` 扩展。
 const DEFAULT_FILENAME_BLACKLIST: &[&str] = &[
     ".env",
@@ -277,7 +279,11 @@ pub fn check_write_for(
     // Steps 6 and 7 are the ones a deployment can carve exceptions out of.
     // Root containment below is not: an exception says "this sensitive name
     // is fine here", never "this path may be outside the project".
-    if !policy.allow.iter().any(|a| starts_within(target, a)) {
+    if !policy
+        .allow
+        .iter()
+        .any(|a| is_within_root_lexical(target, a))
+    {
         // 6. 系统目录硬黑名单
         for prefix in ABSOLUTE_DENY_PREFIXES {
             if target.starts_with(prefix) {
@@ -325,7 +331,7 @@ pub fn check_write_for(
     let mut roots = vec![policy.primary_root.clone()];
     roots.extend(policy.additional_roots.iter().cloned());
 
-    if !roots.iter().any(|r| starts_within(target, r)) {
+    if !roots.iter().any(|r| is_within_root_lexical(target, r)) {
         return Err(PathSafetyError::OutsideAllowedRoots {
             path: target.to_path_buf(),
             primary: policy.primary_root.clone(),
@@ -363,13 +369,15 @@ pub fn check_write_for(
                 continue;
             }
             // Only check components that are INSIDE the allowed root tree
-            if !roots.iter().any(|r| starts_within(component, r)) {
+            if !roots.iter().any(|r| is_within_root_lexical(component, r)) {
                 continue;
             }
             if let Ok(real_path) = std::fs::canonicalize(component) {
                 if real_path != *component
-                    && !roots.iter().any(|r| starts_within(&real_path, r))
-                    && !canonical_roots.iter().any(|r| starts_within(&real_path, r))
+                    && !roots.iter().any(|r| is_within_root_lexical(&real_path, r))
+                    && !canonical_roots
+                        .iter()
+                        .any(|r| is_within_root_lexical(&real_path, r))
                 {
                     return Err(PathSafetyError::SymlinkEscape {
                         symlink_path: component.to_path_buf(),
@@ -411,42 +419,6 @@ pub fn check_write_resolve_symlinks(
         }
         _ => Ok(()),
     }
-}
-
-/// Lexically normalize a path without touching the filesystem.
-///
-/// This collapses `.` and `..` components so callers can classify
-/// `cwd/../outside` as "outside cwd" instead of rejecting it before a user
-/// has a chance to approve an outside-project access. It intentionally does
-/// not resolve symlinks; sandbox/path safety still runs at execution time.
-pub fn normalize_path_lexically(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// Public wrapper for root containment checks used by tool-level policy.
-pub fn is_path_within_root(target: &Path, root: &Path) -> bool {
-    starts_within(target, root)
-}
-
-/// `target` 是否在 `root` 子树内（按字符串前缀；调用方要自行 canonicalize 防符号链接绕过）。
-fn starts_within(target: &Path, root: &Path) -> bool {
-    // 用 components 比对而非字符串 prefix，避免 `/foo/bar2` 误匹配 `/foo/bar` root
-    let tcomp: Vec<_> = target.components().collect();
-    let rcomp: Vec<_> = root.components().collect();
-    if tcomp.len() < rcomp.len() {
-        return false;
-    }
-    tcomp.iter().zip(rcomp.iter()).all(|(a, b)| a == b)
 }
 
 #[cfg(test)]
@@ -504,10 +476,11 @@ mod tests {
 
     #[test]
     fn lexical_normalize_and_root_check_classify_outside_paths() {
+        use crate::path_rule::normalize_path_lexically;
         let path = normalize_path_lexically(Path::new("/tmp/work/../other/x"));
         assert_eq!(path, PathBuf::from("/tmp/other/x"));
-        assert!(!is_path_within_root(&path, Path::new("/tmp/work")));
-        assert!(is_path_within_root(
+        assert!(!is_within_root_lexical(&path, Path::new("/tmp/work")));
+        assert!(is_within_root_lexical(
             &normalize_path_lexically(Path::new("/tmp/work/sub/../x")),
             Path::new("/tmp/work")
         ));
