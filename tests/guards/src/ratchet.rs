@@ -16,12 +16,27 @@ use std::path::{Path, PathBuf};
 /// `data` is relative to `tests/guards`, e.g. `ratchet/size.txt`. A measured
 /// key is the key columns joined by single spaces.
 pub fn check(data: &str, measured: BTreeMap<String, usize>, default_limit: usize) {
+    check_by(data, measured, |_| default_limit);
+}
+
+/// [`check`] for a file whose default limit depends on the key, such as one
+/// limit for functions and another for files.
+pub fn check_by(data: &str, measured: BTreeMap<String, usize>, limit_of: impl Fn(&str) -> usize) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(data);
     let mode = std::env::var("AGIX_UPDATE_RATCHET").unwrap_or_default();
-    check_at(&path, &mode, measured, default_limit);
+    check_at_by(&path, &mode, measured, limit_of);
 }
 
 pub fn check_at(path: &Path, mode: &str, measured: BTreeMap<String, usize>, default_limit: usize) {
+    check_at_by(path, mode, measured, |_| default_limit);
+}
+
+pub fn check_at_by(
+    path: &Path,
+    mode: &str,
+    measured: BTreeMap<String, usize>,
+    limit_of: impl Fn(&str) -> usize,
+) {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let (header, mut entries) = parse(&text, path);
     match mode {
@@ -31,7 +46,7 @@ pub fn check_at(path: &Path, mode: &str, measured: BTreeMap<String, usize>, defa
                 .filter_map(|(k, ceiling)| {
                     let now = *measured.get(&k)?;
                     let lowered = now.min(ceiling);
-                    (lowered > default_limit).then_some((k, lowered))
+                    (lowered > limit_of(&k)).then_some((k, lowered))
                 })
                 .collect();
             write(path, &header, &entries);
@@ -39,7 +54,7 @@ pub fn check_at(path: &Path, mode: &str, measured: BTreeMap<String, usize>, defa
         "seed" => {
             entries = measured
                 .iter()
-                .filter(|(_, n)| **n > default_limit)
+                .filter(|(k, n)| **n > limit_of(k))
                 .map(|(k, n)| (k.clone(), *n))
                 .collect();
             write(path, &header, &entries);
@@ -50,7 +65,7 @@ pub fn check_at(path: &Path, mode: &str, measured: BTreeMap<String, usize>, defa
     let shown = shown(path);
     let mut problems = Vec::new();
     for (key, n) in &measured {
-        let ceiling = entries.get(key).copied().unwrap_or(default_limit);
+        let ceiling = entries.get(key).copied().unwrap_or_else(|| limit_of(key));
         if *n > ceiling {
             problems.push(format!(
                 "{key}: {n}, above its ceiling {ceiling}. Split it; or raise the ceiling in \
@@ -61,6 +76,7 @@ pub fn check_at(path: &Path, mode: &str, measured: BTreeMap<String, usize>, defa
         }
     }
     for (key, ceiling) in &entries {
+        let default_limit = limit_of(key);
         if *ceiling <= default_limit {
             problems.push(format!(
                 "{key}: the ceiling {ceiling} is not above the default {default_limit}; delete the entry from {shown}"
