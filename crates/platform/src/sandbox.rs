@@ -48,7 +48,8 @@
 //!
 //! The policy's `deny_read` (the credential stores in the user's home, by
 //! default) less its `allow_read`, and whatever the policy says, the state
-//! root's settings files and MCP OAuth tokens, its own and every scene's.
+//! root's settings files and MCP OAuth tokens, its own and every scene's,
+//! and the project's `.agix/settings.local.json` and `.agix/mcp.local.json`.
 //!
 //! # What a confined command may not connect to
 //!
@@ -323,6 +324,27 @@ fn state_root_secrets(policy: &SandboxPolicy, state_root: &Path) -> Vec<PathBuf>
     }
     secrets.retain(|p| p.symlink_metadata().is_ok());
     secrets
+}
+
+/// The project's `.agix`, as given and as the kernel sees it.
+#[cfg(feature = "sandbox")]
+fn project_agix_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let given = cwd.join(".agix");
+    let real = resolve_path(&given);
+    if real == given {
+        vec![given]
+    } else {
+        vec![given, real]
+    }
+}
+
+/// Whether a file directly in a project's `.agix` holds the project's keys:
+/// `settings.local.json` and `mcp.local.json`, which are where the engine
+/// writes them, and the temporary files it writes them through.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn holds_project_keys(name: &str) -> bool {
+    let name = name.strip_prefix('.').unwrap_or(name);
+    name.starts_with("settings.local.json") || name.starts_with("mcp.local.json")
 }
 
 #[derive(Debug, Clone)]
@@ -740,6 +762,13 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
             ));
         }
     }
+    for agix in project_agix_dirs(&roots.cwd) {
+        let agix = regex_escape(&agix.display().to_string());
+        s.push_str(&format!(
+            "(deny file-read* (regex \"{}\"))\n",
+            sandbox_escape(&format!(r"^{agix}/\.?(settings|mcp)\.local\.json[^/]*$"))
+        ));
+    }
 
     // `launchctl submit` / `bootstrap` need no rule: launchd refuses a job
     // from a sandboxed caller.
@@ -1119,6 +1148,16 @@ fn linux_wrap(
         }
         for p in state_root_secrets(policy, state_root) {
             hide(&mut args, &p);
+        }
+    }
+    for agix in project_agix_dirs(&roots.cwd) {
+        let Ok(entries) = std::fs::read_dir(&agix) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_name().to_str().is_some_and(holds_project_keys) {
+                hide(&mut args, &entry.path());
+            }
         }
     }
     for socket in daemon_sockets(roots.state_root.as_deref()) {
@@ -2004,7 +2043,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_profile_empty_deny_read_denies_only_the_state_roots_secrets() {
+    fn macos_profile_empty_deny_read_denies_only_the_engines_own_secrets() {
         let o = SandboxOptions {
             command: "ls",
             cwd: Path::new("/tmp/work"),
@@ -2024,11 +2063,12 @@ mod tests {
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
+        // Other cases in this process may hold a fenced secret meanwhile.
         let reads: Vec<&str> = profile
             .lines()
-            .filter(|l| l.contains("file-read*"))
+            .filter(|l| l.contains("file-read*") && !l.contains("(literal "))
             .collect();
-        assert_eq!(reads.len(), 2, "{reads:?}");
+        assert_eq!(reads.len(), 3, "{reads:?}");
         assert!(
             reads
                 .iter()
@@ -2868,6 +2908,54 @@ mod tests {
         }
         let (ok, listed) = cat(&format!("ls '{}'", state.join("scenes/code").display()));
         assert!(ok && listed.contains("skills"), "{listed}");
+    }
+
+    /// The project's own `.agix/settings.local.json` and `.agix/mcp.local.json`
+    /// are where the engine writes the project's keys; a command reads neither,
+    /// even with the whole project in `allow_read`. The committed
+    /// `settings.json` beside them stays readable.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_sandboxed_command_reads_none_of_the_projects_keys() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let agix = project.join(".agix");
+        let secret = "agix-test-secret";
+        let secrets = [
+            agix.join("settings.local.json"),
+            agix.join("mcp.local.json"),
+            agix.join(".settings.local.json.1234.tmp"),
+        ];
+        for path in &secrets {
+            write_file(path, secret);
+        }
+        write_file(&agix.join("settings.json"), "fine");
+        let policy = SandboxPolicy {
+            deny_read: vec![dir.path().join("nowhere")],
+            allow_read: vec![project.clone()],
+            state_root: Some(dir.path().join("state")),
+            ..Default::default()
+        };
+        let cat = |path: &Path| {
+            let out = run_confined(&project, &policy, &[], &format!("cat '{}'", path.display()));
+            (
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+            )
+        };
+        for path in &secrets {
+            let (ok, shown) = cat(path);
+            assert!(
+                !ok && !shown.contains(secret),
+                "{} was read: {shown:?}",
+                path.display()
+            );
+        }
+        assert_eq!(cat(&agix.join("settings.json")), (true, "fine".to_string()));
     }
 
     /// Unattended, a command cannot have the keychain read for it through

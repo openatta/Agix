@@ -1333,7 +1333,8 @@ WebAssembly 载体整个移除。
 - **沙箱里的命令读得到的少了。** 缺省的 `deny_read` 多了 `~/.git-credentials`、
   `~/.config/git/credentials`、`~/.config/gcloud`、`~/.cargo/credentials{,.toml}`、`~/.vault-token`
   等(全表见 `base::interface::exec::default_deny_read_in`),要用的用 `sandbox.allow_read` 放开;
-  状态目录与各场景目录下的 `settings*.json`、`mcp.local.json` 和 `mcp/oauth/` 一律读不到。
+  状态目录与各场景目录下的 `settings*.json`、`mcp.local.json` 和 `mcp/oauth/`,以及项目的
+  `.agix/settings.local.json`、`.agix/mcp.local.json` 一律读不到。
   无人值守的会话另外读不了钥匙串(`security`)、连不上 tmux / screen。子模块 git 目录里的
   `config`、`hooks/` 等和主仓库的一样只读,沙箱里的 `git submodule sync` 之类会失败(§6.3)。
 - **监听关了,端口和 socket 不再被沙箱围着。** 以前进程里关掉的监听器的端口、socket 路径一直被

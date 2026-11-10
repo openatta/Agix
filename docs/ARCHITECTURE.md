@@ -791,7 +791,8 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `Bash` 读项目外的东西只受凭据黑名单约束:`sandbox.deny_read`(缺省是家目录下的凭据,
 `base::interface::exec::default_deny_read`)减去 `sandbox.allow_read`;另外不论怎么配,
 状态目录与各场景目录下的设置文件(`settings*.json`、`mcp.local.json`,明文的 `api_key` 与 MCP
-headers 在里面)和 `mcp/oauth/` 都读不到,`allow_read` 也放不开。状态目录里别的东西(skills、
+headers 在里面)和 `mcp/oauth/`,以及项目自己的 `.agix/settings.local.json`、`.agix/mcp.local.json`
+(项目这一层的 key 写在这里)都读不到,`allow_read` 也放不开。状态目录里别的东西(skills、
 memory、scratchpad、会话记录、`scene.json`)照常可读。`Monitor` 的脚本进同一个沙箱,
 `sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
 
