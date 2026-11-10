@@ -198,18 +198,8 @@ impl DaemonServer {
     pub(super) async fn method_start_agent(
         &self,
         id: serde_json::Value,
-        params: serde_json::Value,
+        params: crate::rpc::StartAgentParams,
     ) -> RpcResponse {
-        let params: crate::rpc::StartAgentParams = match serde_json::from_value(params) {
-            Ok(p) => p,
-            Err(e) => {
-                return RpcResponse::err(
-                    id,
-                    codes::INVALID_PARAMS,
-                    format!("session.startAgent: {e}"),
-                )
-            }
-        };
         if params.prompt.trim().is_empty() {
             return RpcResponse::err(
                 id,

@@ -1,22 +1,18 @@
-//! The protocol doc and the code describe the same set of methods, and the
-//! same set of stream events.
+//! The protocol doc, the method table and the committed schema describe the
+//! same methods, events and error codes.
 //!
 //! `docs/daemon_rpc_protocol.md` is what someone writes a client against.
 //! When it drifts, both directions hurt and neither is visible from the
 //! code: a documented method that does not exist fails at runtime with
 //! METHOD_NOT_FOUND, and an implemented method nobody documented is a
-//! capability clients never learn about.
+//! capability clients never learn about. The same holds for §7's and §8's
+//! event kinds and §9's error codes.
 //!
-//! The same drift is possible in the events: §7's table is a
-//! whitelist of `session.event` kinds, and the whitelist in the code is the
-//! `match` in `run_turn`'s forwarding loop. Nothing compared them, so an
-//! event could be documented and never sent — a client waiting forever for a
-//! frame that does not exist — or sent and never documented.
-//!
-//! Source-text scanning: match arms out of `dispatch`, `#### \`name\``
-//! headings out of §6, `AgentEvent` arms out of the forwarding loop, table
-//! rows out of §7. It cannot check that a documented *shape* is right,
-//! only that both sides agree on what exists.
+//! The code side is read at run time — the method table
+//! (`assembly::server::methods`), the event types' schema and
+//! `ErrorCode::ALL` — and the doc side from its `#### \`name\`` headings and
+//! tables. It cannot check that a documented *shape* is right, only that both
+//! sides agree on what exists.
 
 use std::path::{Path, PathBuf};
 
@@ -27,45 +23,13 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Method names from `dispatch`'s match arms.
-///
-/// Reads the arms rather than a hand-kept list, so a new method is covered
-/// by this test the moment it is dispatchable — a list would need the same
-/// discipline the test exists to enforce.
-fn dispatched_methods(server_rs: &str) -> Vec<String> {
-    let body = server_rs
-        .split_once("match req.method.as_str() {")
-        .expect("dispatch still matches on req.method")
-        .1;
-
-    let mut out = Vec::new();
-    for line in body.lines() {
-        let line = line.trim();
-        // `"a.b" => ...` and `"a.b" | "c.d" => ...`, with or without a guard.
-        if !line.starts_with('"') || !line.contains("=>") && !line.contains('|') {
-            continue;
-        }
-        let arm = line.split("=>").next().unwrap_or(line);
-        for part in arm.split('|') {
-            let part = part.trim();
-            let Some(name) = part
-                .strip_prefix('"')
-                .and_then(|rest| rest.split('"').next())
-            else {
-                continue;
-            };
-            // A method name, not some other string literal in the arm.
-            if name.contains('.') && !out.contains(&name.to_string()) {
-                out.push(name.to_string());
-            }
-        }
-        // The wildcard arm ends the table.
-        if line.starts_with("_ =>") {
-            break;
-        }
-    }
-    out.sort();
-    out
+/// Every method in the dispatch table.
+fn dispatched_methods() -> Vec<String> {
+    sorted(
+        assembly::server::methods()
+            .map(|m| m.name.to_string())
+            .collect(),
+    )
 }
 
 /// Method names documented as `#### \`name\`` headings.
@@ -101,16 +65,9 @@ const UNDOCUMENTED_BY_DESIGN: &[&str] = &["daemon.auth"];
 
 #[test]
 fn every_dispatched_method_is_documented() {
-    let root = repo_root();
-    let server =
-        std::fs::read_to_string(root.join("crates/assembly/src/server/dispatch.rs")).unwrap();
-    let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
 
-    let dispatched = dispatched_methods(&server);
-    assert!(
-        dispatched.len() > 10,
-        "only found {dispatched:?} — the dispatch scan is broken, not the doc"
-    );
+    let dispatched = dispatched_methods();
     let documented = documented_methods(&doc);
 
     let missing: Vec<&String> = dispatched
@@ -127,12 +84,9 @@ fn every_dispatched_method_is_documented() {
 
 #[test]
 fn every_documented_method_is_dispatched() {
-    let root = repo_root();
-    let server =
-        std::fs::read_to_string(root.join("crates/assembly/src/server/dispatch.rs")).unwrap();
-    let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
 
-    let dispatched = dispatched_methods(&server);
+    let dispatched = dispatched_methods();
     let documented = documented_methods(&doc);
     assert!(
         documented.len() > 10,
@@ -152,37 +106,54 @@ fn every_documented_method_is_dispatched() {
     );
 }
 
-/// Error codes the doc lists must exist in `rpc::codes`, for the same reason:
-/// a client cannot branch on a constant nothing ever returns.
-#[test]
-fn every_documented_error_code_exists() {
-    let root = repo_root();
-    let rpc = std::fs::read_to_string(root.join("crates/assembly/src/rpc.rs")).unwrap();
-    let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
-
-    let mut missing = Vec::new();
-    for line in doc.lines() {
+/// §9's error table and `ErrorCode::ALL` are the same set of `(code, name)`
+/// pairs: a client cannot branch on a constant nothing ever returns, nor
+/// handle one nobody told it about. `PARSE_ERROR` is described under the
+/// table rather than in it, as `` `PARSE_ERROR (-32700)` ``.
+fn documented_error_codes(doc: &str) -> Vec<String> {
+    let section = doc
+        .split("## 9. 错误码")
+        .nth(1)
+        .and_then(|s| s.split("### 9.1").next())
+        .expect("the doc still has §9");
+    let mut out: Vec<String> = section
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|span| {
+            let (name, code) = span.split_once(" (")?;
+            let code = code.strip_suffix(')')?;
+            (code.starts_with("-32") && name.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+                .then(|| format!("{code} {name}"))
+        })
+        .collect();
+    for line in section.lines() {
         // The error table rows: `| -32015 | SESSION_BUSY | … |`
         let mut cells = line.split('|').map(str::trim);
         let (Some(""), Some(code), Some(name)) = (cells.next(), cells.next(), cells.next()) else {
             continue;
         };
-        if !code.starts_with("-32") || !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+        if !code.starts_with("-32")
+            || name.is_empty()
+            || !name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+        {
             continue;
         }
-        if name.is_empty() {
-            continue;
-        }
-        let declaration = format!("{name}: i32 = {code};");
-        if !rpc.contains(&declaration) {
-            missing.push(format!("{name} ({code})"));
-        }
+        out.push(format!("{code} {name}"));
     }
+    sorted(out)
+}
 
-    assert!(
-        missing.is_empty(),
-        "these error codes are documented but not declared in crates/assembly/src/rpc.rs: {missing:?}"
+#[test]
+fn the_documented_error_codes_are_the_declared_ones() {
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
+    let declared = sorted(
+        daemon::rpc::ErrorCode::ALL
+            .iter()
+            .map(|c| format!("{} {}", c.code(), c.name()))
+            .collect(),
     );
+    assert_eq!(documented_error_codes(&doc), declared);
 }
 
 /// Every method the daemon answers is invoked by some test.
@@ -207,9 +178,7 @@ fn every_documented_error_code_exists() {
 #[test]
 fn every_method_a_client_can_send_is_driven_by_a_test() {
     let root = repo_root();
-    let mut required = dispatched_methods(
-        &std::fs::read_to_string(root.join("crates/assembly/src/server/dispatch.rs")).unwrap(),
-    );
+    let mut required = dispatched_methods();
     required.push("daemon.auth".to_string());
 
     let wrappers = client_wrappers(&root);
@@ -413,25 +382,18 @@ fn schema_names(path: &[&str]) -> Vec<String> {
 /// `daemon.auth` is the connection handshake and is in none of the three.
 #[test]
 fn the_rpc_schema_lists_the_dispatched_methods_and_the_documented_ones() {
-    let root = repo_root();
-    let dispatch =
-        std::fs::read_to_string(root.join("crates/assembly/src/server/dispatch.rs")).unwrap();
-    let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
-    let schema = schema_names(&["methods"]);
-    let table = sorted(
-        assembly::rpc_schema::method_names()
-            .iter()
-            .map(|m| m.to_string())
-            .collect(),
-    );
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
     let documented: Vec<String> = documented_methods(&doc)
         .into_iter()
         .filter(|m| !UNDOCUMENTED_BY_DESIGN.contains(&m.as_str()))
         .collect();
 
-    assert_eq!(schema, table, "committed schema is out of date");
-    assert_eq!(table, dispatched_methods(&dispatch), "schema vs dispatch");
-    assert_eq!(table, documented, "schema vs protocol doc");
+    assert_eq!(
+        schema_names(&["methods"]),
+        dispatched_methods(),
+        "committed schema is out of date"
+    );
+    assert_eq!(dispatched_methods(), documented, "dispatch vs protocol doc");
 }
 
 fn documented_daemon_event_kinds(doc: &str) -> Vec<String> {
@@ -461,39 +423,63 @@ fn the_rpc_schema_lists_the_documented_event_kinds() {
 
     assert_eq!(
         schema_names(&["notifications", "session.event", "kinds"]),
-        to_vec(assembly::rpc_schema::session_event_kinds())
+        to_vec(assembly::server::schema::session_event_kinds())
     );
     assert_eq!(
-        to_vec(assembly::rpc_schema::session_event_kinds()),
+        to_vec(assembly::server::schema::session_event_kinds()),
         documented_event_kinds(&doc)
     );
     assert_eq!(
         schema_names(&["notifications", "daemon.event", "kinds"]),
-        sorted(assembly::rpc_schema::daemon_event_kinds())
+        sorted(assembly::server::schema::daemon_event_kinds())
     );
     assert_eq!(
-        sorted(assembly::rpc_schema::daemon_event_kinds()),
+        sorted(assembly::server::schema::daemon_event_kinds()),
         documented_daemon_event_kinds(&doc)
     );
 }
 
 #[test]
-fn the_rpc_schema_error_codes_are_the_declared_constants() {
-    let rpc = std::fs::read_to_string(repo_root().join("crates/assembly/src/rpc.rs")).unwrap();
-    let in_schema: Vec<String> = assembly::rpc_schema::error_codes()
-        .iter()
-        .map(|(code, name)| format!("{name}: i32 = {code};"))
-        .collect();
-    for declaration in &in_schema {
-        assert!(rpc.contains(declaration), "{declaration} is not in rpc.rs");
-    }
-    let declared = rpc
-        .lines()
-        .filter(|l| l.trim_start().starts_with("pub const ") && l.contains(": i32 = -"))
-        .count();
-    assert_eq!(
-        in_schema.len(),
-        declared,
-        "rpc::codes and the schema's error table differ in size"
+fn the_rpc_schema_error_codes_are_the_declared_ones() {
+    let text = std::fs::read_to_string(repo_root().join("docs/schemas/rpc.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let in_schema = sorted(
+        schema["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| format!("{} {}", e["code"], e["name"].as_str().unwrap()))
+            .collect(),
     );
+    let declared = sorted(
+        daemon::rpc::ErrorCode::ALL
+            .iter()
+            .map(|c| format!("{} {}", c.code(), c.name()))
+            .collect(),
+    );
+    assert_eq!(in_schema, declared);
+}
+
+/// A method of an optional module is listed whether or not the module is
+/// compiled in, and says which module it is.
+#[test]
+fn every_optional_module_s_methods_are_listed_with_their_module() {
+    let modules: Vec<(&str, Option<&str>)> = assembly::server::methods()
+        .map(|m| (m.name, m.module))
+        .collect();
+    for (name, module) in &modules {
+        let expected = if name.starts_with("mcp.") {
+            Some("mcp")
+        } else if *name == "session.startAgent" {
+            Some("agents")
+        } else {
+            None
+        };
+        assert_eq!(*module, expected, "{name}");
+    }
+    let text = std::fs::read_to_string(repo_root().join("docs/schemas/rpc.schema.json")).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&text).unwrap();
+    for (name, module) in modules {
+        assert_eq!(schema["methods"][name]["module"].as_str(), module, "{name}");
+    }
 }

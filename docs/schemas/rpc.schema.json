@@ -608,7 +608,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "daemon 的 JSON-RPC 2.0 接口。语义见 docs/daemon_rpc_protocol.md;params/result 标着\"未类型化\"的,服务端手拼 JSON,这里不做约束。daemon.auth 是连接握手,不在 methods 里(协议文档 §5.1)。",
+  "description": "daemon 的 JSON-RPC 2.0 接口。语义见 docs/daemon_rpc_protocol.md;params/result 标着\"未类型化\"的,这里不做约束。带 module 的方法属于可选模块,构建里没有这个模块时答 METHOD_NOT_FOUND。daemon.auth 是连接握手,不在 methods 里(协议文档 §5.1)。",
   "errors": [
     {
       "code": -32700,
@@ -715,701 +715,570 @@
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "config.get": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "config.getProvider": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "config.reload": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "config.setProvider": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "daemon.doctor": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "daemon.ping": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "daemon.shutdown": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "daemon.status": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "daemon.subscribeEvents": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "import.list": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "import.run": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.addServer": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.auth.cancel": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.auth.complete": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.auth.logout": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.auth.setIdentity": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.auth.start": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.status": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "mcp.updateServer": {
+      "module": "mcp",
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "plugin.disable": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "plugin.enable": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "plugin.install": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "plugin.list": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "plugin.reload": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "plugin.uninstall": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "project.status": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "project.trust": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.activate": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.deactivate": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.describe": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.list": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.register": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.reload": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "scene.unregister": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "schedule.create": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "schedule.delete": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "schedule.list": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.appendEntry": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.clear": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.close": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.compact": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.create": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.delete": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.dropMessages": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.editMessage": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.entries": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.export": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.fork": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.get": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.goal": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.history": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.inspectContext": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.interrupt": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.list": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.messageTask": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.rename": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.respondToPrompt": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.resume": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.run_turn": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.setGoal": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.setModel": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.setPrompt": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.startAgent": {
+      "module": "agents",
       "params": {
         "$ref": "#/$defs/StartAgentParams"
       },
-      "params_typed": true,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.stopTask": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.subscribe": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.taskOutput": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.tasks": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.unsubscribe": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     },
     "session.updateGoal": {
       "params": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
       },
-      "params_typed": false,
       "result": {
         "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-      },
-      "result_typed": false
+      }
     }
   },
   "notifications": {

@@ -30,7 +30,6 @@ fn    crates/agents/src/lib.rs                             AgentsModule::on_sess
 fn    crates/assembly/src/assemble.rs                      pool                                     137
 fn    crates/assembly/src/export.rs                        pack                                     211
 fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          258
-fn    crates/assembly/src/server/dispatch.rs               DaemonServer::dispatch                   334
 fn    crates/assembly/src/session_pool/create.rs           SessionPool::create                      578
 fn    crates/assembly/src/session_pool/history_rpc.rs      SessionPool::export_session              115
 fn    crates/assembly/src/session_pool/history_rpc.rs      SessionPool::fork_session                128

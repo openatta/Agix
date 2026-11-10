@@ -304,7 +304,7 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 
 | 测试 | 盯住什么 |
 |---|---|
-| `daemon/tests/protocol_doc_matches_dispatch.rs` | `daemon_rpc_protocol.md` §6 与 `dispatch` 的方法集合一致 |
+| `daemon/tests/protocol_doc_matches_dispatch.rs` | `daemon_rpc_protocol.md` §6–§9 与方法表、事件类型、错误码一致 |
 | `daemon/tests/protocol_doc_examples.rs` | 文档里的响应示例和真 daemon 的回答逐字段一致;比对不了的方法(示例是各种状态的字段并集、要外部授权服务器等)列在 `NOT_COMPARED` / `NO_EXAMPLE` 里并写明原因,两张表与文档、与比对代码对不上就挂 |
 | `daemon/tests/extension_points_doc.rs` | `extension_points.md` 的表由 `catalog` 生成 |
 | `crates/core` 的 `settings_schema_matches_committed_file` | `docs/schemas/settings.schema.json` 由 `Settings` 类型生成（`#[ignore]`，CI 的 ignored 那一步跑） |
@@ -363,7 +363,7 @@ target 从根文件出发沿 `mod` 声明走模块树，只有编译器会读的
 | SZ-1..3 | 生产文件不超过 800 行、函数不超过 100 行，超限的按现值入棘轮 | syn 的行号 | `tests/guards/tests/size.rs`、`tests/guards/ratchet/size.txt` | 已落地，拆分（D6）后收紧 |
 | G1、G2a、G3–G5 | 会话池与线格式分层 | syn 加棘轮 | `tests/guards/tests/layering.rs` | 文件已建、内容为空，归 RPC 层（D4） |
 | A1–A8 | 接口面 | syn | `tests/guards/tests/api_surface.rs` | 文件已建、内容为空，归接口收口（D5） |
-| RT-1 | 协议文档对账 | 运行时加文档文本 | `daemon/tests/protocol_doc_matches_dispatch.rs` | 保留文本版，归 RPC 层（D4 S8）改成运行时 |
+| RT-1 | 协议文档对账 | 代码一侧读运行时的方法表、schema 和 `ErrorCode::ALL`，文档用文本 | `daemon/tests/protocol_doc_matches_dispatch.rs` | 已落地 |
 | RT-5 | 两个池互不可见 | 运行时 | `daemon/tests/two_pools_one_process.rs` | 已落地 |
 | DOC-* | 扩展点、hook、README、遥测清单的文档对账 | 文档用文本，代码一侧用运行时常量或 `guards::scan` | 各自原位 | 已落地 |
 | CI-1 | base 和 platform 没有 http 栈（传递依赖） | `cargo tree` | `.github/workflows/ci.yml` | 已落地 |
