@@ -192,6 +192,7 @@ impl AgentTool {
                     cwd,
                     cancel,
                     subagent_type.as_deref(),
+                    None,
                     run,
                     admission,
                 )
@@ -258,6 +259,8 @@ impl AgentTool {
             ..SubRun::for_task(&task, &sid)
         };
         let session = ctx.session.clone();
+        let (parent_session_id, parent_turn, parent_tool_use_id) =
+            (ctx.session_id.clone(), ctx.turn_no, ctx.tool_use_id.clone());
 
         tokio::spawn(async move {
             let r = without_panics(async move {
@@ -268,6 +271,7 @@ impl AgentTool {
                     cwd,
                     outer_cancel,
                     subagent_type.as_deref(),
+                    Some((&parent_session_id, parent_turn, &parent_tool_use_id)),
                     run,
                     admission,
                 )
@@ -348,6 +352,7 @@ impl AgentTool {
                     cwd,
                     cancel,
                     subagent_type.as_deref(),
+                    None,
                     run,
                     admission,
                 )
@@ -374,6 +379,7 @@ impl AgentTool {
         cwd: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
+        parent: Option<(&str, u32, &str)>,
         run: SubRun,
         admission: Admission,
     ) -> Result<String, base::error::ToolError> {
@@ -388,7 +394,7 @@ impl AgentTool {
                     cancel,
                     subagent_type,
                     permission,
-                    parent: None,
+                    parent,
                     run,
                     runs_on: RunsOn::Background,
                 },

@@ -111,3 +111,30 @@ async fn a_background_sub_agent_and_a_team_member_record_who_spawned_them_and_as
     assert_eq!(seen.lock().unwrap().as_slice(), [expected]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_sub_agents_progress_names_the_call_that_started_it() {
+    let agent_tool = agent_tool_with_model(Arc::new(LineageModel {
+        seen: Default::default(),
+    }));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
+
+    start_in_background(&agent_tool, parent_ctx()).await;
+
+    let mut progress = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::SubagentProgress {
+            parent_session_id,
+            parent_turn,
+            parent_tool_use_id,
+            ..
+        } = event
+        {
+            progress += 1;
+            assert_eq!(parent_session_id, "parent-session-1");
+            assert_eq!(parent_turn, 3);
+            assert_eq!(parent_tool_use_id.as_deref(), Some("toolu_bg"));
+        }
+    }
+    assert!(progress > 0, "the sub-agent's events reach the parent");
+}

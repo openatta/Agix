@@ -509,6 +509,54 @@ async fn a_sub_agents_output_is_its_answer() {
     assert_eq!(out["output"], "hello from below");
 }
 
+#[tokio::test]
+async fn a_background_sub_agents_progress_names_the_call_that_started_it() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(text_round("hi"));
+    model.push_turn(tool_round(
+        "Agent",
+        "toolu_bg",
+        serde_json::json!({
+            "description": "say hello",
+            "prompt": "Reply with: hello from below",
+            "subagent_type": "general-purpose",
+            "background": true,
+        }),
+    ));
+    // The parent's next call and the sub-agent's race for these.
+    model.push_turn(text_round("done"));
+    model.push_turn(text_round("done"));
+    let daemon = Daemon::start(model).await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let frames = daemon.watch(&session).await;
+    for message in ["hello", "delegate"] {
+        daemon
+            .ok(
+                "session.run_turn",
+                serde_json::json!({"session_id": session, "message": message}),
+            )
+            .await;
+    }
+
+    let progress = eventually!(
+        "the background sub-agent's progress",
+        frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f["event"]["kind"] == "subagent_progress")
+            .cloned()
+    );
+    assert_eq!(
+        progress["event"]["parent_tool_use_id"], "toolu_bg",
+        "{progress}"
+    );
+    assert_eq!(progress["event"]["parent_turn"], 1, "{progress}");
+}
+
 /// Keeps talking and never finishes, and counts the calls given up on — a
 /// stream dropped unfinished is a model call whose caller was stopped.
 #[derive(Default)]
