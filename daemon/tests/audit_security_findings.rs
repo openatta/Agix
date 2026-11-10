@@ -459,10 +459,9 @@ async fn audit_f3_a_hook_approval_overrides_a_managed_ask() {
     assert!(!marker.exists());
 }
 
-/// An MCP tool's `readOnlyHint` is the server's own claim, and
-/// `acceptEdits` lets a "read-only" call through on it alone.
+/// An MCP tool's `readOnlyHint` is the server's own claim: `acceptEdits`
+/// does not let a "read-only" call through on it alone.
 #[tokio::test]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() {
     use base::permission::PermissionDecision;
     use base::tool::Tool;

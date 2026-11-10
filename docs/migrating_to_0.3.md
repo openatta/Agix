@@ -1432,6 +1432,10 @@ WebAssembly 载体整个移除。
 - 一个 MCP server 连不上不再卡住别的项目:会话池的 MCP manager 缓存改为每个(项目, 场景)一把锁,
   `mcp.addServer` / `updateServer`、登录后重连、令牌失效降级只挡同一对;以前一个不应答的 server 能让所有
   项目的建会话、`mcp.status` 等到它的启动超时(约 90 秒)。
+- **`acceptEdits` 下 MCP 工具一律询问。** 以前 server 给工具标了 `readOnlyHint: true` 就免确认,
+  而这只是 server 对自己的说法,一个恶意或出错的 server 能把任何工具标成只读。要免询问的,为它写
+  allow 规则(`mcp__<server>` 管整个 server,`mcp__<server>__<工具>` 管一个);`default` 下本来就要问,
+  不受影响。
 - `RUST_LOG=debug` 不再把 rmcp 的授权日志(授权码、令牌)落盘:`rmcp::transport::auth` 固定在 `info`,
   用户显式写了这个 target 才放开。
 

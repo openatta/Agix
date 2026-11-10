@@ -368,7 +368,7 @@ glob 清单),项目自己写的忽略。三态:
 | `plan` | 只允许只读工具 |
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
-| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问。"项目内"指会话的工作目录、`sandbox.additional_directories`,读还包括 `sandbox.read_directories`(`sandbox.read_anywhere` 时不限):项目外的写入照样询问,`Read` / `Glob` / `Grep` 读项目外、只读的 `Bash` / `Monitor` 命令参数指向项目外(含 `~`、`$VAR` 这类展开不了的写法)也照样询问,与 `default` 一致(`.ssh` 一类的受保护路径仍被拒)。只读的 `Bash` / `Monitor` 命令只要跑 `git`,就还要求每一次 `git` 找到的仓库就是会话目录自己所在的那个(不能是裸仓库;`cd` 进项目自带的嵌套 `.git`、或 `cd` 到去向不明的目录再跑 `git`,都要询问),因为仓库配置(`core.fsmonitor`、`diff.external` 一类)会让 git 自己去启动程序,会话自己的仓库是用户的,项目里带来的是别人写的。`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机 |
+| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问。"项目内"指会话的工作目录、`sandbox.additional_directories`,读还包括 `sandbox.read_directories`(`sandbox.read_anywhere` 时不限):项目外的写入照样询问,`Read` / `Glob` / `Grep` 读项目外、只读的 `Bash` / `Monitor` 命令参数指向项目外(含 `~`、`$VAR` 这类展开不了的写法)也照样询问,与 `default` 一致(`.ssh` 一类的受保护路径仍被拒)。只读的 `Bash` / `Monitor` 命令只要跑 `git`,就还要求每一次 `git` 找到的仓库就是会话目录自己所在的那个(不能是裸仓库;`cd` 进项目自带的嵌套 `.git`、或 `cd` 到去向不明的目录再跑 `git`,都要询问),因为仓库配置(`core.fsmonitor`、`diff.external` 一类)会让 git 自己去启动程序,会话自己的仓库是用户的,项目里带来的是别人写的。`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机;MCP 工具一律询问,server 自报的 `readOnlyHint` 不算(有 allow 规则的照常放行) |
 | `bypassPermissions` | 不询问、不看任何规则 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
 
 `auto`、`yolo` 是 `bypassPermissions` 的另外两种写法:在 settings.json、`options.permission_mode`、

@@ -173,6 +173,12 @@ impl Tool for McpToolAdapter {
         None // MCP 工具的"内容"不可解释；只按 tool_name 匹配规则
     }
 
+    /// `readOnlyHint` is the server's own word about itself, so it does not
+    /// spare a call the `acceptEdits` question; an allow rule still does.
+    fn accept_edits_allows(&self, _: &Value, _: &ToolContext) -> bool {
+        false
+    }
+
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         // 接受任意 object 输入 —— 实际 schema 校验由 server 端做
         if input.is_object() {

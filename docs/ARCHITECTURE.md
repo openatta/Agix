@@ -746,6 +746,8 @@ managed 层管的是权限,不是沙箱:它挡得住模型发起的调用,挡不
 的、`.git` / `.agix` / `.agents/skills` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
 只读调用里够得比"读"更远的也不放行(`Tool::accept_edits_allows`):`WebFetch` / `Ping`
 只放行 `sandbox.allowed_domains` 列出的主机(含子域),URL 本身就能把数据带到主机那里;
+MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server 对自己的说法,要免询问就写 allow
+规则(`mcp__<server>` 或具体工具名);
 进了会话所在仓库之外的仓库的只读 `git`(`Bash` / `Monitor`)照样询问。读项目外的文件也与
 `default` 一样询问:能免询问读的范围是 `security::readable_roots`——会话的工作目录、它能写的
 附加目录(`sandbox.additional_directories` 与实例状态目录)和 `sandbox.read_directories`,
