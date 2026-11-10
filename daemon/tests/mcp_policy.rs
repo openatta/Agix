@@ -243,7 +243,7 @@ async fn reload_never_starts_a_denied_server_and_reports_it_failed() {
     let mut events = pool.subscribe_events();
     d.configure(d.root(), &["blocked", "stray"]);
 
-    let report = pool.reload_settings(None, "code").await;
+    let report = serde_json::to_value(pool.reload_settings(None, "code").await).unwrap();
     let mut failed: Vec<&str> = report["routing"]["mcp_failed"]
         .as_array()
         .unwrap()
@@ -451,7 +451,7 @@ async fn plugin_servers_are_admitted_on_reload_too() {
     let denied = denied_in_status(&pool).await;
     assert_eq!(denied.len(), 1, "{denied:?}");
 
-    let report = pool.reload_settings(None, "code").await;
+    let report = serde_json::to_value(pool.reload_settings(None, "code").await).unwrap();
     assert_eq!(
         report["routing"]["mcp_failed"],
         serde_json::json!(["p-mcp-srv"]),

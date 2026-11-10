@@ -2,5 +2,10 @@
 //! `session_pool::api`，这里只放线上多出来的那一层（`ping` 的 `pong`、
 //! `ignored_options` 之类）。
 
+pub mod config;
 pub mod daemon;
+pub mod import;
+pub mod project;
 pub mod schedule;
+
+pub use config::ConfigTarget;

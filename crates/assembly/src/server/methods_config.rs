@@ -46,87 +46,16 @@ impl DaemonServer {
         subscribed
     }
 
-    /// `config.getProvider` params: `{"include_secrets": false}` (optional,
-    /// default `false`). Read-side counterpart to `config.setProvider` — see
-    /// `SessionPool::get_providers` doc comment for the redaction default.
-    pub(super) async fn method_config_get_provider(
+    /// The `(project_root, scene)` of a [`ConfigTarget`], this daemon's own
+    /// where it names none.
+    pub(super) fn target_of(
         &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let include_secrets = params
-            .get("include_secrets")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let (project_root, scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        RpcResponse::ok(
-            id,
-            self.pool
-                .get_providers(project_root.as_deref(), &scene, include_secrets)
-                .await,
-        )
-    }
-
-    /// `config.reload` params: `{"scene": "...", "project_root": "..."}`,
-    /// both optional and both defaulting to this daemon's own — see
-    /// `config_target`.
-    pub(super) async fn method_config_reload(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let (project_root, scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        RpcResponse::ok(
-            id,
-            self.pool
-                .reload_settings(project_root.as_deref(), &scene)
-                .await,
-        )
-    }
-
-    pub(super) async fn method_project_status(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let (project_root, scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        RpcResponse::ok(
-            id,
-            self.pool
-                .project_status(project_root.as_deref(), &scene)
-                .await,
-        )
-    }
-
-    pub(super) async fn method_project_trust(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let (project_root, scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        let Some(trusted) = params.get("trusted").and_then(|v| v.as_bool()) else {
-            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing boolean `trusted`");
-        };
-        match self
-            .pool
-            .set_project_trust(project_root.as_deref(), &scene, trusted)
-            .await
-        {
-            Ok(result) => RpcResponse::ok(id, result),
-            Err(e) => failure(id, e),
-        }
+        target: crate::rpc::methods::ConfigTarget,
+    ) -> (Option<std::path::PathBuf>, String) {
+        let scene = target
+            .scene
+            .unwrap_or_else(|| self.pool.scene_id().to_string());
+        (target.project_root, scene)
     }
 
     /// The `(project_root, scene)` pair a configuration method acts on.
@@ -195,31 +124,6 @@ impl DaemonServer {
         match self
             .pool
             .describe_scene(&scene, project_root.as_deref(), include_secrets)
-            .await
-        {
-            Ok(v) => RpcResponse::ok(id, v),
-            Err(e) => failure(id, e),
-        }
-    }
-
-    /// `config.get` params:
-    /// `{"scene": "code", "project_root": "...", "tier": "effective"}`
-    pub(super) async fn method_config_get(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let (scene, project_root, include_secrets) = self.describe_target(&params);
-        let Some(scene) = scene else {
-            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing scene");
-        };
-        let tier = params
-            .get("tier")
-            .and_then(|v| v.as_str())
-            .unwrap_or("effective");
-        match self
-            .pool
-            .config_tier(&scene, project_root.as_deref(), tier, include_secrets)
             .await
         {
             Ok(v) => RpcResponse::ok(id, v),
@@ -540,99 +444,6 @@ impl DaemonServer {
             }
         };
         match self.pool.mcp_auth_set_identity(identity).await {
-            Ok(result) => RpcResponse::ok(id, result),
-            Err(e) => failure(id, e),
-        }
-    }
-
-    /// `import.list` params: `{"project_root": "..."}` (optional — see
-    /// `config_target`; an import reads and writes one project's files).
-    pub(super) async fn method_import_list(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let (project_root, _scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        let sources = self.pool.list_import_sources(project_root.as_deref()).await;
-        RpcResponse::ok(id, serde_json::json!({"sources": sources}))
-    }
-
-    /// `import.run` params: `{"source": "claude_code" | "codex" | "cursor",
-    /// "project_root": "..."}` (one of the `source` values `import.list`
-    /// returned; `project_root` optional, as for `import.list`).
-    pub(super) async fn method_import_run(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let source = match params.get("source").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(),
-            None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing source"),
-        };
-        let (project_root, _scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        match self.pool.run_import(project_root.as_deref(), &source).await {
-            Ok(result) => RpcResponse::ok(id, result),
-            Err(e) => RpcResponse::err(id, codes::INVALID_PARAMS, e),
-        }
-    }
-
-    /// `config.setProvider` params:
-    /// ```json
-    /// {
-    ///   "provider_id": "deepseek",
-    ///   "config": { "api_type": "openai_compatible", "base_url": "...", "api_key": "...", "default_model": "..." },
-    ///   "default_provider": "deepseek",       // optional
-    ///   "task_models": { "subagent": "deepseek" }, // optional, merged
-    ///   "delete": false                        // optional, default false
-    /// }
-    /// ```
-    /// `config`/`task_models` are partial patches (see `SessionPool::set_provider`
-    /// doc comment for why they're raw JSON, not typed structs). Writes to the
-    /// project-tier `settings.json` — the key to `settings.local.json` beside it —
-    /// and returns the reloaded effective config plus routing validation.
-    pub(super) async fn method_config_set_provider(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let provider_id = match params.get("provider_id").and_then(|v| v.as_str()) {
-            Some(s) => s.to_string(),
-            None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing provider_id"),
-        };
-        let delete = params
-            .get("delete")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let config_patch = params.get("config").cloned();
-        let default_provider = params
-            .get("default_provider")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let task_models_patch = params.get("task_models").cloned();
-
-        let (project_root, scene) = match self.config_target(&params) {
-            Ok(target) => target,
-            Err(message) => return RpcResponse::err(id, codes::INVALID_PARAMS, message),
-        };
-        match self
-            .pool
-            .set_provider(
-                project_root.as_deref(),
-                &scene,
-                &provider_id,
-                delete,
-                config_patch,
-                default_provider,
-                task_models_patch,
-            )
-            .await
-        {
             Ok(result) => RpcResponse::ok(id, result),
             Err(e) => failure(id, e),
         }

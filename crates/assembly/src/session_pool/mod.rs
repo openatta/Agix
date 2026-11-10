@@ -862,17 +862,17 @@ struct ReloadReport {
 }
 
 impl ReloadReport {
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "ok": self.error.is_none(),
-            "warnings": self.warnings,
-            "error": self.error,
-            "router_rebuilt": self.router_rebuilt,
-            "router_error": self.router_error,
-            "mcp_connected": self.mcp_connected,
-            "mcp_failed": self.mcp_failed,
-            "mcp_connecting": self.mcp_connecting,
-        })
+    fn to_status(&self) -> api::RoutingStatus {
+        api::RoutingStatus {
+            ok: self.error.is_none(),
+            warnings: self.warnings.clone(),
+            error: self.error.clone(),
+            router_rebuilt: self.router_rebuilt,
+            router_error: self.router_error.clone(),
+            mcp_connected: self.mcp_connected.clone(),
+            mcp_failed: self.mcp_failed.clone(),
+            mcp_connecting: self.mcp_connecting.clone(),
+        }
     }
 }
 
@@ -901,7 +901,7 @@ fn project_trust_report(
     root: &Path,
     settings: &Settings,
     plugin_agent_types: &[base::agent_type::AgentTypeDefinition],
-) -> serde_json::Value {
+) -> api::ProjectStatus {
     let layer = &settings.project_layer;
     #[cfg_attr(not(any(feature = "agents", feature = "skills")), allow(unused_mut))]
     let mut requires_trust = layer.requires_trust.clone();
@@ -914,13 +914,13 @@ fn project_trust_report(
     let _ = plugin_agent_types;
     #[cfg(feature = "skills")]
     requires_trust.extend(skills::module::project_skills_requiring_trust(settings));
-    serde_json::json!({
-        "project_root": root,
-        "trust": layer.trust.as_str(),
-        "matched": layer.matched,
-        "default": settings.project_trust.default,
-        "requires_trust": requires_trust,
-    })
+    api::ProjectStatus {
+        project_root: root.to_path_buf(),
+        trust: layer.trust.into(),
+        matched: layer.matched.clone(),
+        default: settings.project_trust.default,
+        requires_trust,
+    }
 }
 
 /// `mcp.status` entries for the project's own servers that are not started

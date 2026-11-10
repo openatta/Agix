@@ -280,7 +280,7 @@ async fn a_host_credential_source_supplies_keys_the_settings_leave_out() {
     .await
     .expect("the host's source answers for the provider");
 
-    let reloaded = pool.reload_settings(Some(&cwd), "code").await;
+    let reloaded = serde_json::to_value(pool.reload_settings(Some(&cwd), "code").await).unwrap();
     assert_eq!(reloaded["routing"]["router_rebuilt"], true, "{reloaded}");
     assert!(reloaded["routing"]["router_error"].is_null(), "{reloaded}");
 }

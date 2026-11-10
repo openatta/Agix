@@ -128,7 +128,9 @@ impl DaemonEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct ImportSource {
     pub source: String,
     pub description: String,

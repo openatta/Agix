@@ -5,6 +5,7 @@ mod commands;
 mod daemon;
 mod error;
 mod events;
+mod settings;
 mod turn;
 
 pub use commands::{CommandInfo, CommandKind, CommandSource, NewSchedule};
@@ -13,5 +14,9 @@ pub use error::{Busy, BusyReason, EngineFailure, PoolError};
 pub use events::{
     emitted_outside_turns, AskKind, PendingAsk, SessionEvent, SessionFrame, SessionWatcher,
     Subscribed, WatcherId,
+};
+pub use settings::{
+    ConfigTier, ConfigTierName, ImportRun, ProjectStatus, ProjectTrustSet, ProviderConfigView,
+    ProviderPatch, ProviderSaved, ProviderView, RoutingStatus, SettingsReloaded, TrustState,
 };
 pub use turn::{Initiator, TurnOutcome, TurnRequest};

@@ -17,50 +17,55 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         include_secrets: bool,
-    ) -> serde_json::Value {
+    ) -> api::ProviderConfigView {
         let settings = self
             .binding_for(Some(project_root.unwrap_or(self.cwd.as_path())), scene_id)
             .await
             .settings
             .clone();
-        let providers: serde_json::Map<String, serde_json::Value> = settings
+        let providers = settings
             .providers
             .iter()
             .map(|(id, cfg)| {
-                let api_key = match &cfg.api_key {
-                    None => serde_json::Value::Null,
-                    Some(k) if include_secrets => serde_json::Value::String(k.clone()),
-                    Some(k) => serde_json::Value::String(redact_secret(k)),
-                };
+                let api_key = cfg.api_key.as_ref().map(|k| {
+                    if include_secrets {
+                        k.clone()
+                    } else {
+                        redact_secret(k)
+                    }
+                });
                 (
                     id.clone(),
-                    serde_json::json!({
-                        "api_type": cfg.api_type,
-                        "base_url": cfg.base_url,
-                        "api_key": api_key,
-                        "default_model": cfg.default_model,
-                        "models": cfg.models,
-                    }),
+                    api::ProviderView {
+                        api_type: cfg.api_type.clone(),
+                        base_url: cfg.base_url.clone(),
+                        api_key,
+                        default_model: cfg.default_model.clone(),
+                        models: cfg.models.clone(),
+                    },
                 )
             })
             .collect();
-        serde_json::json!({
-            "providers": providers,
-            "default_provider": settings.default_provider,
-            "task_models": settings.task_models,
-        })
+        api::ProviderConfigView {
+            providers,
+            default_provider: settings.default_provider.clone(),
+            task_models: settings.task_models.clone().into_iter().collect(),
+        }
     }
 
     /// Detect importable cross-tool configuration sources (Claude Code/
     /// Codex/Cursor) in this pool's project directory — pure filesystem
     /// detection, no LLM turn needed. The manual `/import` path (the bundled
     /// `import` skill) does its own detection with the file tools.
-    pub async fn list_import_sources(&self, project_root: Option<&Path>) -> Vec<serde_json::Value> {
+    pub async fn list_import_sources(&self, project_root: Option<&Path>) -> Vec<api::ImportSource> {
         let project_root = project_root.unwrap_or(self.cwd.as_path());
         base::frozen::detect_import_sources(project_root)
             .await
             .iter()
-            .map(|s| serde_json::json!({"source": s.kind().as_str(), "description": s.describe()}))
+            .map(|s| api::ImportSource {
+                source: s.kind().as_str().to_string(),
+                description: s.describe(),
+            })
             .collect()
     }
 
@@ -71,27 +76,30 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         source: &str,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<api::ImportRun, PoolError> {
+        let invalid = |message: String| PoolError::InvalidRequest(message);
         let project_root = project_root.unwrap_or(self.cwd.as_path());
         let kind = base::frozen::ImportSourceKind::try_parse(source).ok_or_else(|| {
-            format!("unknown source `{source}` — expected claude_code, codex, or cursor")
+            invalid(format!(
+                "unknown source `{source}` — expected claude_code, codex, or cursor"
+            ))
         })?;
         let sources = base::frozen::detect_import_sources(project_root).await;
         let Some(matched) = sources.iter().find(|s| s.kind() == kind) else {
-            return Err(format!(
+            return Err(invalid(format!(
                 "source `{source}` not currently detected in this project"
-            ));
+            )));
         };
         let summary = base::frozen::execute_import(project_root, matched)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| invalid(e.to_string()))?;
         base::frozen::mark_imported(project_root, &sources, kind)
             .await
-            .map_err(|e| e.to_string())?;
-        Ok(serde_json::json!({
-            "source": summary.kind.as_str(),
-            "actions": summary.actions,
-        }))
+            .map_err(|e| invalid(e.to_string()))?;
+        Ok(api::ImportRun {
+            source: summary.kind.as_str().to_string(),
+            actions: summary.actions,
+        })
     }
 
     /// Read-only config/wiring diagnostics — see `crate::doctor`.
@@ -105,7 +113,12 @@ impl SessionPool {
         #[cfg(feature = "mcp")]
         checks.push(self.mcp_policy.clone());
         checks.push(Arc::new(crate::doctor::ProjectTrustCheck::new(
-            project_trust_report(&self.cwd, &settings, &self.plugins.agent_types()),
+            serde_json::to_value(project_trust_report(
+                &self.cwd,
+                &settings,
+                &self.plugins.agent_types(),
+            ))
+            .unwrap_or_default(),
         )));
         checks.push(Arc::new(
             crate::doctor_posture::UnattendedNetworkCheck::new(
@@ -222,18 +235,21 @@ impl SessionPool {
     /// Refused with `PROJECT_UNTRUSTED`, writing nothing, when the target is
     /// a project's own tier and that project is not trusted: a provider there
     /// would not be used.
-    #[allow(clippy::too_many_arguments)]
     pub async fn set_provider(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
-        provider_id: &str,
-        delete: bool,
-        config_patch: Option<serde_json::Value>,
-        default_provider: Option<String>,
-        task_models_patch: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, PoolError> {
+        patch: api::ProviderPatch,
+    ) -> Result<api::ProviderSaved, PoolError> {
         use base::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
+        let api::ProviderPatch {
+            provider_id,
+            delete,
+            config: config_patch,
+            default_provider,
+            task_models: task_models_patch,
+        } = patch;
+        let provider_id = provider_id.as_str();
         let invalid = |message: String| PoolError::InvalidRequest(message);
         if provider_id.trim().is_empty() {
             return Err(invalid("provider_id must not be empty".into()));
@@ -330,18 +346,11 @@ impl SessionPool {
         let (reloaded, report) = self
             .apply_reloaded_settings(project_root, scene_id, None)
             .await;
-        let mut result = serde_json::json!({
-            "written_to": settings_path.display().to_string(),
-            "providers": reloaded.providers.keys().collect::<Vec<_>>(),
-            "default_provider": reloaded.default_provider,
-            "task_models": reloaded.task_models.keys().collect::<Vec<_>>(),
-            "routing": report.to_json(),
-        });
-        if let Some(path) = secrets_written_to {
-            result["secrets_written_to"] = serde_json::Value::String(path);
-        }
-
-        Ok(result)
+        Ok(api::ProviderSaved {
+            written_to: settings_path.display().to_string(),
+            secrets_written_to,
+            reloaded: settings_reloaded(&reloaded, &report),
+        })
     }
 
     /// `project.status` — whether `project_root` (this daemon's own project
@@ -351,7 +360,7 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
-    ) -> serde_json::Value {
+    ) -> api::ProjectStatus {
         let root = project_root.unwrap_or(self.cwd.as_path());
         let settings = self.settings_for_project(Some(root), scene_id).await;
         project_trust_report(root, &settings, &self.plugins.agent_types())
@@ -373,7 +382,7 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         trusted: bool,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ProjectTrustSet, PoolError> {
         use crate::watch_hub::Tier;
         use base::settings::SETTINGS_LOCAL_FILE;
         let root = project_root.unwrap_or(self.cwd.as_path()).to_path_buf();
@@ -445,13 +454,15 @@ impl SessionPool {
                 .await;
         }
 
-        let mut status = self.project_status(Some(&root), scene_id).await;
+        let status = self.project_status(Some(&root), scene_id).await;
         self.emit_event(api::DaemonEvent::ProjectTrustChanged {
             project_root: root.clone(),
-            trust: status["trust"].as_str().unwrap_or_default().to_string(),
+            trust: status.trust.as_str().to_string(),
         });
-        status["written_to"] = serde_json::Value::String(path.display().to_string());
-        Ok(status)
+        Ok(api::ProjectTrustSet {
+            status,
+            written_to: path.display().to_string(),
+        })
     }
 
     /// Re-read whatever is currently on disk across all three settings.json
@@ -466,7 +477,7 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
-    ) -> serde_json::Value {
+    ) -> api::SettingsReloaded {
         self.reload_settings_from(project_root, scene_id, None)
             .await
     }
@@ -476,16 +487,11 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         changed: Option<&crate::watch_hub::Tier>,
-    ) -> serde_json::Value {
+    ) -> api::SettingsReloaded {
         let (reloaded, report) = self
             .apply_reloaded_settings(project_root, scene_id, changed)
             .await;
-        serde_json::json!({
-            "providers": reloaded.providers.keys().collect::<Vec<_>>(),
-            "default_provider": reloaded.default_provider,
-            "task_models": reloaded.task_models.keys().collect::<Vec<_>>(),
-            "routing": report.to_json(),
-        })
+        settings_reloaded(&reloaded, &report)
     }
 
     /// Re-read the three-tier merged settings.json from disk, re-resolve
@@ -549,6 +555,15 @@ impl SessionPool {
         }
 
         (binding.settings.clone(), report)
+    }
+}
+
+fn settings_reloaded(settings: &Settings, report: &ReloadReport) -> api::SettingsReloaded {
+    api::SettingsReloaded {
+        providers: settings.providers.keys().cloned().collect(),
+        default_provider: settings.default_provider.clone(),
+        task_models: settings.task_models.keys().cloned().collect(),
+        routing: report.to_status(),
     }
 }
 

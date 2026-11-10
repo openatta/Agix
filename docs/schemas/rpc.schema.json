@@ -74,6 +74,162 @@
       ],
       "type": "string"
     },
+    "ConfigGetParams": {
+      "properties": {
+        "include_secrets": {
+          "default": false,
+          "type": "boolean"
+        },
+        "project_root": {
+          "default": null,
+          "description": "Absent and `null` both mean the scene with no project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "type": "string"
+        },
+        "tier": {
+          "$ref": "#/$defs/ConfigTierName",
+          "default": "effective"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "type": "object"
+    },
+    "ConfigGetProviderParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "include_secrets": {
+          "default": false,
+          "type": "boolean"
+        },
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ConfigSetProviderParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "config": {
+          "default": null,
+          "description": "A partial patch merged key by key onto the project tier's entry."
+        },
+        "default_provider": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delete": {
+          "default": false,
+          "description": "Remove the provider instead of merging.",
+          "type": "boolean"
+        },
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_id": {
+          "type": "string"
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_models": {
+          "default": null,
+          "description": "A partial patch merged key by key."
+        }
+      },
+      "required": [
+        "provider_id"
+      ],
+      "type": "object"
+    },
+    "ConfigTarget": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ConfigTier": {
+      "properties": {
+        "managed": {
+          "description": "The deployment's managed layer; only `effective` has one."
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "type": "string"
+        },
+        "settings": {
+          "description": "The tier's settings file as it sits on disk (`null` when it has none),\nor the merged result for `effective`."
+        },
+        "tier": {
+          "$ref": "#/$defs/ConfigTierName"
+        }
+      },
+      "required": [
+        "scene",
+        "tier",
+        "settings",
+        "managed"
+      ],
+      "type": "object"
+    },
+    "ConfigTierName": {
+      "description": "Which settings layer `config.get` reads.",
+      "enum": [
+        "global",
+        "scene",
+        "project",
+        "effective"
+      ],
+      "type": "string"
+    },
     "CronJob": {
       "properties": {
         "agent_id": {
@@ -560,6 +716,51 @@
         }
       ]
     },
+    "ImportRun": {
+      "properties": {
+        "actions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "ImportRunParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "One of the `source` values `import.list` returned for the same project.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
     "ImportSource": {
       "properties": {
         "description": {
@@ -572,6 +773,20 @@
       "required": [
         "source",
         "description"
+      ],
+      "type": "object"
+    },
+    "ImportSourceList": {
+      "properties": {
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/ImportSource"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
       ],
       "type": "object"
     },
@@ -668,6 +883,270 @@
         "capabilities",
         "modules",
         "pong"
+      ],
+      "type": "object"
+    },
+    "ProjectStatus": {
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/TrustLevel"
+        },
+        "matched": {
+          "description": "The `project_trust.trusted` entry that matched; `null` when the\ndefault decided.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_root": {
+          "type": "string"
+        },
+        "requires_trust": {
+          "description": "What the project sets that takes effect only while it is trusted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "trust": {
+          "$ref": "#/$defs/TrustState"
+        }
+      },
+      "required": [
+        "project_root",
+        "trust",
+        "default",
+        "requires_trust"
+      ],
+      "type": "object"
+    },
+    "ProjectTrustParams": {
+      "description": "The `(scene, project_root)` pair a configuration method acts on. Omitted\nmeans this daemon's own; a named `project_root` reaches another project\nthe daemon serves. `null` is refused: these methods act on the *project*\ntier, and a session with no project has none.",
+      "properties": {
+        "project_root": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trusted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "trusted"
+      ],
+      "type": "object"
+    },
+    "ProjectTrustSet": {
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/TrustLevel"
+        },
+        "matched": {
+          "description": "The `project_trust.trusted` entry that matched; `null` when the\ndefault decided.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_root": {
+          "type": "string"
+        },
+        "requires_trust": {
+          "description": "What the project sets that takes effect only while it is trusted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "trust": {
+          "$ref": "#/$defs/TrustState"
+        },
+        "written_to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_root",
+        "trust",
+        "default",
+        "requires_trust",
+        "written_to"
+      ],
+      "type": "object"
+    },
+    "ProviderConfigView": {
+      "properties": {
+        "default_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProviderView"
+          },
+          "type": "object"
+        },
+        "task_models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TaskModelOverride"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "providers",
+        "task_models"
+      ],
+      "type": "object"
+    },
+    "ProviderSaved": {
+      "properties": {
+        "default_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "routing": {
+          "$ref": "#/$defs/RoutingStatus"
+        },
+        "secrets_written_to": {
+          "description": "Set when a credential was written, to the `settings.local.json`\nbeside `written_to`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_models": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "written_to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "written_to",
+        "providers",
+        "task_models",
+        "routing"
+      ],
+      "type": "object"
+    },
+    "ProviderView": {
+      "properties": {
+        "api_key": {
+          "description": "Redacted to `***<last 4>` unless secrets were asked for.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "models": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "models"
+      ],
+      "type": "object"
+    },
+    "RoutingStatus": {
+      "description": "What reading the settings back and resolving provider routing found.",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcp_connected": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mcp_connecting": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mcp_failed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ok": {
+          "description": "The configuration's shape parses.",
+          "type": "boolean"
+        },
+        "router_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "router_rebuilt": {
+          "description": "A usable router was actually built; `ok` can hold without it.",
+          "type": "boolean"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ok",
+        "warnings",
+        "router_rebuilt",
+        "mcp_connected",
+        "mcp_failed",
+        "mcp_connecting"
       ],
       "type": "object"
     },
@@ -913,6 +1392,37 @@
       ],
       "type": "object"
     },
+    "SettingsReloaded": {
+      "properties": {
+        "default_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "routing": {
+          "$ref": "#/$defs/RoutingStatus"
+        },
+        "task_models": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "providers",
+        "task_models",
+        "routing"
+      ],
+      "type": "object"
+    },
     "ShuttingDown": {
       "properties": {
         "shutting_down": {
@@ -1003,6 +1513,56 @@
         "prompt"
       ],
       "type": "object"
+    },
+    "TaskModelOverride": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "properties": {
+            "model": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "A `task_models.<task>` entry. Accepts either the shorthand `\"provider_id\"`\nstring form or the detailed `{ \"provider\": ..., \"model\": ... }` object form."
+    },
+    "TrustLevel": {
+      "description": "What a project no `trusted` pattern names is.",
+      "enum": [
+        "trusted",
+        "untrusted"
+      ],
+      "type": "string"
+    },
+    "TrustState": {
+      "oneOf": [
+        {
+          "enum": [
+            "trusted",
+            "untrusted"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "description": "No project tier of its own.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1123,34 +1683,34 @@
     },
     "config.get": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigGetParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigTier"
       }
     },
     "config.getProvider": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigGetProviderParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ProviderConfigView"
       }
     },
     "config.reload": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigTarget"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SettingsReloaded"
       }
     },
     "config.setProvider": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigSetProviderParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ProviderSaved"
       }
     },
     "daemon.doctor": {
@@ -1215,18 +1775,18 @@
     },
     "import.list": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigTarget"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ImportSourceList"
       }
     },
     "import.run": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ImportRunParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ImportRun"
       }
     },
     "mcp.addServer": {
@@ -1351,18 +1911,18 @@
     },
     "project.status": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ConfigTarget"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ProjectStatus"
       }
     },
     "project.trust": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ProjectTrustParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ProjectTrustSet"
       }
     },
     "scene.activate": {

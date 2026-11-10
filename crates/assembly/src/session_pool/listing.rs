@@ -127,9 +127,10 @@ impl SessionPool {
         &self,
         scene_id: &str,
         project_root: Option<&Path>,
-        tier: &str,
+        tier: api::ConfigTierName,
         include_secrets: bool,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ConfigTier, PoolError> {
+        use api::ConfigTierName as Tier;
         if self.scene_registry().resolve(scene_id).is_none() {
             return Err(PoolError::SceneNotFound {
                 scene: scene_id.to_string(),
@@ -138,26 +139,21 @@ impl SessionPool {
 
         let paths = self.paths.as_ref();
         let path = match tier {
-            "global" => Some(paths.global_root().join("settings.json")),
-            "scene" => Some(
+            Tier::Global => Some(paths.global_root().join("settings.json")),
+            Tier::Scene => Some(
                 paths
                     .global_root()
                     .join("scenes")
                     .join(scene_id)
                     .join("settings.json"),
             ),
-            "project" => project_root.map(|p| p.join(".agix").join("settings.json")),
-            "effective" => None,
-            other => {
-                return Err(PoolError::InvalidRequest(format!(
-                    "tier must be global|scene|project|effective, got `{other}`"
-                )))
-            }
+            Tier::Project => project_root.map(|p| p.join(".agix").join("settings.json")),
+            Tier::Effective => None,
         };
 
         let mut managed = serde_json::Value::Null;
         let mut value = match tier {
-            "effective" => {
+            Tier::Effective => {
                 let settings = self.settings_for_project(project_root, scene_id).await;
                 managed = serde_json::to_value(&settings.managed).unwrap_or_default();
                 serde_json::to_value(settings.as_ref()).unwrap_or_else(|_| serde_json::json!({}))
@@ -176,13 +172,13 @@ impl SessionPool {
             redact_settings_secrets(&mut value);
         }
 
-        Ok(serde_json::json!({
-            "scene": scene_id,
-            "project_root": project_root.map(|p| p.display().to_string()),
-            "tier": tier,
-            "settings": value,
-            "managed": managed,
-        }))
+        Ok(api::ConfigTier {
+            scene: scene_id.to_string(),
+            project_root: project_root.map(|p| p.display().to_string()),
+            tier,
+            settings: value,
+            managed,
+        })
     }
 
     /// One session's summary plus what only the live pool knows.
