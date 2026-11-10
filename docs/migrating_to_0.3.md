@@ -1977,6 +1977,33 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 ### 部署 `agixd` 的
 
+#### 权限与沙箱
+
+- **项目放在状态目录里、围栏被撤掉时,状态目录的配置对沙箱命令只读。** 以前这种部署只有状态目录的
+  `settings.json` 和场景文件受保护,macOS 上状态目录的 `settings.local.json` 也可写。现在状态目录
+  按配置根处理:`settings.json`、`settings.local.json`、`mcp.local.json`,以及 `skills`、`hooks`、
+  `agents`、`mcp`、`plugins`、`rules`、`scenes`、`policy`、`scripts`、`output-styles` 目录,沙箱里的命令
+  都不能写;cwd 本身所在的那个配置目录除外,否则项目整个不可写。macOS 用 deny 规则,不存在的目录同样
+  拦住;Linux 上已存在的目录只读挂载,不存在的目录挂一个只读空 tmpfs,会在状态目录里留下空目录(与项目
+  `.agix` 的做法相同);不存在的配置文件在 Linux 上仍挡不住新建,这是残留。要改的:项目放在状态目录里、
+  又让沙箱命令往这些位置写的,改成别的位置,或在沙箱外改。
+- **macOS:profile 写出之后才新建的场景,它的场景文件也不可写。** 以前只保护写 profile 时已知或已存在的
+  场景;现在 `<状态目录>/scenes/<场景>/` 下的 `settings.json`、`scene.json`、`prompt.md` 由一条正则统一
+  拦住,会话中途新建的场景同样。状态目录根下的 `scene.json`、`prompt.md` 也不可写。要改的:靠沙箱命令
+  在会话里建场景并写这三个文件的,改在沙箱外做。
+- **Linux:被链接的场景整个遮住。** 遮挡只认真目录:`scenes/` 下的符号链接、`scenes/` 里的普通文件,
+  不再原样放进沙箱,而是留在 tmpfs 之下读不到。以前按名字逐个处理已知场景。要改的:把场景目录做成符号
+  链接的部署,沙箱里的命令从此读不到那个场景。
+- **凭据位置改由一张表生成,两个后端不再各写一份。** 表里新增的凭据位置两个后端自动跟上。macOS 上状态
+  目录与场景目录原来共用的一条读拒绝正则现在分开写,效果不变。Linux 的状态目录遮挡效果与以前相同
+  (挂载按名字排序)。
+- **文件工具与 gate 对 key 文件的判断变宽。** 以前只认路径本身是 key 文件;现在"是它或在它之下"都算
+  凭据,`<状态目录>/settings.json/x` 这样以 key 文件名为目录名的路径也被拒。正常部署碰不到。
+- **宿主自己的策略不带授权一侧时,引擎不再写 `settings.local.json`。** 配
+  `PermissionSet::without_grants` 时,"总是允许(Local)"回 `GrantError::NotKept`,不落盘;要引擎写盘,
+  让策略同时实现授权并用 `PermissionSet::of(..)`(见"嵌入方")。引擎自己的 `RuleSetPermission` 不受影响;
+  它写 `settings.local.json` 改在 `spawn_blocking` 里做,不再占 async 线程。
+
 #### 引擎自己起的进程
 
 - **引擎的 `git` 走会话的 `exec.process`。** 以前它直接用 `tokio::process` 起在宿主上,环境按缺省
@@ -2069,6 +2096,55 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 | `AgentTool::with_process_groups` | `AgentTool::with_exec(ExecProviders)` |
 | `SessionPool::drop_connection(ConnectionId)`(`assembly::server` 上的同名方法仍在) | `SessionPool::drop_watcher(WatcherId)` |
 | `tests/` 里的 `dependency_direction.rs`、`one_assembly.rs`、`carrier_invariants.rs` 的依赖两条 | `tests/guards/tests/deps.rs`(读 `cargo metadata`)、`SessionPool::new` 的 `pub(crate)` 可见性;进程级状态守卫在 `tests/guards/tests/process_state.rs` |
+
+#### 权限
+
+- **`Permission` 拆成 `PermissionPolicy` 与 `PermissionGrants`。** `base::interface::permission::Permission`
+  删除。`PermissionPolicy` 只有 `decide(&PermissionRequest)` 一个方法,管这次调用让不让跑;
+  `PermissionGrants` 有 `grant(Grant)` 与 `clear(GrantScope)`,管会话里给出的放行记在哪。
+  `GrantScope` 是 `Turn`(skill 的 `allowed-tools`,下一轮清掉)、`Session`、`Project`(再写
+  `settings.local.json`),`Grant` 带工具名、内容与 scope;`GrantError`、`NoGrants`(每次授权回
+  `NotKept`)一并新增。`PermissionSet { policy, grants }` 把两半打包:`PermissionSet::of(x)` 收同时实现
+  两个 trait 的值,`PermissionSet::without_grants(policy)` 只判定、不记放行。要改的:自己实现
+  `Permission` 的,`check` 改名 `decide` 并实现 `PermissionPolicy`;还要记"总是允许"的再实现
+  `PermissionGrants`。
+- **`PermissionRequest` 自带判定要用的状态,晚绑定方法全部删除。** `check_for_delegate`、
+  `bind_tool_registry`、`bind_session_state` 删除:请求里的 `tool` 是分发用的 registry 里查到的工具
+  (`None` 即未知工具,`RuleSetPermission` 对它询问),`session` 是策略所属会话的实时 `SessionState`,
+  `delegate` 是子 Agent、团队成员转来的调用的会话。以前靠 `bind_*` 补状态、按 `check_for_delegate`
+  判子 Agent 的,改读请求的这三个字段;包装别的策略的,转发 `decide` 即可。
+- **授权方法删除。** `add_temporary_allow`、`clear_temporary_allows`、`add_persistent_allow` 删除,
+  改为 `grant(..)` 配 `GrantScope::{Turn, Session, Project}` 与 `clear(GrantScope::Turn)`。
+  `PermitAlways{Local}` 对应 `Project`,`PermitAlways{Session}` 对应 `Session`。
+- **`Builder` 与周边签名。** `runtime::agent::Builder::permission` 收 `PermissionSet`;
+  `Agent::permission()` 返回 `&PermissionSet`;`SessionContext.permission`、`ToolExecCtx.permission`
+  是 `PermissionSet`;`daemon::Assembly.permission` 是 `Option<PermissionSet>`,原来传
+  `Arc::new(AllowAllPermission)` 的改传 `PermissionSet::without_grants(Arc::new(AllowAllPermission))`。
+  `SkillCatalog::expand`、`CommandRegistry::run_prompt_command` 的 permission 参数改为
+  `&dyn PermissionPolicy`;`SkillTool::with_permission`、`skills::tool::register` 收 `PermissionSet`;
+  `AgentTool::set_parent_permission(PermissionSet, Arc<SessionState>)` 多一个参数;
+  `RuleSetPermission::new(gate)` 不再收 registry 与 mode,`from_settings(settings, extra_rules)` 不再收
+  mode 与 registry,新增 `with_local_settings_file`,模式一律取请求里会话的实时模式。
+  `Builder` 的 `local_settings_path` 字段删除;`runtime` 不再依赖 `permissions`(只是 dev-dependency)。
+- **子 Agent 的授权。** 子 Agent 的 `PermissionSet` 在派生处显式组装,授权一侧是 `ParentGrants`:
+  转发 `Session` 与 `Project` 到父会话,丢弃 `Turn`,与以前一致。`DenyRulesFirst`、`NoPrompt`、
+  `ParentPermission` 只实现 `PermissionPolicy`,转发方法没有了。
+- **`Credentials` 由敏感路径登记表取代。** `base::paths::Credentials`(含 `Credentials::hold`)删除,
+  改为 `base::paths::sensitive`:`CREDENTIALS` 表(`Scope` × `Secret`)与 `SensitivePaths`,按会话的状态
+  目录与项目解析一次、各处共享。`is_credential` 判一条路径,`credential_locations` 给沙箱后端用。
+  `ENGINE_CONFIG_*`、`PROJECT_ENGINE_CONFIG_DIRS`、`PROJECT_WORKTREES_DIR`、`STATE_ROOT_*` 搬进
+  `sensitive`,仍可从 `base::paths` 引用;`HOME_CREDENTIAL_STORES` 从 `exec/sandbox.rs` 搬来;
+  `CREDENTIAL_DIR_NAMES` 改为函数 `credential_dir_names()`;过渡用的 `STATE_ROOT_TOKEN_DIRS`、
+  `DAEMON_TOKEN_DIRS`、`STATE_ROOT_KEY_FILE_STEMS`、`PROJECT_KEY_FILES`、`is_state_root_key_file`、
+  `is_project_key_file` 删除。要改的:用 `Credentials::hold` 的,改建一个 `SensitivePaths`,调
+  `is_credential`。
+- **`SandboxPolicyConfig.state_root`、`SandboxSettings.state_root` 换成 `paths: Arc<SensitivePaths>`;
+  `SandboxPolicy.known_scenes` 删除**(从来没有调用方填过)。直接构造这两个结构的,改传
+  `SensitivePaths`;沙箱的场景文件保护不再靠已知场景名单,见"部署"一节。
+- **`PromptFiles` 删掉 `Default` 与 `new(None, ..)`。** 没有状态目录的地方用显式的
+  `PromptFiles::unscoped()`;原 `new(None, Some(dir))` 改为
+  `SensitivePaths::default().prompt_files_within(dir)`。文件工具的 `SessionCredentials` 与插件
+  manifest 的凭据检查同样改用 `SensitivePaths`。
 
 #### Tool 实现方
 

@@ -198,7 +198,7 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
   ├─ 3. 硬顶        ContextBudget::hard_cap
   ├─ 4. 装配提示词  PromptAssembler / 注册的块 / 装配钩子
   ├─ 5. 调模型      Model + ModelInterceptor + BackoffPolicy
-  │     ├─ 边流边跑工具 Permission → ToolMiddleware → Tool → ToolResultTransformer
+  │     ├─ 边流边跑工具 PermissionPolicy → ToolMiddleware → Tool → ToolResultTransformer
   │     └─ 出错 → RecoveryPolicy:换模型 / 压缩重试 / 失败
   ├─ 6. 复查        TurnPolicy::after_model_call    ← 这一轮还走不走下一步
   ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
@@ -740,14 +740,20 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 
 ### 6.1 规则怎么裁决
 
+权限分两半,会话以 `PermissionSet { policy, grants }` 持有:`PermissionPolicy::decide` 裁决一次调用,
+`PermissionGrants` 记下会话里给出的放行(`Turn` / `Session` / `Project` 三档;`Project` 写项目的
+`settings.local.json`)。内建的 `RuleSetPermission` 两个都实现,宿主只给策略时配 `without_grants`。
 内建的 `PermissionGate` 按固定顺序走:凭据(任何模式都拒)→ 工具自己的判定(拒绝即拒;
 放行只先记下,等后面都没否掉才兑现)→ 规则 → 免于 bypass 的路径 → 模式级硬拒绝 → 兑现 →
 模式分派。完整顺序在 `crates/permissions/src/gate.rs` 的模块头。
 
-**两份敏感路径名单。** gate、文件工具(`tools::security::read_allowed`、`Grep` / `Glob`
-的遍历、只读 `Bash` 的路径判断)和 OS 沙箱读的是 `base::paths` 里同两份名单,不各抄一份:
+**两份敏感路径名单。** 它们都登记在 `base::paths::sensitive`:凭据在 `CREDENTIALS` 表
+(`Scope` × `Secret`),引擎配置在 `ENGINE_CONFIG_*` 一组常量;`SensitivePaths` 按会话的状态目录
+与项目解析一次,会话内共享。gate 与文件工具(`tools::security::read_allowed`、`Grep` / `Glob`
+的遍历、只读 `Bash` 的路径判断)问它(`is_credential`、`is_engine_settings_file` 等),`PromptFiles`
+内部也走它,两个 OS 沙箱后端从它的 `credential_locations` 生成各自的规则,不各抄一份:
 
-- **凭据**(`base::paths::Credentials`):状态目录与各场景目录下的设置文件(`settings*.json`、
+- **凭据**(`CREDENTIALS` 表):状态目录与各场景目录下的设置文件(`settings*.json`、
   `mcp.local*.json`,明文的 `api_key` 与 MCP headers 在里面)和 `mcp/oauth/`,状态目录下
   daemon 的 `daemon/auth/`,项目 `.agix` 下的 `settings.local.json` / `mcp.local.json`,以及
   任何位置的 `.ssh` / `.aws` / `.gnupg`。调用里有一个字符串(路径工具的路径及其解析后的各种
@@ -769,7 +775,8 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
   monorepo 子目录里起的会话,上层目录的 `AGENTS.md` 由向上查找按它自己的路径读到,不需要
   链接;子包里链向仓库别处的 skill / agent 不跟随——在仓库根起会话,或者装成用户层的 skill。
   memory 的条目只认解析后仍在各自 memory 目录里的文件,插件包里的文件只认解析后仍在包里的。
-- **引擎配置**(`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}` 与 `PROJECT_ENGINE_CONFIG_DIRS`):
+- **引擎配置**(`base::paths::sensitive` 的 `ENGINE_CONFIG_{ROOTS,FILES,DIRS}` 与
+  `PROJECT_ENGINE_CONFIG_DIRS`):
   `.agix` / `.claude` 下除工作区之外的部分,和项目的 `.agents/skills/`(skill 的
   `allowed-tools` 会给自己授权)。写工具写这里要确认(工具自判的放行不算数),沙箱里只读
   (§6.2、§6.3)。读不受限。
@@ -1001,7 +1008,8 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
    的落脚点,把整个目录设为拒写会否掉子代理被创建出来要做的每一次写入。`.agix` / `.claude`
    下的配置目录(`hooks`、`agents`、`skills` …)和项目的 `.agents/skills/` 对写工具是"要确认",
    不是"拒写";沙箱里的命令没法逐次确认,所以对它们是拒写(§6.3)。两边用同一份名单
-   (`base::paths::ENGINE_CONFIG_{ROOTS,FILES,DIRS}`、`PROJECT_ENGINE_CONFIG_DIRS`,§6.1)。
+   (`base::paths::sensitive` 的 `ENGINE_CONFIG_{ROOTS,FILES,DIRS}`、`PROJECT_ENGINE_CONFIG_DIRS`,
+   §6.1)。
    另外,凭据名单(§6.1)上的路径在 gate 那一步就拒绝了,任何模式都到不了这里。
 
    **这个不对称是有意的。** 写工具改引擎配置目录是确认,沙箱里的 Bash 写同一处是硬拒,
@@ -1070,6 +1078,16 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `.agents` 已经存在时挡(`.agents` 绑定到自身,挪不走;`skills` 只读,不存在时留一个只读的空挂载点),
 不存在的 `.agents` 在 Linux 上建得出来;没有 `.git` 的项目、没有
 `commondir` 的仓库在 Linux 上补不上这一道(见 `sandbox.rs` 模块头第 3 条),所以有下一段。
+
+读遮挡的写法两个后端不同,来源相同:都是 `SensitivePaths::credential_locations` 给出的位置。macOS 把
+每条翻成一条读拒绝正则,所以 profile 写出之后才新建的场景目录也在内;写保护同理,状态目录与各
+`scenes/<场景>/` 下的 `settings.json`、`scene.json`、`prompt.md` 是一条正则。Linux 的状态目录遮挡由
+`platform::sandbox::mask::mask_plan` 生成 tmpfs 与只读 bind 的序列(不分操作系统,可在 macOS 上单测):
+每个含凭据或通向凭据的目录先盖一层 tmpfs,再把其余条目只读绑回;之后写进去的凭据落在 tmpfs 里,
+读不到。通向凭据的条目若不是真目录(符号链接的场景、`scenes/` 里的普通文件)保持遮住。撤掉围栏、
+或项目在状态目录里时整块盖 tmpfs 会连项目一起盖住,改为按 `Located::existing()` 逐个遮挡;这种情况下
+状态目录也按配置根保护:它的 `ENGINE_CONFIG_FILES` 与 `ENGINE_CONFIG_DIRS` 对沙箱命令只读(cwd 所在的
+那个配置目录除外)。
 
 保护只到项目自己的 `.git`。沙箱里的命令可以在子目录里 `git init` 一个新仓库、写它的
 `.git/config`(`core.fsmonitor` 之类),再 `git add` 成一个 gitlink 登记进项目的 index;
