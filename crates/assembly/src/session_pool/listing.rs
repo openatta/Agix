@@ -76,7 +76,7 @@ impl SessionPool {
         scene_id: &str,
         project_root: Option<&Path>,
         include_secrets: bool,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::SceneDescription, PoolError> {
         let Some(scene) = self.scene_registry().resolve(scene_id) else {
             return Err(PoolError::SceneNotFound {
                 scene: scene_id.to_string(),
@@ -89,31 +89,23 @@ impl SessionPool {
             redact_settings_secrets(&mut settings_json);
         }
 
-        Ok(serde_json::json!({
-            "scene": scene.id(),
-            "name": scene.name(),
-            "description": scene.description(),
-            "project_root": project_root.map(|p| p.display().to_string()),
-            "active": self.active_scenes.read().await.contains_key(scene_id),
-            "capabilities": {
-                "requires_project": scene.requires_project(),
-                "supports_team": scene.supports_team(),
+        Ok(api::SceneDescription {
+            scene: scene.id().to_string(),
+            name: scene.name().to_string(),
+            description: scene.description().to_string(),
+            project_root: project_root.map(|p| p.display().to_string()),
+            active: self.active_scenes.read().await.contains_key(scene_id),
+            capabilities: api::SceneCapabilities {
+                requires_project: scene.requires_project(),
+                supports_team: scene.supports_team(),
             },
-            "tools": {
-                // `Scene::tools()` is a whitelist, and empty means "no
-                // whitelist — every registered tool". Reporting that as `[]`
-                // would read to a client as "no tools at all", the opposite;
-                // `null` says there is no restriction.
-                "allowed": if scene.tools().is_empty() {
-                    serde_json::Value::Null
-                } else {
-                    serde_json::json!(scene.tools())
-                },
-                "disallowed": scene.disallowed_tools(),
-                "deferred": scene.deferred_tools(),
+            tools: api::SceneTools {
+                allowed: Some(scene.tools()).filter(|tools| !tools.is_empty()),
+                disallowed: scene.disallowed_tools(),
+                deferred: scene.deferred_tools(),
             },
-            "settings": settings_json,
-        }))
+            settings: settings_json,
+        })
     }
 
     /// `config.get {scene, project_root, tier}` — one settings tier as it

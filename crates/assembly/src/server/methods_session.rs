@@ -406,34 +406,6 @@ impl DaemonServer {
         )
     }
 
-    /// `scene.register` params: `{"scene": {…scene.json…}, "prompt": "…"}` —
-    /// `scene` as an object or as the JSON text.
-    pub(super) async fn method_scene_register(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let scene_json = match params.get("scene") {
-            Some(serde_json::Value::String(text)) => text.clone(),
-            Some(v @ serde_json::Value::Object(_)) => v.to_string(),
-            _ => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing scene"),
-        };
-        let Some(prompt) = params.get("prompt").and_then(|v| v.as_str()) else {
-            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing prompt");
-        };
-        match self
-            .pool
-            .register_scene_from_sources(&scene_json, prompt)
-            .await
-        {
-            Ok(scene) => RpcResponse::ok(
-                id,
-                serde_json::json!({ "scene": scene, "registered": true }),
-            ),
-            Err(e) => failure(id, e),
-        }
-    }
-
     /// `session.setPrompt` params: `{"session_id": "...", "append": "...",
     /// "override": "..."}`. A string sets the field, `null` clears it back to
     /// the settings files' value, an absent key leaves it.

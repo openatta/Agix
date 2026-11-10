@@ -84,53 +84,6 @@ impl DaemonServer {
         }
     }
 
-    /// Shared by `scene.describe` and `config.get`: the `(scene,
-    /// project_root, include_secrets)` triple they both key on.
-    ///
-    /// `project_root` absent and `project_root: null` mean the same thing
-    /// here — describe the scene with no project — because unlike
-    /// `session.create` there is no session to bind and so no difference
-    /// between "unspecified" and "explicitly none".
-    pub(super) fn describe_target(
-        &self,
-        params: &serde_json::Value,
-    ) -> (Option<String>, Option<std::path::PathBuf>, bool) {
-        let scene = params
-            .get("scene")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let project_root = params
-            .get("project_root")
-            .and_then(|v| v.as_str())
-            .map(std::path::PathBuf::from);
-        let include_secrets = params
-            .get("include_secrets")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        (scene, project_root, include_secrets)
-    }
-
-    /// `scene.describe` params:
-    /// `{"scene": "code", "project_root": "...", "include_secrets": false}`
-    pub(super) async fn method_scene_describe(
-        &self,
-        id: serde_json::Value,
-        params: serde_json::Value,
-    ) -> RpcResponse {
-        let (scene, project_root, include_secrets) = self.describe_target(&params);
-        let Some(scene) = scene else {
-            return RpcResponse::err(id, codes::INVALID_PARAMS, "missing scene");
-        };
-        match self
-            .pool
-            .describe_scene(&scene, project_root.as_deref(), include_secrets)
-            .await
-        {
-            Ok(v) => RpcResponse::ok(id, v),
-            Err(e) => failure(id, e),
-        }
-    }
-
     /// `mcp.addServer` params: `{"name": "...", "config": {"type": "stdio", ...}}`
     /// (`config` is an `mcp::config::McpServerConfig`, tagged by `type`).
     /// `plugin.install` params:

@@ -32,7 +32,7 @@ impl SessionPool {
     /// `session.list`'s own active/inactive split already accepts; a
     /// disk-wide count would need scanning every session's `Meta`, not
     /// worth it just for this summary view).
-    pub async fn list_scenes(&self) -> Vec<serde_json::Value> {
+    pub async fn list_scenes(&self) -> Vec<api::SceneSummary> {
         let active = self.active_scenes.read().await;
         let mut counts: HashMap<String, usize> = HashMap::new();
         {
@@ -46,16 +46,14 @@ impl SessionPool {
         self.scene_registry()
             .list_all()
             .into_iter()
-            .map(|info| {
-                serde_json::json!({
-                    "scene": info.id,
-                    "name": info.name,
-                    "description": info.description,
-                    "active": active.contains_key(&info.id),
-                    "sessions": counts.get(&info.id).copied().unwrap_or(0),
-                    "requires_project": info.requires_project,
-                    "supports_team": info.supports_team,
-                })
+            .map(|info| api::SceneSummary {
+                active: active.contains_key(&info.id),
+                sessions: counts.get(&info.id).copied().unwrap_or(0),
+                scene: info.id,
+                name: info.name,
+                description: info.description,
+                requires_project: info.requires_project,
+                supports_team: info.supports_team,
             })
             .collect()
     }
@@ -126,16 +124,16 @@ impl SessionPool {
     }
 
     /// `scene.reload`: read the declarative scenes on disk again.
-    pub async fn reload_scenes(&self) -> serde_json::Value {
+    pub async fn reload_scenes(&self) -> api::SceneReload {
         let change = self.refresh_scene_table().await;
         let mut scenes = self.scene_registry().ids();
         scenes.sort();
-        serde_json::json!({
-            "scenes": scenes,
-            "added": change.added,
-            "removed": change.removed,
-            "errors": change.refused,
-        })
+        api::SceneReload {
+            scenes,
+            added: change.added,
+            removed: change.removed,
+            errors: change.refused,
+        }
     }
 
     /// `scene.register`: add a declarative scene from its `scene.json` and

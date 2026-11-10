@@ -1267,6 +1267,285 @@
         }
       ]
     },
+    "SceneActivated": {
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "scene": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene",
+        "active"
+      ],
+      "type": "object"
+    },
+    "SceneCapabilities": {
+      "properties": {
+        "requires_project": {
+          "type": "boolean"
+        },
+        "supports_team": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "requires_project",
+        "supports_team"
+      ],
+      "type": "object"
+    },
+    "SceneDeactivated": {
+      "properties": {
+        "scene": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "type": "object"
+    },
+    "SceneDescribeParams": {
+      "properties": {
+        "include_secrets": {
+          "default": false,
+          "type": "boolean"
+        },
+        "project_root": {
+          "default": null,
+          "description": "Absent and `null` both mean the scene with no project.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "type": "object"
+    },
+    "SceneDescription": {
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/SceneCapabilities"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "project_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scene": {
+          "type": "string"
+        },
+        "settings": {
+          "description": "The merged settings a session here would resolve to."
+        },
+        "tools": {
+          "$ref": "#/$defs/SceneTools"
+        }
+      },
+      "required": [
+        "scene",
+        "name",
+        "description",
+        "active",
+        "capabilities",
+        "tools",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "SceneList": {
+      "properties": {
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/SceneSummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "scenes"
+      ],
+      "type": "object"
+    },
+    "SceneRef": {
+      "properties": {
+        "scene": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene"
+      ],
+      "type": "object"
+    },
+    "SceneRegisterParams": {
+      "properties": {
+        "prompt": {
+          "description": "The scene's `prompt.md`.",
+          "type": "string"
+        },
+        "scene": {
+          "$ref": "#/$defs/SceneSource"
+        }
+      },
+      "required": [
+        "scene",
+        "prompt"
+      ],
+      "type": "object"
+    },
+    "SceneRegistered": {
+      "properties": {
+        "registered": {
+          "type": "boolean"
+        },
+        "scene": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scene",
+        "registered"
+      ],
+      "type": "object"
+    },
+    "SceneReload": {
+      "description": "What rebuilding the scene table changed.",
+      "properties": {
+        "added": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "errors": {
+          "description": "Scenes that did not load, each with the reason.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "removed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scenes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "scenes",
+        "added",
+        "removed",
+        "errors"
+      ],
+      "type": "object"
+    },
+    "SceneSource": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      ],
+      "description": "A `scene.json`, as an object or as its JSON text."
+    },
+    "SceneSummary": {
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "requires_project": {
+          "type": "boolean"
+        },
+        "scene": {
+          "type": "string"
+        },
+        "sessions": {
+          "description": "Sessions in memory recorded under this scene.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "supports_team": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "scene",
+        "name",
+        "description",
+        "active",
+        "sessions",
+        "requires_project",
+        "supports_team"
+      ],
+      "type": "object"
+    },
+    "SceneTools": {
+      "properties": {
+        "allowed": {
+          "description": "`null` is no whitelist: every registered tool.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "deferred": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "disallowed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "disallowed",
+        "deferred"
+      ],
+      "type": "object"
+    },
     "ScheduleCreateParams": {
       "properties": {
         "cron": {
@@ -1927,58 +2206,66 @@
     },
     "scene.activate": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneActivated"
       }
     },
     "scene.deactivate": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneDeactivated"
       }
     },
     "scene.describe": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneDescribeParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneDescription"
       }
     },
     "scene.list": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneList"
       }
     },
     "scene.register": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneRegisterParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneRegistered"
       }
     },
     "scene.reload": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "description": "no params; anything sent is ignored",
+        "type": [
+          "object",
+          "null"
+        ]
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneReload"
       }
     },
     "scene.unregister": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SceneRegistered"
       }
     },
     "schedule.create": {

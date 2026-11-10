@@ -221,8 +221,8 @@ async fn an_unknown_extra_scene_fails_the_assembly() {
     let scenes = pool.list_scenes().await;
     let active: Vec<&str> = scenes
         .iter()
-        .filter(|s| s["active"].as_bool().unwrap_or(false))
-        .filter_map(|s| s["scene"].as_str())
+        .filter(|s| s.active)
+        .map(|s| s.scene.as_str())
         .collect();
     assert!(
         active.contains(&"harnix") && active.contains(&"code"),

@@ -5,6 +5,7 @@ mod commands;
 mod daemon;
 mod error;
 mod events;
+mod scene;
 mod settings;
 mod turn;
 
@@ -15,6 +16,7 @@ pub use events::{
     emitted_outside_turns, AskKind, PendingAsk, SessionEvent, SessionFrame, SessionWatcher,
     Subscribed, WatcherId,
 };
+pub use scene::{SceneCapabilities, SceneDescription, SceneReload, SceneSummary, SceneTools};
 pub use settings::{
     ConfigTier, ConfigTierName, ImportRun, ProjectStatus, ProjectTrustSet, ProviderConfigView,
     ProviderPatch, ProviderSaved, ProviderView, RoutingStatus, SettingsReloaded, TrustState,
