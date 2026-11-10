@@ -660,7 +660,6 @@ async fn audit_a_rebuilt_session_keeps_plan_mode_todos_and_loaded_tools() -> any
 /// `tool_progress` from a tool a program calls names a `tool_use` the host
 /// was shown — the program's own, or one emitted for the sub-call.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_a_programs_sub_call_progress_names_a_tool_use_the_host_saw() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("program-progress", &stub)

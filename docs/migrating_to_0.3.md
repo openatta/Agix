@@ -1548,6 +1548,9 @@ WebAssembly 载体整个移除。
   之间。每次调用每秒至多一帧,`dropped` 是合并掉的条数;不进 transcript,不保证送达。内建工具里
   目前只有 `Bash` 报(每行输出一次,`progress` 是行数);子 Agent 的包在 `subagent_progress` 里
   (协议 §7.3)。不认识它的客户端照约定忽略即可。
+- `RunCode` 程序里调用的工具不再发 `tool_progress`。以前程序里的 `Bash` 照样报,帧上的
+  `tool_use_id` 是 `<RunCode 的 id>.1` 这样宿主从没见过的 id;程序的进度仍以它任务的
+  `task_progress` 推出(协议 §7.3)。
 - 后台 `Agent` 调用起的子 Agent,`subagent_progress` 帧里的 `parent_tool_use_id` 与引擎事件的
   `parent_session_id` 不再是空值(以前是 `null` / 空,`AgentSpawned` 遥测的 `parent_turn` 也记成 0)。
 - 新增机器可读的 JSON-RPC 描述 `docs/schemas/rpc.schema.json`:方法名、`session.event` / `daemon.event` 的

@@ -74,7 +74,9 @@ pub(crate) fn exec_providers_from(
 /// model's own calls. Each runs under its own tool-use id derived from the
 /// caller's, cannot ask a person anything, and leaves the round's batch alone:
 /// a hook ending the turn or an image a sub-call returned are the caller's to
-/// report, not the round's.
+/// report, not the round's. Nor does it report progress: the host never saw
+/// a `tool_use` under a sub-call's id, and the program's own progress reaches
+/// it as its task's.
 pub(super) struct SubCallDispatcher {
     ctx: ToolExecCtx,
     next: std::sync::atomic::AtomicU64,
@@ -87,6 +89,7 @@ impl SubCallDispatcher {
         ctx.discontinued = Arc::new(std::sync::atomic::AtomicBool::new(false));
         ctx.images = Arc::default();
         ctx.from_code = true;
+        ctx.events = None;
         Self {
             ctx,
             next: std::sync::atomic::AtomicU64::new(1),
