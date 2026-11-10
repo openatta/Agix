@@ -10,7 +10,8 @@ impl AgentTool {
     /// or `.agix/agents/*.md`) that declares a `model` override, that model
     /// is used instead of the parent's. `None` (or an unknown/type-less
     /// call, e.g. from the generic `AgentSpawner` bridge used by team/skill-fork)
-    /// keeps the parent's model.
+    /// keeps the parent's model. `model`, when given, is used over both.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_sub(
         &self,
         prompt: String,
@@ -19,6 +20,7 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
+        model: Option<String>,
     ) -> Result<String, base::error::ToolError> {
         self.run_sub_tagged(
             prompt,
@@ -28,7 +30,10 @@ impl AgentTool {
             perm,
             subagent_type,
             None,
-            SubRun::default(),
+            SubRun {
+                model,
+                ..SubRun::default()
+            },
         )
         .await
     }
@@ -66,32 +71,6 @@ impl AgentTool {
         .await
     }
 
-    /// `run_sub` without an agent type, on `model`.
-    pub(crate) async fn run_sub_on_model(
-        &self,
-        prompt: String,
-        tools: Arc<InMemoryToolRegistry>,
-        cwd: std::path::PathBuf,
-        cancel: tokio_util::sync::CancellationToken,
-        perm: Arc<dyn Permission>,
-        model: String,
-    ) -> Result<String, base::error::ToolError> {
-        self.run_sub_tagged(
-            prompt,
-            tools,
-            cwd,
-            cancel,
-            perm,
-            None,
-            None,
-            SubRun {
-                model: Some(model),
-                ..SubRun::default()
-            },
-        )
-        .await
-    }
-
     /// `run_sub` for a `TeamCreate` member, in the team's `permission_mode`
     /// held to the parent's.
     #[allow(clippy::too_many_arguments)]
@@ -103,6 +82,7 @@ impl AgentTool {
         cancel: tokio_util::sync::CancellationToken,
         perm: Arc<dyn Permission>,
         subagent_type: Option<&str>,
+        model: Option<String>,
         permission_mode: Option<base::interface::settings::PermissionMode>,
         seat: Option<base::interface::agent_spawner::TeamSeat>,
     ) -> Result<String, base::error::ToolError> {
@@ -120,6 +100,7 @@ impl AgentTool {
             subagent_type,
             None,
             SubRun {
+                model,
                 permission_mode,
                 team_member: true,
                 seat,
@@ -160,7 +141,7 @@ impl AgentTool {
             .await
     }
 
-    /// Background counterpart to `run_sub`, for `AgentSpawner::spawn_agent_background`
+    /// Background counterpart to `run_sub`, for `AgentSpawner::spawn` in `SpawnMode::Background`
     /// (the `context: fork` + `background: true` skill path) — same shape as
     /// `launch_bg` (task registration + `tokio::spawn(run_sub_inner(..))` +
     /// status/output bookkeeping on completion), minus the `worktree`
@@ -170,6 +151,7 @@ impl AgentTool {
     /// `Skill` tool) hands that id back to the model to poll via
     /// `TaskOutput`/`TaskStop` — the same mechanism `Agent`'s own
     /// `background: true` argument already uses.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_background(
         &self,
         prompt: String,
@@ -177,6 +159,7 @@ impl AgentTool {
         cwd: std::path::PathBuf,
         cancel: tokio_util::sync::CancellationToken,
         subagent_type: Option<&str>,
+        model: Option<String>,
         session: Arc<base::context::SessionState>,
     ) -> Result<String, base::error::ToolError> {
         let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
@@ -194,7 +177,10 @@ impl AgentTool {
         );
         let subagent_type = subagent_type.map(str::to_string);
         let inner = self.inner.clone();
-        let run = SubRun::for_task(&task, &sid);
+        let run = SubRun {
+            model,
+            ..SubRun::for_task(&task, &sid)
+        };
         let session_c = session.clone();
 
         tokio::spawn(async move {

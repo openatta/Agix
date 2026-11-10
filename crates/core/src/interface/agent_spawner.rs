@@ -13,17 +13,67 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// A minimal interface for spawning sub-agents and collecting their text output.
-/// The implementation in `runtime` wraps `AgentTool::run_sub` logic.
+/// How sub-agents are spawned and their text collected. The implementation
+/// lives in the `agents` crate (`RuntimeAgentSpawner`).
+///
+/// Implement [`spawn`](Self::spawn). The deprecated `spawn_agent*` methods
+/// default to it, and its own default serves an implementation written
+/// against them; one that implements neither recurses.
 #[async_trait]
 pub trait AgentSpawner: Send + Sync {
-    /// Spawn a sub-agent with the given prompt and allowed tools, returning its
-    /// text output (or an error).
+    /// Spawn one sub-agent. With [`SpawnMode::Wait`] or
+    /// [`SpawnMode::TeamMember`] this returns its final text; with
+    /// [`SpawnMode::Background`], the id of the task it runs as, at once.
     ///
-    /// `agent_type`, when `Some` and it names a type in the runtime's agent
-    /// catalog, selects which agent type to spawn as — the same catalog
-    /// `AgentTool::run_sub`'s own `subagent_type` resolves against. `None`
-    /// keeps the prior behavior (parent's model, no per-type overrides).
+    /// The default reaches the two methods every implementation used to
+    /// provide, `spawn_agent` and `spawn_agent_background`, and refuses what
+    /// they cannot honor — a model, extra tools, a permission mode — rather
+    /// than run the sub-agent without it.
+    #[allow(deprecated)]
+    async fn spawn(
+        &self,
+        request: SpawnRequest,
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        let SpawnRequest {
+            prompt,
+            cwd,
+            cancel,
+            agent_type,
+            model,
+            allowed_tools,
+            mode,
+        } = request;
+        if model.is_some() {
+            return Err(unsupported(
+                "this spawner cannot choose a sub-agent's model",
+            ));
+        }
+        match mode {
+            SpawnMode::Wait => {
+                self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
+                    .await
+            }
+            SpawnMode::Background { session } => {
+                self.spawn_agent_background(prompt, allowed_tools, cwd, cancel, agent_type, session)
+                    .await
+            }
+            SpawnMode::TeamMember {
+                extra_tools,
+                permission_mode,
+                seat: _,
+            } => {
+                if !extra_tools.is_empty() || permission_mode.is_some() {
+                    return Err(unsupported(
+                        "this spawner cannot give a sub-agent extra tools or its own permission mode",
+                    ));
+                }
+                self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
+                    .await
+            }
+        }
+    }
+
+    #[deprecated(note = "use `spawn` with `SpawnMode::Wait`")]
     async fn spawn_agent(
         &self,
         prompt: String,
@@ -31,11 +81,16 @@ pub trait AgentSpawner: Send + Sync {
         cwd: PathBuf,
         cancel: CancellationToken,
         agent_type: Option<String>,
-    ) -> Result<String, Box<dyn std::error::Error + Send>>;
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        self.spawn(SpawnRequest {
+            agent_type,
+            allowed_tools,
+            ..SpawnRequest::new(prompt, cwd, cancel)
+        })
+        .await
+    }
 
-    /// `spawn_agent` without an agent type, on `model` instead of the
-    /// parent's — what an agent hook's `model` asks for. The default refuses
-    /// rather than run it on a model nobody chose.
+    #[deprecated(note = "use `spawn` with `model` set")]
     async fn spawn_agent_on_model(
         &self,
         prompt: String,
@@ -43,21 +98,14 @@ pub trait AgentSpawner: Send + Sync {
         cancel: CancellationToken,
         model: String,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let _ = (prompt, cwd, cancel, model);
-        Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "this spawner cannot choose a sub-agent's model",
-        )))
+        self.spawn(SpawnRequest {
+            model: Some(model),
+            ..SpawnRequest::new(prompt, cwd, cancel)
+        })
+        .await
     }
 
-    /// Background variant of `spawn_agent` — used by a skill's `context:
-    /// fork` + `background: true` frontmatter. Returns a task id
-    /// immediately instead of awaiting the sub-agent's final text; the
-    /// caller polls it via `TaskOutput`/`TaskStop`, the same mechanism the
-    /// `Agent` tool's own `background: true` call argument already uses.
-    /// `session` is the *parent* session the task gets registered on (and
-    /// thus where `TaskOutput`/`TaskStop` will later look it up) — not the
-    /// sub-agent's own, which doesn't exist yet when this is called.
+    #[deprecated(note = "use `spawn` with `SpawnMode::Background`")]
     async fn spawn_agent_background(
         &self,
         prompt: String,
@@ -66,40 +114,17 @@ pub trait AgentSpawner: Send + Sync {
         cancel: CancellationToken,
         agent_type: Option<String>,
         session: Arc<crate::context::SessionState>,
-    ) -> Result<String, Box<dyn std::error::Error + Send>>;
+    ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        self.spawn(SpawnRequest {
+            agent_type,
+            allowed_tools,
+            mode: SpawnMode::Background { session },
+            ..SpawnRequest::new(prompt, cwd, cancel)
+        })
+        .await
+    }
 
-    /// Team-member variant of `spawn_agent`: identical execution, but
-    /// `extra_tools` gets registered into the spawned sub-agent's own tool
-    /// registry before it runs. `team::coordinator` uses this to give
-    /// concurrently-running team members `SendMessage`/`ReadMail`/
-    /// `ListPeers` tools scoped to a mailbox shared only by that stage's
-    /// siblings — real-time coordination *among team members*, while
-    /// they're actually running at the same time. It does not let the team
-    /// *lead* participate: the lead is blocked awaiting this whole call, so
-    /// it can't itself send or receive anything until the call returns (see
-    /// `team::coordinator`'s module doc for why that's a deliberate limit
-    /// of today's synchronous orchestration, not an oversight).
-    ///
-    /// `extra_tools` takes `Tool` trait objects (not, say, a `team`-crate
-    /// mailbox type) specifically so this trait — which `team` depends on
-    /// but which itself must not depend on `team` (see this module's own
-    /// doc comment on why) — never needs to know what's inside them.
-    ///
-    /// The default implementation delegates to `spawn_agent` when there is
-    /// nothing beyond it to honor — no `extra_tools`, no `permission_mode` —
-    /// and refuses otherwise, rather than run a member without the tools or
-    /// the mode it was promised. `seat` only names the member for its hooks.
-    /// Only `RuntimeAgentSpawner` overrides it for real.
-    /// `permission_mode`, when `Some`, is the mode this spawn runs under
-    /// (`base::interface::settings::PermissionMode`), chosen once by the
-    /// caller at spawn time — see
-    /// `team::coordinator::OrchestrateRequest::permission_mode`'s doc comment
-    /// ("one team, one authorization"). It is held to the spawning session's
-    /// mode: it can make the member stricter, never freer, and the session's
-    /// rules apply to the member as to any sub-agent. `None` — like
-    /// `extra_tools` being empty — delegates to `spawn_agent`'s behavior.
-    /// `seat` names the team and the member's place in it, which the
-    /// member's `TaskCompleted` / `TeammateIdle` hooks report.
+    #[deprecated(note = "use `spawn` with `SpawnMode::TeamMember`")]
     #[allow(clippy::too_many_arguments)]
     async fn spawn_agent_with_tools(
         &self,
@@ -112,20 +137,22 @@ pub trait AgentSpawner: Send + Sync {
         permission_mode: Option<crate::settings::PermissionMode>,
         seat: Option<TeamSeat>,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let _ = seat;
-        if !extra_tools.is_empty() || permission_mode.is_some() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "this spawner cannot give a sub-agent extra tools or its own permission mode",
-            )));
-        }
-        self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
-            .await
+        self.spawn(SpawnRequest {
+            agent_type,
+            allowed_tools,
+            mode: SpawnMode::TeamMember {
+                extra_tools,
+                permission_mode,
+                seat,
+            },
+            ..SpawnRequest::new(prompt, cwd, cancel)
+        })
+        .await
     }
 
     /// Stop a persistent team member (the `Agent` tool's `team_name`+`name`
     /// mode — a member that survives across many messages, not a one-shot
-    /// `spawn_agent` call) and drop its handle. `team::coordinator`'s
+    /// spawn) and drop its handle. `team::coordinator`'s
     /// `TeamDelete` cleanup calls this once per member it has on record.
     ///
     /// No-op if the named member doesn't exist — matches `TaskStop`'s
@@ -153,6 +180,69 @@ pub trait AgentSpawner: Send + Sync {
             "this session cannot start sub-agents".into(),
         ))
     }
+}
+
+fn unsupported(message: &str) -> Box<dyn std::error::Error + Send> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        message.to_string(),
+    ))
+}
+
+/// One sub-agent to spawn through [`AgentSpawner::spawn`].
+#[derive(Clone)]
+pub struct SpawnRequest {
+    pub prompt: String,
+    pub cwd: PathBuf,
+    pub cancel: CancellationToken,
+    /// A type in the runtime's agent catalog to spawn as; `None` runs on the
+    /// parent's model with no per-type overrides.
+    pub agent_type: Option<String>,
+    /// Over the agent type's model, or the parent's.
+    pub model: Option<String>,
+    /// Narrows the tools the sub-agent inherits; empty keeps them all.
+    pub allowed_tools: Vec<String>,
+    pub mode: SpawnMode,
+}
+
+impl SpawnRequest {
+    pub fn new(prompt: impl Into<String>, cwd: PathBuf, cancel: CancellationToken) -> Self {
+        Self {
+            prompt: prompt.into(),
+            cwd,
+            cancel,
+            agent_type: None,
+            model: None,
+            allowed_tools: Vec::new(),
+            mode: SpawnMode::Wait,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub enum SpawnMode {
+    /// Run it and wait for its final text.
+    #[default]
+    Wait,
+    /// Run it as a task of `session` — the *parent* session, where
+    /// `TaskOutput` / `TaskStop` find it — and return the task id at once.
+    Background {
+        session: Arc<crate::context::SessionState>,
+    },
+    /// Run it as a team member and wait for its final text.
+    TeamMember {
+        /// Registered into this member's own tool registry only — how a
+        /// stage's members get mailbox tools scoped to their siblings. `Tool`
+        /// objects rather than a `team` type, since this crate sits below
+        /// `team`.
+        extra_tools: Vec<Arc<dyn crate::tool::Tool>>,
+        /// Chosen once for the whole team; held to the spawning session's
+        /// mode, so it can make the member stricter, never freer. `None`
+        /// keeps the spawning session's.
+        permission_mode: Option<crate::settings::PermissionMode>,
+        /// Names the member for its `TaskCompleted` / `TeammateIdle` hooks.
+        seat: Option<TeamSeat>,
+    },
 }
 
 /// Which team a member works in, and its name there.
@@ -204,6 +294,7 @@ pub enum StartAgentError {
 mod tests {
     use super::*;
 
+    /// Written against the methods that used to be required.
     struct Plain;
 
     #[async_trait]
@@ -232,6 +323,51 @@ mod tests {
         }
     }
 
+    struct SpawnOnly;
+
+    #[async_trait]
+    impl AgentSpawner for SpawnOnly {
+        async fn spawn(
+            &self,
+            request: SpawnRequest,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            let mode = match request.mode {
+                SpawnMode::Wait => "wait",
+                SpawnMode::Background { .. } => "background",
+                SpawnMode::TeamMember { .. } => "member",
+            };
+            Ok(format!(
+                "{mode} {} {}",
+                request.agent_type.unwrap_or_default(),
+                request.model.unwrap_or_default()
+            ))
+        }
+    }
+
+    fn session() -> Arc<crate::context::SessionState> {
+        Arc::new(crate::context::SessionState::new(PathBuf::from("/tmp")))
+    }
+
+    fn request(mode: SpawnMode) -> SpawnRequest {
+        SpawnRequest {
+            mode,
+            ..SpawnRequest::new("go", PathBuf::from("/tmp"), CancellationToken::new())
+        }
+    }
+
+    fn member(mode: Option<crate::settings::PermissionMode>) -> SpawnMode {
+        SpawnMode::TeamMember {
+            extra_tools: vec![],
+            permission_mode: mode,
+            seat: None,
+        }
+    }
+
+    async fn spawn(on: &dyn AgentSpawner, request: SpawnRequest) -> Result<String, String> {
+        on.spawn(request).await.map_err(|e| e.to_string())
+    }
+
+    #[allow(deprecated)]
     async fn with(mode: Option<crate::settings::PermissionMode>) -> Result<String, String> {
         Plain
             .spawn_agent_with_tools(
@@ -254,5 +390,83 @@ mod tests {
         assert!(with(Some(crate::settings::PermissionMode::Plan))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn spawn_reaches_a_spawner_written_against_the_old_methods() {
+        assert_eq!(
+            spawn(&Plain, request(SpawnMode::Wait)).await,
+            Ok("ran".into())
+        );
+        assert_eq!(
+            spawn(
+                &Plain,
+                request(SpawnMode::Background { session: session() })
+            )
+            .await,
+            Ok("task".into())
+        );
+        assert_eq!(spawn(&Plain, request(member(None))).await, Ok("ran".into()));
+        assert!(spawn(
+            &Plain,
+            request(member(Some(crate::settings::PermissionMode::Plan)))
+        )
+        .await
+        .is_err());
+        let on_model = SpawnRequest {
+            model: Some("m".into()),
+            ..request(SpawnMode::Wait)
+        };
+        assert!(spawn(&Plain, on_model).await.is_err());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn the_old_methods_reach_a_spawner_that_implements_spawn() {
+        let cwd = || PathBuf::from("/tmp");
+        let cancel = CancellationToken::new;
+        let text =
+            |r: Result<String, Box<dyn std::error::Error + Send>>| r.map_err(|e| e.to_string());
+        assert_eq!(
+            text(
+                SpawnOnly
+                    .spawn_agent("go".into(), vec![], cwd(), cancel(), Some("t".into()))
+                    .await
+            ),
+            Ok("wait t ".into())
+        );
+        assert_eq!(
+            text(
+                SpawnOnly
+                    .spawn_agent_on_model("go".into(), cwd(), cancel(), "m".into())
+                    .await
+            ),
+            Ok("wait  m".into())
+        );
+        assert_eq!(
+            text(
+                SpawnOnly
+                    .spawn_agent_background("go".into(), vec![], cwd(), cancel(), None, session())
+                    .await
+            ),
+            Ok("background  ".into())
+        );
+        assert_eq!(
+            text(
+                SpawnOnly
+                    .spawn_agent_with_tools(
+                        "go".into(),
+                        vec![],
+                        vec![],
+                        cwd(),
+                        cancel(),
+                        None,
+                        None,
+                        None
+                    )
+                    .await
+            ),
+            Ok("member  ".into())
+        );
     }
 }

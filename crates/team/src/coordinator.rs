@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::error::ToolError;
-use base::interface::agent_spawner::AgentSpawner;
+use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 use base::interface::model::{Model, ModelEvent, StreamParams};
 use base::interface::prompt::{BlockRole, PromptBlock};
 use base::interface::settings::ThinkingMode;
@@ -468,9 +468,8 @@ impl Coordinator for DefaultCoordinator {
                     let cancel = ctx.cancel.child_token();
                     // Mailbox tools scoped to this member's own label — lets
                     // it coordinate with whichever siblings are concurrently
-                    // running in the same stage (see `AgentSpawner::
-                    // spawn_agent_with_tools`'s doc comment for why the lead
-                    // itself can't participate here, only siblings can).
+                    // running in the same stage. The lead is blocked awaiting
+                    // the whole stage, so it can't take part, only siblings.
                     let extra_tools: Vec<Arc<dyn base::tool::Tool>> = vec![
                         Arc::new(crate::mailbox::SendMessageTool::new(
                             mailbox.clone(),
@@ -495,18 +494,16 @@ impl Coordinator for DefaultCoordinator {
                     async move {
                         let member_start = std::time::Instant::now();
                         let _permit = permits.acquire_owned().await.expect("semaphore closed");
-                        let result = spawner
-                            .spawn_agent_with_tools(
-                                prompt,
-                                vec![], // allowed_tools: empty = all tools
+                        let request = SpawnRequest {
+                            agent_type,
+                            mode: SpawnMode::TeamMember {
                                 extra_tools,
-                                cwd,
-                                cancel,
-                                agent_type,
-                                Some(permission_mode),
-                                Some(seat),
-                            )
-                            .await;
+                                permission_mode: Some(permission_mode),
+                                seat: Some(seat),
+                            },
+                            ..SpawnRequest::new(prompt, cwd, cancel)
+                        };
+                        let result = spawner.spawn(request).await;
                         drop(_permit);
                         let duration_ms = member_start.elapsed().as_millis() as u64;
                         match result {
@@ -1039,7 +1036,7 @@ mod tests {
         }
     }
 
-    /// A fake `AgentSpawner` whose `spawn_agent` sleeps for a duration
+    /// A fake `AgentSpawner` whose `spawn` sleeps for a duration
     /// encoded in the agent's task text (as a plain millisecond count),
     /// tracking in-flight concurrency via an `AtomicUsize`. Records every
     /// prompt it was handed so tests can inspect the injected team context.
@@ -1075,14 +1072,11 @@ mod tests {
 
     #[async_trait]
     impl AgentSpawner for FakeSpawner {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            agent_type: Option<String>,
+            request: SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            let prompt = request.prompt;
             let cur = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak_in_flight.fetch_max(cur, Ordering::SeqCst);
             self.prompts
@@ -1092,7 +1086,7 @@ mod tests {
             self.agent_types
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push(agent_type);
+                .push(request.agent_type);
 
             let task = task_text(&prompt);
             let delay_ms: u64 = task.parse().unwrap_or(0);
@@ -1100,33 +1094,6 @@ mod tests {
 
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             Ok(format!("done-{task}"))
-        }
-
-        async fn spawn_agent_with_tools(
-            &self,
-            prompt: String,
-            allowed_tools: Vec<String>,
-            _extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-            cwd: std::path::PathBuf,
-            cancel: tokio_util::sync::CancellationToken,
-            agent_type: Option<String>,
-            _permission_mode: Option<base::interface::settings::PermissionMode>,
-            _seat: Option<base::interface::agent_spawner::TeamSeat>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
-                .await
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _session: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            unimplemented!("not exercised by these tests")
         }
     }
 
@@ -1157,43 +1124,12 @@ mod tests {
 
     #[async_trait]
     impl AgentSpawner for GatheringSpawner {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
+            _: SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
             self.gathered.wait().await;
             Ok("done".into())
-        }
-
-        async fn spawn_agent_with_tools(
-            &self,
-            prompt: String,
-            allowed_tools: Vec<String>,
-            _extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-            cwd: std::path::PathBuf,
-            cancel: tokio_util::sync::CancellationToken,
-            agent_type: Option<String>,
-            _permission_mode: Option<base::interface::settings::PermissionMode>,
-            _seat: Option<base::interface::agent_spawner::TeamSeat>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            self.spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
-                .await
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _session: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            unimplemented!("not exercised by these tests")
         }
     }
 
@@ -1350,54 +1286,25 @@ mod tests {
     }
 
     /// A fake `AgentSpawner` that actually *uses* `extra_tools` (unlike
-    /// `FakeSpawner`, which never overrides `spawn_agent_with_tools` and so
-    /// silently falls through to the trait's ignore-and-delegate default) —
-    /// it calls the `ListPeers` tool it was handed and returns its result as
+    /// `FakeSpawner`, which ignores them) — it calls the `ListPeers` tool it was handed and returns its result as
     /// the "agent's own output", proving the tool it received is real and
     /// wired to the right mailbox, not just present-but-inert.
     struct MailboxAwareSpawner;
 
     #[async_trait]
     impl AgentSpawner for MailboxAwareSpawner {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
+            request: SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            panic!("MailboxAwareSpawner test only expects spawn_agent_with_tools to be called");
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _session: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            panic!("not used by this test");
-        }
-
-        async fn spawn_agent_with_tools(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-            cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _permission_mode: Option<base::interface::settings::PermissionMode>,
-            _seat: Option<base::interface::agent_spawner::TeamSeat>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            let SpawnMode::TeamMember { extra_tools, .. } = request.mode else {
+                panic!("MailboxAwareSpawner test only expects team members to be spawned");
+            };
             let list_peers = extra_tools
                 .iter()
                 .find(|t| t.name() == "ListPeers")
                 .expect("coordinator must hand each team member a ListPeers tool");
-            let ctx = ToolContext::for_test(cwd);
+            let ctx = ToolContext::for_test(request.cwd);
             let result = list_peers
                 .call(
                     serde_json::json!({}),
@@ -1465,42 +1372,15 @@ mod tests {
 
     #[async_trait]
     impl AgentSpawner for MemoryAwareSpawner {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
+            request: SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            panic!("only spawn_agent_with_tools is expected");
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _session: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            panic!("not used by this test");
-        }
-
-        async fn spawn_agent_with_tools(
-            &self,
-            prompt: String,
-            _allowed_tools: Vec<String>,
-            extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-            cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _permission_mode: Option<base::interface::settings::PermissionMode>,
-            _seat: Option<base::interface::agent_spawner::TeamSeat>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            if !prompt.contains("remember") {
-                return Ok(prompt);
+            let SpawnMode::TeamMember { extra_tools, .. } = request.mode else {
+                panic!("only team members are expected");
+            };
+            if !request.prompt.contains("remember") {
+                return Ok(request.prompt);
             }
             let save = extra_tools
                 .iter()
@@ -1511,7 +1391,7 @@ mod tests {
                 "description": "Handlers return typed errors",
                 "content": "Every handler returns a typed error, never a string."
             });
-            let ctx = ToolContext::for_test(cwd);
+            let ctx = ToolContext::for_test(request.cwd);
             let result = save
                 .call(input, ctx, base::tool::ProgressSender::noop("test"))
                 .await
@@ -1928,13 +1808,9 @@ mod tests {
         struct AlwaysFails;
         #[async_trait]
         impl AgentSpawner for AlwaysFails {
-            async fn spawn_agent(
+            async fn spawn(
                 &self,
-                _prompt: String,
-                _allowed_tools: Vec<String>,
-                _cwd: std::path::PathBuf,
-                _cancel: tokio_util::sync::CancellationToken,
-                _agent_type: Option<String>,
+                _: SpawnRequest,
             ) -> Result<String, Box<dyn std::error::Error + Send>> {
                 #[derive(Debug)]
                 struct E;
@@ -1945,17 +1821,6 @@ mod tests {
                 }
                 impl std::error::Error for E {}
                 Err(Box::new(E))
-            }
-            async fn spawn_agent_background(
-                &self,
-                _prompt: String,
-                _allowed_tools: Vec<String>,
-                _cwd: std::path::PathBuf,
-                _cancel: tokio_util::sync::CancellationToken,
-                _agent_type: Option<String>,
-                _session: Arc<base::context::SessionState>,
-            ) -> Result<String, Box<dyn std::error::Error + Send>> {
-                unimplemented!()
             }
         }
 

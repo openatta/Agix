@@ -227,43 +227,11 @@ impl LateAgentSpawner {
 
 #[async_trait]
 impl AgentSpawner for LateAgentSpawner {
-    async fn spawn_agent(
+    async fn spawn(
         &self,
-        prompt: String,
-        allowed_tools: Vec<String>,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        agent_type: Option<String>,
+        request: base::interface::agent_spawner::SpawnRequest,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        self.require()?
-            .spawn_agent(prompt, allowed_tools, cwd, cancel, agent_type)
-            .await
-    }
-
-    async fn spawn_agent_on_model(
-        &self,
-        prompt: String,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        model: String,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        self.require()?
-            .spawn_agent_on_model(prompt, cwd, cancel, model)
-            .await
-    }
-
-    async fn spawn_agent_background(
-        &self,
-        prompt: String,
-        allowed_tools: Vec<String>,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        agent_type: Option<String>,
-        session: Arc<SessionState>,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        self.require()?
-            .spawn_agent_background(prompt, allowed_tools, cwd, cancel, agent_type, session)
-            .await
+        self.require()?.spawn(request).await
     }
 
     async fn start_agent(
@@ -283,31 +251,6 @@ impl AgentSpawner for LateAgentSpawner {
                 ),
             ),
         }
-    }
-
-    async fn spawn_agent_with_tools(
-        &self,
-        prompt: String,
-        allowed_tools: Vec<String>,
-        extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        agent_type: Option<String>,
-        permission_mode: Option<base::interface::settings::PermissionMode>,
-        seat: Option<base::interface::agent_spawner::TeamSeat>,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        self.require()?
-            .spawn_agent_with_tools(
-                prompt,
-                allowed_tools,
-                extra_tools,
-                cwd,
-                cancel,
-                agent_type,
-                permission_mode,
-                seat,
-            )
-            .await
     }
 
     async fn stop_team_member(&self, team_name: &str, member_name: &str) {

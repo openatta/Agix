@@ -1288,3 +1288,15 @@ WebAssembly 载体整个移除。
   (unix socket、TCP、WebSocket 都是),连接不断。以前这样的行被静默丢弃。宿主的读循环要容得下
   一个 `id` 为 `null` 的错误帧(它不对应任何在途请求);缺 `method` 的合法 JSON 仍然不回。
 
+### 嵌入方
+
+- `AgentSpawner` 的主入口是 `spawn(SpawnRequest)`:`SpawnRequest::new(prompt, cwd, cancel)`,
+  再按需填 `agent_type`、`model`、`allowed_tools` 与 `mode`(`SpawnMode::Wait` 等最终文本、
+  `Background { session }` 立即返回任务 id、`TeamMember { extra_tools, permission_mode, seat }`)。
+  `spawn_agent`、`spawn_agent_on_model`、`spawn_agent_background`、`spawn_agent_with_tools`
+  标为 `#[deprecated]`,缺省实现转到 `spawn`,照旧能调。
+- 自己实现 `AgentSpawner` 的:只按旧方法实现(`spawn_agent` + `spawn_agent_background`)的不用改,
+  `spawn` 的缺省实现会转到它们;但经 `spawn` 进来时,旧的 `spawn_agent_on_model` /
+  `spawn_agent_with_tools` 覆盖不会被走到,要模型、额外工具或权限模式的请求被拒绝。要支持这些的
+  改为实现 `spawn`。`spawn` 与旧方法都不实现的,调用会无限递归。
+- 宿主起子 Agent 的 `start_agent(AgentRequest, …)` 不变。

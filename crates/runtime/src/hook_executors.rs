@@ -126,20 +126,15 @@ impl AgentHookExecutor for AgentSpawnerHookExecutor {
     ) -> Result<String, String> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
         let full_prompt = format!("{prompt}\n\nContext:\n{payload_json}");
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let spawned = match model {
-            Some(model) => {
-                self.spawner
-                    .spawn_agent_on_model(full_prompt, self.cwd.clone(), cancel, model.to_string())
-                    .await
-            }
-            None => {
-                self.spawner
-                    .spawn_agent(full_prompt, vec![], self.cwd.clone(), cancel, None)
-                    .await
-            }
+        let request = base::interface::agent_spawner::SpawnRequest {
+            model: model.map(str::to_string),
+            ..base::interface::agent_spawner::SpawnRequest::new(
+                full_prompt,
+                self.cwd.clone(),
+                tokio_util::sync::CancellationToken::new(),
+            )
         };
-        spawned.map_err(|e| e.to_string())
+        self.spawner.spawn(request).await.map_err(|e| e.to_string())
     }
 }
 
@@ -213,37 +208,14 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl base::interface::agent_spawner::AgentSpawner for StubSpawner {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
+            request: base::interface::agent_spawner::SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            Ok(self.response.to_string())
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            _agent_type: Option<String>,
-            _session: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            Ok("stub-task-id".to_string())
-        }
-
-        async fn spawn_agent_on_model(
-            &self,
-            _prompt: String,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            model: String,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            Ok(format!("ran on {model}"))
+            Ok(match request.model {
+                Some(model) => format!("ran on {model}"),
+                None => self.response.to_string(),
+            })
         }
     }
 

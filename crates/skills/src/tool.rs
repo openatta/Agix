@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
-use base::interface::agent_spawner::AgentSpawner;
+use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 use base::interface::skill_catalog::SkillExpansion;
 use base::tool::{ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent};
 use serde_json::Value;
@@ -162,20 +162,18 @@ impl Tool for SkillTool {
         // one, so its `allowed-tools` grants have nowhere to go.
         if info.context.as_deref() == Some("fork") {
             if let Some(ref spawner) = self.spawner {
-                let cancel = ctx.cancel.clone();
-                let agent_type = info.agent.clone();
+                let request = SpawnRequest {
+                    agent_type: info.agent.clone(),
+                    ..SpawnRequest::new(expansion.text, ctx.cwd.clone(), ctx.cancel.clone())
+                };
                 if info.background == Some(true) {
-                    return match spawner
-                        .spawn_agent_background(
-                            expansion.text,
-                            vec![],
-                            ctx.cwd.clone(),
-                            cancel,
-                            agent_type,
-                            ctx.session.clone(),
-                        )
-                        .await
-                    {
+                    let request = SpawnRequest {
+                        mode: SpawnMode::Background {
+                            session: ctx.session.clone(),
+                        },
+                        ..request
+                    };
+                    return match spawner.spawn(request).await {
                         Ok(task_id) => {
                             self.skill_manager.record_invocation(skill_name);
                             Ok(ToolResult {
@@ -198,10 +196,7 @@ impl Tool for SkillTool {
                     };
                 }
 
-                return match spawner
-                    .spawn_agent(expansion.text, vec![], ctx.cwd.clone(), cancel, agent_type)
-                    .await
-                {
+                return match spawner.spawn(request).await {
                     Ok(output) => {
                         self.skill_manager.record_invocation(skill_name);
                         Ok(ToolResult {
@@ -895,28 +890,16 @@ mod dynamic_context_tests {
 
     #[async_trait]
     impl AgentSpawner for Forks {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            prompt: String,
-            _: Vec<String>,
-            _: std::path::PathBuf,
-            _: tokio_util::sync::CancellationToken,
-            _: Option<String>,
+            request: SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            self.0.lock().unwrap().push(prompt);
+            assert!(
+                matches!(request.mode, SpawnMode::Wait),
+                "no skill here forks in the background"
+            );
+            self.0.lock().unwrap().push(request.prompt);
             Ok("done".into())
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _: String,
-            _: Vec<String>,
-            _: std::path::PathBuf,
-            _: tokio_util::sync::CancellationToken,
-            _: Option<String>,
-            _: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            unreachable!("no skill here forks in the background")
         }
     }
 
@@ -1047,30 +1030,16 @@ mod tests {
     }
     #[async_trait]
     impl base::interface::agent_spawner::AgentSpawner for MockSpawner {
-        async fn spawn_agent(
+        async fn spawn(
             &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            agent_type: Option<String>,
+            request: SpawnRequest,
         ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            *self.last_agent_type.lock().unwrap() = Some(agent_type);
+            *self.last_agent_type.lock().unwrap() = Some(request.agent_type);
+            if matches!(request.mode, SpawnMode::Background { .. }) {
+                *self.background_calls.lock().unwrap() += 1;
+                return Ok("mock-task-id-1".to_string());
+            }
             Ok("forked output".to_string())
-        }
-
-        async fn spawn_agent_background(
-            &self,
-            _prompt: String,
-            _allowed_tools: Vec<String>,
-            _cwd: std::path::PathBuf,
-            _cancel: tokio_util::sync::CancellationToken,
-            agent_type: Option<String>,
-            _session: Arc<base::context::SessionState>,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            *self.last_agent_type.lock().unwrap() = Some(agent_type);
-            *self.background_calls.lock().unwrap() += 1;
-            Ok("mock-task-id-1".to_string())
         }
     }
 
@@ -1523,8 +1492,8 @@ mod tests {
     }
 
     /// `context: fork` + `background: true` must return a task id
-    /// immediately via `spawn_agent_background`, not block on
-    /// `spawn_agent`'s synchronous result.
+    /// immediately via a background `spawn`, not block on
+    /// a waiting one's result.
     #[tokio::test]
     async fn fork_context_with_background_true_uses_the_background_spawner_method() {
         let mgr = Arc::new(crate::manager::SkillManager::new());

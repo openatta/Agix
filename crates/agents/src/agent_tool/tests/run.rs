@@ -3,7 +3,7 @@
 use super::*;
 
 /// `AgentTool::spawn_background` (the `context: fork` + `background:
-/// true` skill path, via `RuntimeAgentSpawner::spawn_agent_background`)
+/// true` skill path, via `RuntimeAgentSpawner::spawn` in the background)
 /// must return a task id immediately — without waiting for the spawned
 /// sub-agent turn to finish — and that id must already be registered on
 /// the *caller's* session (the real `session.register_task` /
@@ -29,19 +29,21 @@ async fn spawn_background_returns_immediately_with_a_registered_task() {
 
     let start = std::time::Instant::now();
     let task_id = spawner
-        .spawn_agent_background(
-            "do the thing".into(),
-            vec![],
-            std::path::PathBuf::from("/tmp"),
-            tokio_util::sync::CancellationToken::new(),
-            None,
-            session.clone(),
-        )
+        .spawn(base::interface::agent_spawner::SpawnRequest {
+            mode: base::interface::agent_spawner::SpawnMode::Background {
+                session: session.clone(),
+            },
+            ..base::interface::agent_spawner::SpawnRequest::new(
+                "do the thing",
+                std::path::PathBuf::from("/tmp"),
+                tokio_util::sync::CancellationToken::new(),
+            )
+        })
         .await
-        .expect("spawn_agent_background itself should not error — it only registers the task");
+        .expect("a background spawn itself should not error — it only registers the task");
     assert!(
         start.elapsed() < std::time::Duration::from_secs(1),
-        "spawn_agent_background must return immediately, not block on the sub-agent turn"
+        "a background spawn must return immediately, not block on the sub-agent turn"
     );
 
     let task = session
@@ -161,6 +163,7 @@ async fn run_sub_returns_promptly_on_a_plain_model_error_instead_of_hanging() {
             tokio_util::sync::CancellationToken::new(),
             perm,
             None,
+            None,
         ),
     )
     .await
@@ -188,6 +191,7 @@ pub(super) async fn run_sub_with(agent_tool: &AgentTool) -> Result<String, base:
             std::path::PathBuf::from("/tmp"),
             tokio_util::sync::CancellationToken::new(),
             Arc::new(AlwaysPermit),
+            None,
             None,
         )
         .await

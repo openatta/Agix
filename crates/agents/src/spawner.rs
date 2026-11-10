@@ -1,12 +1,11 @@
 //! Runtime implementation of the AgentSpawner trait.
 //!
-//! Wraps AgentTool::run_sub from this crate to provide sub-agent spawning
-//! to consumers (e.g., the team coordinator) without creating a circular dependency.
-//! `allowed_tools`, when not empty, narrows what the sub-agent inherits.
+//! Wraps `AgentTool`'s delegate runs to provide sub-agent spawning to
+//! consumers (the team coordinator, Skill fork, agent hooks) without creating
+//! a circular dependency.
 
 use async_trait::async_trait;
-use base::interface::agent_spawner::AgentSpawner;
-use std::path::PathBuf;
+use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -25,89 +24,78 @@ impl RuntimeAgentSpawner {
 
 #[async_trait]
 impl AgentSpawner for RuntimeAgentSpawner {
-    async fn spawn_agent(
+    async fn spawn(
         &self,
-        prompt: String,
-        allowed_tools: Vec<String>,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        agent_type: Option<String>,
+        request: SpawnRequest,
     ) -> Result<String, Box<dyn std::error::Error + Send>> {
+        let SpawnRequest {
+            prompt,
+            cwd,
+            cancel,
+            agent_type,
+            model,
+            allowed_tools,
+            mode,
+        } = request;
         let tools = self.agent_tool.sub_tools(&allowed_tools);
-        let perm = self.agent_tool.sub_permission();
-
-        self.agent_tool
-            .run_sub(prompt, tools, cwd, cancel, perm, agent_type.as_deref())
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
-    }
-
-    async fn spawn_agent_on_model(
-        &self,
-        prompt: String,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        model: String,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let tools = self.agent_tool.sub_tools(&[]);
-        let perm = self.agent_tool.sub_permission();
-        self.agent_tool
-            .run_sub_on_model(prompt, tools, cwd, cancel, perm, model)
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
-    }
-
-    async fn spawn_agent_background(
-        &self,
-        prompt: String,
-        allowed_tools: Vec<String>,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        agent_type: Option<String>,
-        session: Arc<base::context::SessionState>,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        let tools = self.agent_tool.sub_tools(&allowed_tools);
-        self.agent_tool
-            .spawn_background(prompt, tools, cwd, cancel, agent_type.as_deref(), session)
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
-    }
-
-    async fn spawn_agent_with_tools(
-        &self,
-        prompt: String,
-        allowed_tools: Vec<String>,
-        extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-        cwd: PathBuf,
-        cancel: CancellationToken,
-        agent_type: Option<String>,
-        permission_mode: Option<base::interface::settings::PermissionMode>,
-        seat: Option<base::interface::agent_spawner::TeamSeat>,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        // A fresh registry per call, so one member's mailbox tools reach
-        // only that member.
-        let tools = self.agent_tool.sub_tools(&allowed_tools);
-        for t in extra_tools {
-            tools.register(t);
-        }
-        let perm = match permission_mode {
-            Some(mode) => self.agent_tool.team_member_permission(&tools, mode),
-            None => self.agent_tool.sub_permission(),
-        };
-
-        self.agent_tool
-            .run_team_member(
-                prompt,
-                tools,
-                cwd,
-                cancel,
-                perm,
-                agent_type.as_deref(),
+        let ran = match mode {
+            SpawnMode::Wait => {
+                let perm = self.agent_tool.sub_permission();
+                self.agent_tool
+                    .run_sub(
+                        prompt,
+                        tools,
+                        cwd,
+                        cancel,
+                        perm,
+                        agent_type.as_deref(),
+                        model,
+                    )
+                    .await
+            }
+            SpawnMode::Background { session } => {
+                self.agent_tool
+                    .spawn_background(
+                        prompt,
+                        tools,
+                        cwd,
+                        cancel,
+                        agent_type.as_deref(),
+                        model,
+                        session,
+                    )
+                    .await
+            }
+            SpawnMode::TeamMember {
+                extra_tools,
                 permission_mode,
                 seat,
-            )
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
+            } => {
+                // A fresh registry per call, so one member's mailbox tools reach
+                // only that member.
+                for t in extra_tools {
+                    tools.register(t);
+                }
+                let perm = match permission_mode {
+                    Some(mode) => self.agent_tool.team_member_permission(&tools, mode),
+                    None => self.agent_tool.sub_permission(),
+                };
+                self.agent_tool
+                    .run_team_member(
+                        prompt,
+                        tools,
+                        cwd,
+                        cancel,
+                        perm,
+                        agent_type.as_deref(),
+                        model,
+                        permission_mode,
+                        seat,
+                    )
+                    .await
+            }
+        };
+        ran.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
     }
 
     async fn start_agent(

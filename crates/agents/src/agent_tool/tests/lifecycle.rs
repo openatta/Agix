@@ -265,6 +265,7 @@ async fn a_background_sub_agent_reads_its_messages_and_reports_back_when_done() 
             std::env::temp_dir(),
             tokio_util::sync::CancellationToken::new(),
             None,
+            None,
             session.clone(),
         )
         .await
@@ -407,12 +408,14 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
     let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
 
     let answer = spawner
-        .spawn_agent_on_model(
-            "review".into(),
-            std::path::PathBuf::from("/tmp"),
-            tokio_util::sync::CancellationToken::new(),
-            "claude-haiku-4-5".into(),
-        )
+        .spawn(base::interface::agent_spawner::SpawnRequest {
+            model: Some("claude-haiku-4-5".into()),
+            ..base::interface::agent_spawner::SpawnRequest::new(
+                "review",
+                std::path::PathBuf::from("/tmp"),
+                tokio_util::sync::CancellationToken::new(),
+            )
+        })
         .await
         .unwrap();
     assert_eq!(answer, "{\"ok\":true}");
@@ -499,13 +502,11 @@ async fn a_background_sub_agent_and_a_spawned_one_get_the_scenes_tools_once() {
     offered.lock().unwrap().clear();
     use base::interface::agent_spawner::AgentSpawner as _;
     crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
-        .spawn_agent(
-            "look".into(),
-            vec![],
+        .spawn(base::interface::agent_spawner::SpawnRequest::new(
+            "look",
             std::env::temp_dir(),
             tokio_util::sync::CancellationToken::new(),
-            None,
-        )
+        ))
         .await
         .expect("a spawner sub-agent is built and runs");
     assert!(
@@ -582,6 +583,7 @@ async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() 
         std::path::PathBuf::from("/tmp"),
         tokio_util::sync::CancellationToken::new(),
         Arc::new(AlwaysPermit),
+        None,
         None,
         None,
         None,
