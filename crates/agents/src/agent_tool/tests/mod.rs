@@ -11,6 +11,7 @@ mod programs;
 mod resolve;
 mod run;
 mod scenes;
+mod spawn_paths;
 mod wiring;
 
 use catalog::*;

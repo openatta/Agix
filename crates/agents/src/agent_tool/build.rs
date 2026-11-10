@@ -21,7 +21,6 @@ pub(super) struct DelegatePlan<'a> {
     pub(super) subagent_type: Option<&'a str>,
     pub(super) grant: Grant,
     pub(super) parent: Option<(&'a str, u32, &'a str)>,
-    pub(super) records_lineage: bool,
     pub(super) run: &'a SubRun,
 }
 
@@ -69,7 +68,6 @@ impl Inner {
             subagent_type,
             grant,
             parent,
-            records_lineage,
             run,
         } = plan;
         let def = subagent_type.and_then(|t| self.agent_type_def(t));
@@ -102,11 +100,9 @@ impl Inner {
         let parent_session_id = parent
             .map(|(sid, _, _)| sid.to_string())
             .or_else(|| self.parent_session_id());
-        let mut builder = Builder::new().session_id(sid.clone());
-        if records_lineage {
-            builder = builder.lineage(parent_session_id.clone(), subagent_type);
-        }
-        builder = builder
+        let mut builder = Builder::new()
+            .session_id(sid.clone())
+            .lineage(parent_session_id.clone(), subagent_type)
             .scene(scene)
             .contributed_tool_filter(contributed_tool_filter(def.as_ref(), run))
             .model(self.model_for_subagent())
@@ -176,7 +172,6 @@ impl Inner {
                 subagent_type,
                 grant: Grant::Given(permission),
                 parent,
-                records_lineage: runs_on == RunsOn::Foreground,
                 run: &run,
             })
             .await?;

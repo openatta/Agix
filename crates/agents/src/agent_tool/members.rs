@@ -42,7 +42,6 @@ impl AgentTool {
                 subagent_type,
                 grant: Grant::TeamMember,
                 parent: None,
-                records_lineage: false,
                 run: &run,
             })
             .await?;
