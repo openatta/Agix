@@ -63,9 +63,8 @@ impl Agent {
             PromptScreen::Blocked(message) => {
                 self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());
                 return Ok(TurnOutcome {
-                    stop_reason: "stopped_by_hook".into(),
                     message,
-                    ..TurnOutcome::default()
+                    ..TurnOutcome::stopped("stopped_by_hook")
                 });
             }
         }
@@ -513,14 +512,12 @@ impl Agent {
             if cancel.is_cancelled() {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
                 self.record_turn_complete("cancelled", api_calls, tool_calls, start);
-                return Ok(TurnOutcome {
-                    stop_reason: "cancelled".into(),
+                return Ok(TurnOutcome::ended_before_reply(
+                    "cancelled",
                     api_calls,
                     tool_calls,
-                    total_usage: turn_usage,
-                    usage: Usage::default(),
-                    message: None,
-                });
+                    turn_usage,
+                ));
             }
             if let base::interface::turn_policy::TurnStep::Stop { reason } = self
                 .turn_policy
@@ -533,14 +530,9 @@ impl Agent {
             {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
                 self.record_turn_complete(&reason, api_calls, tool_calls, start);
-                return Ok(TurnOutcome {
-                    stop_reason: reason,
-                    api_calls,
-                    tool_calls,
-                    total_usage: turn_usage,
-                    usage: Usage::default(),
-                    message: None,
-                });
+                return Ok(TurnOutcome::ended_before_reply(
+                    reason, api_calls, tool_calls, turn_usage,
+                ));
             }
 
             // 1. Compact if token budget exceeded
@@ -558,14 +550,12 @@ impl Agent {
                     tracing::warn!(carried, cap, "context above the hard cap after compaction");
                     self.last_had_tool_uses = had_tool_uses_this_turn;
                     self.record_turn_complete("context_exceeded", api_calls, tool_calls, start);
-                    return Ok(TurnOutcome {
-                        stop_reason: "context_exceeded".into(),
+                    return Ok(TurnOutcome::ended_before_reply(
+                        "context_exceeded",
                         api_calls,
                         tool_calls,
-                        total_usage: turn_usage,
-                        usage: Usage::default(),
-                        message: None,
-                    });
+                        turn_usage,
+                    ));
                 }
             }
 
@@ -851,34 +841,16 @@ impl Agent {
             // discontinue path below, just triggered from a different point.
             if discontinued.load(std::sync::atomic::Ordering::Relaxed) {
                 tracing::info!("PostToolUse hook discontinued the turn");
-                let tid = self.current_turn_id.clone();
-                let _ = self
-                    .telemetry_handle
-                    .record(telemetry::TelemetryEvent::turn_complete(
-                        &self.session.session_id,
-                        self.session.turn_count,
-                        Some(tid),
-                        telemetry::TurnCompletePayload {
-                            stop_reason: "stopped_by_hook".into(),
-                            api_calls,
-                            tool_calls,
-                            permission_denials: self
-                                .permission_denial_count
-                                .load(std::sync::atomic::Ordering::Relaxed),
-                            last_tool_name: None,
-                            last_tool_was_error: false,
-                            turn_duration_ms: start.elapsed().as_millis() as u64,
-                        },
-                    ));
+                self.record_turn_complete("stopped_by_hook", api_calls, tool_calls, start);
                 self.last_had_tool_uses = had_tool_uses_this_turn;
-                return Ok(TurnOutcome {
-                    stop_reason: "stopped_by_hook".into(),
+                return Ok(TurnOutcome::ended(
+                    "stopped_by_hook",
                     api_calls,
                     tool_calls,
                     usage,
-                    total_usage: turn_usage,
-                    message: None,
-                });
+                    turn_usage,
+                    None,
+                ));
             }
 
             // Structured output retry limit.
@@ -903,14 +875,9 @@ impl Agent {
                 );
                 self.last_had_tool_uses = had_tool_uses_this_turn;
                 self.record_turn_complete(&reason, api_calls, tool_calls, start);
-                return Ok(TurnOutcome {
-                    stop_reason: reason,
-                    api_calls,
-                    tool_calls,
-                    total_usage: turn_usage,
-                    usage: Usage::default(),
-                    message: None,
-                });
+                return Ok(TurnOutcome::ended_before_reply(
+                    reason, api_calls, tool_calls, turn_usage,
+                ));
             }
 
             // Cumulative token budget, checked against the real usage the
@@ -964,14 +931,12 @@ impl Agent {
                         );
                         self.last_had_tool_uses = had_tool_uses_this_turn;
                         self.record_turn_complete("budget_exceeded", api_calls, tool_calls, start);
-                        return Ok(TurnOutcome {
-                            stop_reason: "budget_exceeded".into(),
+                        return Ok(TurnOutcome::ended_before_reply(
+                            "budget_exceeded",
                             api_calls,
                             tool_calls,
-                            total_usage: turn_usage,
-                            usage: Usage::default(),
-                            message: None,
-                        });
+                            turn_usage,
+                        ));
                     }
                 }
             }
@@ -1076,34 +1041,16 @@ impl Agent {
                         i.with_reason("turn discontinued by a Stop hook")
                     })
                     .await;
-                    let tid = self.current_turn_id.clone();
-                    let _ = self
-                        .telemetry_handle
-                        .record(telemetry::TelemetryEvent::turn_complete(
-                            &self.session.session_id,
-                            self.session.turn_count,
-                            Some(tid.clone()),
-                            telemetry::TurnCompletePayload {
-                                stop_reason: "stopped_by_hook".into(),
-                                api_calls,
-                                tool_calls,
-                                permission_denials: self
-                                    .permission_denial_count
-                                    .load(std::sync::atomic::Ordering::Relaxed),
-                                last_tool_name: None,
-                                last_tool_was_error: false,
-                                turn_duration_ms: start.elapsed().as_millis() as u64,
-                            },
-                        ));
+                    self.record_turn_complete("stopped_by_hook", api_calls, tool_calls, start);
                     self.last_had_tool_uses = had_tool_uses_this_turn;
-                    return Ok(TurnOutcome {
-                        stop_reason: "stopped_by_hook".into(),
+                    return Ok(TurnOutcome::ended(
+                        "stopped_by_hook",
                         api_calls,
                         tool_calls,
                         usage,
-                        total_usage: turn_usage,
-                        message: hook_result.discontinue_message().map(str::to_string),
-                    });
+                        turn_usage,
+                        hook_result.discontinue_message().map(str::to_string),
+                    ));
                 }
                 if let Some(blocked) = hook_result.blocked() {
                     let reason = blocked
@@ -1184,26 +1131,7 @@ impl Agent {
 
             // No tools → turn complete
             self.session.increment_turn();
-            let latency_ms = start.elapsed().as_millis() as f64;
-            let tid = self.current_turn_id.clone();
-            let _ = self
-                .telemetry_handle
-                .record(telemetry::TelemetryEvent::turn_complete(
-                    &self.session.session_id,
-                    turn_no,
-                    Some(tid.clone()),
-                    telemetry::TurnCompletePayload {
-                        stop_reason: stop_reason.clone(),
-                        api_calls,
-                        tool_calls,
-                        permission_denials: self
-                            .permission_denial_count
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                        last_tool_name: None,
-                        last_tool_was_error: false,
-                        turn_duration_ms: latency_ms as u64,
-                    },
-                ));
+            self.record_turn_complete_in(turn_no, &stop_reason, api_calls, tool_calls, start);
             // TurnComplete — the normal end of a turn. Distinct from the
             // `Stop` hook above, which fires whenever the model stops calling
             // tools and can *veto* the stop; this one is a notification that
@@ -1294,14 +1222,14 @@ or project context that should survive across sessions.
             }
 
             self.last_had_tool_uses = had_tool_uses_this_turn;
-            return Ok(TurnOutcome {
+            return Ok(TurnOutcome::ended(
                 stop_reason,
                 api_calls,
                 tool_calls,
                 usage,
-                total_usage: turn_usage,
-                message: None,
-            });
+                turn_usage,
+                None,
+            ));
         }
     }
 }

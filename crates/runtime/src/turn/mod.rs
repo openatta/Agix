@@ -132,6 +132,49 @@ pub struct TurnOutcome {
     pub message: Option<String>,
 }
 
+impl TurnOutcome {
+    fn stopped(stop_reason: impl Into<String>) -> Self {
+        Self {
+            stop_reason: stop_reason.into(),
+            ..Self::default()
+        }
+    }
+
+    fn ended_before_reply(
+        stop_reason: impl Into<String>,
+        api_calls: u32,
+        tool_calls: u32,
+        total_usage: Usage,
+    ) -> Self {
+        Self::ended(
+            stop_reason,
+            api_calls,
+            tool_calls,
+            Usage::default(),
+            total_usage,
+            None,
+        )
+    }
+
+    fn ended(
+        stop_reason: impl Into<String>,
+        api_calls: u32,
+        tool_calls: u32,
+        usage: Usage,
+        total_usage: Usage,
+        message: Option<String>,
+    ) -> Self {
+        Self {
+            stop_reason: stop_reason.into(),
+            api_calls,
+            tool_calls,
+            usage,
+            total_usage,
+            message,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
     #[error("model error: {0}")]

@@ -54,12 +54,31 @@ impl Agent {
         tool_calls: u32,
         start: std::time::Instant,
     ) {
+        self.record_turn_complete_in(
+            self.session.turn_count,
+            stop_reason,
+            api_calls,
+            tool_calls,
+            start,
+        );
+    }
+
+    /// For the one path that has already advanced `turn_count` and still
+    /// reports the turn under the number it ran as.
+    pub(super) fn record_turn_complete_in(
+        &self,
+        turn_no: u32,
+        stop_reason: &str,
+        api_calls: u32,
+        tool_calls: u32,
+        start: std::time::Instant,
+    ) {
         let tid = self.current_turn_id.clone();
         let _ = self
             .telemetry_handle
             .record(telemetry::TelemetryEvent::turn_complete(
                 &self.session.session_id,
-                self.session.turn_count,
+                turn_no,
                 Some(tid.clone()),
                 telemetry::TurnCompletePayload {
                     stop_reason: stop_reason.to_string(),

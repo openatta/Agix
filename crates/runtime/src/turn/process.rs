@@ -170,10 +170,7 @@ impl Agent {
                                 });
                                 self.last_had_tool_uses = false;
                                 return self
-                                    .finish_turn(Ok(TurnOutcome {
-                                        stop_reason: "command_executed".into(),
-                                        ..TurnOutcome::default()
-                                    }))
+                                    .finish_turn(Ok(TurnOutcome::stopped("command_executed")))
                                     .await;
                             }
                         }

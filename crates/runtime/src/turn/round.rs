@@ -3,7 +3,7 @@
 use super::request::awaits_result;
 use super::{TurnError, TurnOutcome};
 use crate::agent::Agent;
-use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, Usage};
+use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use std::path::PathBuf;
 
 /// Count StructuredOutput tool uses in the current session messages.
@@ -41,14 +41,7 @@ impl Agent {
                 is_error: Some(is_error),
             }],
         });
-        Ok(TurnOutcome {
-            stop_reason: "tool_result_received".into(),
-            api_calls: 0,
-            tool_calls: 0,
-            total_usage: Usage::default(),
-            usage: Usage::default(),
-            message: None,
-        })
+        Ok(TurnOutcome::stopped("tool_result_received"))
     }
 
     /// The messages pushed since this turn's user message, that message
