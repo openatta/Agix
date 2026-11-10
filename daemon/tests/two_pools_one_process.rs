@@ -233,6 +233,7 @@ fn the_engine_keeps_no_new_process_wide_state() {
         ("crates/platform/src/orphans.rs", "ORPHANS", "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
         ("crates/core/src/settings_file.rs", "LOCKS", "serialises writes to a settings directory, which every pool may share"),
         ("crates/assembly/src/telemetry_otel.rs", "PROCESS_EXPORTER", "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
+        ("crates/core/src/interface/tool.rs", "DERIVING", "a per-thread stack of the tool types inside their default `spec()`, emptied before the call returns: it breaks the spec/old-method recursion and carries nothing between calls"),
         ("crates/history/src/lock.rs", "HELD", "the session-log locks this process holds: an flock belongs to an open file, so every pool writing one state directory must share the one open file per log"),
     ];
 
