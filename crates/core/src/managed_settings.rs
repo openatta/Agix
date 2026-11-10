@@ -144,6 +144,19 @@ impl ManagedSettings {
         self.disable_bypass_permissions_mode |= later.disable_bypass_permissions_mode;
         self
     }
+
+    /// Whether a `bypassPermissions` session under this layer can still be
+    /// asked about a call: the layer takes bypass away, or holds an `ask` or
+    /// `deny` rule. A `deny` counts because a command it cannot read through
+    /// (`$CMD x`) is asked about rather than refused.
+    pub fn asks_under_bypass(&self) -> bool {
+        self.error.is_none()
+            && (self.disable_bypass_permissions_mode
+                || self
+                    .permission_rules
+                    .iter()
+                    .any(|r| r.action != crate::settings::PermissionAction::Allow))
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +180,18 @@ mod tests {
         assert_eq!(m.permission_rules.len(), 1);
         assert_eq!(m.permission_rules[0].action, PermissionAction::Deny);
         assert_eq!(m.permission_rules[0].tier, Some(Tier::Managed));
+    }
+
+    #[test]
+    fn a_bypass_session_can_be_asked_when_the_layer_asks_denies_or_takes_bypass_away() {
+        let rule = |action: &str| json!({"permission_rules": [{"tool": "Bash", "action": action}]});
+        let asks = |value| ManagedSettings::from_value("it", value).asks_under_bypass();
+        assert!(asks(rule("ask")));
+        assert!(asks(rule("deny")));
+        assert!(asks(json!({"disable_bypass_permissions_mode": true})));
+        assert!(!asks(rule("allow")));
+        assert!(!asks(json!({})));
+        assert!(!asks(json!({"permission_mode": "default"})));
     }
 
     #[test]

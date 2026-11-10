@@ -274,6 +274,37 @@ async fn a_managed_ask_still_asks_in_a_bypass_session() {
     d.stop().await;
 }
 
+async fn reported_permission(d: &Daemon) -> serde_json::Value {
+    let (_, created) = d.call("session.create", json!({})).await;
+    let session_id = created["result"]["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_, resumed) = d
+        .call("session.resume", json!({"session_id": session_id}))
+        .await;
+    resumed["result"]["permission"].clone()
+}
+
+#[tokio::test]
+async fn a_bypass_session_reports_prompts_only_when_the_managed_layer_can_ask() {
+    let plain = Daemon::start(None, Duration::from_secs(30)).await;
+    let permission = reported_permission(&plain).await;
+    assert_eq!(permission["mode"], "bypassPermissions", "{permission}");
+    assert_eq!(permission["prompts"], false, "{permission}");
+    plain.stop().await;
+
+    let asks = Daemon::start(
+        Some(r#"{"permission_rules": [{"tool": "Bash(touch:*)", "action": "ask"}]}"#),
+        Duration::from_secs(30),
+    )
+    .await;
+    let permission = reported_permission(&asks).await;
+    assert_eq!(permission["mode"], "bypassPermissions", "{permission}");
+    assert_eq!(permission["prompts"], true, "{permission}");
+    asks.stop().await;
+}
+
 #[tokio::test]
 async fn disabling_bypass_turns_a_bypass_session_into_one_that_asks() {
     let d = Daemon::start(

@@ -293,19 +293,21 @@ impl SessionPool {
                 live.map(|live| (live.project.clone(), live.scene.id().to_string())),
             )
         };
-        let project_trust = match project {
+        let (project_trust, settings) = match project {
             Some((project, scene)) => {
-                self.settings_for_project(project.as_deref(), &scene)
-                    .await
-                    .project_layer
-                    .trust
+                let settings = self.settings_for_project(project.as_deref(), &scene).await;
+                (settings.project_layer.trust, settings)
             }
-            None => base::project_trust::ProjectTrust::NoProject,
+            None => (
+                base::project_trust::ProjectTrust::NoProject,
+                self.settings.read().await.clone(),
+            ),
         };
-        let prompts_enabled = !matches!(
-            mode,
-            base::interface::settings::PermissionMode::BypassPermissions
-        );
+        let prompts_enabled = mode != base::interface::settings::PermissionMode::BypassPermissions
+            || settings
+                .managed
+                .as_ref()
+                .is_some_and(|m| m.asks_under_bypass());
         serde_json::json!({
             "session_id": session_id,
             "status": status,

@@ -1558,8 +1558,11 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 - 会话因别的原因建不回来(例如它记录的 `provider` 已经不在配置里)→ `INTERNAL_ERROR`,
   消息写明原因。同样不会换一个新 id 建会话顶替,`session.run_turn` 也一样。
 
-`permission.prompts` 为 `false` 意味着这个会话跑在 `bypassPermissions` 下,不会有
-任何 `kind:"prompt"` 事件。
+`permission.prompts` 为 `false` 意味着这个会话跑在 `bypassPermissions` 下、部署方的
+managed 层(§10)也没有能让它询问的东西,不会有任何 `prompt_type:"permission"` 的 `prompt`
+帧。`bypassPermissions` 会话在 managed 层有 `ask` 或 `deny` 规则(`deny` 规则读不透的命令,
+如 `$CMD x`,是询问而不是拒绝)、或写了 `disable_bypass_permissions_mode: true` 时,
+`prompts` 为 `true`:这样的会话仍可能被询问,宿主要能回答。
 
 #### `session.fork`
 

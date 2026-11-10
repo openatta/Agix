@@ -1365,6 +1365,9 @@ WebAssembly 载体整个移除。
   `null`)。
 - `PermissionRule.source` 为 `policySettings` 的规则在同样具体的命中里先被报出(数值由 10 改为
   70)。裁决不变。
+- `session.resume` 的 `permission.prompts` 在 `bypassPermissions` 会话里不再一律是 `false`:
+  managed 层有 `ask` / `deny` 规则或关掉了 bypass 时报 `true`,这样的会话仍会发 permission
+  `prompt` 帧。看到 `bypassPermissions` 就不接询问的宿主,改看 `prompts`。
 
 - **新增帧:一行不是合法 JSON 时,服务端回
   `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`**
