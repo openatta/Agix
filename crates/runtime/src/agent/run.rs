@@ -529,9 +529,9 @@ impl Agent {
         self.settings.recorder.as_ref()
     }
 
-    /// Access the permission handler (read-only).
-    pub fn permission(&self) -> &dyn Permission {
-        &*self.gate.permission
+    /// The session's permission: its policy and its grants.
+    pub fn permission(&self) -> &PermissionSet {
+        &self.gate.permission
     }
 
     /// Access the memory store (read-only).

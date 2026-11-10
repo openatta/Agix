@@ -715,22 +715,35 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
     )));
     tools.register(Arc::new(AskingWriteTool));
 
-    let perm = permissions::rule_set_permission::RuleSetPermission::new(
-        Arc::new(permissions::gate::PermissionGate::new(
-            permissions::ruleset::RuleSet::new(vec![]),
+    let perm = PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+            permissions::gate::PermissionGate::new(permissions::ruleset::RuleSet::new(vec![])),
         )),
-        tools,
-        base::settings::PermissionMode::Plan.into(),
+    ));
+    let session = Arc::new(
+        base::context::SessionState::new("/tmp".into())
+            .with_permission_mode(base::permission::PermissionMode::Plan),
     );
+    let decide = |name: &'static str, input: Value| {
+        let (perm, session, tool) = (perm.clone(), session.clone(), tools.get(name));
+        async move {
+            sub_decides(
+                &perm,
+                tool.as_ref(),
+                name,
+                &input,
+                std::path::Path::new("/tmp"),
+                &session,
+            )
+            .await
+        }
+    };
 
-    let send_outcome = perm
-        .check(
-            "SendMessage",
-            &serde_json::json!({"peer": "peer", "message": "y"}),
-            std::path::Path::new("/tmp"),
-            "test-session",
-        )
-        .await;
+    let send_outcome = decide(
+        "SendMessage",
+        serde_json::json!({"peer": "peer", "message": "y"}),
+    )
+    .await;
     assert!(
         matches!(
             send_outcome,
@@ -745,14 +758,7 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
     // way the mailbox tools do — proving Plan's restriction is real for
     // everything except the deliberately-exempted mailbox tools, not
     // that this test's setup accidentally permits everything.
-    let write_outcome = perm
-        .check(
-            "Write",
-            &serde_json::json!({}),
-            std::path::Path::new("/tmp"),
-            "test-session",
-        )
-        .await;
+    let write_outcome = decide("Write", serde_json::json!({})).await;
     assert!(
         matches!(write_outcome, base::interface::permission::PermissionOutcome::Deny { .. }),
         "an ordinary non-read-only tool must still be denied under Plan mode — got {write_outcome:?}"

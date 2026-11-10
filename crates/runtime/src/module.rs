@@ -20,7 +20,7 @@ use base::frozen::SkillEntry;
 use base::interface::agent_spawner::AgentSpawner;
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
-use base::interface::permission::Permission;
+use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
 use base::interface::skill_catalog::{NoSkills, SkillCatalog};
 use base::settings::Settings;
@@ -71,7 +71,7 @@ pub struct SessionContext<'a> {
     /// Already wrapped for telemetry: what a module calls through it is
     /// accounted to this session.
     pub model: &'a Arc<dyn Model>,
-    pub permission: &'a Arc<dyn Permission>,
+    pub permission: &'a PermissionSet,
     pub pending_permissions: &'a PendingPermissions,
     pub hooks: &'a Arc<hooks::HookRunner>,
     /// What a hook payload this module fires starts from: the session's id,
@@ -189,7 +189,7 @@ impl SkillCatalog for LateSkillCatalog {
         name: &'a str,
         args: &'a str,
         ctx: &'a base::tool::ToolContext,
-        permission: &'a dyn base::interface::permission::Permission,
+        permission: &'a dyn base::interface::permission::PermissionPolicy,
     ) -> futures::future::BoxFuture<
         'a,
         Option<Result<base::interface::skill_catalog::SkillExpansion, String>>,

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base::frozen::SkillEntry;
-use base::interface::permission::Permission;
+use base::interface::permission::PermissionPolicy;
 use base::interface::scene::Scene;
 use base::interface::skill_catalog::{SkillCatalog, SkillExpansion};
 use base::tool::ToolContext;
@@ -65,7 +65,7 @@ impl SkillCatalog for SkillManager {
         name: &'a str,
         args: &'a str,
         ctx: &'a ToolContext,
-        permission: &'a dyn Permission,
+        permission: &'a dyn PermissionPolicy,
     ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
         Box::pin(async move {
             let info = SkillManager::get(self, name)?;
@@ -167,7 +167,7 @@ impl SkillCatalog for SceneSkills {
         name: &'a str,
         args: &'a str,
         ctx: &'a ToolContext,
-        permission: &'a dyn Permission,
+        permission: &'a dyn PermissionPolicy,
     ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
         Box::pin(async move {
             SkillCatalog::get(self, name)?;

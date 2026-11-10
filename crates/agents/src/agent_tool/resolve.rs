@@ -5,7 +5,7 @@ use super::*;
 
 impl AgentTool {
     /// Returns a permission handler for sub-agent creation.
-    pub(crate) fn sub_permission(&self) -> Arc<dyn Permission> {
+    pub(crate) fn sub_permission(&self) -> PermissionSet {
         self.permission_handler()
     }
 
@@ -83,13 +83,13 @@ impl AgentTool {
     /// Create a permission handler appropriate for this sub-agent's context.
     ///
     /// Resolution order:
-    /// 1. the parent agent's own `Permission` impl, when wired via
+    /// 1. the parent session's own policy, when wired via
     ///    [`AgentTool::set_parent_permission`] — so a session using
-    ///    `RuleSetPermission` (or any other real handler) can't have its rules
+    ///    `RuleSetPermission` (or any other real policy) can't have its rules
     ///    bypassed by spawning a sub-agent;
     /// 2. [`AlwaysPermit`], for `AgentTool`s built
     ///    without any wiring (tests, embedders).
-    pub(crate) fn permission_handler(&self) -> Arc<dyn Permission> {
+    pub(crate) fn permission_handler(&self) -> PermissionSet {
         self.inner.permission_handler()
     }
 }

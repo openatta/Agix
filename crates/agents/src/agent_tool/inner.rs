@@ -301,12 +301,12 @@ pub(super) struct Inner {
     /// The sub-agent gets its own fresh session id, so it lands in its own
     /// JSONL file — the parent's transcript is never written to.
     pub(super) history_store: SetLater<Option<Arc<dyn HistoryStore>>>,
-    /// The **parent agent's** `Permission` impl. Sub-agent permission checks
-    /// are routed here instead of being hard-permitted, so a session
-    /// that opts into a real permission handler can't be bypassed just by
-    /// spawning a sub-agent. `None` means `AlwaysPermit`, for `AgentTool`s
-    /// built without wiring (tests).
-    pub(super) parent_permission: SetLater<Option<Arc<dyn Permission>>>,
+    /// The **parent session's** permission and state. Sub-agent permission
+    /// checks are routed here instead of being hard-permitted, so a session
+    /// that opts into a real permission can't be bypassed just by spawning a
+    /// sub-agent. `None` means `AlwaysPermit`, for `AgentTool`s built without
+    /// wiring (tests).
+    pub(super) parent_permission: SetLater<Option<ParentSide>>,
     /// The **parent agent's** pending-permission registry, so a sub-agent's
     /// `Prompt` outcome can be turned into a real, answerable question
     /// instead of an automatic refusal.
@@ -584,7 +584,7 @@ impl Inner {
 
     /// See `AgentTool::permission_handler` — same resolution, reachable from
     /// the static `run_sub_inner` path (background spawns).
-    pub(super) fn permission_handler(&self) -> Arc<dyn Permission> {
+    pub(super) fn permission_handler(&self) -> PermissionSet {
         self.permission_handler_for(None)
     }
 
@@ -593,7 +593,7 @@ impl Inner {
     pub(super) fn permission_handler_for(
         &self,
         task: Option<Arc<base::context::RunningTask>>,
-    ) -> Arc<dyn Permission> {
+    ) -> PermissionSet {
         self.permission_handler_asking(task, true)
     }
 
@@ -603,24 +603,28 @@ impl Inner {
         &self,
         task: Option<Arc<base::context::RunningTask>>,
         can_ask: bool,
-    ) -> Arc<dyn Permission> {
-        if let Some(parent) = self.parent_permission.get() {
-            return Arc::new(ParentPermission {
-                inner: if can_ask {
-                    parent
+    ) -> PermissionSet {
+        let Some(parent) = self.parent_permission.get() else {
+            return PermissionSet::without_grants(Arc::new(AlwaysPermit));
+        };
+        let policy = parent.permission.policy.clone();
+        PermissionSet {
+            policy: Arc::new(ParentPermission {
+                parent: if can_ask {
+                    policy
                 } else {
-                    Arc::new(NoPrompt(parent))
+                    Arc::new(NoPrompt(policy))
                 },
+                parent_grants: parent.permission.grants.clone(),
+                parent_session: parent.session,
                 event_tx: self.event_tx(),
                 pending: self.parent_pending_permissions.get(),
                 timeout_secs: self.config.permission_prompt_timeout_secs,
-                own_tools: Default::default(),
                 task,
-                session: Default::default(),
                 parent_exec: self.exec.clone(),
-            });
+            }),
+            grants: Arc::new(ParentGrants(parent.permission.grants)),
         }
-        Arc::new(AlwaysPermit)
     }
 
     /// A team member's permission: the parent's, judged in the member's own
@@ -628,19 +632,15 @@ impl Inner {
     /// answers reach the member. With no parent wired (an `AgentTool` built
     /// on its own) there are no rules to inherit, and the member is judged by
     /// its mode alone.
-    pub(super) fn team_member_permission(
-        &self,
-        tools: &Arc<InMemoryToolRegistry>,
-        mode: base::settings::PermissionMode,
-    ) -> Arc<dyn Permission> {
+    pub(super) fn team_member_permission(&self) -> PermissionSet {
         let wired = self.parent_permission.get().is_some();
         if wired {
             return self.permission_handler();
         }
-        Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-            Arc::new(permissions::gate::PermissionGate::empty()),
-            tools.clone(),
-            mode.into(),
+        PermissionSet::of(Arc::new(
+            permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+                permissions::gate::PermissionGate::empty(),
+            )),
         ))
     }
 

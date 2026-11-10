@@ -4,13 +4,10 @@ use super::*;
 
 struct AllowAllTestPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AllowAllTestPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
+    async fn decide(
         &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &std::path::Path,
-        _: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -21,16 +18,18 @@ fn defaults() -> Settings {
 }
 
 /// Everything the resolver needs beyond the settings/options under test,
-/// with the host having supplied its own `Permission`.
+/// with the host having supplied its own permission.
 fn resolve(
     settings: &Settings,
     options: Option<&SessionOptions>,
-) -> (Arc<dyn Permission>, Arc<dyn Permission>) {
-    let host: Arc<dyn Permission> = Arc::new(AllowAllTestPermission);
-    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+) -> (
+    Arc<dyn base::interface::permission::PermissionPolicy>,
+    Arc<dyn base::interface::permission::PermissionPolicy>,
+) {
+    let host = PermissionSet::without_grants(Arc::new(AllowAllTestPermission));
     let mode = effective_permission_mode(settings, options);
-    let resolved = resolve_session_permission(Some(&host), &tools, settings, mode, options);
-    (host, resolved)
+    let resolved = resolve_session_permission(Some(&host), settings, mode, options);
+    (host.policy, resolved.policy)
 }
 
 /// With nothing configured, a session does not get the allow-all
@@ -70,18 +69,34 @@ async fn a_bypass_session_gets_the_hosts_permission_or_else_a_gate_that_only_val
 
     let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
     tools::register_builtin_tools(&tools);
+    let bash = tools.get("Bash");
     let mode = effective_permission_mode(&settings, None);
-    let gate = resolve_session_permission(None, &tools, &settings, mode, None);
+    let gate = resolve_session_permission(None, &settings, mode, None);
     let cwd = std::env::temp_dir();
+    let session =
+        Arc::new(base::context::SessionState::new(cwd.clone()).with_permission_mode(mode.into()));
+    let bash_says = |input: serde_json::Value| {
+        let (gate, bash, cwd, session) = (gate.clone(), bash.clone(), cwd.clone(), session.clone());
+        async move {
+            gate.policy
+                .decide(&base::interface::permission::PermissionRequest::new(
+                    "Bash",
+                    bash.as_ref(),
+                    &input,
+                    &cwd,
+                    "s",
+                    &session,
+                ))
+                .await
+        }
+    };
     assert!(matches!(
-        gate.check("Bash", &serde_json::json!({"command": "ls"}), &cwd, "s")
-            .await,
+        bash_says(serde_json::json!({"command": "ls"})).await,
         PermissionOutcome::Permit
     ));
     assert!(
         matches!(
-            gate.check("Bash", &serde_json::json!({"command": "  "}), &cwd, "s")
-                .await,
+            bash_says(serde_json::json!({"command": "  "})).await,
             PermissionOutcome::Deny { .. }
         ),
         "input validation still runs under bypass"

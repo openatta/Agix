@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base::interface::credentials::CredentialSource;
-use base::interface::permission::{Permission, PermissionOutcome};
+use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionSet};
 use base::interface::scene::Scene;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use tracing::{info, warn};
@@ -27,7 +27,7 @@ use tracing::{info, warn};
 use crate::config::DaemonConfig;
 use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
 
-/// A `Permission` that permits every call without looking at it — not even
+/// A policy that permits every call without looking at it — not even
 /// to validate its input.
 ///
 /// Not the default for anything. A daemon session asks unless its settings
@@ -39,18 +39,16 @@ use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PRO
 /// `docs/daemon_rpc_protocol.md`'s "权限默认值" section.
 ///
 /// A host that wants its bypass sessions to skip even input validation
-/// passes this as [`Assembly::permission`]; what it supplies there replaces
-/// the gate for those sessions only.
+/// passes this as [`Assembly::permission`]
+/// (`PermissionSet::without_grants(Arc::new(AllowAllPermission))`); what it
+/// supplies there replaces the gate for those sessions only.
 pub struct AllowAllPermission;
 
 #[async_trait::async_trait]
-impl Permission for AllowAllPermission {
-    async fn check(
+impl PermissionPolicy for AllowAllPermission {
+    async fn decide(
         &self,
-        _tool: &str,
-        _input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> PermissionOutcome {
         PermissionOutcome::Permit
     }
@@ -90,7 +88,7 @@ pub struct Assembly {
     pub transcripts: Transcripts,
     /// What a `bypassPermissions` session runs under in place of the rule
     /// gate. `None` keeps the gate, which in that mode only validates input.
-    pub permission: Option<Arc<dyn Permission>>,
+    pub permission: Option<PermissionSet>,
     /// Rust plugins every session this pool builds is built with, in order.
     pub plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     /// The host's last word on every session engine — see

@@ -2,6 +2,7 @@
 
 use super::*;
 use base::interface::model::{MessageRole, ModelMessage};
+use base::interface::permission::PermissionPolicy;
 use std::io::Write;
 
 mod catalog;

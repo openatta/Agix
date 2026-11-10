@@ -190,7 +190,7 @@ async fn a_project_reached_through_a_symlink_is_still_the_project() {
 // permission gate builds one, and the control list configured in settings
 // has to reach it, not stop one call short of the decision it governs.
 
-use base::interface::permission::{Permission, PermissionOutcome};
+use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
 
 fn settings_allowing(paths: Vec<PathBuf>) -> base::settings::Settings {
     let mut s = base::settings::Settings::defaults_for("test-model");
@@ -203,20 +203,18 @@ async fn gate_decision(
     cwd: &std::path::Path,
     path: &std::path::Path,
 ) -> PermissionOutcome {
-    let registry = std::sync::Arc::new(base::interface::tool::InMemoryToolRegistry::new());
-    registry.register(std::sync::Arc::new(tools::file_write::FileWriteTool));
-    let gate = permissions::rule_set_permission::RuleSetPermission::from_settings(
-        settings,
-        base::permission::PermissionMode::Default,
-        registry,
-        [],
-    );
-    gate.check(
+    let write: std::sync::Arc<dyn base::interface::tool::Tool> =
+        std::sync::Arc::new(tools::file_write::FileWriteTool);
+    let gate = permissions::rule_set_permission::RuleSetPermission::from_settings(settings, []);
+    let session = std::sync::Arc::new(base::context::SessionState::new(cwd.to_path_buf()));
+    gate.decide(&PermissionRequest::new(
         "Write",
+        Some(&write),
         &serde_json::json!({ "file_path": path.display().to_string(), "content": "x" }),
         cwd,
         "s1",
-    )
+        &session,
+    ))
     .await
 }
 

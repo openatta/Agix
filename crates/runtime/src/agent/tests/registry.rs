@@ -848,15 +848,36 @@ async fn build_wires_session_memory_when_history_store_present() {
     assert_eq!(sm.path(), expected);
 }
 
-/// The most important test in this file: every tool the model can
-/// actually call must be resolvable by the session's `Permission` handler.
-/// The handler is built from whatever registry the caller passes, while
-/// `build()` registers more tools into a fresh per-session registry; an
-/// unresolvable name would pass `RuleSetPermission`'s "unknown tool"
-/// branch unchecked. Asserting the invariant covers future tools too.
+/// What the engine puts to the session's policy: the tool as the session's
+/// registry has it, and the session's live state.
+async fn decided_by(
+    agent: &crate::agent::Agent,
+    name: &str,
+    input: &serde_json::Value,
+) -> base::interface::permission::PermissionOutcome {
+    let tool = agent.tooling.tools.get(name);
+    agent
+        .permission()
+        .policy
+        .decide(&base::interface::permission::PermissionRequest::new(
+            name,
+            tool.as_ref(),
+            input,
+            std::path::Path::new("/tmp"),
+            "s1",
+            &agent.session_state,
+        ))
+        .await
+}
+
+/// Every tool the model can actually call reaches the session's policy as a
+/// tool it can judge. The policy is built from whatever registry the caller
+/// passes, while `build()` registers more tools into a fresh per-session
+/// registry; a call the policy could not resolve would be asked about rather
+/// than judged. Asserting the invariant covers future tools too.
 #[tokio::test]
-async fn every_registered_tool_is_visible_to_the_permission_handler() {
-    use base::interface::permission::{Permission, PermissionOutcome};
+async fn every_registered_tool_is_judged_by_the_permission_policy() {
+    use base::interface::permission::{PermissionOutcome, PermissionSet};
 
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
@@ -866,19 +887,18 @@ async fn every_registered_tool_is_visible_to_the_permission_handler() {
     // built-ins and build the handler over *that*.
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
-    let permission: Arc<dyn Permission> =
-        Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-            Arc::new(permissions::gate::PermissionGate::empty()),
-            template.clone(),
-            base::permission::PermissionMode::DontAsk,
-        ));
+    let permission = PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+            permissions::gate::PermissionGate::empty(),
+        )),
+    ));
 
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
         .model(model)
         .settings(settings)
         .tools(template.clone())
-        .permission(permission.clone())
+        .permission(permission)
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
@@ -899,11 +919,11 @@ async fn every_registered_tool_is_visible_to_the_permission_handler() {
     assert!(
         template.get("TaskStop").is_none(),
         "the template must stay untouched — `build()` populates a copy, which is \
-         precisely why the handler has to be rebound to that copy"
+         precisely why the request carries the tool dispatch resolved"
     );
 
-    // Put the *session* into `DontAsk` — the handler reads the live
-    // session state, not its construction-time fallback.
+    // Put the *session* into `DontAsk` — the policy reads the live
+    // session state.
     agent
         .session_state
         .set_permission_mode(base::permission::PermissionMode::DontAsk);
@@ -912,27 +932,19 @@ async fn every_registered_tool_is_visible_to_the_permission_handler() {
     // `DontAsk` with no rules denies everything it *can* resolve, so a
     // `Prompt` here means "unresolvable", which is the bug.
     for name in &session_names {
-        let outcome = permission
-            .check(
-                name,
-                &serde_json::json!({}),
-                std::path::Path::new("/tmp"),
-                "s1",
-            )
-            .await;
+        let outcome = decided_by(&agent, name, &serde_json::json!({})).await;
         assert!(
             !matches!(outcome, PermissionOutcome::Prompt { .. }),
-            "`{name}` is not resolvable by the permission handler — it would have \
-             executed without any check. Got {outcome:?}"
+            "`{name}` was not judged by the permission policy. Got {outcome:?}"
         );
     }
 }
 
-/// The permission handler must read the session's *live* mode, so
+/// The permission policy must read the session's *live* mode, so
 /// `EnterPlanMode` moves the gate.
 #[tokio::test]
 async fn entering_plan_mode_moves_the_permission_gate() {
-    use base::interface::permission::{Permission, PermissionOutcome};
+    use base::interface::permission::{PermissionOutcome, PermissionSet};
 
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
@@ -940,19 +952,18 @@ async fn entering_plan_mode_moves_the_permission_gate() {
 
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
-    let permission: Arc<dyn Permission> =
-        Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-            Arc::new(permissions::gate::PermissionGate::empty()),
-            template.clone(),
-            base::permission::PermissionMode::Default,
-        ));
+    let permission = PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+            permissions::gate::PermissionGate::empty(),
+        )),
+    ));
 
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
         .model(model)
         .settings(settings)
         .tools(template.clone())
-        .permission(permission.clone())
+        .permission(permission)
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
@@ -960,9 +971,7 @@ async fn entering_plan_mode_moves_the_permission_gate() {
     let write = serde_json::json!({"file_path": "/tmp/x.txt", "content": "hi"});
     assert!(
         matches!(
-            permission
-                .check("Write", &write, std::path::Path::new("/tmp"), "s1")
-                .await,
+            decided_by(&agent, "Write", &write).await,
             PermissionOutcome::Permit
         ),
         "an in-project write is allowed in Default mode"
@@ -974,9 +983,7 @@ async fn entering_plan_mode_moves_the_permission_gate() {
 
     assert!(
         matches!(
-            permission
-                .check("Write", &write, std::path::Path::new("/tmp"), "s1")
-                .await,
+            decided_by(&agent, "Write", &write).await,
             PermissionOutcome::Deny { .. }
         ),
         "plan mode must deny a write, even one the tool allows itself"

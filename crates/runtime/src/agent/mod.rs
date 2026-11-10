@@ -2,7 +2,7 @@
 
 use base::event::AgentEvent;
 use base::interface::model::Model;
-use base::interface::permission::Permission;
+use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
 use base::memory::MemoryStore;
 use base::settings::Settings;
@@ -135,7 +135,7 @@ pub(crate) struct Tooling {
 
 /// Permission, the questions put to the host, and hooks.
 pub(crate) struct Gate {
-    pub(crate) permission: Arc<dyn Permission>,
+    pub(crate) permission: PermissionSet,
     /// A `prompt_id` with no entry (timed out, stale or duplicate response)
     /// is ignored by whoever resolves it.
     pub(crate) pending_permissions: PendingPermissions,

@@ -235,7 +235,7 @@ impl CommandRegistry {
         entry: &SkillEntry,
         cmd: &SlashCommand,
         ctx: &base::tool::ToolContext,
-        permission: &dyn base::interface::permission::Permission,
+        permission: &dyn base::interface::permission::PermissionPolicy,
     ) -> SkillExpansion {
         let expanded = match self.skills.as_ref() {
             Some(skills) => skills.expand(&entry.name, &cmd.args, ctx, permission).await,

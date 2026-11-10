@@ -1,7 +1,12 @@
-//! Permission wrappers a delegate runs under: deny-rules-first, the parent-bridged
-//! `ParentPermission` that forwards questions to the parent session, and `NoPrompt`.
+//! Permission a delegate runs under: deny-rules-first, the parent-bridged
+//! `ParentPermission` that forwards questions to the parent session, `NoPrompt`,
+//! and `ParentGrants`, which keeps a delegate's grants with its parent.
 
 use super::*;
+use base::interface::permission::{
+    GrantError, GrantScope, PermissionGrants, PermissionOutcome, PermissionPolicy,
+    PermissionRequest,
+};
 
 /// A permission with a host's `deny` rules in front: what they refuse is
 /// refused, anything else is decided as it would have been.
@@ -10,74 +15,28 @@ use super::*;
 /// the denials; its mode never decides anything here.
 pub(super) struct DenyRulesFirst {
     pub(super) rules: permissions::rule_set_permission::RuleSetPermission,
-    pub(super) inner: Arc<dyn Permission>,
+    pub(super) inner: Arc<dyn PermissionPolicy>,
 }
 
 #[async_trait]
-impl Permission for DenyRulesFirst {
-    async fn check(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-    ) -> base::interface::permission::PermissionOutcome {
-        use base::interface::permission::PermissionOutcome;
-        match self
-            .rules
-            .check(tool_name, tool_input, cwd, session_id)
-            .await
-        {
+impl PermissionPolicy for DenyRulesFirst {
+    async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome {
+        match self.rules.decide(req).await {
             denied @ PermissionOutcome::Deny { .. } => denied,
-            _ => {
-                self.inner
-                    .check(tool_name, tool_input, cwd, session_id)
-                    .await
-            }
+            _ => self.inner.decide(req).await,
         }
-    }
-    async fn check_for_delegate(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-        delegate: &Arc<base::context::SessionState>,
-    ) -> base::interface::permission::PermissionOutcome {
-        use base::interface::permission::PermissionOutcome;
-        match self
-            .rules
-            .check(tool_name, tool_input, cwd, session_id)
-            .await
-        {
-            denied @ PermissionOutcome::Deny { .. } => denied,
-            _ => {
-                self.inner
-                    .check_for_delegate(tool_name, tool_input, cwd, session_id, delegate)
-                    .await
-            }
-        }
-    }
-    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
-        self.rules.bind_tool_registry(tools.clone());
-        self.inner.bind_tool_registry(tools);
-    }
-    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
-        self.inner.bind_session_state(session);
-    }
-    fn add_temporary_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        self.inner.add_temporary_allow(tool_name, rule_content);
-    }
-    fn clear_temporary_allows(&self) {
-        self.inner.clear_temporary_allows();
-    }
-    fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        self.inner.add_persistent_allow(tool_name, rule_content);
     }
 }
 
-/// A sub-agent's `Permission`: the parent's rules, plus the parent's channel
-/// to a human.
+/// The parent session the delegates of an `AgentTool` are judged for.
+#[derive(Clone)]
+pub(super) struct ParentSide {
+    pub(super) permission: PermissionSet,
+    pub(super) session: Arc<base::context::SessionState>,
+}
+
+/// A sub-agent's policy: the parent's rules, plus the parent's channel to a
+/// human.
 ///
 /// Delegating the *decision* to the parent is what stops a session from
 /// having its rules bypassed by spawning a sub-agent. But an `Ask` verdict
@@ -97,33 +56,46 @@ impl Permission for DenyRulesFirst {
 /// that never call the setters), it refuses with an explanation rather than
 /// blocking forever.
 pub(super) struct ParentPermission {
-    pub(super) inner: Arc<dyn Permission>,
+    pub(super) parent: Arc<dyn PermissionPolicy>,
+    /// Where an "always allow" the parent's host gives a sub-agent's question
+    /// is kept: with the parent, whose rules decide the sub-agent's calls.
+    pub(super) parent_grants: Arc<dyn PermissionGrants>,
+    /// The session `parent` belongs to; a sub-agent's call reaches it as a
+    /// delegate's.
+    pub(super) parent_session: Arc<base::context::SessionState>,
     pub(super) event_tx: Option<runtime::agent::EventSender>,
     pub(super) pending: Option<runtime::agent::PendingPermissions>,
     /// How long a question waits for its answer; `0` waits indefinitely.
     pub(super) timeout_secs: u64,
-    /// The sub-agent's own tools, for the input checks and the mode held here
-    /// on top of the parent's verdict.
-    pub(super) own_tools: std::sync::RwLock<Option<Arc<dyn base::tool::ToolRegistry>>>,
     pub(super) task: Option<Arc<base::context::RunningTask>>,
-    /// The sub-agent's own session. When nobody attends it, a question is
-    /// handed back for the turn to refuse, not sent up to wait for an answer.
-    pub(super) session: std::sync::RwLock<Option<Arc<base::context::SessionState>>>,
     /// The parent session's providers, for a check made before the
     /// sub-agent's own are bound.
     pub(super) parent_exec: Option<base::interface::exec::ExecProviders>,
 }
 
-/// The parent's permission as a sub-agent a program started sees it: nobody
+/// A delegate's grants, kept by its parent: an answer the person gave lasts
+/// as long there as it would have here. A turn's grant — a forked skill's
+/// `allowed-tools` — is not passed up, and a delegate clears nothing of its
+/// parent's.
+pub(super) struct ParentGrants(pub(super) Arc<dyn PermissionGrants>);
+
+#[async_trait]
+impl PermissionGrants for ParentGrants {
+    async fn grant(&self, grant: base::interface::permission::Grant) -> Result<(), GrantError> {
+        match grant.scope {
+            GrantScope::Turn => Err(GrantError::NotKept),
+            _ => self.0.grant(grant).await,
+        }
+    }
+    fn clear(&self, _: GrantScope) {}
+}
+
+/// The parent's policy as a sub-agent a program started sees it: nobody
 /// watches a program run, so a call that would need the user's approval is
 /// refused rather than asked about.
-pub(super) struct NoPrompt(pub(super) Arc<dyn Permission>);
+pub(super) struct NoPrompt(pub(super) Arc<dyn PermissionPolicy>);
 
-pub(super) fn refuse_a_question(
-    tool_name: &str,
-    outcome: base::interface::permission::PermissionOutcome,
-) -> base::interface::permission::PermissionOutcome {
-    use base::interface::permission::PermissionOutcome;
+pub(super) fn refuse_a_question(tool_name: &str, outcome: PermissionOutcome) -> PermissionOutcome {
     match outcome {
         PermissionOutcome::Prompt { message, .. } => PermissionOutcome::Deny {
             reason: format!(
@@ -137,48 +109,9 @@ pub(super) fn refuse_a_question(
 }
 
 #[async_trait]
-impl Permission for NoPrompt {
-    async fn check(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-    ) -> base::interface::permission::PermissionOutcome {
-        refuse_a_question(
-            tool_name,
-            self.0.check(tool_name, tool_input, cwd, session_id).await,
-        )
-    }
-    async fn check_for_delegate(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-        delegate: &Arc<base::context::SessionState>,
-    ) -> base::interface::permission::PermissionOutcome {
-        refuse_a_question(
-            tool_name,
-            self.0
-                .check_for_delegate(tool_name, tool_input, cwd, session_id, delegate)
-                .await,
-        )
-    }
-    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
-        self.0.bind_tool_registry(tools);
-    }
-    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
-        self.0.bind_session_state(session);
-    }
-    fn add_temporary_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        self.0.add_temporary_allow(tool_name, rule_content);
-    }
-    fn clear_temporary_allows(&self) {
-        self.0.clear_temporary_allows();
-    }
-    fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        self.0.add_persistent_allow(tool_name, rule_content);
+impl PermissionPolicy for NoPrompt {
+    async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome {
+        refuse_a_question(req.tool_name, self.0.decide(req).await)
     }
 }
 
@@ -206,16 +139,15 @@ impl Drop for Waiting<'_> {
     }
 }
 
-/// What `mode` refuses on its own, for a parent handler that can only judge
-/// in its own session's mode (the default `check_for_delegate`). A rule-set
+/// What `mode` refuses on its own, for a parent policy that judges in its own
+/// session's mode whatever `PermissionRequest::delegate` says. A rule-set
 /// parent has already refused all of this, and more precisely.
 pub(super) fn held_to_mode(
-    outcome: base::interface::permission::PermissionOutcome,
+    outcome: PermissionOutcome,
     mode: base::permission::PermissionMode,
     tool: Option<&dyn base::tool::Tool>,
     input: &Value,
-) -> base::interface::permission::PermissionOutcome {
-    use base::interface::permission::PermissionOutcome;
+) -> PermissionOutcome {
     use base::permission::PermissionMode;
     match (mode, outcome) {
         (_, denied @ PermissionOutcome::Deny { .. }) => denied,
@@ -241,112 +173,44 @@ pub(super) fn held_to_mode(
 }
 
 #[async_trait]
-impl Permission for ParentPermission {
-    async fn check(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-    ) -> base::interface::permission::PermissionOutcome {
-        self.decide(tool_name, tool_input, cwd, session_id, None)
-            .await
-    }
-
-    async fn check_for_delegate(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-        delegate: &Arc<base::context::SessionState>,
-    ) -> base::interface::permission::PermissionOutcome {
-        self.decide(tool_name, tool_input, cwd, session_id, Some(delegate))
-            .await
-    }
-
-    fn bind_tool_registry(&self, tools: Arc<dyn base::tool::ToolRegistry>) {
-        *self
-            .own_tools
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tools);
-    }
-
-    fn bind_session_state(&self, session: Arc<base::context::SessionState>) {
-        *self
-            .session
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
-    }
-}
-
-impl ParentPermission {
-    /// The parent's verdict on a call of the sub-agent's — or, as `delegate`,
-    /// of the sub-agent's own delegate — judged against the caller's session
-    /// (its mode, what it has read), then asked of the host when it is a
-    /// question.
-    pub(super) async fn decide(
-        &self,
-        tool_name: &str,
-        tool_input: &Value,
-        cwd: &std::path::Path,
-        session_id: &str,
-        delegate: Option<&Arc<base::context::SessionState>>,
-    ) -> base::interface::permission::PermissionOutcome {
-        use base::interface::permission::PermissionOutcome;
-        let own = self
-            .own_tools
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|tools| tools.get(tool_name));
-        let session = self
-            .session
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let judged = delegate.cloned().or_else(|| session.clone());
-        if let (Some(tool), None) = (&own, delegate) {
+impl PermissionPolicy for ParentPermission {
+    /// The parent's verdict on a call of the sub-agent's — or, as
+    /// `req.delegate`, of the sub-agent's own delegate — judged against the
+    /// caller's session (its mode, what it has read), then asked of the host
+    /// when it is a question.
+    async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome {
+        let tool_name = req.tool_name;
+        let judged = req.judged();
+        if let (Some(tool), None) = (req.tool, req.delegate) {
             let exec = judged
-                .as_ref()
-                .and_then(|judged| judged.exec())
+                .exec()
                 .or_else(|| self.parent_exec.clone())
                 .unwrap_or_else(base::interface::exec::ExecProviders::in_process);
             let mut ctx = ToolContext::from_engine_ctx_with(
-                cwd.to_path_buf(),
+                req.cwd.to_path_buf(),
                 tokio_util::sync::CancellationToken::new(),
                 exec,
             );
-            if let Some(judged) = &judged {
-                ctx.session = judged.clone();
-            }
+            ctx.session = judged.clone();
             if let base::tool::ValidationResult::Err(reason, _) =
-                tool.validate_input(tool_input, &ctx).await
+                tool.validate_input(req.input, &ctx).await
             {
                 return PermissionOutcome::Deny { reason };
             }
         }
-        let outcome = match &judged {
-            Some(judged) => {
-                let mode = session.as_ref().map_or(judged.permission_mode(), |own| {
-                    own.permission_mode().for_delegate(judged.permission_mode())
-                });
-                held_to_mode(
-                    self.inner
-                        .check_for_delegate(tool_name, tool_input, cwd, session_id, judged)
-                        .await,
-                    mode,
-                    own.as_deref(),
-                    tool_input,
-                )
-            }
-            None => {
-                self.inner
-                    .check(tool_name, tool_input, cwd, session_id)
-                    .await
-            }
-        };
-        if session.as_ref().is_some_and(|s| s.unattended) {
+        let mode = req
+            .session
+            .permission_mode()
+            .for_delegate(judged.permission_mode());
+        let mut asked = req.for_delegate(judged);
+        asked.session = &self.parent_session;
+        let outcome = held_to_mode(
+            self.parent.decide(&asked).await,
+            mode,
+            req.tool.map(|t| t.as_ref()),
+            req.input,
+        );
+        if req.session.unattended {
             return outcome;
         }
         let PermissionOutcome::Prompt {
@@ -383,7 +247,7 @@ impl ParentPermission {
             .send(base::event::AgentEvent::PermissionPrompt {
                 prompt_id: prompt_id.clone(),
                 tool_name: tool_name.to_string(),
-                message: format!("[sub-agent {session_id}] {message}"),
+                message: format!("[sub-agent {}] {message}", req.session_id),
                 paths,
                 turn_id: String::new(),
                 tool_use_id: None,
@@ -421,16 +285,20 @@ impl ParentPermission {
         match answer {
             Ok(runtime::agent::PermissionDecision::Permit) => PermissionOutcome::Permit,
             Ok(runtime::agent::PermissionDecision::PermitAlways { .. }) => {
-                // Persist on the *parent's* handler, which is where the rule
-                // engine actually lives, for what was asked — this command,
-                // this path — as the parent's own answer is. A tool not in
-                // the sub-agent's registry has no content to scope it by, and
-                // is permitted this once.
-                if let Some(tool) = &own {
-                    self.inner.add_persistent_allow(
+                // Kept by the parent, where the rule engine deciding this
+                // sub-agent's calls lives, for what was asked — this command,
+                // this path — as the parent's own answer is. A call with no
+                // tool behind it has no content to scope it by, and is
+                // permitted this once.
+                if let Some(tool) = req.tool {
+                    let grant = base::interface::permission::Grant::new(
                         tool_name,
-                        tool.permission_match_content(tool_input).as_deref(),
+                        tool.permission_match_content(req.input),
+                        GrantScope::Session,
                     );
+                    if let Err(e) = self.parent_grants.grant(grant).await {
+                        tracing::debug!(tool_name, error = %e, "sub-agent permit-always not kept");
+                    }
                 }
                 PermissionOutcome::Permit
             }
@@ -448,14 +316,8 @@ impl ParentPermission {
 
 pub(super) struct AlwaysPermit;
 #[async_trait]
-impl Permission for AlwaysPermit {
-    async fn check(
-        &self,
-        _tn: &str,
-        _i: &Value,
-        _c: &std::path::Path,
-        _s: &str,
-    ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Permit
+impl PermissionPolicy for AlwaysPermit {
+    async fn decide(&self, _: &PermissionRequest<'_>) -> PermissionOutcome {
+        PermissionOutcome::Permit
     }
 }

@@ -554,7 +554,7 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
             _: &'a str,
             args: &'a str,
             _: &'a ToolContext,
-            _: &'a dyn base::interface::permission::Permission,
+            _: &'a dyn base::interface::permission::PermissionPolicy,
         ) -> futures::future::BoxFuture<
             'a,
             Option<Result<base::interface::skill_catalog::SkillExpansion, String>>,
@@ -586,21 +586,19 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
     #[derive(Default)]
     struct Grants(std::sync::Mutex<Vec<String>>);
     #[async_trait::async_trait]
-    impl base::interface::permission::Permission for Grants {
-        async fn check(
+    impl base::interface::permission::PermissionGrants for Grants {
+        async fn grant(
             &self,
-            _: &str,
-            _: &serde_json::Value,
-            _: &std::path::Path,
-            _: &str,
-        ) -> base::interface::permission::PermissionOutcome {
-            base::interface::permission::PermissionOutcome::Permit
+            grant: base::interface::permission::Grant,
+        ) -> Result<(), base::interface::permission::GrantError> {
+            self.0.lock().unwrap().push(format!(
+                "{}({:?}) {:?}",
+                grant.tool_name, grant.content, grant.scope
+            ));
+            Ok(())
         }
-        fn add_temporary_allow(&self, tool: &str, pattern: Option<&str>) {
-            self.0.lock().unwrap().push(format!("{tool}({pattern:?})"));
-        }
-        fn clear_temporary_allows(&self) {
-            self.0.lock().unwrap().push("clear".into());
+        fn clear(&self, scope: base::interface::permission::GrantScope) {
+            self.0.lock().unwrap().push(format!("clear {scope:?}"));
         }
     }
 
@@ -619,7 +617,7 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
         catalog,
     ));
     let grants = Arc::new(Grants::default());
-    agent.gate.permission = grants.clone();
+    agent.gate.permission.grants = grants.clone();
 
     agent
         .process_turn(
@@ -640,6 +638,9 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
         .any(|t| t.contains("EXPANDED for release") && !t.contains("the raw body")));
     assert_eq!(
         *grants.0.lock().unwrap(),
-        vec!["clear".to_string(), "Bash(Some(\"make\"))".to_string()]
+        vec![
+            "clear Turn".to_string(),
+            "Bash(Some(\"make\")) Turn".to_string()
+        ]
     );
 }

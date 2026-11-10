@@ -67,7 +67,7 @@ when no one is watching.
    start, while the Agix daemon is already running; [how it was measured](tests/live/tests/compare_dsh.rs)).
 5. **Your product stays in charge.** Every session, task, sub-agent, goal and
    prompt is visible, stoppable and editable over one JSON-RPC protocol.
-   45 extension points let you replace or intercept any subsystem from Rust
+   46 extension points let you replace or intercept any subsystem from Rust
    or a QuickJS script without forking. Every session is an
    append-only log you can resume, fork, export or replay byte for byte
    with no network.
@@ -156,7 +156,7 @@ monitors and structured output ([table below](#tools--45-built-in)).
   schedules and which projects are trusted.
 
 **Extensibility**
-- 45 published extension points: 30 contracts, 9 interceptions and 6
+- 46 published extension points: 31 contracts, 9 interceptions and 6
   registrations.
 - Rust plugins compiled into the host, and QuickJS scripts, installable as
   packages with install-time disclosure.
@@ -215,7 +215,7 @@ other way.
  contract   core (crate `base`) — every trait and every shared data type
 ```
 
-- **Contract.** `core` defines the traits (`Model`, `Scene`, `Permission`, `Tool`,
+- **Contract.** `core` defines the traits (`Model`, `Scene`, `PermissionPolicy`, `Tool`,
   `HistoryStore`, `Compactor`, …) and the data types, and depends on no other
   crate in the workspace. Replacing a subsystem means implementing a trait from
   `core`, never reaching into another crate's internals.
@@ -326,8 +326,8 @@ mode. A sub-agent's question reaches the host on its parent's session.
 
 ### The extension surface
 
-The engine publishes a catalog of its seams, generated from the code: **45
-extension points** — 30 *contracts* (replace a subsystem), 9 *interceptions* (sit
+The engine publishes a catalog of its seams, generated from the code: **46
+extension points** — 31 *contracts* (replace a subsystem), 9 *interceptions* (sit
 in the path of something in flight), 6 *registrations* (contribute to a
 collection). From Rust, implement the trait and hand it to the builder. From
 outside a Rust build:

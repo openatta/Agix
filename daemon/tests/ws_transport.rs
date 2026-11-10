@@ -21,13 +21,10 @@ use tokio_util::sync::CancellationToken;
 struct AllowAllPermission;
 
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AllowAllPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AllowAllPermission {
+    async fn decide(
         &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &std::path::Path,
-        _: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -59,7 +56,9 @@ async fn start_ws_server(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(Arc::new(AllowAllPermission)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(AllowAllPermission),
+            )),
             ..Default::default()
         },
     )
@@ -244,7 +243,9 @@ async fn serving_without_a_token_fails_instead_of_refusing_everyone_forever() {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(Arc::new(AllowAllPermission)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(AllowAllPermission),
+            )),
             ..Default::default()
         },
     )

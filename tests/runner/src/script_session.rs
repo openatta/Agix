@@ -327,17 +327,14 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     // The gate the daemon builds for a session that is not bypassing, rather
     // than the builder's own allow-everything default: a case about the
     // ordering between a script and the gate needs a gate that really asks.
-    let permission: Option<Arc<dyn base::interface::permission::Permission>> =
-        session.asking.then(|| {
-            Arc::new(
-                permissions::rule_set_permission::RuleSetPermission::from_settings(
-                    &settings,
-                    base::settings::PermissionMode::Default.into(),
-                    registry.clone(),
-                    Vec::new(),
-                ),
-            ) as Arc<dyn base::interface::permission::Permission>
-        });
+    let permission = session.asking.then(|| {
+        base::interface::permission::PermissionSet::of(Arc::new(
+            permissions::rule_set_permission::RuleSetPermission::from_settings(
+                &settings,
+                Vec::new(),
+            ),
+        ))
+    });
     let mut builder = Builder::new()
         .scene(scene)
         .module(Arc::new(agents::AgentsModule::new()))

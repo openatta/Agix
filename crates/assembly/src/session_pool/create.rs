@@ -195,7 +195,7 @@ impl SessionPool {
 
         // The prompt timeout is a daemon-level flag but the wait it bounds
         // lives in the engine, so it travels as a setting rather than as a
-        // daemon-side wrapper around `Permission`. `Settings` is behind an
+        // daemon-side wrapper around the permission. `Settings` is behind an
         // `Arc`, so override on a private clone rather than in place.
         // The mode is decided once and written into the snapshot as well:
         // the gate, the hook payloads and `Meta` all read it from there, and a
@@ -225,7 +225,6 @@ impl SessionPool {
         );
         let permission = resolve_session_permission(
             self.permission.as_ref(),
-            &self.tools,
             &settings_snapshot,
             permission_mode,
             options,

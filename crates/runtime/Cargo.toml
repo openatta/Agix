@@ -10,7 +10,6 @@ description  = "Agix — agent runtime (turn loop, Agent + Builder)"
 [dependencies]
 base          = { workspace = true }
 platform      = { workspace = true }
-permissions   = { workspace = true }
 history       = { workspace = true }
 tools         = { workspace = true }
 telemetry     = { workspace = true }
@@ -47,6 +46,7 @@ structured-output = ["tools/structured-output"]
 
 [dev-dependencies]
 url      = { workspace = true }
+permissions = { workspace = true }
 tempfile = { workspace = true }
 model    = { workspace = true }
 tokio    = { workspace = true, features = ["test-util"] }

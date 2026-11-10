@@ -105,13 +105,10 @@ impl base::tool::Tool for FailingTool {
 
 struct DenyingPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for DenyingPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for DenyingPermission {
+    async fn decide(
         &self,
-        _tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Deny {
             reason: "denied by test rule engine".into(),
@@ -121,13 +118,10 @@ impl base::interface::permission::Permission for DenyingPermission {
 
 struct AllowAllTestPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AllowAllTestPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
+    async fn decide(
         &self,
-        _tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -143,17 +137,12 @@ fn test_exec_ctx(
 fn test_exec_ctx_with_permission(
     tools: Arc<base::tool::InMemoryToolRegistry>,
     hooks: Arc<hooks::HookRunner>,
-    permission: Arc<dyn base::interface::permission::Permission>,
+    permission: Arc<dyn base::interface::permission::PermissionPolicy>,
 ) -> ToolExecCtx {
     ToolExecCtx {
         tool_use_id: "toolu_test".into(),
         tools,
         cwd: std::env::temp_dir(),
-        local_settings_path: Some(
-            std::env::temp_dir()
-                .join(".agix")
-                .join(base::settings::SETTINGS_LOCAL_FILE),
-        ),
         session_id: "test-session".into(),
         turn_no: 1,
         agent_depth: 0,
@@ -167,7 +156,7 @@ fn test_exec_ctx_with_permission(
             &base::context::EngineConfig::defaults_for("test"),
             None,
         ),
-        permission,
+        permission: base::interface::permission::PermissionSet::without_grants(permission),
         session_state: Arc::new(base::context::SessionState::new(std::env::temp_dir())),
         elicitation: Arc::new(base::interface::elicitation::DeclineAll),
         tool_middleware: Arc::new(Vec::new()),
@@ -720,7 +709,8 @@ async fn permission_denied_hook_fires_on_a_rule_engine_deny() {
     }));
 
     let mut ctx = ctx_with_marker_hook(hooks::HookEvent::PermissionDenied, &marker, tools);
-    ctx.permission = Arc::new(DenyingPermission);
+    ctx.permission =
+        base::interface::permission::PermissionSet::without_grants(Arc::new(DenyingPermission));
 
     let result = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({})).await;
     assert!(result.is_err(), "the call must still be denied");
@@ -840,13 +830,10 @@ async fn post_tool_use_hook_block_denies_only_this_result() {
 
 struct DenyAllTestPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for DenyAllTestPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for DenyAllTestPermission {
+    async fn decide(
         &self,
-        _tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Deny {
             reason: "denied by test".into(),
@@ -860,13 +847,10 @@ struct PromptTestPermission {
     prompt_id: &'static str,
 }
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for PromptTestPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for PromptTestPermission {
+    async fn decide(
         &self,
-        _tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Prompt {
             prompt_id: self.prompt_id.into(),
@@ -1000,10 +984,8 @@ async fn permission_prompt_answered_deny_blocks_the_call() {
     assert!(called.lock().unwrap().is_none());
 }
 
-/// Like `ProbeTool`, but overrides `permission_match_content` so the
-/// derived rule pattern is non-empty — needed to exercise the
-/// `PermitAlways` disk-write path, since `settings_patch::build_rule_string`
-/// returns `None` (nothing to write) for empty/absent content.
+/// Like `ProbeTool`, but overrides `permission_match_content`, so an "always
+/// allow" answer has content to scope its grant by.
 struct ContentProbeTool {
     called: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>>,
 }
@@ -1037,154 +1019,63 @@ impl base::tool::Tool for ContentProbeTool {
     }
 }
 
-type RecordedAllows = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
-
-/// Records every `add_persistent_allow` call it receives, and always
-/// prompts on `check` (fixed `prompt_id`) so a test can drive the
-/// `InputMessage::PermissionResponse` -> `PermitAlways` path the same
-/// way a real interactive "always allow" answer would.
-struct PromptThenRecordPersistentAllow {
-    prompt_id: &'static str,
-    recorded: RecordedAllows,
-}
+#[derive(Default)]
+struct RecordedGrants(std::sync::Mutex<Vec<base::interface::permission::Grant>>);
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for PromptThenRecordPersistentAllow {
-    async fn check(
+impl base::interface::permission::PermissionGrants for RecordedGrants {
+    async fn grant(
         &self,
-        _tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
-    ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Prompt {
-            prompt_id: self.prompt_id.into(),
-            message: "allow?".into(),
-            paths: vec![],
-            managed: false,
-        }
+        grant: base::interface::permission::Grant,
+    ) -> Result<(), base::interface::permission::GrantError> {
+        self.0.lock().unwrap().push(grant);
+        Ok(())
     }
-    fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        self.recorded
-            .lock()
-            .unwrap()
-            .push((tool_name.to_string(), rule_content.map(|s| s.to_string())));
-    }
+    fn clear(&self, _: base::interface::permission::GrantScope) {}
 }
 
+/// An "always allow" answer is granted to the session's grants in the scope
+/// it asked for, with the content the rule engine itself matches calls by,
+/// and the pending call proceeds as a plain `Permit` would. Where a
+/// `Project` grant is written is the grants' business, not the turn's.
 #[tokio::test]
-async fn permission_prompt_answered_permit_always_local_persists_rule_to_disk() {
-    // End-to-end: a `PermitAlways{scope: Local}` response must (1) call
-    // `Permission::add_persistent_allow` so the in-memory rule engine
-    // allows the rest of this session immediately, using the same
-    // `tool.permission_match_content` derivation the rule engine itself
-    // uses to match calls, and (2) write the equivalent rule to
-    // `<project_root>/.agix/settings.local.json` (NOT `settings.json` —
-    // that's the shared/committed project tier), in the shape
-    // `Settings::load` reads back — and (3) still let the pending tool
-    // call proceed, same as a plain `Permit` would.
-    let dir = tempfile::tempdir().unwrap();
-    let agix_dir = dir.path().join(".agix");
-    let called = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
-    tools.register(std::sync::Arc::new(ContentProbeTool {
-        called: called.clone(),
-    }));
-    let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
-    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let permission = Arc::new(PromptThenRecordPersistentAllow {
-        prompt_id: "permit-always-local",
-        recorded: recorded.clone(),
-    });
-
-    let ctx = ToolExecCtx {
-        tool_use_id: "toolu_test".into(),
-        tools,
-        cwd: dir.path().to_path_buf(),
-        local_settings_path: Some(agix_dir.join(base::settings::SETTINGS_LOCAL_FILE)),
-        session_id: "test-session".into(),
-        turn_no: 1,
-        agent_depth: 0,
-        telemetry_handle: telemetry::TelemetryHandle::noop(),
-        turn_id: "test-turn".into(),
-        cancel: tokio_util::sync::CancellationToken::new(),
-        hooks: hooks_runner,
-        discontinued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        config: Arc::new(base::context::EngineConfig::defaults_for("test")),
-        exec: crate::turn::exec_providers_from(
-            &base::context::EngineConfig::defaults_for("test"),
-            None,
-        ),
-        permission,
-        session_state: Arc::new(base::context::SessionState::new(dir.path().to_path_buf())),
-        tool_middleware: Arc::new(Vec::new()),
-        result_transformers: Arc::new(Vec::new()),
-        elicitation: base::interface::elicitation::FixedElicitation::new(
+async fn permission_prompt_answered_permit_always_grants_in_the_scope_asked_for() {
+    use base::interface::permission::{Grant, GrantScope, PermissionSet};
+    for (answered, scope) in [
+        (crate::agent::PersistScope::Local, GrantScope::Project),
+        (crate::agent::PersistScope::Session, GrantScope::Session),
+    ] {
+        let called = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(std::sync::Arc::new(ContentProbeTool {
+            called: called.clone(),
+        }));
+        let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+        let mut ctx = test_exec_ctx(tools, hooks_runner);
+        let grants = Arc::new(RecordedGrants::default());
+        ctx.permission = PermissionSet {
+            policy: Arc::new(PromptTestPermission {
+                prompt_id: "permit-always",
+            }),
+            grants: grants.clone(),
+        };
+        ctx.elicitation = base::interface::elicitation::FixedElicitation::new(
             base::interface::elicitation::ElicitOutcome::answered(
-                &crate::agent::PermissionDecision::PermitAlways {
-                    scope: crate::agent::PersistScope::Local,
-                },
+                &crate::agent::PermissionDecision::PermitAlways { scope: answered },
             ),
-        ),
-        images: Arc::new(std::sync::Mutex::new(Vec::new())),
-        from_code: false,
-        events: None,
-    };
+        );
 
-    let result = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({})).await;
+        let result = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({})).await;
 
-    assert!(
-        result.is_ok(),
-        "PermitAlways must let the pending tool call proceed: {result:?}"
-    );
-    assert!(
-        called.lock().unwrap().is_some(),
-        "the tool must actually have run"
-    );
-    assert_eq!(
-        recorded.lock().unwrap().as_slice(),
-        &[("Probe".to_string(), Some("git status".to_string()))],
-        "add_persistent_allow must be called with the tool's derived match content"
-    );
-
-    let settings_local_path = agix_dir.join(base::settings::SETTINGS_LOCAL_FILE);
-    assert!(
-        settings_local_path.exists(),
-        "expected {} to exist — anywhere else is outside the Bash sandbox's \
-             deny-file-write protection for this file",
-        settings_local_path.display()
-    );
-
-    // The rule has to survive a real load, not just be present as JSON:
-    // a shape `Settings` doesn't deserialize would leave the user
-    // re-answering the same prompt every restart.
-    let empty = tempfile::tempdir().unwrap();
-    let loaded = base::settings::Settings::load(
-        empty.path().to_path_buf(),
-        empty.path().to_path_buf(),
-        agix_dir.clone(),
-        "code",
-        "m",
-    );
-    let rules = permissions::rule::rules_from_all_tiers(&loaded);
-    assert_eq!(
-        rules.len(),
-        1,
-        "expected exactly one loaded rule: {rules:?}"
-    );
-    assert_eq!(rules[0].tool_name, "Probe");
-    assert_eq!(rules[0].rule_content.as_deref(), Some("git status"));
-    assert_eq!(rules[0].behavior, base::permission::RuleBehavior::Allow);
-    assert_eq!(
-        rules[0].source,
-        base::permission::RuleSource::LocalSettings,
-        "must carry the local tier's source so its priority outranks ProjectSettings"
-    );
-
-    // Not written to the shared/committed settings.json tier.
-    assert!(
-        !agix_dir.join(base::settings::SETTINGS_FILE).exists(),
-        "must not touch the shared/committed settings.json tier"
-    );
+        assert!(
+            result.is_ok(),
+            "PermitAlways must let the pending tool call proceed: {result:?}"
+        );
+        assert!(called.lock().unwrap().is_some(), "the tool must have run");
+        assert_eq!(
+            grants.0.lock().unwrap().as_slice(),
+            &[Grant::new("Probe", Some("git status".into()), scope)],
+        );
+    }
 }
 
 #[test]

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use futures::future::BoxFuture;
 
 use crate::frozen::SkillEntry;
-use crate::interface::permission::Permission;
+use crate::interface::permission::PermissionPolicy;
 use crate::interface::tool::ToolContext;
 
 /// One invocation's worth of a skill: the text the conversation receives,
@@ -36,7 +36,7 @@ pub trait SkillCatalog: Send + Sync {
         name: &'a str,
         args: &'a str,
         ctx: &'a ToolContext,
-        permission: &'a dyn Permission,
+        permission: &'a dyn PermissionPolicy,
     ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
         let _ = (ctx, permission);
         Box::pin(async move {

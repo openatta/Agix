@@ -6,12 +6,13 @@ use super::*;
 #[test]
 fn permission_handler_falls_back_to_always_permit_when_no_parent_is_wired() {
     let agent_tool = test_agent_tool();
-    let perm = agent_tool.sub_permission();
-    let outcome = futures::executor::block_on(perm.check(
+    let outcome = futures::executor::block_on(sub_decides(
+        &agent_tool.sub_permission(),
+        None,
         "Bash",
         &serde_json::json!({}),
         Path::new("/tmp"),
-        "s",
+        &Arc::new(base::context::SessionState::new("/tmp".into())),
     ));
     assert!(matches!(
         outcome,

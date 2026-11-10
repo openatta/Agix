@@ -128,13 +128,10 @@ impl AnthropicClient for AskingClient {
 struct AllowAllPermission;
 
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AllowAllPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AllowAllPermission {
+    async fn decide(
         &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &std::path::Path,
-        _: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -143,13 +140,10 @@ impl base::interface::permission::Permission for AllowAllPermission {
 struct AskEverythingPermission;
 
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AskEverythingPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AskEverythingPermission {
+    async fn decide(
         &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &std::path::Path,
-        _: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Prompt {
             prompt_id: uuid::Uuid::new_v4().to_string(),
@@ -199,11 +193,14 @@ impl Harness {
                 cwd: Some(cwd.clone()),
                 model_client: Some(client),
                 transcripts: daemon::Transcripts::In(store),
-                permission: Some(if allow_all {
-                    Arc::new(AllowAllPermission) as Arc<dyn base::interface::permission::Permission>
-                } else {
-                    Arc::new(AskEverythingPermission)
-                }),
+                permission: Some(base::interface::permission::PermissionSet::without_grants(
+                    if allow_all {
+                        Arc::new(AllowAllPermission)
+                            as Arc<dyn base::interface::permission::PermissionPolicy>
+                    } else {
+                        Arc::new(AskEverythingPermission)
+                    },
+                )),
                 ..Default::default()
             },
         )

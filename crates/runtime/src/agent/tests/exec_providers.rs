@@ -61,14 +61,9 @@ async fn the_permission_judges_a_call_on_the_providers_it_runs_on() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     tools.register(Arc::new(ExecProbe(seen.clone())));
     let settings = test_settings();
-    let permission = Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::from_settings(
-            &settings,
-            base::permission::PermissionMode::Default,
-            tools.clone(),
-            [],
-        ),
-    );
+    let permission = base::interface::permission::PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::from_settings(&settings, []),
+    ));
     let (mut agent, _event_rx, _input_tx) = Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()))
         .model(Arc::new(ToolThenStopModel {

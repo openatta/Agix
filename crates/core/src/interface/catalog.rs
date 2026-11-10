@@ -172,7 +172,7 @@ pub fn all() -> &'static [ExtensionPoint] {
     &POINTS
 }
 
-static POINTS: [ExtensionPoint; 45] = [
+static POINTS: [ExtensionPoint; 46] = [
     ExtensionPoint {
         id: "tool.registry",
         kind: Kind::Contract,
@@ -301,7 +301,17 @@ static POINTS: [ExtensionPoint; 45] = [
         rewrites: "放行、拒绝,或者问人",
         frequency: Frequency::PerToolCall,
         trust: Trust::host_only(),
-        defined_in: "base::interface::permission::Permission",
+        defined_in: "base::interface::permission::PermissionPolicy",
+    },
+    ExtensionPoint {
+        id: "permission.grants",
+        kind: Kind::Contract,
+        summary: "会话里给出的放行记在哪、记多久",
+        timing: "skill 的 allowed-tools 生效、人答\"总是允许\"时",
+        rewrites: "本轮、本会话、本项目的放行",
+        frequency: Frequency::PerTurn,
+        trust: Trust::host_only(),
+        defined_in: "base::interface::permission::PermissionGrants",
     },
     ExtensionPoint {
         id: "scene",

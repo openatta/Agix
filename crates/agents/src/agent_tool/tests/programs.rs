@@ -12,7 +12,7 @@ pub(super) fn asking_agent_tool() -> (
 ) {
     let (agent_tool, _tools, runs, dir) = wired_agent_tool("code");
     agent_tool.set_scene(Arc::new(scene::code::CodeScene::default()));
-    agent_tool.set_parent_permission(Arc::new(PromptsForEverything));
+    wire_parent(&agent_tool, Arc::new(PromptsForEverything));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
     agent_tool.set_parent_pending_permissions(Arc::default());

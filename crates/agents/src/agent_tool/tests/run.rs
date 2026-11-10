@@ -152,7 +152,7 @@ fn sub_settings_without_parent_settings_uses_the_passed_cwd() {
 async fn run_sub_returns_promptly_on_a_plain_model_error_instead_of_hanging() {
     let agent_tool = test_agent_tool();
     let tools = Arc::new(InMemoryToolRegistry::new());
-    let perm: Arc<dyn Permission> = Arc::new(AlwaysPermit);
+    let perm = PermissionSet::without_grants(Arc::new(AlwaysPermit));
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -191,7 +191,7 @@ pub(super) async fn run_sub_with(agent_tool: &AgentTool) -> Result<String, base:
             Arc::new(InMemoryToolRegistry::new()),
             std::path::PathBuf::from("/tmp"),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             None,
             None,
             Vec::new(),

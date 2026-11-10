@@ -1,8 +1,13 @@
-//! `Permission` trait — tool execution authorization.
+//! Tool authorization, in two parts: [`PermissionPolicy`] decides whether a
+//! call runs, [`PermissionGrants`] keeps the allows a person or a skill hands
+//! out along the way. A session holds the two together as a [`PermissionSet`].
 
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use crate::context::SessionState;
+use crate::interface::tool::Tool;
 
 /// Permission check outcome.
 #[derive(Debug, Clone)]
@@ -24,106 +29,161 @@ pub enum PermissionOutcome {
     },
 }
 
-/// Tool execution permission interface.
-///
-/// Implementations decide whether a tool call is allowed. The engine's own is
-/// `permissions::gate::PermissionGate` (rules, modes, the host's answers).
-#[async_trait]
-pub trait Permission: Send + Sync {
-    /// Check whether a tool call is permitted.
-    async fn check(
-        &self,
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        cwd: &Path,
-        session_id: &str,
-    ) -> PermissionOutcome;
+/// One tool call put to a [`PermissionPolicy`].
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct PermissionRequest<'a> {
+    pub tool_name: &'a str,
+    /// The tool the call dispatches to, looked up in the registry dispatch
+    /// uses. `None` is a name nothing answers to.
+    pub tool: Option<&'a Arc<dyn Tool>>,
+    pub input: &'a serde_json::Value,
+    pub cwd: &'a Path,
+    pub session_id: &'a str,
+    /// The live state of the session the policy belongs to: its permission
+    /// mode as it is now, what it has read.
+    pub session: &'a Arc<SessionState>,
+    /// Set when the call is a delegate's — a sub-agent's, a team member's —
+    /// relayed to this session's policy. The call is then judged against the
+    /// delegate's state, in the mode `PermissionMode::for_delegate` gives it
+    /// against `session`'s.
+    pub delegate: Option<&'a Arc<SessionState>>,
+}
 
-    /// [`Self::check`] for a call made by a delegate of this handler's
-    /// session — a sub-agent, a team member — judged against the delegate's
-    /// own [`SessionState`]: its permission mode, and what it has read (a
-    /// write to a file the delegate read is checked against the delegate's
-    /// reads, not the session's), in the mode `PermissionMode::for_delegate`
-    /// gives it against this handler's own session.
-    ///
-    /// The default ignores `delegate` and judges as [`Self::check`]; the
-    /// caller then narrows that verdict as far as it can by itself.
-    ///
-    /// [`SessionState`]: crate::context::SessionState
-    async fn check_for_delegate(
-        &self,
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        cwd: &Path,
-        session_id: &str,
-        delegate: &Arc<crate::context::SessionState>,
-    ) -> PermissionOutcome {
-        let _ = delegate;
-        self.check(tool_name, tool_input, cwd, session_id).await
+impl<'a> PermissionRequest<'a> {
+    pub fn new(
+        tool_name: &'a str,
+        tool: Option<&'a Arc<dyn Tool>>,
+        input: &'a serde_json::Value,
+        cwd: &'a Path,
+        session_id: &'a str,
+        session: &'a Arc<SessionState>,
+    ) -> Self {
+        Self {
+            tool_name,
+            tool,
+            input,
+            cwd,
+            session_id,
+            session,
+            delegate: None,
+        }
     }
 
-    /// Bind this handler to the tool registry the session actually dispatches
-    /// against.
-    ///
-    /// A rule-engine implementation has to look a tool up by name to consult
-    /// its `check_permissions`/`call_traits`/`permission_match_content` —
-    /// which means the registry it holds must be *the same one* dispatch uses.
-    /// It usually is not at construction time: a daemon builds the handler
-    /// from its pool-level template of self-contained built-ins, and
-    /// `runtime::agent::Builder::build()` afterwards creates a fresh
-    /// per-session registry and registers every engine-state tool
-    /// (`Skill`/`Agent`/`Team*`/`WebSearch`/`EnterWorktree`/`Cron*`/`Task*`/
-    /// `Import`/every `mcp__*` adapter) into *that*. Anything registered in
-    /// that second step was invisible to the handler, and
-    /// `RuleSetPermission`'s "unknown tool" branch let it straight through —
-    /// so the entire MCP surface, `Skill`, and `Agent` ran with no permission
-    /// check at all. `Builder::build()` now calls this right after it finishes
-    /// populating the session registry.
-    ///
-    /// Default no-op: handlers that don't consult a registry (always-permit,
-    /// bubble-to-parent, cwd-boundary) have nothing to rebind.
-    fn bind_tool_registry(&self, _tools: Arc<dyn crate::tool::ToolRegistry>) {}
+    pub fn for_delegate(mut self, delegate: &'a Arc<SessionState>) -> Self {
+        self.delegate = Some(delegate);
+        self
+    }
 
-    /// Bind this handler to the session's live [`SessionState`], so mode
-    /// changes made *during* the session are visible to permission decisions.
-    ///
-    /// [`SessionState::permission_mode`] is runtime-mutable — `EnterPlanMode`
-    /// and `ExitPlanMode` flip it — but a handler that constructs a throwaway
-    /// `SessionState` per check can only ever see the mode frozen at session
-    /// construction, which made entering plan mode a no-op as far as the gate
-    /// was concerned.
-    ///
-    /// Default no-op, same reasoning as [`Self::bind_tool_registry`].
-    ///
-    /// [`SessionState`]: crate::context::SessionState
-    /// [`SessionState::permission_mode`]: crate::context::SessionState::permission_mode
-    fn bind_session_state(&self, _session: Arc<crate::context::SessionState>) {}
+    /// The state the call is judged against: the delegate's when there is
+    /// one, the session's otherwise.
+    pub fn judged(&self) -> &'a Arc<SessionState> {
+        self.delegate.unwrap_or(self.session)
+    }
+}
 
-    /// Temporarily allow `tool_name` without going through the normal
-    /// Allow/Deny/Ask flow — used by a skill's `allowed_tools` frontmatter
-    /// field while that skill is active. Default no-op: implementations
-    /// with no backing rule engine (an always-permit or bubble-to-parent
-    /// implementation, say) have nothing meaningful to add a temporary
-    /// override on top of — `check` already decides everything for them.
+/// Whether a tool call runs. The engine's own is
+/// `permissions::rule_set_permission::RuleSetPermission` (rules, modes, the
+/// tools' own verdicts).
+#[async_trait]
+pub trait PermissionPolicy: Send + Sync {
+    async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome;
+}
+
+/// How long a [`Grant`] lasts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
+pub enum GrantScope {
+    /// Until the next user turn starts: a skill's `allowed-tools`.
+    Turn,
+    /// For the rest of the session: "always allow" answered for this session.
+    Session,
+    /// For this project, kept in its `settings.local.json`; a session with no
+    /// project keeps it for the session.
+    Project,
+}
+
+/// An allow for calls to one tool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Grant {
+    pub tool_name: String,
+    /// `None` allows every call to the tool. For [`GrantScope::Turn`] this is
+    /// a rule pattern, matched as a `settings.json` rule's content is; for
+    /// [`GrantScope::Session`] and [`GrantScope::Project`] it is the
+    /// approved call's own match content, kept literally so the allow covers
+    /// that call and not whatever its text happens to match as a pattern.
     ///
-    /// `rule_content` narrows the grant to a content pattern (a command
-    /// prefix for `Bash`, a path glob for `Read`/`Write`, ...), matched the
-    /// same way a `settings.json` rule is. `None` means "every call to this
-    /// tool", which is a blanket grant — callers relaying a grant that
-    /// originated in *project-controlled* data (a skill's frontmatter, say)
-    /// must not pass `None`, because anyone who can write a file in the
-    /// repository could then switch off confirmation for `Bash` wholesale.
-    fn add_temporary_allow(&self, _tool_name: &str, _rule_content: Option<&str>) {}
+    /// A grant relayed from project-controlled data — a skill's frontmatter —
+    /// must not be `None`: anyone who can write a file in the repository could
+    /// then switch off confirmation for `Bash` wholesale.
+    pub content: Option<String>,
+    pub scope: GrantScope,
+}
 
-    /// Clear every temporary allow `add_temporary_allow` added. Same
-    /// no-op default as above.
-    fn clear_temporary_allows(&self) {}
+impl Grant {
+    pub fn new(tool_name: impl Into<String>, content: Option<String>, scope: GrantScope) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            content,
+            scope,
+        }
+    }
+}
 
-    /// Persist an Allow decision for `tool_name` beyond this single check —
-    /// unlike `add_temporary_allow`, this is NOT cleared by
-    /// `clear_temporary_allows` and is meant to last for the rest of the
-    /// session (and, separately, the caller is responsible for any on-disk
-    /// persistence — this method only affects in-memory/live behavior).
-    /// Default no-op for implementations without a backing rule engine.
-    fn add_persistent_allow(&self, _tool_name: &str, _rule_content: Option<&str>) {}
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum GrantError {
+    /// This permission keeps no allows of its own.
+    #[error("this permission keeps no grants")]
+    NotKept,
+    /// Kept for the session, but not written where it would outlast it.
+    #[error("kept for this session only, not written to {}: {reason}", .path.display())]
+    NotPersisted { path: PathBuf, reason: String },
+}
+
+/// Where the allows handed out during a session are kept.
+#[async_trait]
+pub trait PermissionGrants: Send + Sync {
+    async fn grant(&self, grant: Grant) -> Result<(), GrantError>;
+    /// Drop every grant of `scope`.
+    fn clear(&self, scope: GrantScope);
+}
+
+/// Keeps nothing: [`PermissionGrants::grant`] answers
+/// [`GrantError::NotKept`], so a caller can tell an allow was not kept.
+pub struct NoGrants;
+
+#[async_trait]
+impl PermissionGrants for NoGrants {
+    async fn grant(&self, _: Grant) -> Result<(), GrantError> {
+        Err(GrantError::NotKept)
+    }
+    fn clear(&self, _: GrantScope) {}
+}
+
+/// A session's permission: the policy its calls are judged by and where the
+/// allows it is handed are kept.
+#[derive(Clone)]
+pub struct PermissionSet {
+    pub policy: Arc<dyn PermissionPolicy>,
+    pub grants: Arc<dyn PermissionGrants>,
+}
+
+impl PermissionSet {
+    /// One value that both decides and keeps grants, so what it is granted
+    /// changes what it decides.
+    pub fn of<P: PermissionPolicy + PermissionGrants + 'static>(p: Arc<P>) -> Self {
+        Self {
+            policy: p.clone(),
+            grants: p,
+        }
+    }
+
+    pub fn without_grants(policy: Arc<dyn PermissionPolicy>) -> Self {
+        Self {
+            policy,
+            grants: Arc::new(NoGrants),
+        }
+    }
 }

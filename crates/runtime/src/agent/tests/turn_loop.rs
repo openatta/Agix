@@ -443,14 +443,12 @@ impl Model for OneCallModel {
 pub(super) struct AsksForAllButRunCode;
 #[cfg(feature = "ptc")]
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AsksForAllButRunCode {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AsksForAllButRunCode {
+    async fn decide(
         &self,
-        tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
+        let tool_name = req.tool_name;
         if tool_name == "RunCode" {
             return base::interface::permission::PermissionOutcome::Permit;
         }
@@ -467,7 +465,7 @@ impl base::interface::permission::Permission for AsksForAllButRunCode {
 pub(super) async fn run_code_result(
     code: &str,
     args: serde_json::Value,
-    permission: Option<Arc<dyn base::interface::permission::Permission>>,
+    permission: Option<Arc<dyn base::interface::permission::PermissionPolicy>>,
 ) -> (String, bool) {
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
@@ -483,7 +481,9 @@ pub(super) async fn run_code_result(
         .tools(template)
         .skip_warmup(true);
     if let Some(p) = permission {
-        builder = builder.permission(p);
+        builder = builder.permission(base::interface::permission::PermissionSet::without_grants(
+            p,
+        ));
     }
     let (mut agent, mut event_rx, _input_tx) = builder.build().expect("build should succeed");
     assert!(
@@ -970,14 +970,12 @@ async fn turn_without_tool_use_does_not_wait_on_a_slow_memory_prefetch() {
 /// engine loop.
 pub(super) struct PromptingPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for PromptingPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for PromptingPermission {
+    async fn decide(
         &self,
-        tool_name: &str,
-        _tool_input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session_id: &str,
+        req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
+        let tool_name = req.tool_name;
         base::interface::permission::PermissionOutcome::Prompt {
             prompt_id: "p1".into(),
             message: format!("allow {tool_name}?"),
@@ -1034,7 +1032,9 @@ async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
-        .permission(Arc::new(PromptingPermission))
+        .permission(base::interface::permission::PermissionSet::without_grants(
+            Arc::new(PromptingPermission),
+        ))
         .skip_warmup(true)
         .build()
         .expect("build should succeed");

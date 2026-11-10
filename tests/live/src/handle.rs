@@ -24,7 +24,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::permission::{Permission, PermissionOutcome};
+use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionSet};
 use daemon::config::{load_daemon_config, DaemonPaths, StaticDaemonPaths};
 use daemon::{DaemonServer, SessionPool};
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
@@ -227,7 +227,7 @@ impl Daemon {
                 cwd: Some(opts.project.clone()),
                 permission_prompt_timeout: opts.prompt_timeout,
                 model_client: Some(client),
-                permission: Some(Arc::new(AllowAll) as Arc<dyn Permission>),
+                permission: Some(PermissionSet::without_grants(Arc::new(AllowAll))),
                 extra_scenes: opts
                     .host
                     .scenes
@@ -550,13 +550,10 @@ pub fn alternate_daemon_binary(var: &str, how_to_build: &str) -> anyhow::Result<
 struct AllowAll;
 
 #[async_trait::async_trait]
-impl Permission for AllowAll {
-    async fn check(
+impl PermissionPolicy for AllowAll {
+    async fn decide(
         &self,
-        _tool: &str,
-        _input: &serde_json::Value,
-        _cwd: &std::path::Path,
-        _session: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> PermissionOutcome {
         PermissionOutcome::Permit
     }

@@ -43,7 +43,7 @@ Agix 是 agent 产品底下的那台引擎:它运行一个**会话**——装配
    工程任务上,与另一个开源 agent 框架用同一个模型对比:**总耗时少 34%,提示 token 少 13%,
    每次都做对**(对方的耗时含进程启动,Agix 的 daemon 是常驻的;[测法](../tests/live/tests/compare_dsh.rs))。
 5. **主导权在你的产品手里。** 每个会话、任务、子 Agent、目标和询问,都能通过同一套 JSON-RPC
-   看到、叫停、修改。45 个扩展点,用 Rust 或 QuickJS 脚本替换或拦截任何子系统,不用
+   看到、叫停、修改。46 个扩展点,用 Rust 或 QuickJS 脚本替换或拦截任何子系统,不用
    fork。每个会话都是只追加的日志,可以恢复、分叉、导出,也能不联网逐字节回放。
 
 ---
@@ -110,7 +110,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 - 换模型或提示词;管理场景、MCP 服务器、插件、定时任务,以及信任哪些项目。
 
 **扩展**
-- 公开的 45 个扩展点:30 个契约、9 个拦截点、6 个注册点。
+- 公开的 46 个扩展点:31 个契约、9 个拦截点、6 个注册点。
 - 编译进宿主的 Rust 插件,与 QuickJS 脚本;可以打成插件包安装,安装时强制披露。
 - 三十个时机的 hook,后端有 command、prompt、HTTP、agent 四种([hooks.md](hooks.md))。
 - MCP 客户端(stdio、SSE、streamable HTTP、WebSocket);声明式场景;自定义 Agent 类型。
@@ -157,7 +157,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
  契约      core(包名 `base`)── 所有 trait 与所有共享数据类型
 ```
 
-- **契约。** `core` 定义 trait(`Model`、`Scene`、`Permission`、`Tool`、`HistoryStore`、
+- **契约。** `core` 定义 trait(`Model`、`Scene`、`PermissionPolicy`、`Tool`、`HistoryStore`、
   `Compactor` ……)与数据类型,不依赖工作区里任何别的 crate。换掉一个子系统就是实现
   `core` 里的一个 trait,永远不用伸手进别的 crate 的内部。
 - **内核。** 一个会话跑一轮所需的一切:turn loop(`runtime`)、模型适配(Anthropic
@@ -250,7 +250,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 
 ### 扩展面
 
-引擎公开一份从代码生成的接缝清单:**45 个扩展点**——30 个**契约**(换掉一个子系统)、
+引擎公开一份从代码生成的接缝清单:**46 个扩展点**——31 个**契约**(换掉一个子系统)、
 9 个**拦截**(坐在进行中的某件事的路径上)、6 个**注册**(往一个集合里贡献)。用 Rust
 就实现 trait 交给 builder;不重新编译引擎的,经下面几条路够到其中一部分:
 

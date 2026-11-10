@@ -34,14 +34,15 @@ pub struct SkillTool {
     admission: crate::catalog::BundledAdmission,
     /// Agent spawner for forked skill execution (context: "fork").
     spawner: Option<Arc<dyn AgentSpawner>>,
-    /// Real permission checker — held here (not read off `ToolContext`,
+    /// The session's permission — held here (not read off `ToolContext`,
     /// which has no `permission` field and would mean threading it through
     /// all ~30 other `ToolContext` construction sites workspace-wide for a
-    /// field only this one tool needs) so `allowed_tools` can inject
-    /// temporary Allow rules. `None` when not wired up (mirrors `spawner`'s
-    /// `None` default) — `allowed_tools` injection is simply skipped, same
-    /// as `context: fork` silently staying inline without a spawner.
-    permission: Option<Arc<dyn base::interface::permission::Permission>>,
+    /// field only this one tool needs): its policy judges a body's inline
+    /// commands, its grants keep `allowed_tools` for the turn. `None` when
+    /// not wired up (mirrors `spawner`'s `None` default) — no inline command
+    /// runs and `allowed_tools` grants nothing, same as `context: fork`
+    /// silently staying inline without a spawner.
+    permission: Option<base::interface::permission::PermissionSet>,
     /// Per-session set of already-injected `(skill_name, rendered content)`
     /// hashes — when a re-invocation's rendered content exactly matches one
     /// already in this session, a short note is returned instead of a
@@ -75,10 +76,9 @@ impl SkillTool {
         self
     }
 
-    /// Set the real permission checker, for `allowed_tools` rule injection.
     pub fn with_permission(
         mut self,
-        permission: Arc<dyn base::interface::permission::Permission>,
+        permission: base::interface::permission::PermissionSet,
     ) -> Self {
         self.permission = Some(permission);
         self
@@ -147,7 +147,7 @@ impl Tool for SkillTool {
             &info,
             args,
             &ctx,
-            self.permission.as_deref(),
+            self.permission.as_ref().map(|p| p.policy.as_ref()),
         )
         .await
         {
@@ -162,7 +162,7 @@ impl Tool for SkillTool {
             }
         };
 
-        // A forked skill's sub-agent gets its own `Permission`, never this
+        // A forked skill's sub-agent gets its own permission, never this
         // one, so its `allowed-tools` grant nothing there; they only narrow
         // the tools it is offered.
         if info.context.as_deref() == Some("fork") {
@@ -231,7 +231,14 @@ impl Tool for SkillTool {
 
         if let Some(permission) = &self.permission {
             for (tool_name, rule_content) in &expansion.grants {
-                permission.add_temporary_allow(tool_name, rule_content.as_deref());
+                let _ = permission
+                    .grants
+                    .grant(base::interface::permission::Grant::new(
+                        tool_name.clone(),
+                        rule_content.clone(),
+                        base::interface::permission::GrantScope::Turn,
+                    ))
+                    .await;
             }
         }
 
@@ -300,7 +307,7 @@ pub async fn expand_for_invocation(
     info: &crate::manager::SkillInfo,
     args: &str,
     ctx: &ToolContext,
-    permission: Option<&dyn base::interface::permission::Permission>,
+    permission: Option<&dyn base::interface::permission::PermissionPolicy>,
 ) -> Result<SkillExpansion, ExpandError> {
     let bundled_files_text = build_bundled_files_injection(
         &info.path,
@@ -582,14 +589,14 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// Security posture: a skill body is untrusted input the same way a
 /// model-generated Bash command is — a project skill is whatever the
 /// repository says — so each command is held to what a model's `Bash` call
-/// with that command would be: the session's `Permission` decides first,
+/// with that command would be: the session's permission policy decides first,
 /// then it runs through the real `BashTool::call()` with this invocation's
 /// `ToolContext` (same sandbox, cwd, cancellation). A deny rule refuses it;
 /// so does a call that would need the user's approval, because
 /// preprocessing has no one to ask — only what the rules allow, or what
 /// `Bash` itself lets through silently (a read-only command inside the
 /// project), runs. The skill's own `allowed-tools` are not applied yet at
-/// this point. With no `Permission` wired nothing runs.
+/// this point. With no permission wired nothing runs.
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
@@ -598,7 +605,7 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 async fn expand_dynamic_context(
     body: &str,
     ctx: &ToolContext,
-    permission: Option<&dyn base::interface::permission::Permission>,
+    permission: Option<&dyn base::interface::permission::PermissionPolicy>,
     source: crate::manager::SkillSource,
 ) -> String {
     if !runs_commands(body) {
@@ -657,17 +664,25 @@ async fn run_skill_shell_command(
     command: &str,
     ctx: &ToolContext,
     refusal: Option<&str>,
-    permission: Option<&dyn base::interface::permission::Permission>,
+    permission: Option<&dyn base::interface::permission::PermissionPolicy>,
 ) -> String {
     use base::interface::permission::PermissionOutcome;
     if let Some(refusal) = refusal {
         return refusal.to_string();
     }
     let input = serde_json::json!({"command": command});
+    let bash: Arc<dyn Tool> = Arc::new(tools::bash::BashTool);
     let refused = match permission {
         None => Some("no permission check is wired for this skill".to_string()),
         Some(permission) => match permission
-            .check("Bash", &input, &ctx.cwd, &ctx.session_id)
+            .decide(&base::interface::permission::PermissionRequest::new(
+                "Bash",
+                Some(&bash),
+                &input,
+                &ctx.cwd,
+                &ctx.session_id,
+                &ctx.session,
+            ))
             .await
         {
             PermissionOutcome::Permit => None,
@@ -682,7 +697,7 @@ async fn run_skill_shell_command(
         tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
         return format!("[`{command}` not run: {reason}]");
     }
-    let result = tools::bash::BashTool
+    let result = bash
         .call(input, ctx.clone(), ProgressSender::noop(""))
         .await;
     match result {
@@ -705,7 +720,7 @@ pub fn register(
     m: std::sync::Arc<crate::manager::SkillManager>,
     admission: crate::catalog::BundledAdmission,
     spawner: Option<std::sync::Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
-    permission: std::sync::Arc<dyn base::interface::permission::Permission>,
+    permission: base::interface::permission::PermissionSet,
 ) {
     let mut tool = SkillTool::new(m)
         .with_admission(admission)
@@ -719,18 +734,15 @@ pub fn register(
 #[cfg(test)]
 mod dynamic_context_tests {
     use super::*;
-    use base::interface::permission::{Permission, PermissionOutcome};
+    use base::interface::permission::{PermissionOutcome, PermissionPolicy};
 
     struct Permits;
 
     #[async_trait]
-    impl Permission for Permits {
-        async fn check(
+    impl PermissionPolicy for Permits {
+        async fn decide(
             &self,
-            _: &str,
-            _: &Value,
-            _: &std::path::Path,
-            _: &str,
+            _req: &base::interface::permission::PermissionRequest<'_>,
         ) -> PermissionOutcome {
             PermissionOutcome::Permit
         }
@@ -743,17 +755,10 @@ mod dynamic_context_tests {
     /// The session's real gate over the real `Bash`, under `rules`.
     fn gate(
         rules: Vec<base::permission::PermissionRule>,
-        mode: base::permission::PermissionMode,
     ) -> permissions::rule_set_permission::RuleSetPermission {
-        let registry = Arc::new(base::tool::InMemoryToolRegistry::new());
-        tools::register_builtin_tools(&registry);
-        permissions::rule_set_permission::RuleSetPermission::new(
-            Arc::new(permissions::gate::PermissionGate::new(
-                permissions::ruleset::RuleSet::new(rules),
-            )),
-            registry,
-            mode,
-        )
+        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+            permissions::gate::PermissionGate::new(permissions::ruleset::RuleSet::new(rules)),
+        ))
     }
 
     fn bash_rule(
@@ -770,15 +775,12 @@ mod dynamic_context_tests {
 
     #[tokio::test]
     async fn an_inline_command_is_held_to_the_rules_a_bash_call_would_be() {
-        use base::permission::{PermissionMode, RuleBehavior};
+        use base::permission::RuleBehavior;
         let dir = tempfile::tempdir().unwrap();
         let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let body = "!`echo stamped > stamp.txt`";
 
-        let denied = gate(
-            vec![bash_rule(RuleBehavior::Deny, None)],
-            PermissionMode::AcceptEdits,
-        );
+        let denied = gate(vec![bash_rule(RuleBehavior::Deny, None)]);
         let out =
             expand_dynamic_context(body, &ctx, Some(&denied), crate::manager::SkillSource::User)
                 .await;
@@ -788,7 +790,7 @@ mod dynamic_context_tests {
         );
         assert!(!dir.path().join("stamp.txt").exists());
 
-        let asks = gate(vec![], PermissionMode::Default);
+        let asks = gate(vec![]);
         let out =
             expand_dynamic_context(body, &ctx, Some(&asks), crate::manager::SkillSource::User)
                 .await;
@@ -799,10 +801,7 @@ mod dynamic_context_tests {
         assert!(out.contains("not run"), "{out}");
         assert!(!dir.path().join("stamp.txt").exists());
 
-        let allowed = gate(
-            vec![bash_rule(RuleBehavior::Allow, Some("echo:*"))],
-            PermissionMode::Default,
-        );
+        let allowed = gate(vec![bash_rule(RuleBehavior::Allow, Some("echo:*"))]);
         expand_dynamic_context(
             body,
             &ctx,
@@ -817,7 +816,7 @@ mod dynamic_context_tests {
     async fn a_read_only_inline_command_runs_as_a_bash_call_would() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
-        let asks = gate(vec![], base::permission::PermissionMode::Default);
+        let asks = gate(vec![]);
         let out = expand_dynamic_context(
             "!`echo hello`",
             &ctx,
@@ -966,7 +965,9 @@ mod dynamic_context_tests {
         let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
         let forks = Arc::new(Forks::default());
         let tool = SkillTool::new(mgr.clone())
-            .with_permission(Arc::new(Permits))
+            .with_permission(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(Permits),
+            ))
             .with_spawner(forks.clone());
 
         let inline = tool
@@ -1116,7 +1117,7 @@ mod tests {
     /// `project_skill_blanket_allowed_tools_grant_is_refused` below.
     #[tokio::test]
     async fn allowed_tools_injects_a_real_temporary_allow_rule() {
-        use base::interface::permission::{Permission, PermissionOutcome};
+        use base::interface::permission::{PermissionOutcome, PermissionSet};
         use permissions::gate::PermissionGate;
         use permissions::rule_set_permission::RuleSetPermission;
 
@@ -1179,28 +1180,16 @@ mod tests {
             }
         }
 
-        let tool_registry = base::tool::InMemoryToolRegistry::new();
-        tool_registry.register(Arc::new(FakeBashTool));
-        let real_permission = Arc::new(RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            Arc::new(tool_registry),
-            base::permission::PermissionMode::Default,
-        ));
+        let bash: Arc<dyn Tool> = Arc::new(FakeBashTool);
+        let real_permission = Arc::new(RuleSetPermission::new(Arc::new(PermissionGate::empty())));
 
-        let sanity = real_permission
-            .check(
-                "Bash",
-                &serde_json::json!({}),
-                std::path::Path::new("/tmp"),
-                "s1",
-            )
-            .await;
+        let sanity = decide_bash(real_permission.as_ref(), &bash).await;
         assert!(
             matches!(sanity, PermissionOutcome::Prompt { .. }),
             "sanity: Bash should Ask before the skill runs, got {sanity:?}"
         );
 
-        let tool = SkillTool::new(mgr).with_permission(real_permission.clone());
+        let tool = SkillTool::new(mgr).with_permission(PermissionSet::of(real_permission.clone()));
         let result = tool
             .call(
                 serde_json::json!({"skill": "uses-bash"}),
@@ -1211,14 +1200,7 @@ mod tests {
             .expect("call should not error");
         assert!(!result.is_error);
 
-        let after = real_permission
-            .check(
-                "Bash",
-                &serde_json::json!({}),
-                std::path::Path::new("/tmp"),
-                "s1",
-            )
-            .await;
+        let after = decide_bash(real_permission.as_ref(), &bash).await;
         assert!(
             matches!(after, PermissionOutcome::Permit),
             "expected allowed_tools to have injected a real Allow rule, got {after:?}"
@@ -1349,7 +1331,6 @@ mod tests {
     async fn bash_after_a_blanket_grant_from(
         source: FrozenSkillSource,
     ) -> base::interface::permission::PermissionOutcome {
-        use base::interface::permission::Permission;
         use permissions::gate::PermissionGate;
         use permissions::rule_set_permission::RuleSetPermission;
 
@@ -1404,15 +1385,12 @@ mod tests {
             }
         }
 
-        let registry = base::tool::InMemoryToolRegistry::new();
-        registry.register(Arc::new(AskingBash));
-        let permission = Arc::new(RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            Arc::new(registry),
-            base::permission::PermissionMode::Default,
-        ));
+        let bash: Arc<dyn Tool> = Arc::new(AskingBash);
+        let permission = Arc::new(RuleSetPermission::new(Arc::new(PermissionGate::empty())));
 
-        let tool = SkillTool::new(mgr).with_permission(permission.clone());
+        let tool = SkillTool::new(mgr).with_permission(
+            base::interface::permission::PermissionSet::of(permission.clone()),
+        );
         let result = tool
             .call(
                 serde_json::json!({"skill": "grabby"}),
@@ -1423,13 +1401,25 @@ mod tests {
             .expect("call should not error");
         assert!(!result.is_error, "the skill itself still runs");
 
-        permission
-            .check(
+        decide_bash(permission.as_ref(), &bash).await
+    }
+
+    /// `Bash` with an empty input put to `policy` in a `Default` session.
+    async fn decide_bash(
+        policy: &dyn base::interface::permission::PermissionPolicy,
+        bash: &Arc<dyn Tool>,
+    ) -> base::interface::permission::PermissionOutcome {
+        let input = serde_json::json!({});
+        let session = Arc::new(base::context::SessionState::new("/tmp".into()));
+        policy
+            .decide(&base::interface::permission::PermissionRequest::new(
                 "Bash",
-                &serde_json::json!({}),
+                Some(bash),
+                &input,
                 std::path::Path::new("/tmp"),
                 "s1",
-            )
+                &session,
+            ))
             .await
     }
 

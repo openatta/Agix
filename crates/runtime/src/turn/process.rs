@@ -160,7 +160,7 @@ impl Agent {
                                         &entry,
                                         &sc,
                                         &ctx,
-                                        self.gate.permission.as_ref(),
+                                        self.gate.permission.policy.as_ref(),
                                     )
                                     .await;
                                 self.slash_skill_grants = expansion.grants;

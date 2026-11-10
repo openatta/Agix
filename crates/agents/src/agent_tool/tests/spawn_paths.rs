@@ -391,7 +391,7 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
             Arc::new(InMemoryToolRegistry::new()),
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             None,
             None,
             Vec::new(),

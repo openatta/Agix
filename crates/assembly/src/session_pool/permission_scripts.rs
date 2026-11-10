@@ -188,18 +188,17 @@ pub(super) fn bind_scripts(
     (None, faults)
 }
 
-/// Which `Permission` a new session gets: a `RuleSetPermission` over every
-/// tier's rules plus `options.permission_rules`, in the resolved `mode`.
+/// Which permission a new session gets: a `RuleSetPermission` over every
+/// tier's rules plus `options.permission_rules`, keeping its own grants.
 ///
-/// `bypassPermissions` with a host permission returns that very `Arc`, not an
-/// equivalent instance: a host that sandboxes the daemon itself relies on it.
+/// `bypassPermissions` with a host permission returns that very set, not an
+/// equivalent one: a host that sandboxes the daemon itself relies on it.
 pub(super) fn resolve_session_permission(
-    host: Option<&Arc<dyn Permission>>,
-    tools: &Arc<base::tool::InMemoryToolRegistry>,
+    host: Option<&PermissionSet>,
     settings: &Settings,
     mode: base::settings::PermissionMode,
     options: Option<&SessionOptions>,
-) -> Arc<dyn Permission> {
+) -> PermissionSet {
     // A host's own permission never sees the managed layer, so it does not
     // stand in for the gate while there is one.
     if let (Some(host), base::settings::PermissionMode::BypassPermissions, None) =
@@ -212,14 +211,7 @@ pub(super) fn resolve_session_permission(
         .map(|o| o.permission_rules.clone())
         .unwrap_or_default();
 
-    let rule_set: Arc<dyn Permission> = Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::from_settings(
-            settings,
-            mode.into(),
-            tools.clone(),
-            extra,
-        ),
-    );
-
-    rule_set
+    PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::from_settings(settings, extra),
+    ))
 }

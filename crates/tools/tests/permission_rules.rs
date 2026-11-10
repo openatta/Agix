@@ -4,10 +4,10 @@
 //! many others — a path relative to cwd, through `..`, through a symlink,
 //! through a different tool that reads the same bytes; a command chained
 //! after another, inside `$(...)`, behind a variable assignment. Every case
-//! here goes in through `Permission::check` with the built-in tool the model
-//! would actually call.
+//! here goes in through `PermissionPolicy::decide` with the built-in tool the
+//! model would actually call.
 
-use base::interface::permission::{Permission, PermissionOutcome};
+use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use permissions::gate::PermissionGate;
 use permissions::rule_set_permission::RuleSetPermission;
@@ -25,23 +25,46 @@ fn rule(behavior: RuleBehavior, tool: &str, content: impl Into<String>) -> Permi
     }
 }
 
-fn permission(rules: Vec<PermissionRule>, mode: PermissionMode) -> RuleSetPermission {
-    let registry = Arc::new(base::tool::InMemoryToolRegistry::new());
-    tools::register_builtin_tools(&registry);
-    RuleSetPermission::new(
-        Arc::new(PermissionGate::new(RuleSet::new(rules))),
-        registry,
-        mode,
-    )
+/// The rules, the built-in tools they are asked about, and the mode the
+/// session runs in.
+struct Judged {
+    rules: RuleSetPermission,
+    tools: Arc<base::tool::InMemoryToolRegistry>,
+    mode: PermissionMode,
 }
 
-async fn check(
-    perm: &RuleSetPermission,
-    tool: &str,
-    input: Value,
-    cwd: &Path,
-) -> PermissionOutcome {
-    perm.check(tool, &input, cwd, "s").await
+fn permission(rules: Vec<PermissionRule>, mode: PermissionMode) -> Judged {
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools::register_builtin_tools(&tools);
+    Judged {
+        rules: RuleSetPermission::new(Arc::new(PermissionGate::new(RuleSet::new(rules)))),
+        tools,
+        mode,
+    }
+}
+
+impl Judged {
+    fn with_sandbox(mut self, sandbox: base::tool::SandboxSettings) -> Self {
+        self.rules = self.rules.with_sandbox(sandbox);
+        self
+    }
+}
+
+async fn check(perm: &Judged, tool: &str, input: Value, cwd: &Path) -> PermissionOutcome {
+    let session = Arc::new(
+        base::context::SessionState::new(cwd.to_path_buf()).with_permission_mode(perm.mode),
+    );
+    let found = perm.tools.get(tool);
+    perm.rules
+        .decide(&PermissionRequest::new(
+            tool,
+            found.as_ref(),
+            &input,
+            cwd,
+            "s",
+            &session,
+        ))
+        .await
 }
 
 fn is_deny(o: &PermissionOutcome) -> bool {
@@ -331,7 +354,7 @@ async fn an_allow_for_a_bare_command_does_not_cover_a_dangerous_assignment() {
 }
 
 /// What a user who wants "anything but deleting" writes.
-fn anything_but_rm() -> RuleSetPermission {
+fn anything_but_rm() -> Judged {
     permission(
         vec![
             PermissionRule {

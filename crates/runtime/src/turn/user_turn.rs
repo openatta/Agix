@@ -107,14 +107,18 @@ impl Agent {
 
         // A skill's `allowed_tools` (see `SkillTool::call`) pre-approves
         // tools only for the rest of the turn it was invoked in — clear
-        // whatever the *previous* turn injected before this new user
-        // message starts a fresh one. No-op if nothing was injected, or on
-        // `Permission` implementations without a backing rule engine.
-        self.gate.permission.clear_temporary_allows();
+        // whatever the *previous* turn granted before this new user message
+        // starts a fresh one.
+        let grants = &self.gate.permission.grants;
+        grants.clear(base::interface::permission::GrantScope::Turn);
         for (tool, pattern) in std::mem::take(&mut self.slash_skill_grants) {
-            self.gate
-                .permission
-                .add_temporary_allow(&tool, pattern.as_deref());
+            let _ = grants
+                .grant(base::interface::permission::Grant::new(
+                    tool,
+                    pattern,
+                    base::interface::permission::GrantScope::Turn,
+                ))
+                .await;
         }
 
         let _timer = self.telemetry.perf.start_timer("turn", "total");
@@ -618,7 +622,6 @@ impl Agent {
             let tools = Arc::clone(&self.tooling.tools);
             let tools_for_safety = Arc::clone(&self.tooling.tools);
             let cwd = self.settings.paths.working_dir().to_path_buf();
-            let local_settings_path = self.settings.paths.local_settings_file();
             let session_id = self.session.session_id.clone();
             let turn_no = self.session.turn_count;
             let th = self.telemetry.telemetry_handle.clone();
@@ -631,7 +634,7 @@ impl Agent {
             let events_for_exec = self.channels.event_tx.clone();
             let config_for_exec = Arc::clone(&self.config);
             let exec_providers = self.exec.clone();
-            let permission_for_exec = Arc::clone(&self.gate.permission);
+            let permission_for_exec = self.gate.permission.clone();
             let session_state_for_exec = Arc::clone(&self.session_state);
             let elicitation_for_exec = Arc::clone(&self.gate.elicitation);
             let tool_middleware_for_exec = Arc::clone(&self.tooling.tool_middleware);
@@ -645,7 +648,6 @@ impl Agent {
                         tool_use_id,
                         tools: Arc::clone(&tools),
                         cwd: cwd.clone(),
-                        local_settings_path: local_settings_path.clone(),
                         session_id: session_id.clone(),
                         turn_no,
                         agent_depth: agent_depth_for_exec,
@@ -655,7 +657,7 @@ impl Agent {
                         hooks: Arc::clone(&hooks_for_exec),
                         config: Arc::clone(&config_for_exec),
                         exec: exec_providers.clone(),
-                        permission: Arc::clone(&permission_for_exec),
+                        permission: permission_for_exec.clone(),
                         session_state: Arc::clone(&session_state_for_exec),
                         elicitation: Arc::clone(&elicitation_for_exec),
                         tool_middleware: Arc::clone(&tool_middleware_for_exec),

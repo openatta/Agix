@@ -55,13 +55,10 @@ fn build_demo_plugin_zip(dir: &std::path::Path, plugin_name: &str) -> (PathBuf, 
 /// Always-allow permission for tests.
 struct AllowAllPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AllowAllPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AllowAllPermission {
+    async fn decide(
         &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &std::path::Path,
-        _: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -126,7 +123,9 @@ async fn start_server_serving(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(Arc::new(AllowAllPermission)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(AllowAllPermission),
+            )),
             ..Default::default()
         },
     )
@@ -1890,7 +1889,9 @@ async fn start_server_with_history(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(Arc::new(AllowAllPermission)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(AllowAllPermission),
+            )),
             ..Default::default()
         },
     )
@@ -1973,7 +1974,9 @@ async fn start_tcp_server(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(Arc::new(AllowAllPermission)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(AllowAllPermission),
+            )),
             ..Default::default()
         },
     )
@@ -2165,7 +2168,9 @@ async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(Arc::new(AllowAllPermission)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(AllowAllPermission),
+            )),
             ..Default::default()
         },
     )

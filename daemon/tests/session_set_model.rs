@@ -10,7 +10,6 @@
 //! binding, and the model would go back to the configured one with
 //! nothing said to whoever chose otherwise — the second test is that case.
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,13 +52,10 @@ fn one_turn() -> Vec<StreamEvent> {
 struct PermitAll;
 
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for PermitAll {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for PermitAll {
+    async fn decide(
         &self,
-        _tool: &str,
-        _input: &serde_json::Value,
-        _cwd: &Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -163,7 +159,9 @@ async fn start_daemon(turns: usize) -> Daemon {
             cwd: Some(cwd.clone()),
             model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(Arc::new(PermitAll)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(PermitAll),
+            )),
             ..Default::default()
         },
     )

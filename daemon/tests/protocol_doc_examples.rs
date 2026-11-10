@@ -301,7 +301,9 @@ async fn start_daemon_with(
             cwd: Some(cwd.clone()),
             model_client: Some(model_client),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(Arc::new(PermitAll)),
+            permission: Some(base::interface::permission::PermissionSet::without_grants(
+                Arc::new(PermitAll),
+            )),
             ..Default::default()
         },
     )
@@ -333,13 +335,10 @@ async fn start_daemon_with(
 struct PermitAll;
 
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for PermitAll {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for PermitAll {
+    async fn decide(
         &self,
-        _tool: &str,
-        _input: &serde_json::Value,
-        _cwd: &Path,
-        _session_id: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }

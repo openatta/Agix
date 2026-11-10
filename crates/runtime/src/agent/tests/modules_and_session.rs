@@ -279,7 +279,9 @@ async fn run_emits_session_end_on_exit() {
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(base::tool::InMemoryToolRegistry::new()))
-        .permission(Arc::new(PromptingPermission))
+        .permission(base::interface::permission::PermissionSet::without_grants(
+            Arc::new(PromptingPermission),
+        ))
         .telemetry_handle(telemetry::TelemetryHandle::new(tx))
         .skip_warmup(true)
         .build()

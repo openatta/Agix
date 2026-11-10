@@ -33,7 +33,8 @@
 //! | [`exec::Network`] | every request that leaves the process |
 //! | [`exec::Sandbox`] | how a process is constrained |
 //! | [`backoff::BackoffPolicy`] | whether a failed request is sent again, and when |
-//! | [`permission::Permission`] | tool authorization |
+//! | [`permission::PermissionPolicy`] | whether a tool call runs |
+//! | [`permission::PermissionGrants`] | the allows handed out during a session |
 //! | [`agent_spawner::AgentSpawner`] | how sub-agents are launched |
 //! | [`import_callback::ImportCallback`] | the host's answer to an import prompt |
 //! | [`event_sink::EventSink`] | where the engine's events go |

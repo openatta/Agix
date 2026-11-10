@@ -14,11 +14,6 @@ pub(crate) struct ToolExecCtx {
     pub tool_use_id: String,
     pub tools: Arc<dyn base::tool::ToolRegistry>,
     pub cwd: std::path::PathBuf,
-    /// Where a `PermitAlways { scope: Local }` answer persists its rule;
-    /// `None` keeps it to this session. Carried from `settings.paths` rather
-    /// than derived from `cwd` here — see `PathSettings::local_settings_file`
-    /// for why the exact location matters.
-    pub local_settings_path: Option<std::path::PathBuf>,
     pub session_id: String,
     pub turn_no: u32,
     /// Forwarded into every `ToolContext` this turn builds — see
@@ -39,9 +34,9 @@ pub(crate) struct ToolExecCtx {
     pub config: Arc<base::context::EngineConfig>,
     /// The session's providers — see `Agent.exec`.
     pub exec: base::interface::exec::ExecProviders,
-    /// Real permission checker — see `Agent.permission`. Consulted once per
-    /// tool call in `execute_tool_inner`, after the `PreToolUse` hook step.
-    pub permission: Arc<dyn base::interface::permission::Permission>,
+    /// Consulted once per tool call in `execute_tool_inner`, after the
+    /// `PreToolUse` hook step; an "always allow" answer is granted to it.
+    pub permission: base::interface::permission::PermissionSet,
     /// The session's one shared `SessionState` — see `Agent.session_state`.
     /// Cloned into every `ToolContext` so state a tool records (read cache,
     /// file snapshots, todos, plan mode) is visible to the next tool call
@@ -319,7 +314,15 @@ pub(super) async fn execute_tool_inner(
     let check_started = std::time::Instant::now();
     let checked = ctx
         .permission
-        .check(name, &input, &ctx.cwd, &ctx.session_id)
+        .policy
+        .decide(&base::interface::permission::PermissionRequest::new(
+            name,
+            Some(&tool),
+            &input,
+            &ctx.cwd,
+            &ctx.session_id,
+            &ctx.session_state,
+        ))
         .await;
     record_permission_decision(ctx, &tool, name, &input, &checked, check_started);
     // Before the unattended refusal below: a hook's approve is an answer given
@@ -425,38 +428,23 @@ pub(super) async fn execute_tool_inner(
                             // evaluation) — this is what makes the persisted
                             // pattern actually match future calls the same
                             // way the one the user just answered did.
-                            let match_content = tool.permission_match_content(&input);
-                            ctx.permission
-                                .add_persistent_allow(name, match_content.as_deref());
-                            if let (crate::agent::PersistScope::Local, Some(local_settings_path)) =
-                                (scope, &ctx.local_settings_path)
+                            use base::interface::permission::{Grant, GrantError, GrantScope};
+                            let scope = match scope {
+                                crate::agent::PersistScope::Session => GrantScope::Session,
+                                crate::agent::PersistScope::Local => GrantScope::Project,
+                            };
+                            match ctx
+                                .permission
+                                .grants
+                                .grant(Grant::new(name, tool.permission_match_content(&input), scope))
+                                .await
                             {
-                                match permissions::settings_patch::build_rule_string(
-                                    name,
-                                    match_content.as_deref(),
-                                ) {
-                                    Some(rule_string) => {
-                                        if let Err(e) = permissions::settings_patch::append_permission_rule(
-                                            local_settings_path,
-                                            permissions::settings_patch::AppendTarget::Allow,
-                                            &rule_string,
-                                        ) {
-                                            tracing::warn!(
-                                                path = %local_settings_path.display(),
-                                                error = %e,
-                                                "failed to persist permit-always rule to settings.local.json; \
-                                                 in-memory allow for this session still applies"
-                                            );
-                                        }
-                                    }
-                                    None => {
-                                        tracing::warn!(
-                                            tool_name = %name,
-                                            "permit-always with scope=local but no rule content could be \
-                                             derived — nothing written to settings.local.json; \
-                                             in-memory allow for this session still applies"
-                                        );
-                                    }
+                                Ok(()) => {}
+                                Err(GrantError::NotKept) => {
+                                    tracing::debug!(tool_name = %name, "permit-always: this session keeps no grants");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(tool_name = %name, error = %e, "permit-always not kept as asked");
                                 }
                             }
                         }

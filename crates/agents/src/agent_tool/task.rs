@@ -74,20 +74,21 @@ impl SubRun {
         }
     }
 
-    pub(super) fn permission(&self, base: Arc<dyn Permission>) -> Arc<dyn Permission> {
+    pub(super) fn permission(&self, base: PermissionSet) -> PermissionSet {
         if self.deny_rules.is_empty() {
             return base;
         }
-        Arc::new(DenyRulesFirst {
-            rules: permissions::rule_set_permission::RuleSetPermission::new(
-                Arc::new(permissions::gate::PermissionGate::deny_rules_only(
-                    permissions::ruleset::RuleSet::new(self.deny_rules.clone()),
+        PermissionSet {
+            policy: Arc::new(DenyRulesFirst {
+                rules: permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+                    permissions::gate::PermissionGate::deny_rules_only(
+                        permissions::ruleset::RuleSet::new(self.deny_rules.clone()),
+                    ),
                 )),
-                Arc::new(InMemoryToolRegistry::new()),
-                base::permission::PermissionMode::Default,
-            ),
-            inner: base,
-        })
+                inner: base.policy,
+            }),
+            grants: base.grants,
+        }
     }
 }
 

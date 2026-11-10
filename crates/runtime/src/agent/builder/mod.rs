@@ -11,7 +11,7 @@ pub struct Builder {
     model: Option<Arc<dyn Model>>,
     tools: Option<Arc<dyn base::tool::ToolRegistry>>,
     settings: Option<Arc<Settings>>,
-    permission: Option<Arc<dyn Permission>>,
+    permission: Option<PermissionSet>,
     memory_store: Option<Arc<MemoryStore>>,
     compactor: Option<Arc<dyn Compactor>>,
     hooks: Option<Arc<HookRunner>>,
@@ -574,7 +574,7 @@ impl Builder {
         self.settings = Some(s);
         self
     }
-    pub fn permission(mut self, p: Arc<dyn Permission>) -> Self {
+    pub fn permission(mut self, p: PermissionSet) -> Self {
         self.permission = Some(p);
         self
     }

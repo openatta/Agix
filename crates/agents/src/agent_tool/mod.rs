@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::event::AgentEvent;
 use base::interface::model::Model;
-use base::interface::permission::Permission;
+use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
 use base::paths::PromptFiles;
 use base::settings::{
@@ -456,10 +456,18 @@ impl AgentTool {
         self.inner.telemetry_handle.set(Some(handle));
     }
 
-    /// Route sub-agent permission checks to the parent agent's `Permission`
-    /// impl — see `Inner::parent_permission`.
-    pub fn set_parent_permission(&self, permission: Arc<dyn Permission>) {
-        self.inner.parent_permission.set(Some(permission));
+    /// Route sub-agent permission checks to the parent session's
+    /// permission, judged as delegates of `session` — see
+    /// `Inner::parent_permission`.
+    pub fn set_parent_permission(
+        &self,
+        permission: PermissionSet,
+        session: Arc<base::context::SessionState>,
+    ) {
+        self.inner.parent_permission.set(Some(ParentSide {
+            permission,
+            session,
+        }));
     }
 
     /// Route sub-agent permission *prompts* to the parent session's host

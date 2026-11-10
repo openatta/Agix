@@ -10,7 +10,7 @@
 use crate::rpc::SessionOptions;
 use base::event::AgentEvent;
 use base::id::Id;
-use base::interface::permission::Permission;
+use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
 use base::settings::Settings;
 use base::settings::{Divergence, RecorderConfig, RecorderMode};
@@ -635,12 +635,12 @@ pub struct SessionPool {
     host_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
     /// Scenes `scene.register` added, held in memory only.
     registered_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
-    /// The host's own `Permission`, handed to a session whose effective mode
+    /// The host's own permission, handed to a session whose effective mode
     /// is `bypassPermissions` in place of the rule gate (see
     /// `resolve_session_permission`). `None` when the host supplied none:
     /// such a session gets the gate too, which under bypass consults no rule
     /// but still validates input and still follows a later `EnterPlanMode`.
-    permission: Option<Arc<dyn Permission>>,
+    permission: Option<PermissionSet>,
     /// Built-in tool registry (Bash/Read/Write/Edit/Grep/Glob/...), shared
     /// (cheap `Arc` clone) by every session `Builder`. Built once here via
     /// `tools::register_builtin_tools`; `Builder::build()` on its own registers
@@ -1097,7 +1097,7 @@ impl SessionPool {
         client: Arc<dyn AnthropicClient>,
         settings: Arc<Settings>,
         scene: Arc<dyn Scene>,
-        permission: Option<Arc<dyn Permission>>,
+        permission: Option<PermissionSet>,
         cwd: PathBuf,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
         paths: Arc<dyn crate::config::DaemonPaths>,

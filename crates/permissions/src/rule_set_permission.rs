@@ -1,45 +1,28 @@
-//! `RuleSetPermission` — the real `base::interface::permission::Permission`
-//! implementation, wrapping `PermissionGate`/`RuleSet`.
+//! `RuleSetPermission` — the engine's own permission: decides over
+//! `PermissionGate`/`RuleSet` and keeps the session's grants as rules in the
+//! same gate.
 //!
 //! This is what makes `permission_rules` in `settings.json` and
 //! `PermissionMode` (`BypassPermissions`/`DontAsk`/`Plan`/...) take effect on
-//! real tool calls, and gives `Skill.allowed_tools` (see `SkillTool`)
-//! somewhere to inject temporary Allow rules into via `add_rules`.
+//! real tool calls, and where a skill's `allowed_tools` and a person's
+//! "always allow" land.
 
 use crate::gate::PermissionGate;
 use async_trait::async_trait;
-use base::context::SessionState;
-use base::interface::permission::{Permission, PermissionOutcome};
-use base::permission::{PermissionDecision as GateDecision, PermissionMode};
-#[cfg(test)]
-use base::tool::InMemoryToolRegistry;
-use base::tool::{ToolContext, ToolRegistry};
-use std::path::Path;
-use std::sync::{Arc, RwLock};
+use base::interface::permission::{
+    Grant, GrantError, GrantScope, PermissionGrants, PermissionOutcome, PermissionPolicy,
+    PermissionRequest,
+};
+use base::permission::{
+    PermissionDecision as GateDecision, PermissionRule, RuleBehavior, RuleSource,
+};
+use base::tool::ToolContext;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub struct RuleSetPermission {
     gate: Arc<PermissionGate>,
-    /// The registry `check` resolves tool names against.
-    ///
-    /// Interior-mutable because the registry this handler is *constructed*
-    /// with is frequently not the registry the session ends up dispatching
-    /// against — see `Permission::bind_tool_registry`, which swaps this to
-    /// the real one once `Builder::build()` has finished populating it. A
-    /// stale registry here is not a cosmetic problem: every tool missing from
-    /// it falls into `check`'s unknown-tool branch.
-    tools: RwLock<Arc<dyn ToolRegistry>>,
-    /// The session's live state, once `bind_session_state` has supplied it.
-    ///
-    /// `None` (embedders that never bind) falls back to a throwaway
-    /// `SessionState` carrying `permission_mode` below.
-    /// When bound, `check` reads the *live* permission mode, so
-    /// `EnterPlanMode`/`ExitPlanMode` actually move the gate.
-    session: RwLock<Option<Arc<SessionState>>>,
-    /// The mode to assume when no live `SessionState` is bound. Also the mode
-    /// a freshly-bound session starts in — `Builder::build()` seeds
-    /// `SessionState` from the same `Settings` value.
-    permission_mode: PermissionMode,
     /// The sandbox settings a tool's own `check_permissions` reads.
     ///
     /// This is the only path that reaches a tool's own judgement in
@@ -49,20 +32,19 @@ pub struct RuleSetPermission {
     /// control list came to be configurable everywhere except where it is
     /// consulted.
     sandbox: base::tool::SandboxSettings,
+    /// Where a [`GrantScope::Project`] grant is written. `None` — a session
+    /// with no project — keeps it for the session only: the state root's
+    /// `settings.local.json` is the global tier, and a rule written there would
+    /// allow the call everywhere.
+    local_settings_file: Option<PathBuf>,
 }
 
 impl RuleSetPermission {
-    pub fn new(
-        gate: Arc<PermissionGate>,
-        tools: Arc<dyn ToolRegistry>,
-        permission_mode: PermissionMode,
-    ) -> Self {
+    pub fn new(gate: Arc<PermissionGate>) -> Self {
         Self {
             gate,
-            tools: RwLock::new(tools),
-            session: RwLock::new(None),
-            permission_mode,
             sandbox: Default::default(),
+            local_settings_file: None,
         }
     }
 
@@ -73,31 +55,24 @@ impl RuleSetPermission {
     ///
     /// This is the path that makes `permission_rules` and
     /// `settings.local.json` actually take effect, and every embedder that
-    /// builds its own `Permission` should come through here rather than
-    /// reassembling gate + ruleset + mode itself — `runtime::agent::Builder`
-    /// takes an injected `Permission` and does not read `Settings` for rules,
-    /// so an embedder that skips this silently gets no configured rules at
-    /// all.
+    /// builds its own permission should come through here rather than
+    /// reassembling gate + ruleset itself — `runtime::agent::Builder` takes
+    /// an injected `PermissionSet` and does not read `Settings` for rules, so
+    /// an embedder that skips this silently gets no configured rules at all.
     ///
     /// `extra_rules` are appended after both tiers — session-scoped rules a
     /// caller adds on top (the daemon's `SessionOptions::permission_rules`),
     /// evaluated alongside the configured ones rather than replacing them.
     pub fn from_settings(
         settings: &base::settings::Settings,
-        mode: PermissionMode,
-        tools: Arc<dyn ToolRegistry>,
-        extra_rules: impl IntoIterator<Item = base::permission::PermissionRule>,
+        extra_rules: impl IntoIterator<Item = PermissionRule>,
     ) -> Self {
         let mut rules = crate::rule::rules_from_all_tiers(settings);
         rules.extend(extra_rules);
-        Self::new(
-            Arc::new(
-                PermissionGate::new(crate::ruleset::RuleSet::new(rules))
-                    .with_managed(crate::gate::ManagedPolicy::from_settings(settings)),
-            ),
-            tools,
-            mode,
-        )
+        Self::new(Arc::new(
+            PermissionGate::new(crate::ruleset::RuleSet::new(rules))
+                .with_managed(crate::gate::ManagedPolicy::from_settings(settings)),
+        ))
         .with_sandbox(base::tool::SandboxSettings {
             allow_read: settings.sandbox.allow_read.clone(),
             deny_read: settings.sandbox.deny_read.clone(),
@@ -109,6 +84,7 @@ impl RuleSetPermission {
             require_enforcement: settings.sandbox.require_enforcement,
             unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         })
+        .with_local_settings_file(settings.paths.local_settings_file())
     }
 
     /// The sandbox settings the tools' own checks are judged against.
@@ -117,83 +93,99 @@ impl RuleSetPermission {
         self
     }
 
-    /// The registry currently bound — snapshot of the `Arc`, so a concurrent
-    /// `bind_tool_registry` can't hold the lock across an `.await`.
-    fn tools(&self) -> Arc<dyn ToolRegistry> {
-        self.tools.read().unwrap_or_else(|e| e.into_inner()).clone()
+    pub fn with_local_settings_file(mut self, file: Option<PathBuf>) -> Self {
+        self.local_settings_file = file;
+        self
     }
 
-    /// `check` against the session's own state, or against `delegate`'s in
-    /// the stricter of the two sessions' modes, on the tool the delegate's
-    /// call dispatches to — its own `StructuredOutput`, which the session may
-    /// not have — under this session's rules.
-    async fn decide(
+    fn allow(&self, source: RuleSource, tool_name: &str, rule_content: Option<String>) {
+        self.gate.add_rules(vec![PermissionRule {
+            source,
+            behavior: RuleBehavior::Allow,
+            tool_name: tool_name.to_string(),
+            rule_content,
+        }]);
+    }
+
+    async fn write_project_rule(
         &self,
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        cwd: &Path,
-        session_id: &str,
-        delegate: Option<&Arc<SessionState>>,
-    ) -> PermissionOutcome {
-        // Unknown tool name — fail closed.
-        //
-        // Not `Permit`, even though dispatch's own "Tool not found" error
-        // would follow: that only holds while this registry *is* the dispatch
-        // registry. If the binding is ever stale, permitting here would let
-        // every per-session tool (`Skill`, `Agent`, `mcp__*`, ...) run
-        // unchecked. A genuinely nonexistent tool surfaces as a prompt whose
-        // message says so, and dispatch's own error follows if approved.
-        let Some(tool) = delegate
-            .and_then(|d| d.tool(tool_name))
-            .or_else(|| self.tools().get(tool_name))
+        path: &std::path::Path,
+        grant: &Grant,
+    ) -> Result<(), GrantError> {
+        let not_persisted = |reason: String| GrantError::NotPersisted {
+            path: path.to_path_buf(),
+            reason,
+        };
+        let Some(rule) =
+            crate::settings_patch::build_rule_string(&grant.tool_name, grant.content.as_deref())
         else {
+            return Err(not_persisted(
+                "the call has no content a rule could be scoped to".into(),
+            ));
+        };
+        let target = path.to_path_buf();
+        match tokio::task::spawn_blocking(move || {
+            crate::settings_patch::append_permission_rule(
+                &target,
+                crate::settings_patch::AppendTarget::Allow,
+                &rule,
+            )
+        })
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(not_persisted(e.to_string())),
+            Err(e) => Err(not_persisted(e.to_string())),
+        }
+    }
+}
+
+#[async_trait]
+impl PermissionPolicy for RuleSetPermission {
+    /// Judged against the session's own state, or against the delegate's in
+    /// the stricter of the two sessions' modes, under this session's rules.
+    async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome {
+        let tool_name = req.tool_name;
+        // Not `Permit`, even though dispatch's own "Tool not found" error
+        // would follow: a caller that asks before looking the tool up must
+        // not be able to run it unchecked by naming it wrongly.
+        let Some(tool) = req.tool else {
             return PermissionOutcome::Prompt {
                 prompt_id: uuid::Uuid::new_v4().to_string(),
                 message: format!(
-                    "`{tool_name}` is not registered in this session's permission registry. \
-                     It is either an unknown tool, or a tool that reached dispatch without \
-                     being registered for permission checks — approve only if you expected it."
+                    "`{tool_name}` is not a tool this session has. It is either an unknown \
+                     tool, or one that reached the permission check without being looked up \
+                     — approve only if you expected it."
                 ),
                 paths: Vec::new(),
                 managed: false,
             };
         };
 
-        // Prefer the session's live state (so a runtime `set_permission_mode`
-        // — plan mode — is honored); fall back to a throwaway carrying the
-        // construction-time mode when nothing was bound.
-        let own = match self
-            .session
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
-            Some(live) => live,
-            None => Arc::new(
-                SessionState::new(cwd.to_path_buf()).with_permission_mode(self.permission_mode),
-            ),
-        };
-        let own_mode = own.permission_mode();
-        let (judged, permission_mode) = match delegate {
+        let own_mode = req.session.permission_mode();
+        let (judged, permission_mode) = match req.delegate {
             Some(delegate) => (
                 delegate.clone(),
                 own_mode.for_delegate(delegate.permission_mode()),
             ),
-            None => (own, own_mode),
+            None => (req.session.clone(), own_mode),
         };
         // The machine the call will run on is the judged session's; one that
         // never had its providers bound runs on this one.
         let exec = judged.exec().unwrap_or_else(platform::local_providers);
-        let mut ctx =
-            ToolContext::from_engine_ctx_with(cwd.to_path_buf(), CancellationToken::new(), exec);
-        ctx.session_id = session_id.to_string();
+        let mut ctx = ToolContext::from_engine_ctx_with(
+            req.cwd.to_path_buf(),
+            CancellationToken::new(),
+            exec,
+        );
+        ctx.session_id = req.session_id.to_string();
         ctx.sandbox = self.sandbox.clone();
         ctx.session = judged;
         ctx.permission_mode = permission_mode;
         ctx.additional_writable_dirs = ctx.session.additional_writable_dirs.clone();
         ctx.dangerously_disable_sandbox = ctx.session.sandbox_disabled;
 
-        match self.gate.check(tool.as_ref(), tool_input, &ctx).await {
+        match self.gate.check(tool.as_ref(), req.input, &ctx).await {
             Ok(GateDecision::Allow { .. }) => PermissionOutcome::Permit,
             Ok(GateDecision::Deny { message, .. }) => PermissionOutcome::Deny { reason: message },
             Ok(GateDecision::Ask {
@@ -215,66 +207,34 @@ impl RuleSetPermission {
 }
 
 #[async_trait]
-impl Permission for RuleSetPermission {
-    async fn check(
-        &self,
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        cwd: &Path,
-        session_id: &str,
-    ) -> PermissionOutcome {
-        self.decide(tool_name, tool_input, cwd, session_id, None)
-            .await
+impl PermissionGrants for RuleSetPermission {
+    async fn grant(&self, grant: Grant) -> Result<(), GrantError> {
+        if grant.scope == GrantScope::Turn {
+            self.allow(RuleSource::Command, &grant.tool_name, grant.content);
+            return Ok(());
+        }
+        // `Session`, not `Command`: `clear(Turn)` bulk-deletes
+        // `Command`-sourced rules whenever a skill's turn ends, and an answer
+        // a person gave must survive that.
+        self.allow(
+            RuleSource::Session,
+            &grant.tool_name,
+            grant
+                .content
+                .as_deref()
+                .map(|content| crate::ruleset::literal_rule_content(&grant.tool_name, content)),
+        );
+        match (grant.scope, &self.local_settings_file) {
+            (GrantScope::Project, Some(path)) => self.write_project_rule(path, &grant).await,
+            _ => Ok(()),
+        }
     }
 
-    async fn check_for_delegate(
-        &self,
-        tool_name: &str,
-        tool_input: &serde_json::Value,
-        cwd: &Path,
-        session_id: &str,
-        delegate: &Arc<SessionState>,
-    ) -> PermissionOutcome {
-        self.decide(tool_name, tool_input, cwd, session_id, Some(delegate))
-            .await
-    }
-
-    fn bind_tool_registry(&self, tools: Arc<dyn ToolRegistry>) {
-        *self.tools.write().unwrap_or_else(|e| e.into_inner()) = tools;
-    }
-
-    fn bind_session_state(&self, session: Arc<SessionState>) {
-        *self.session.write().unwrap_or_else(|e| e.into_inner()) = Some(session);
-    }
-
-    fn add_temporary_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        self.gate.add_rules(vec![base::permission::PermissionRule {
-            source: base::permission::RuleSource::Command,
-            behavior: base::permission::RuleBehavior::Allow,
-            tool_name: tool_name.to_string(),
-            rule_content: rule_content.map(|s| s.to_string()),
-        }]);
-    }
-
-    fn clear_temporary_allows(&self) {
-        self.gate
-            .remove_rules_by_source(base::permission::RuleSource::Command);
-    }
-
-    fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {
-        // `RuleSource::Session` (50), not `Command` (45) — `Command`-sourced
-        // rules get bulk-deleted by `clear_temporary_allows` (called from
-        // `runtime::turn`'s per-turn skill cleanup via `RuleSet::remove_by_source`)
-        // whenever a skill goes inactive, and a "permit always" decision
-        // from a user's interactive prompt answer must survive that
-        // unrelated cleanup for the rest of the session.
-        self.gate.add_rules(vec![base::permission::PermissionRule {
-            source: base::permission::RuleSource::Session,
-            behavior: base::permission::RuleBehavior::Allow,
-            tool_name: tool_name.to_string(),
-            rule_content: rule_content
-                .map(|content| crate::ruleset::literal_rule_content(tool_name, content)),
-        }]);
+    fn clear(&self, scope: GrantScope) {
+        self.gate.remove_rules_by_source(match scope {
+            GrantScope::Turn => RuleSource::Command,
+            _ => RuleSource::Session,
+        });
     }
 }
 
@@ -283,9 +243,12 @@ mod tests {
     use super::*;
     use crate::ruleset::RuleSet;
     use async_trait::async_trait as async_trait2;
+    use base::context::SessionState;
     use base::error::ToolError;
+    use base::permission::PermissionMode;
     use base::tool::{PermissionDecision as ToolPermissionDecision, Tool};
     use serde_json::json;
+    use std::path::Path;
 
     struct FakeTool {
         name: &'static str,
@@ -328,16 +291,12 @@ mod tests {
         }
     }
 
-    fn registry_with(tool: FakeTool) -> Arc<InMemoryToolRegistry> {
-        let reg = Arc::new(InMemoryToolRegistry::new());
-        reg.register(Arc::new(tool));
-        reg
+    fn fake(name: &'static str, read_only: bool) -> Arc<dyn Tool> {
+        Arc::new(FakeTool { name, read_only })
     }
 
     /// Like `FakeTool`, but with a settable `permission_match_content` —
-    /// needed to exercise `add_persistent_allow`'s content-aware rule
-    /// (`FakeTool` always derives `None`, which only a blanket/no-content
-    /// rule would match).
+    /// a grant scoped to content only matches a tool that derives some.
     struct ContentAwareFakeTool {
         name: &'static str,
         content: Option<&'static str>,
@@ -382,22 +341,50 @@ mod tests {
         }
     }
 
-    fn registry_with_content_tool(tool: ContentAwareFakeTool) -> Arc<InMemoryToolRegistry> {
-        let reg = Arc::new(InMemoryToolRegistry::new());
-        reg.register(Arc::new(tool));
-        reg
+    fn content_tool(name: &'static str, content: &'static str) -> Arc<dyn Tool> {
+        Arc::new(ContentAwareFakeTool {
+            name,
+            content: Some(content),
+        })
     }
 
-    /// An unresolvable tool name must **not** be waved through.
+    fn session(mode: PermissionMode) -> Arc<SessionState> {
+        Arc::new(SessionState::new("/tmp".into()).with_permission_mode(mode))
+    }
+
+    fn empty() -> RuleSetPermission {
+        RuleSetPermission::new(Arc::new(PermissionGate::empty()))
+    }
+
+    async fn decide(
+        perm: &RuleSetPermission,
+        tool: &Arc<dyn Tool>,
+        session: &Arc<SessionState>,
+    ) -> PermissionOutcome {
+        let input = json!({});
+        perm.decide(&PermissionRequest::new(
+            tool.name(),
+            Some(tool),
+            &input,
+            Path::new("/tmp"),
+            "s1",
+            session,
+        ))
+        .await
+    }
+
     #[tokio::test]
-    async fn unknown_tool_name_fails_closed() {
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            Arc::new(InMemoryToolRegistry::new()),
-            PermissionMode::Default,
-        );
-        let outcome = perm
-            .check("Nonexistent", &json!({}), Path::new("/tmp"), "s1")
+    async fn a_call_to_a_tool_nobody_looked_up_is_asked_about_not_waved_through() {
+        let input = json!({});
+        let outcome = empty()
+            .decide(&PermissionRequest::new(
+                "Nonexistent",
+                None,
+                &input,
+                Path::new("/tmp"),
+                "s1",
+                &session(PermissionMode::BypassPermissions),
+            ))
             .await;
         match outcome {
             PermissionOutcome::Prompt { ref message, .. } => {
@@ -407,102 +394,53 @@ mod tests {
         }
     }
 
-    /// Rebinding makes a tool registered *after* construction visible,
-    /// which is exactly the `Builder::build()` ordering — the handler is
-    /// built from a template, the session registry is populated afterwards.
-    #[tokio::test]
-    async fn bind_tool_registry_makes_late_registered_tools_checkable() {
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            Arc::new(InMemoryToolRegistry::new()),
-            PermissionMode::DontAsk,
-        );
-        // Before binding: not in the registry at all → fails closed as a prompt.
-        assert!(matches!(
-            perm.check("Skill", &json!({}), Path::new("/tmp"), "s1")
-                .await,
-            PermissionOutcome::Prompt { .. }
-        ));
-
-        let session_registry = registry_with(FakeTool {
-            name: "Skill",
-            read_only: false,
-        });
-        perm.bind_tool_registry(session_registry);
-
-        // After binding: a real tool, so `DontAsk` with no matching rule denies.
-        assert!(
-            matches!(
-                perm.check("Skill", &json!({}), Path::new("/tmp"), "s1")
-                    .await,
-                PermissionOutcome::Deny { .. }
-            ),
-            "after rebinding, the tool must go through real mode dispatch"
-        );
-    }
-
-    /// A bound `SessionState` is read live, so switching the mode at
+    /// The request's session is read as it is now, so switching the mode at
     /// runtime (what `EnterPlanMode`/`ExitPlanMode` do) moves the gate.
     #[tokio::test]
-    async fn bound_session_state_supplies_the_live_permission_mode() {
-        let tools = registry_with(FakeTool {
-            name: "Write",
-            read_only: false,
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::Default,
-        );
-        let session = Arc::new(
-            SessionState::new(std::path::PathBuf::from("/tmp"))
-                .with_permission_mode(PermissionMode::Default),
-        );
-        perm.bind_session_state(session.clone());
+    async fn the_requests_session_supplies_the_live_permission_mode() {
+        let perm = empty();
+        let write = fake("Write", false);
+        let session = session(PermissionMode::Default);
 
         assert!(matches!(
-            perm.check("Write", &json!({}), Path::new("/tmp"), "s1")
-                .await,
+            decide(&perm, &write, &session).await,
             PermissionOutcome::Prompt { .. }
         ));
-
         session.set_permission_mode(PermissionMode::Plan);
         assert!(
             matches!(
-                perm.check("Write", &json!({}), Path::new("/tmp"), "s1")
-                    .await,
+                decide(&perm, &write, &session).await,
                 PermissionOutcome::Deny { .. }
             ),
             "entering plan mode must deny a non-read-only tool"
         );
-
         session.set_permission_mode(PermissionMode::BypassPermissions);
         assert!(matches!(
-            perm.check("Write", &json!({}), Path::new("/tmp"), "s1")
-                .await,
+            decide(&perm, &write, &session).await,
             PermissionOutcome::Permit
         ));
     }
 
     #[tokio::test]
     async fn a_delegate_is_judged_in_its_own_mode_held_to_plan_and_taken_along_by_bypass() {
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            registry_with(FakeTool {
-                name: "Write",
-                read_only: false,
-            }),
-            PermissionMode::Default,
-        );
-        let session = Arc::new(
-            SessionState::new(std::path::PathBuf::from("/tmp"))
-                .with_permission_mode(PermissionMode::Default),
-        );
-        perm.bind_session_state(session.clone());
+        let perm = empty();
+        let write = fake("Write", false);
+        let session = session(PermissionMode::Default);
         let delegate = Arc::new(SessionState::new(std::path::PathBuf::from("/tmp")));
         let input = json!({});
-        let judged =
-            || perm.check_for_delegate("Write", &input, Path::new("/tmp"), "s1", &delegate);
+        let judged = || {
+            let req = PermissionRequest::new(
+                "Write",
+                Some(&write),
+                &input,
+                Path::new("/tmp"),
+                "s1",
+                &session,
+            )
+            .for_delegate(&delegate);
+            let perm = &perm;
+            async move { perm.decide(&req).await }
+        };
 
         delegate.set_permission_mode(PermissionMode::Plan);
         assert!(matches!(judged().await, PermissionOutcome::Deny { .. }));
@@ -555,257 +493,359 @@ mod tests {
         }
     }
 
+    /// A delegate's call carries the tool the delegate dispatches to — its own
+    /// `StructuredOutput`, which the session does not have — and is judged
+    /// under the session's rules.
     #[tokio::test]
     async fn a_delegates_own_tool_is_judged_under_the_sessions_rules() {
-        let delegate = Arc::new(SessionState::new(std::path::PathBuf::from("/tmp")));
-        let delegate_tools: Arc<dyn ToolRegistry> = Arc::new(InMemoryToolRegistry::new());
-        delegate_tools.register(Arc::new(HandIn));
-        delegate.bind_tools(&delegate_tools);
+        let own = session(PermissionMode::Default);
+        let delegate = session(PermissionMode::Default);
+        let hand_in: Arc<dyn Tool> = Arc::new(HandIn);
+        let input = json!({});
         let judged = |perm: RuleSetPermission| {
-            let delegate = delegate.clone();
+            let (own, delegate, hand_in, input) = (
+                own.clone(),
+                delegate.clone(),
+                hand_in.clone(),
+                input.clone(),
+            );
             async move {
-                perm.check_for_delegate(
-                    "StructuredOutput",
-                    &json!({}),
-                    Path::new("/tmp"),
-                    "s1",
-                    &delegate,
+                perm.decide(
+                    &PermissionRequest::new(
+                        "StructuredOutput",
+                        Some(&hand_in),
+                        &input,
+                        Path::new("/tmp"),
+                        "s1",
+                        &own,
+                    )
+                    .for_delegate(&delegate),
                 )
                 .await
             }
         };
 
-        let parent_without_it = || {
-            RuleSetPermission::new(
-                Arc::new(PermissionGate::empty()),
-                Arc::new(InMemoryToolRegistry::new()),
-                PermissionMode::Default,
-            )
-        };
-        assert!(matches!(
-            parent_without_it()
-                .check("StructuredOutput", &json!({}), Path::new("/tmp"), "s1")
-                .await,
-            PermissionOutcome::Prompt { .. }
-        ));
-        assert!(matches!(
-            judged(parent_without_it()).await,
-            PermissionOutcome::Permit
-        ));
-
-        let denying = RuleSetPermission::new(
-            Arc::new(PermissionGate::new(RuleSet::new(vec![
-                base::permission::PermissionRule {
-                    source: base::permission::RuleSource::UserSettings,
-                    behavior: base::permission::RuleBehavior::Deny,
-                    tool_name: "StructuredOutput".into(),
-                    rule_content: None,
-                },
-            ]))),
-            Arc::new(InMemoryToolRegistry::new()),
-            PermissionMode::Default,
-        );
+        assert!(matches!(judged(empty()).await, PermissionOutcome::Permit));
+        let denying = RuleSetPermission::new(Arc::new(PermissionGate::new(RuleSet::new(vec![
+            PermissionRule {
+                source: RuleSource::UserSettings,
+                behavior: RuleBehavior::Deny,
+                tool_name: "StructuredOutput".into(),
+                rule_content: None,
+            },
+        ]))));
         assert!(matches!(
             judged(denying).await,
             PermissionOutcome::Deny { .. }
         ));
     }
 
-    /// A temporary allow carrying `rule_content` must only match calls whose
-    /// content matches — a blanket grant would let a project-supplied skill's
+    /// A turn grant carrying content must only match calls whose content
+    /// matches — a blanket grant would let a project-supplied skill's
     /// `allowed-tools` switch off confirmation wholesale.
     #[tokio::test]
-    async fn temporary_allow_with_content_does_not_grant_everything() {
-        let tools = registry_with_content_tool(ContentAwareFakeTool {
-            name: "Bash",
-            content: Some("cargo test"),
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::Default,
-        );
+    async fn a_turn_grant_with_content_does_not_grant_everything() {
+        let perm = empty();
+        let bash = content_tool("Bash", "cargo test");
+        let session = session(PermissionMode::Default);
 
-        // Grant only `git status`; the tool reports `cargo test` as its
-        // content, so the grant must not apply.
-        perm.add_temporary_allow("Bash", Some("git status"));
+        perm.grant(Grant::new(
+            "Bash",
+            Some("git status".into()),
+            GrantScope::Turn,
+        ))
+        .await
+        .unwrap();
         assert!(
             matches!(
-                perm.check("Bash", &json!({}), Path::new("/tmp"), "s1")
-                    .await,
+                decide(&perm, &bash, &session).await,
                 PermissionOutcome::Prompt { .. }
             ),
             "a content-scoped grant must not cover a different command"
         );
 
-        perm.add_temporary_allow("Bash", Some("cargo test"));
+        perm.grant(Grant::new(
+            "Bash",
+            Some("cargo test".into()),
+            GrantScope::Turn,
+        ))
+        .await
+        .unwrap();
         assert!(matches!(
-            perm.check("Bash", &json!({}), Path::new("/tmp"), "s1")
-                .await,
+            decide(&perm, &bash, &session).await,
             PermissionOutcome::Permit
+        ));
+
+        perm.clear(GrantScope::Turn);
+        assert!(matches!(
+            decide(&perm, &bash, &session).await,
+            PermissionOutcome::Prompt { .. }
         ));
     }
 
     #[tokio::test]
-    async fn bypass_mode_permits_without_rules() {
-        let tools = registry_with(FakeTool {
-            name: "Bash",
-            read_only: false,
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::BypassPermissions,
-        );
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
-        assert!(matches!(outcome, PermissionOutcome::Permit));
-    }
-
-    #[tokio::test]
-    async fn dontask_mode_denies_without_rules() {
-        let tools = registry_with(FakeTool {
-            name: "Bash",
-            read_only: false,
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::DontAsk,
-        );
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
-        assert!(matches!(outcome, PermissionOutcome::Deny { .. }));
-    }
-
-    #[tokio::test]
-    async fn default_mode_with_no_rule_prompts() {
-        let tools = registry_with(FakeTool {
-            name: "Bash",
-            read_only: false,
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::Default,
-        );
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
-        assert!(matches!(outcome, PermissionOutcome::Prompt { .. }));
+    async fn with_no_rule_bypass_permits_dontask_denies_and_default_prompts() {
+        let perm = empty();
+        let bash = fake("Bash", false);
+        assert!(matches!(
+            decide(&perm, &bash, &session(PermissionMode::BypassPermissions)).await,
+            PermissionOutcome::Permit
+        ));
+        assert!(matches!(
+            decide(&perm, &bash, &session(PermissionMode::DontAsk)).await,
+            PermissionOutcome::Deny { .. }
+        ));
+        assert!(matches!(
+            decide(&perm, &bash, &session(PermissionMode::Default)).await,
+            PermissionOutcome::Prompt { .. }
+        ));
     }
 
     #[tokio::test]
     async fn allow_rule_permits_even_in_default_mode() {
-        let tools = registry_with(FakeTool {
-            name: "Bash",
-            read_only: false,
-        });
-        let rules = RuleSet::new(vec![base::permission::PermissionRule {
-            source: base::permission::RuleSource::UserSettings,
-            behavior: base::permission::RuleBehavior::Allow,
-            tool_name: "Bash".into(),
-            rule_content: None,
-        }]);
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::new(rules)),
-            tools,
-            PermissionMode::Default,
-        );
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
+        let perm = RuleSetPermission::new(Arc::new(PermissionGate::new(RuleSet::new(vec![
+            PermissionRule {
+                source: RuleSource::UserSettings,
+                behavior: RuleBehavior::Allow,
+                tool_name: "Bash".into(),
+                rule_content: None,
+            },
+        ]))));
+        let outcome = decide(
+            &perm,
+            &fake("Bash", false),
+            &session(PermissionMode::Default),
+        )
+        .await;
         assert!(matches!(outcome, PermissionOutcome::Permit));
     }
 
     #[tokio::test]
-    async fn add_persistent_allow_permits_matching_content_without_prompting() {
-        // The tool derives "git status" as its match content for any input
-        // (a stand-in for e.g. Bash's command-line extraction) — matching
-        // what a real "always allow" prompt answer would persist for the
-        // specific call the user just approved.
-        let tools = registry_with_content_tool(ContentAwareFakeTool {
-            name: "Bash",
-            content: Some("git status"),
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::Default,
-        );
+    async fn a_session_grant_permits_matching_content_without_prompting_and_survives_the_turn() {
+        let perm = empty();
+        let bash = content_tool("Bash", "git status");
+        let session = session(PermissionMode::Default);
+        assert!(matches!(
+            decide(&perm, &bash, &session).await,
+            PermissionOutcome::Prompt { .. }
+        ));
 
-        // Before: no rule, Default mode with a real tool asks.
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
-        assert!(matches!(outcome, PermissionOutcome::Prompt { .. }));
+        perm.grant(Grant::new(
+            "Bash",
+            Some("git status".into()),
+            GrantScope::Session,
+        ))
+        .await
+        .unwrap();
+        perm.clear(GrantScope::Turn);
 
-        perm.add_persistent_allow("Bash", Some("git status"));
-
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
+        let outcome = decide(&perm, &bash, &session).await;
         assert!(
             matches!(outcome, PermissionOutcome::Permit),
-            "expected immediate Permit after add_persistent_allow, got {outcome:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn add_persistent_allow_survives_clear_temporary_allows() {
-        // A Session-sourced persistent allow must NOT be wiped by `clear_temporary_allows`
-        // (which only removes `Command`-sourced rules — see
-        // `RuleSetPermission::clear_temporary_allows` and the skill
-        // deactivation cleanup in `runtime::turn` that calls it).
-        let tools = registry_with(FakeTool {
-            name: "Bash",
-            read_only: false,
-        });
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools,
-            PermissionMode::Default,
-        );
-        perm.add_persistent_allow("Bash", None);
-        perm.clear_temporary_allows();
-
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
-        assert!(
-            matches!(outcome, PermissionOutcome::Permit),
-            "persistent allow must survive clear_temporary_allows, got {outcome:?}"
+            "a session grant must hold past the turn's cleanup, got {outcome:?}"
         );
     }
 
     #[tokio::test]
     async fn a_session_allow_cannot_carve_an_exception_out_of_a_settings_deny() {
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::new(RuleSet::new(vec![
-                base::permission::PermissionRule {
-                    source: base::permission::RuleSource::UserSettings,
-                    behavior: base::permission::RuleBehavior::Deny,
-                    tool_name: "Bash".into(),
-                    rule_content: None,
-                },
-            ]))),
-            registry_with_content_tool(ContentAwareFakeTool {
-                name: "Bash",
-                content: Some("git status"),
-            }),
-            PermissionMode::Default,
-        );
-        perm.add_persistent_allow("Bash", Some("git status"));
+        let perm = RuleSetPermission::new(Arc::new(PermissionGate::new(RuleSet::new(vec![
+            PermissionRule {
+                source: RuleSource::UserSettings,
+                behavior: RuleBehavior::Deny,
+                tool_name: "Bash".into(),
+                rule_content: None,
+            },
+        ]))));
+        perm.grant(Grant::new(
+            "Bash",
+            Some("git status".into()),
+            GrantScope::Session,
+        ))
+        .await
+        .unwrap();
 
-        let outcome = perm
-            .check("Bash", &json!({}), Path::new("/tmp"), "s1")
-            .await;
+        let outcome = decide(
+            &perm,
+            &content_tool("Bash", "git status"),
+            &session(PermissionMode::Default),
+        )
+        .await;
         assert!(
             matches!(outcome, PermissionOutcome::Deny { .. }),
             "{outcome:?}"
         );
+    }
+
+    fn project_settings(root: &Path) -> base::settings::Settings {
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        base::settings::Settings::load(
+            root.join("global"),
+            root.join("scene"),
+            project,
+            "code",
+            "m",
+        )
+    }
+
+    /// The rule is written to the project's `settings.local.json`, in the
+    /// shape the next `Settings::load` reads back as a local-tier allow.
+    #[tokio::test]
+    async fn a_project_grant_is_written_where_the_next_session_reads_it() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = project_settings(root.path());
+        let local = settings.paths.local_settings_file().unwrap();
+        let perm = RuleSetPermission::from_settings(&settings, []);
+
+        perm.grant(Grant::new(
+            "Probe",
+            Some("git status".into()),
+            GrantScope::Project,
+        ))
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            decide(
+                &perm,
+                &content_tool("Probe", "git status"),
+                &session(PermissionMode::Default)
+            )
+            .await,
+            PermissionOutcome::Permit
+        ));
+        let reloaded = project_settings(root.path());
+        let rules: Vec<_> = crate::rule::rules_from_all_tiers(&reloaded)
+            .into_iter()
+            .filter(|r| r.source == RuleSource::LocalSettings)
+            .collect();
+        assert_eq!(rules.len(), 1, "{rules:?} in {}", local.display());
+        assert_eq!(rules[0].tool_name, "Probe");
+        assert_eq!(rules[0].rule_content.as_deref(), Some("git status"));
+        assert_eq!(rules[0].behavior, RuleBehavior::Allow);
+        assert!(
+            !local.with_file_name(base::settings::SETTINGS_FILE).exists(),
+            "must not touch the shared/committed settings.json tier"
+        );
+    }
+
+    /// Without a project there is no `settings.local.json` of its own; the
+    /// state root's is the global tier. The grant is kept for the session.
+    #[tokio::test]
+    async fn a_project_grant_without_a_project_is_kept_for_the_session() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = base::settings::Settings::load_without_project(
+            root.path().join("global"),
+            root.path().join("scene"),
+            "code",
+            "m",
+        );
+        assert_eq!(settings.paths.local_settings_file(), None);
+        let perm = RuleSetPermission::from_settings(&settings, []);
+
+        perm.grant(Grant::new(
+            "Probe",
+            Some("git status".into()),
+            GrantScope::Project,
+        ))
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            decide(
+                &perm,
+                &content_tool("Probe", "git status"),
+                &session(PermissionMode::Default)
+            )
+            .await,
+            PermissionOutcome::Permit
+        ));
+        assert!(
+            !root
+                .path()
+                .join("global")
+                .join(base::settings::SETTINGS_LOCAL_FILE)
+                .exists(),
+            "a rule in the global tier would allow the call everywhere"
+        );
+    }
+
+    /// The write takes the settings directory's lock, which another writer may
+    /// hold. Done on the async thread, it stalls every task on that thread for
+    /// as long as the other writer takes; here the other writer holds it until
+    /// this thread shows it is still free.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_project_grant_writes_to_disk_off_the_async_thread() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root
+            .path()
+            .join(".agix")
+            .join(base::settings::SETTINGS_LOCAL_FILE);
+        let perm = Arc::new(empty().with_local_settings_file(Some(file.clone())));
+
+        let dir = root.path().join(".agix");
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _held = base::settings_file::SettingsDir::lock(&dir).unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .is_ok()
+        });
+        locked_rx.recv().unwrap();
+
+        let granting = tokio::spawn({
+            let perm = perm.clone();
+            async move {
+                perm.grant(Grant::new(
+                    "Bash",
+                    Some("git status".into()),
+                    GrantScope::Project,
+                ))
+                .await
+            }
+        });
+        // Parks this thread's scheduler, so the grant above runs first.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let _ = release_tx.send(());
+
+        assert!(
+            holder.join().unwrap(),
+            "the grant blocked the async thread on the settings lock"
+        );
+        granting.await.unwrap().unwrap();
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert!(written.contains("Bash(git status)"), "{written}");
+    }
+
+    #[tokio::test]
+    async fn a_project_grant_with_nothing_to_scope_it_says_it_was_not_written() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root
+            .path()
+            .join(".agix")
+            .join(base::settings::SETTINGS_LOCAL_FILE);
+        let perm = empty().with_local_settings_file(Some(file.clone()));
+
+        let kept = perm
+            .grant(Grant::new("Probe", None, GrantScope::Project))
+            .await;
+
+        assert!(
+            matches!(kept, Err(GrantError::NotPersisted { ref path, .. }) if *path == file),
+            "{kept:?}"
+        );
+        assert!(!file.exists());
+        assert!(matches!(
+            decide(
+                &perm,
+                &fake("Probe", false),
+                &session(PermissionMode::Default)
+            )
+            .await,
+            PermissionOutcome::Permit
+        ));
     }
 
     #[tokio::test]
@@ -829,27 +869,21 @@ mod tests {
         let settings =
             base::settings::Settings::load(global, root.path().join("scene"), project, "code", "m");
 
-        let perm = RuleSetPermission::from_settings(
-            &settings,
-            PermissionMode::Default,
-            registry_with_content_tool(ContentAwareFakeTool {
-                name: "Bash",
-                content: Some("rm -rf build"),
-            }),
-            [],
-        );
+        let perm = RuleSetPermission::from_settings(&settings, []);
         assert_eq!(
             perm.gate
                 .rules()
                 .iter()
                 .map(|r| r.source)
                 .collect::<Vec<_>>(),
-            vec![
-                base::permission::RuleSource::UserSettings,
-                base::permission::RuleSource::ProjectSettings
-            ]
+            vec![RuleSource::UserSettings, RuleSource::ProjectSettings]
         );
-        let outcome = perm.check("Bash", &json!({}), root.path(), "s1").await;
+        let outcome = decide(
+            &perm,
+            &content_tool("Bash", "rm -rf build"),
+            &session(PermissionMode::Default),
+        )
+        .await;
         assert!(
             matches!(outcome, PermissionOutcome::Deny { .. }),
             "{outcome:?}"
@@ -880,16 +914,11 @@ mod tests {
         mode: PermissionMode,
         command: &'static str,
     ) -> PermissionOutcome {
-        RuleSetPermission::from_settings(
-            settings,
-            mode,
-            registry_with_content_tool(ContentAwareFakeTool {
-                name: "Bash",
-                content: Some(command),
-            }),
-            [],
+        decide(
+            &RuleSetPermission::from_settings(settings, []),
+            &content_tool("Bash", command),
+            &session(mode),
         )
-        .check("Bash", &json!({}), Path::new("/tmp"), "s1")
         .await
     }
 
@@ -1017,37 +1046,31 @@ mod tests {
         }
     }
 
-    /// A call is judged on the providers of the session it runs in: the bound
+    /// A call is judged on the providers of the session it runs in: the
     /// session's for its own calls, the delegate's for a delegate's.
     #[tokio::test]
     async fn a_call_is_judged_on_the_providers_of_the_session_it_runs_in() {
         let probe = Arc::new(FilesystemProbe(Default::default()));
-        let tools = Arc::new(InMemoryToolRegistry::new());
-        tools.register(probe.clone());
-        let perm = RuleSetPermission::new(
-            Arc::new(PermissionGate::empty()),
-            tools.clone(),
-            PermissionMode::Default,
-        );
+        let tool: Arc<dyn Tool> = probe.clone();
+        let perm = empty();
         let own = Arc::new(SessionState::new("/tmp".into()));
         let own_exec = base::interface::exec::ExecProviders::in_process();
         own.bind_exec(own_exec.clone());
-        perm.bind_session_state(own);
         let delegate = Arc::new(SessionState::new("/tmp".into()));
         let delegate_exec = base::interface::exec::ExecProviders::in_process();
         delegate.bind_exec(delegate_exec.clone());
-        delegate.bind_tools(&(tools as Arc<dyn ToolRegistry>));
-
-        perm.check("FilesystemProbe", &json!({}), Path::new("/tmp"), "s1")
-            .await;
-        perm.check_for_delegate(
+        let input = json!({});
+        let req = PermissionRequest::new(
             "FilesystemProbe",
-            &json!({}),
+            Some(&tool),
+            &input,
             Path::new("/tmp"),
             "s1",
-            &delegate,
-        )
-        .await;
+            &own,
+        );
+
+        perm.decide(&req).await;
+        perm.decide(&req.for_delegate(&delegate)).await;
 
         let seen = probe.0.lock().unwrap();
         assert_eq!(seen.len(), 2);

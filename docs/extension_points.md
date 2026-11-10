@@ -46,6 +46,7 @@
 | `health.check` | 注册 | 每当有人要一份健康报告 | 什么都改不了——检查只汇报,不修复 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
 | `elicitation.ask` | 契约 | 每当一个决定需要人来做 | 答案 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `permission.check` | 契约 | 每次工具调用之前 | 放行、拒绝,或者问人 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `permission.grants` | 契约 | skill 的 allowed-tools 生效、人答"总是允许"时 | 本轮、本会话、本项目的放行 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `scene` | 契约 | 会话构建时 | 一个 agent 怎么呈现自己,全部 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
 | `model` | 契约 | 每次模型请求 | 整场交互 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `model.factory` | 注册 | 启动时,读 provider 配置的那一刻 | 哪些协议可以被配置出来 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
@@ -273,20 +274,29 @@ let settings = Settings::load_from(&source, global, scene, project, "code", "opu
 那份存储的 source 记下原因,把手上有的交出来:丢一层是坏事,而因为一个远端服务慢
 就拒绝启动,更坏。
 
-### 工具授权 — `permission.check`
+### 工具授权 — `permission.check` 与 `permission.grants`
 
-`base::interface::permission::Permission` 决定一次工具调用跑不跑。返回 `Prompt`
-不是做决定,而是把这个问题经 [`elicitation.ask`](#向人提问--elicitationask)
-交给人。
+权限分成两半,会话以 `PermissionSet { policy, grants }` 一起持有:
+
+- `base::interface::permission::PermissionPolicy`(`permission.check`)决定一次工具调用跑不跑,
+  只有 `decide(&PermissionRequest)` 一个方法。返回 `Prompt` 不是做决定,而是把这个问题经
+  [`elicitation.ask`](#向人提问--elicitationask) 交给人。
+- `base::interface::permission::PermissionGrants`(`permission.grants`)记下会话里给出的放行:
+  `GrantScope::Turn` 是 skill 的 `allowed-tools`,到下一轮用户输入前清掉;`Session` 是本会话里
+  答的"总是允许";`Project` 还要写进项目的 `settings.local.json`,没有项目的会话只记到会话结束。
 
 ```rust
-Builder::new().permission(Arc::new(MyGate));
+// 判定与授权是同一个值,授权改变它之后的判定:
+Builder::new().permission(PermissionSet::of(Arc::new(MyGate)));
+// 只判定、不记放行:
+Builder::new().permission(PermissionSet::without_grants(Arc::new(MyPolicy)));
 ```
 
-给需要查状态的 handler 准备了两个绑定方法:`bind_tool_registry` 把分发真正在用的
-那个 registry 交给 handler(绑到别的 registry 上的 handler 看不见之后注册的工具,
-它那条"未知工具"的分支就成了一个洞),`bind_session_state` 让它持续看得见会话中途
-的模式切换。两者对不需要它们的 handler 都默认是空实现。
+`PermissionRequest` 带着判定要用的全部状态:分发用的那个 registry 里查到的工具(`tool`,
+查不到是 `None`——引擎自己的 `RuleSetPermission` 对它询问而不放行)、策略所属会话的实时
+`SessionState`(`session`,会话中途的模式切换从这里看到),以及子 Agent、团队成员转来的调用的
+`SessionState`(`delegate`)。`without_grants` 给的 `NoGrants` 对每次授权都回 `GrantError::NotKept`,
+调用方由此知道放行没有被记下。
 
 `BypassPermissions` 下 `PermissionGate` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
 判定;凭据照样拒绝,部署方 managed 层的 deny / ask 照样生效;输入校验("改文件前先读过"、
@@ -579,7 +589,7 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 (缺省关):打开后会话关闭、被逐出、daemon 收尾时都会收,故意留在后台的服务也一并停掉。
 自己拼 `ExecProviders` 的用 `platform::local_providers_with_ledger`。
 
-自己实现 `Permission`、又要构造 `ToolContext` 去问工具 `check_permissions` 的,provider 取
+自己实现 `PermissionPolicy`、又要构造 `ToolContext` 去问工具 `check_permissions` 的,provider 取
 `SessionState::exec()`——`Builder::build()` 把会话执行用的那套绑在那里,子 Agent 的调用用
 子 Agent 的 `SessionState`。另起一套本机的,判的就不是命令要跑的那台机器。
 

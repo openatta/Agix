@@ -72,18 +72,15 @@ impl Builder {
         let permission = self.permission.unwrap_or_else(|| {
             struct AllowAll;
             #[async_trait::async_trait]
-            impl Permission for AllowAll {
-                async fn check(
+            impl base::interface::permission::PermissionPolicy for AllowAll {
+                async fn decide(
                     &self,
-                    _: &str,
-                    _: &serde_json::Value,
-                    _: &std::path::Path,
-                    _: &str,
+                    _: &base::interface::permission::PermissionRequest<'_>,
                 ) -> base::interface::permission::PermissionOutcome {
                     base::interface::permission::PermissionOutcome::Permit
                 }
             }
-            Arc::new(AllowAll)
+            PermissionSet::without_grants(Arc::new(AllowAll))
         });
         let instruction_file = self.instruction_file.or(settings.instruction_file.clone());
         // Pre-read AGENTS.md / CLAUDE.md content for userContext injection.
@@ -660,19 +657,6 @@ impl Builder {
                 );
             }
         }
-        // The `Permission` this builder was handed was constructed before
-        // the session registry above existed — in a daemon it was built over
-        // `SessionPool.tools`, the pool-level template of self-contained
-        // built-ins. Unbound, everything registered into `tools` in this
-        // function (`Skill`, `Agent`, `Team*`, `WebSearch`, worktree, cron and
-        // task tools, `Import`, every `mcp__*` adapter) would be invisible to
-        // it and pass its "unknown tool" branch unchecked. Bind it to the
-        // registry dispatch actually uses, which is complete at this point.
-        permission.bind_tool_registry(tools.clone());
-        // And to the session's live state, so `EnterPlanMode`/`ExitPlanMode`
-        // (which flip `SessionState.permission_mode`) actually move the gate
-        // instead of being decorative.
-        permission.bind_session_state(session_state.clone());
         session_state.bind_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>));
 
         // Built before the `Agent` literal takes ownership of `scene` and

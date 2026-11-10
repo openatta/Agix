@@ -115,7 +115,7 @@ impl base::tool::Tool for CountingProbeTool {
     }
 }
 
-/// A parent `Permission` impl that records what it was asked about and
+/// A parent policy that records what it was asked about and
 /// answers with a fixed outcome.
 pub(super) struct RecordingPermission {
     pub(super) seen: Arc<std::sync::Mutex<Vec<String>>>,
@@ -123,14 +123,12 @@ pub(super) struct RecordingPermission {
 }
 
 #[async_trait]
-impl Permission for RecordingPermission {
-    async fn check(
+impl PermissionPolicy for RecordingPermission {
+    async fn decide(
         &self,
-        tool_name: &str,
-        _input: &Value,
-        _cwd: &Path,
-        _session_id: &str,
+        req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
+        let tool_name = req.tool_name;
         self.seen
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -202,7 +200,7 @@ async fn subagent_transcript_is_written_as_a_linked_sidechain() {
             tools,
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             Some(("parent-session-1", 1, "")),
             SubRun::default(),
@@ -270,7 +268,7 @@ async fn cancelled_subagent_run_writes_no_terminal_marker() {
             tools,
             dir.clone(),
             cancel,
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             Some(("parent-session-1", 1, "")),
             SubRun::default(),
@@ -324,7 +322,7 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
             tools,
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             Some(("parent-session-1", 1, "")),
             SubRun::default(),
@@ -367,7 +365,7 @@ async fn subagent_telemetry_events_reach_the_parents_sink() {
             tools,
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             Some(("parent-session-1", 1, "")),
             SubRun::default(),
@@ -398,7 +396,7 @@ async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_te
             tools,
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             Some(("parent-session", 7, "toolu_parent")),
             SubRun::default(),
@@ -416,7 +414,7 @@ async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_te
             plain_tools,
             plain_dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            Arc::new(AlwaysPermit),
+            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             None,
             SubRun::default(),
@@ -508,16 +506,46 @@ async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_te
     );
 }
 
+/// Wires `policy` as the parent's, keeping no grants, for a parent session
+/// in `/tmp`.
+pub(super) fn wire_parent(agent_tool: &AgentTool, policy: Arc<dyn PermissionPolicy>) {
+    agent_tool.set_parent_permission(
+        PermissionSet::without_grants(policy),
+        Arc::new(base::context::SessionState::new("/tmp".into())),
+    );
+}
+
+/// `name` with `input`, as the sub-agent's engine puts it to `permission`:
+/// the tool its registry has under that name, its own session.
+pub(super) async fn sub_decides(
+    permission: &PermissionSet,
+    tool: Option<&Arc<dyn base::tool::Tool>>,
+    name: &str,
+    input: &Value,
+    cwd: &Path,
+    session: &Arc<base::context::SessionState>,
+) -> base::interface::permission::PermissionOutcome {
+    permission
+        .policy
+        .decide(&base::interface::permission::PermissionRequest::new(
+            name, tool, input, cwd, "sub", session,
+        ))
+        .await
+}
+
 /// A sub-agent's permission checks must reach the parent's
-/// `Permission` impl, and a `Deny` there must actually stop the tool.
+/// policy, and a `Deny` there must actually stop the tool.
 #[tokio::test]
 async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
     let (agent_tool, tools, runs, dir) = wired_agent_tool("code");
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    agent_tool.set_parent_permission(Arc::new(RecordingPermission {
-        seen: seen.clone(),
-        deny: true,
-    }));
+    wire_parent(
+        &agent_tool,
+        Arc::new(RecordingPermission {
+            seen: seen.clone(),
+            deny: true,
+        }),
+    );
 
     // This is the handler the `Agent` tool itself uses for a spawn.
     let perm = agent_tool.sub_permission();
@@ -538,7 +566,7 @@ async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
     let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
     assert!(
         seen.iter().any(|t| t == "Probe"),
-        "the sub-agent's tool call must be checked against the parent's Permission impl, saw {seen:?}"
+        "the sub-agent's tool call must be checked against the parent's policy, saw {seen:?}"
     );
     assert_eq!(
         runs.load(std::sync::atomic::Ordering::SeqCst),
@@ -553,13 +581,10 @@ async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
 async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
     struct AlwaysPrompts;
     #[async_trait]
-    impl Permission for AlwaysPrompts {
-        async fn check(
+    impl PermissionPolicy for AlwaysPrompts {
+        async fn decide(
             &self,
-            _t: &str,
-            _i: &Value,
-            _c: &Path,
-            _s: &str,
+            _req: &base::interface::permission::PermissionRequest<'_>,
         ) -> base::interface::permission::PermissionOutcome {
             base::interface::permission::PermissionOutcome::Prompt {
                 prompt_id: "p1".into(),
@@ -571,11 +596,16 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
     }
 
     let agent_tool = test_agent_tool();
-    agent_tool.set_parent_permission(Arc::new(AlwaysPrompts));
-    let outcome = agent_tool
-        .sub_permission()
-        .check("Bash", &serde_json::json!({}), Path::new("/tmp"), "s")
-        .await;
+    wire_parent(&agent_tool, Arc::new(AlwaysPrompts));
+    let outcome = sub_decides(
+        &agent_tool.sub_permission(),
+        None,
+        "Bash",
+        &serde_json::json!({}),
+        Path::new("/tmp"),
+        &Arc::new(base::context::SessionState::new("/tmp".into())),
+    )
+    .await;
     match outcome {
         base::interface::permission::PermissionOutcome::Deny { reason } => {
             assert!(reason.contains("parent session"), "got {reason}");
@@ -591,14 +621,22 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
 async fn parent_permit_passes_through_unchanged() {
     let agent_tool = test_agent_tool();
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    agent_tool.set_parent_permission(Arc::new(RecordingPermission {
-        seen: seen.clone(),
-        deny: false,
-    }));
-    let outcome = agent_tool
-        .sub_permission()
-        .check("Bash", &serde_json::json!({}), Path::new("/tmp"), "s")
-        .await;
+    wire_parent(
+        &agent_tool,
+        Arc::new(RecordingPermission {
+            seen: seen.clone(),
+            deny: false,
+        }),
+    );
+    let outcome = sub_decides(
+        &agent_tool.sub_permission(),
+        None,
+        "Bash",
+        &serde_json::json!({}),
+        Path::new("/tmp"),
+        &Arc::new(base::context::SessionState::new("/tmp".into())),
+    )
+    .await;
     assert!(matches!(
         outcome,
         base::interface::permission::PermissionOutcome::Permit
@@ -616,28 +654,28 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     std::fs::write(project.path().join("notes.txt"), "x").unwrap();
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
-    let parent = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-        Arc::new(permissions::gate::PermissionGate::empty()),
-        registry.clone(),
-        PermissionMode::AcceptEdits,
+    let parent = PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+            permissions::gate::PermissionGate::empty(),
+        )),
     ));
     let parent_session = Arc::new(
         base::context::SessionState::new(project.path().to_path_buf())
             .with_permission_mode(PermissionMode::AcceptEdits),
     );
-    parent.bind_session_state(parent_session.clone());
     let agent_tool = test_agent_tool();
-    agent_tool.set_parent_permission(parent);
+    agent_tool.set_parent_permission(parent, parent_session.clone());
     let sub = agent_tool.sub_permission();
-    sub.bind_tool_registry(registry);
     let sub_session = Arc::new(base::context::SessionState::new(
         project.path().to_path_buf(),
     ));
-    sub.bind_session_state(sub_session.clone());
     let check = |tool: &'static str, input: Value| {
-        let sub = sub.clone();
+        let (sub, sub_session, registry) = (sub.clone(), sub_session.clone(), registry.clone());
         let cwd = project.path().to_path_buf();
-        async move { sub.check(tool, &input, &cwd, "sub").await }
+        async move {
+            let found = registry.get(tool);
+            sub_decides(&sub, found.as_ref(), tool, &input, &cwd, &sub_session).await
+        }
     };
     let write = serde_json::json!({"file_path": project.path().join("a.txt"), "content": "x"});
     // A read-only `Monitor` command: `acceptEdits` lets it through, `default`
@@ -695,51 +733,175 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
     let project = tempfile::tempdir().unwrap();
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
-    let parent = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-        Arc::new(permissions::gate::PermissionGate::new(
-            permissions::ruleset::RuleSet::new(vec![PermissionRule {
-                source: RuleSource::ProjectSettings,
-                behavior: RuleBehavior::Deny,
-                tool_name: "Write".into(),
-                rule_content: Some("**/locked/**".into()),
-            }]),
+    let parent = PermissionSet::of(Arc::new(
+        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+            permissions::gate::PermissionGate::new(permissions::ruleset::RuleSet::new(vec![
+                PermissionRule {
+                    source: RuleSource::ProjectSettings,
+                    behavior: RuleBehavior::Deny,
+                    tool_name: "Write".into(),
+                    rule_content: Some("**/locked/**".into()),
+                },
+            ])),
         )),
-        registry.clone(),
-        PermissionMode::AcceptEdits,
     ));
     let agent_tool = test_agent_tool();
-    agent_tool.set_parent_permission(parent);
-    let member = agent_tool
-        .inner
-        .team_member_permission(&registry, base::settings::PermissionMode::BypassPermissions);
-    member.bind_tool_registry(registry);
-    member.bind_session_state(Arc::new(
-        base::context::SessionState::new(project.path().to_path_buf())
-            .with_permission_mode(PermissionMode::AcceptEdits),
-    ));
-    let outcome = member
-        .check(
-            "Write",
-            &serde_json::json!({"file_path": project.path().join("locked/a.txt"), "content": "x"}),
-            project.path(),
-            "member",
-        )
-        .await;
+    agent_tool.set_parent_permission(
+        parent,
+        Arc::new(
+            base::context::SessionState::new(project.path().to_path_buf())
+                .with_permission_mode(PermissionMode::AcceptEdits),
+        ),
+    );
+    let member = agent_tool.inner.team_member_permission();
+    let write = registry.get("Write");
+    let outcome = sub_decides(
+        &member,
+        write.as_ref(),
+        "Write",
+        &serde_json::json!({"file_path": project.path().join("locked/a.txt"), "content": "x"}),
+        project.path(),
+        &Arc::new(
+            base::context::SessionState::new(project.path().to_path_buf())
+                .with_permission_mode(PermissionMode::AcceptEdits),
+        ),
+    )
+    .await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "{outcome:?}"
     );
 }
 
+/// A tool whose own check always asks, matched by the content it carries.
+struct AsksAboutDeploys;
+#[async_trait]
+impl base::tool::Tool for AsksAboutDeploys {
+    fn name(&self) -> &str {
+        "Deploy"
+    }
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "deploy (test tool)"
+    }
+    fn input_schema(&self, _: PathStyle) -> Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn check_permissions(
+        &self,
+        _: &Value,
+        _: &ToolContext,
+    ) -> base::tool::PermissionDecision {
+        base::tool::PermissionDecision::ask("deploy?")
+    }
+    fn permission_match_content(&self, input: &Value) -> Option<String> {
+        input["target"].as_str().map(str::to_string)
+    }
+    async fn call(
+        &self,
+        _: Value,
+        _: ToolContext,
+        _: ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        Ok(base::tool::ToolResult::text("deployed"))
+    }
+}
+
+/// "Always allow" answered to a sub-agent's question is kept in the parent
+/// session's rule set: the parent's next call of the same kind runs without
+/// asking, a different one is still asked about.
+#[tokio::test]
+async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
+    use base::interface::permission::{PermissionOutcome, PermissionRequest};
+    let rules = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
+        Arc::new(permissions::gate::PermissionGate::empty()),
+    ));
+    let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
+    let agent_tool = test_agent_tool();
+    agent_tool.set_parent_permission(PermissionSet::of(rules.clone()), parent_session.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
+    let pending: runtime::agent::PendingPermissions = Arc::default();
+    agent_tool.set_parent_pending_permissions(pending.clone());
+
+    let deploy: Arc<dyn base::tool::Tool> = Arc::new(AsksAboutDeploys);
+    let staging = serde_json::json!({"target": "staging"});
+    let sub = agent_tool.sub_permission();
+    let sub_session = Arc::new(base::context::SessionState::new("/tmp".into()));
+    let asked = tokio::spawn({
+        let (sub, sub_session, deploy, staging) = (
+            sub.clone(),
+            sub_session.clone(),
+            deploy.clone(),
+            staging.clone(),
+        );
+        async move {
+            sub_decides(
+                &sub,
+                Some(&deploy),
+                "Deploy",
+                &staging,
+                Path::new("/tmp"),
+                &sub_session,
+            )
+            .await
+        }
+    });
+    let prompt_id = loop {
+        match rx
+            .recv()
+            .await
+            .expect("the question reaches the parent's channel")
+        {
+            AgentEvent::PermissionPrompt { prompt_id, .. } => break prompt_id,
+            _ => continue,
+        }
+    };
+    pending
+        .lock()
+        .unwrap()
+        .remove(&prompt_id)
+        .expect("registered with the parent")
+        .send(runtime::agent::PermissionDecision::PermitAlways {
+            scope: runtime::agent::PersistScope::Session,
+        })
+        .unwrap();
+    assert!(matches!(asked.await.unwrap(), PermissionOutcome::Permit));
+
+    let parent_decides = |input: Value| {
+        let (rules, parent_session, deploy) =
+            (rules.clone(), parent_session.clone(), deploy.clone());
+        async move {
+            rules
+                .decide(&PermissionRequest::new(
+                    "Deploy",
+                    Some(&deploy),
+                    &input,
+                    Path::new("/tmp"),
+                    "parent",
+                    &parent_session,
+                ))
+                .await
+        }
+    };
+    assert!(matches!(
+        parent_decides(staging.clone()).await,
+        PermissionOutcome::Permit
+    ));
+    assert!(matches!(
+        parent_decides(serde_json::json!({"target": "production"})).await,
+        PermissionOutcome::Prompt { .. }
+    ));
+}
+
 pub(super) struct PromptsForEverything;
 #[async_trait]
-impl Permission for PromptsForEverything {
-    async fn check(
+impl PermissionPolicy for PromptsForEverything {
+    async fn decide(
         &self,
-        _t: &str,
-        _i: &Value,
-        _c: &Path,
-        _s: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Prompt {
             prompt_id: base::id::Id::new().to_string(),

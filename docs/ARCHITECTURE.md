@@ -937,8 +937,8 @@ MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server �
 `Monitor` 算不算只读看它要跑的命令,与 `Bash` 用同一套分类:`tail -f log` 是只读,
 `npm run dev`、`python3 watch.py` 不是——`plan` 下拒绝,`acceptEdits` 下询问。
 
-子 Agent 与团队成员的每次调用都交给父会话的 `Permission` 判
-(`Permission::check_for_delegate`),父会话的规则与宿主的回答都作用于它们,输入校验看的是
+子 Agent 与团队成员的每次调用都交给父会话的权限策略判
+(`PermissionPolicy::decide`,请求的 `delegate` 是子 Agent 的会话),父会话的规则与宿主的回答都作用于它们,输入校验看的是
 子 Agent 自己的会话状态(它读过哪些文件)。判的模式是子 Agent 自己的
 (`PermissionMode::for_delegate`):父会话在 `plan` 或 `dontAsk` 时取两者中更严的那个,父会话是
 `bypassPermissions` 时随父会话。agent 类型 frontmatter 的 `permission_mode` 可以比父会话
@@ -946,7 +946,7 @@ MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server �
 `Agent(team_name)` 里自己要的 `permission_mode` 只能收紧。子 Agent 的询问经父会话的通道到宿主,等待上限就是会话的
 `permission_prompt_timeout`;在那里答"永久允许",记下的是这一条命令或路径,不是整个工具。
 
-skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的 `Permission`(按一次
+skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的权限策略(按一次
 `Bash` 调用判):deny 规则拒掉的不跑,要询问的也不跑——预处理没有人可问——只有规则
 放行的、或 `Bash` 自己静默放行的(项目内的只读命令)才执行,替换成一行写明原因的文字。
 skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开门。未信任项目自己的 skill
@@ -955,7 +955,7 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 模型调 `Skill`、`context: fork` 的 skill 交给子 Agent、用户打 `/name`,三条路径展开 skill
 用的是同一个函数(`skills::expand_for_invocation`,内核经 `SkillCatalog::expand` 调到):
 去掉 frontmatter 的正文 → `` !`cmd` `` → 参数替换 → 正文截到 8000 字符 → 接上 `files:`
-声明的参考文件。`allowed-tools` 授权到这一轮结束(fork 的子 Agent 有自己的 `Permission`,
+声明的参考文件。`allowed-tools` 授权到这一轮结束(fork 的子 Agent 有自己的 `PermissionSet`,
 不受它影响);只写工具名的整类授权只认用户层 skill,项目层与插件包带来的 skill 必须写成
 `Tool(内容)`,而且内容要真正收窄——够得和整类授权一样远的与整类授权一样不给
 (`permissions::dangerous::is_unscoped_grant_in`,拿不准的都算):
@@ -1478,7 +1478,7 @@ sidecar 答得出**:`Meta` 在 transcript 里,而要读 transcript 先得知道�
 
 ## 9. 扩展面
 
-引擎有 45 个扩展点,分三类:**契约** 30 个(换掉一个子系统)、**拦截** 9 个
+引擎有 46 个扩展点,分三类:**契约** 31 个(换掉一个子系统)、**拦截** 9 个
 (坐在某件事的路径上)、**注册** 6 个(往一个集合里贡献)。
 
 扩展只有两种:**Rust**——契约直接 `impl` 那个 trait 交给 `runtime::agent::Builder`,

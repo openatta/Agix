@@ -126,7 +126,7 @@ impl Module for AgentsModule {
         tool.set_event_sender(cx.events.clone());
         tool.set_hooks(cx.hooks.clone());
         tool.set_session_ended(cx.session_ended());
-        tool.set_parent_permission(cx.permission.clone());
+        tool.set_parent_permission(cx.permission.clone(), cx.session_state.clone());
         tool.set_parent_pending_permissions(cx.pending_permissions.clone());
         tool.set_scene(cx.scene.clone());
         if let Some(registry) = cx.scene_registry {

@@ -7,7 +7,7 @@ use super::*;
 /// Where a delegate's permission comes from.
 pub(super) enum Grant {
     /// The caller's, under the run's deny rules.
-    Given(Arc<dyn Permission>),
+    Given(PermissionSet),
     /// A team member's, judged in the member's final mode.
     TeamMember,
 }
@@ -88,7 +88,7 @@ impl Inner {
         let scene_id = scene.id().to_string();
         let permission = match grant {
             Grant::Given(perm) => run.permission(perm),
-            Grant::TeamMember => self.team_member_permission(&tools, sub_settings.permission_mode),
+            Grant::TeamMember => self.team_member_permission(),
         };
         let settings = Arc::new(sub_settings);
 

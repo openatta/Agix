@@ -4,13 +4,10 @@ use super::*;
 
 struct AllowAllTestPermission;
 #[async_trait::async_trait]
-impl base::interface::permission::Permission for AllowAllTestPermission {
-    async fn check(
+impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
+    async fn decide(
         &self,
-        _: &str,
-        _: &serde_json::Value,
-        _: &std::path::Path,
-        _: &str,
+        _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
         base::interface::permission::PermissionOutcome::Permit
     }
@@ -32,7 +29,9 @@ pub(super) async fn test_pool_with_store(
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
     let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
-    let permission: Option<Arc<dyn Permission>> = Some(Arc::new(AllowAllTestPermission));
+    let permission = Some(PermissionSet::without_grants(Arc::new(
+        AllowAllTestPermission,
+    )));
     let paths: Arc<dyn crate::config::DaemonPaths> = Arc::new(
         crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
     );

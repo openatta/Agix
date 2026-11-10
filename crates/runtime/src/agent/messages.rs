@@ -117,7 +117,7 @@ pub enum PermissionDecision {
         reason: String,
     },
     /// Like `Permit`, but also persists an Allow rule beyond this single
-    /// tool call — see `base::interface::permission::Permission::add_persistent_allow`.
+    /// tool call — see `base::interface::permission::PermissionGrants`.
     /// `scope: Session` keeps it in-memory only (rest of this session);
     /// `scope: Local` additionally writes it to `.agix/settings.local.json`
     /// so future sessions in this project inherit it too.

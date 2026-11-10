@@ -107,7 +107,7 @@ async fn an_unattended_command_runs_only_inside_the_sandbox() {
 
 #[tokio::test]
 async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
-    use base::interface::permission::{Permission, PermissionOutcome};
+    use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(project.path().join(".agix/agents")).unwrap();
     std::fs::write(project.path().join(".agix/agents/a.md"), "x").unwrap();
@@ -116,10 +116,11 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
     registry.register(Arc::new(tools::file_write::FileWriteTool));
     let gate = permissions::rule_set_permission::RuleSetPermission::from_settings(
         &base::settings::Settings::defaults_for("m"),
-        base::permission::PermissionMode::Default,
-        registry,
         [],
     );
+    let session = Arc::new(base::context::SessionState::new(
+        project.path().to_path_buf(),
+    ));
     let config = project
         .path()
         .join(".agix/agents/a.md")
@@ -131,9 +132,19 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
         .display()
         .to_string();
     let check = |tool: &'static str, input: serde_json::Value| {
-        let gate = &gate;
+        let (gate, session, found) = (&gate, &session, registry.get(tool));
         let cwd = project.path().to_path_buf();
-        async move { gate.check(tool, &input, &cwd, "s").await }
+        async move {
+            gate.decide(&PermissionRequest::new(
+                tool,
+                found.as_ref(),
+                &input,
+                &cwd,
+                "s",
+                session,
+            ))
+            .await
+        }
     };
 
     let read = check("Read", serde_json::json!({ "file_path": config })).await;
