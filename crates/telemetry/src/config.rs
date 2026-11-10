@@ -13,10 +13,9 @@ use std::collections::HashMap;
 /// Telemetry configuration.
 ///
 /// `Default` is implemented by hand rather than derived: a derived `Default`
-/// would give every `bool` field `false` (including `default_event_enabled`), silently diverging from what `serde` produces
-/// for an absent/empty `telemetry` block in settings.json (`default_true`).
-/// Callers building a config in Rust via `..Default::default()` need the two
-/// to agree, or a struct-update literal quietly disables redaction and every
+/// would give `default_event_enabled` the value `false`, diverging from what
+/// `serde` produces for an absent `telemetry` block in settings.json
+/// (`default_true`); a struct-update literal would then quietly disable every
 /// event kind.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

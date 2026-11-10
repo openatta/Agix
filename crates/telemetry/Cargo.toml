@@ -21,8 +21,10 @@ time          = { workspace = true }
 async-trait   = { workspace = true }
 futures       = { workspace = true }
 sha2          = { workspace = true }
-regex         = { workspace = true }
 hex           = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc        = { workspace = true }
 
 [dev-dependencies]
 model       = { workspace = true }

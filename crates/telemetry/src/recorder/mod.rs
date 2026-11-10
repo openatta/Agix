@@ -582,6 +582,15 @@ impl Model for RecorderModel {
     }
 }
 
+/// Blob writes are synchronous disk IO; on a multi-thread runtime they are
+/// told to the scheduler so other tasks move off this worker meanwhile.
+fn off_the_reactor<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
+        _ => f(),
+    }
+}
+
 impl RecorderModel {
     async fn record(
         &self,
@@ -597,14 +606,16 @@ impl RecorderModel {
 
         // Written before the stream opens, and flushed: a process killed
         // mid-response still leaves behind the request that was in flight.
-        if let Err(e) = self.write_call(
-            &writer,
-            call_seq,
-            &prompt_blocks,
-            &tools,
-            &messages,
-            &params,
-        ) {
+        if let Err(e) = off_the_reactor(|| {
+            self.write_call(
+                &writer,
+                call_seq,
+                &prompt_blocks,
+                &tools,
+                &messages,
+                &params,
+            )
+        }) {
             tracing::warn!(error = %e, "recorder: failed to write call record, continuing unrecorded");
         }
 

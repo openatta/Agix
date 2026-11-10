@@ -83,8 +83,17 @@ fn open_append(path: &std::path::Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
     let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "telemetry path is not a regular file",
+        ));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -189,6 +198,23 @@ mod tests {
         std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
         FileRecorder::new(&loose).unwrap();
         assert_eq!(mode(&loose), 0o600, "a file already there is narrowed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_refused_and_its_target_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("victim");
+        std::fs::write(&target, "keep").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let link = dir.path().join("t.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(FileRecorder::new(&link).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
     }
 
     #[test]

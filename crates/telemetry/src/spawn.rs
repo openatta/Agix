@@ -72,13 +72,7 @@ pub fn spawn(
         return Ok((TelemetryHandle::noop(), TelemetryConsumer::disabled()));
     }
 
-    let policy = RedactionPolicy {
-        redact_error_messages: true,
-        redact_paths: false,
-        redact_emails: true,
-        redact_ip_addresses: false,
-        redact_env_vars: true,
-    };
+    let policy = RedactionPolicy::all();
     let filter = Arc::new(EventFilter::from_config(&config));
 
     let (tx, rx) = tokio::sync::mpsc::channel(queue_size);
