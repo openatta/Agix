@@ -32,7 +32,7 @@ pub struct RuleEntry {
 /// The engine's own rule sources: the three tiers, outermost first, so
 /// project overrides scene overrides global — same precedence as
 /// skills/agents (`crates/core/src/frozen/skill.rs`,
-/// `crates/agents/src/agent_tool.rs::merge_agent_types`).
+/// `crates/agents/src/agent_tool/catalog.rs::merge_agent_types`).
 pub fn default_rule_sources(paths: &PathSettings) -> Vec<Box<dyn RuleProvider>> {
     vec![
         Box::new(RuleDirectory::new(paths.global_data_dir.join("rules"))),

@@ -143,7 +143,7 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
 /// delegate inherits.
 ///
 /// Source-text again, and the shape it looks for is deliberately crude: a
-/// `Builder::new()` in `agent_tool.rs` that is not followed by
+/// `Builder::new()` in `agent_tool/` that is not followed by
 /// `inherited_by_a_delegate` within the same statement block. What it is
 /// really enforcing is that the list lives in one place — a spawn site that
 /// hand-copies three of the four things a delegate needs compiles, passes its
@@ -151,26 +151,35 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
 #[test]
 fn every_spawn_site_takes_the_whole_inheritance() {
     let root = repo_root();
-    let agent_tool = std::fs::read_to_string(root.join("crates/agents/src/agent_tool.rs"))
-        .expect("crates/agents/src/agent_tool.rs should exist");
-
-    let lines: Vec<&str> = agent_tool.lines().collect();
+    let dir = root.join("crates/agents/src/agent_tool");
     let mut missing = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if !line.contains("Builder::new()") {
+    for entry in std::fs::read_dir(&dir).expect("crates/agents/src/agent_tool should exist") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        // The call comes within a few lines of the chain it extends; a
-        // generous window keeps this from breaking on formatting.
-        let window = lines[i..(i + 40).min(lines.len())].join("\n");
-        if !window.contains("inherited_by_a_delegate") {
-            missing.push(i + 1);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.contains("Builder::new()") {
+                continue;
+            }
+            // The call comes within a few lines of the chain it extends; a
+            // generous window keeps this from breaking on formatting.
+            let window = lines[i..(i + 40).min(lines.len())].join("\n");
+            if !window.contains("inherited_by_a_delegate") {
+                missing.push(format!(
+                    "{}:{}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    i + 1
+                ));
+            }
         }
     }
 
     assert!(
         missing.is_empty(),
-        "agent_tool.rs builds a session at line(s) {missing:?} without taking \
+        "agent_tool/ builds a session at {missing:?} without taking \
          `Inner::inherited_by_a_delegate`. Everything a delegated session \
          inherits is on that one list precisely so a new spawn site cannot \
          take some of it: add the call, and if this site genuinely must not \
