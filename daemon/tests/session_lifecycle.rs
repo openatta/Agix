@@ -3498,6 +3498,48 @@ async fn ask_default_blocks_the_tool_when_denied() {
     srv.stop().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_read_that_climbs_out_through_a_symlink_asks_first() {
+    let (srv, _seen) = start_scripted_server(
+        vec![
+            tool_round(
+                "Read",
+                "tool-1",
+                serde_json::json!({"file_path": "link/../secret"}),
+            ),
+            text_round("done"),
+        ],
+        ask_settings(),
+        Duration::from_secs(30),
+    )
+    .await;
+    // The session runs in the server's own directory, not in `work/`.
+    let project = srv._dir.path();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path();
+    std::fs::create_dir_all(outside.join("sub")).unwrap();
+    std::fs::write(outside.join("secret"), "outside-secret").unwrap();
+    std::fs::write(project.join("secret"), "inside-file").unwrap();
+    std::os::unix::fs::symlink(outside.join("sub"), project.join("link")).unwrap();
+
+    let (frames, response) = run_turn_answering_prompts(&srv.sock, "read it", "", |_| {
+        Some(r#"{"type":"deny","reason":"stay in the project"}"#.to_string())
+    })
+    .await;
+
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let prompts = events_of_kind(&frames, "prompt");
+    assert!(
+        prompts.iter().any(|p| p["tool_name"] == "Read"),
+        "a Read landing outside the project must ask: {frames:?}"
+    );
+    let rendered = serde_json::to_string(&events_of_kind(&frames, "tool_result")).unwrap();
+    assert!(!rendered.contains("outside-secret"), "{rendered}");
+
+    srv.stop().await;
+}
+
 const ANSWERS_QUESTIONS: &str = r#","options":{"prompt_types":["permission","question"]}"#;
 
 fn asking_a_question_rounds() -> Vec<Vec<StreamEvent>> {

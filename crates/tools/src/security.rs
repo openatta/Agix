@@ -159,14 +159,25 @@ pub fn readable_roots(ctx: &base::tool::ToolContext) -> Vec<PathBuf> {
 /// Whether a file tool may read `path` (absolute, or relative to the
 /// working directory) without asking — under a [`readable_roots`] entry, or
 /// anywhere when the instance sets `sandbox.read_anywhere`.
+///
+/// Both the normalized spelling and where the OS takes the path as written
+/// have to be inside: the tools open the path as written, and a `..` after a
+/// symlink climbs out of the link's target, not out of the link.
 pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
     if ctx.session.read_anywhere {
         return true;
     }
-    let path = normalize_path_lexically(&ctx.cwd.join(path));
-    readable_roots(ctx)
+    let written = ctx.cwd.join(path);
+    let roots: Vec<PathBuf> = readable_roots(ctx)
         .iter()
-        .any(|root| is_within_root_resolved(&path, &normalize_path_lexically(root)))
+        .map(|root| normalize_path_lexically(root))
+        .collect();
+    [
+        normalize_path_lexically(&written),
+        permissions::path_rule::resolve_physically(&written),
+    ]
+    .iter()
+    .all(|p| roots.iter().any(|root| is_within_root_resolved(p, root)))
 }
 
 #[cfg(test)]
@@ -203,6 +214,29 @@ mod tests {
             resolve_write_target("new/../b.txt", &proj, &fs).await,
             proj.join("b.txt")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_through_a_symlink_before_a_dotdot_is_judged_where_it_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (proj, outside) = (root.join("proj"), root.join("outside"));
+        std::fs::create_dir_all(proj.join("src")).unwrap();
+        std::fs::create_dir_all(outside.join("sub")).unwrap();
+        std::fs::write(outside.join("secret"), "s").unwrap();
+        std::fs::write(proj.join("secret"), "p").unwrap();
+        std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
+        let ctx = base::tool::ToolContext::for_test(proj.clone());
+
+        assert_eq!(
+            std::fs::read_to_string(proj.join("link/../secret")).unwrap(),
+            "s"
+        );
+        assert!(!read_allowed(Path::new("link/../secret"), &ctx));
+        assert!(!read_allowed(&proj.join("link/../secret"), &ctx));
+        assert!(read_allowed(Path::new("src/../secret"), &ctx));
+        assert!(read_allowed(Path::new("secret"), &ctx));
     }
 
     #[test]
