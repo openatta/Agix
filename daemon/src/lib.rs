@@ -15,5 +15,5 @@ pub use assembly::{
 
 pub use assembly::{
     write_lock_file, AllowAllPermission, Assembly, DaemonServer, SessionCtx, SessionCustomizer,
-    SessionPool, Transcripts,
+    SessionPool, Transcripts, UnixBinding,
 };

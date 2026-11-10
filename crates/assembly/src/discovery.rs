@@ -369,6 +369,39 @@ pub fn write_unix_socket_token(path: &Path) -> io::Result<String> {
     Ok(token)
 }
 
+/// The token file a daemon made up for its unix socket, fenced off from every
+/// command it sandboxes. Dropping it removes the file, and only then the
+/// fence, so the token is never readable from a sandbox while it exists.
+pub struct UnixSocketTokenFile {
+    path: PathBuf,
+    _fence: platform::sandbox::Fence,
+}
+
+impl UnixSocketTokenFile {
+    /// [`write_unix_socket_token`] to `path`, fenced.
+    pub fn create(path: &Path) -> io::Result<(String, Self)> {
+        let token = write_unix_socket_token(path)?;
+        let fence = platform::sandbox::fence_secret(path);
+        Ok((
+            token,
+            Self {
+                path: path.to_path_buf(),
+                _fence: fence,
+            },
+        ))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for UnixSocketTokenFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// Atomically write `<dir>/<instance>.json` (tmp + rename, `0600` on Unix).
 pub fn write_instance_file(dir: &Path, instance: &str, file: &InstanceFile) -> io::Result<()> {
     fs::create_dir_all(dir)?;
@@ -685,6 +718,16 @@ mod tests {
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(path.parent().unwrap()), 0o700);
+    }
+
+    #[test]
+    fn the_unix_socket_token_file_goes_with_its_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = unix_socket_token_path(&dir.path().join("daemon"), "desktop");
+        let (token, file) = UnixSocketTokenFile::create(&path).unwrap();
+        assert_eq!(fs::read_to_string(file.path()).unwrap(), token);
+        drop(file);
+        assert!(!path.exists());
     }
 
     #[test]

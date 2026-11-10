@@ -124,9 +124,10 @@ pub async fn serve_ws_listener(
     if server.token().await.is_none() {
         anyhow::bail!("the WebSocket transport requires a token; pass --token");
     }
-    if let Ok(addr) = listener.local_addr() {
-        platform::sandbox::fence_port(addr);
-    }
+    let _fence = listener
+        .local_addr()
+        .ok()
+        .map(platform::sandbox::fence_port);
     let cancel = server.shutdown_token();
     loop {
         tokio::select! {

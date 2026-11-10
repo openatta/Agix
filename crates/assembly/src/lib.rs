@@ -31,5 +31,5 @@ pub mod ws;
 
 pub use assemble::{AllowAllPermission, Assembly, Transcripts};
 pub use discovery::write_lock_file;
-pub use server::DaemonServer;
+pub use server::{DaemonServer, UnixBinding};
 pub use session_pool::{SessionCtx, SessionCustomizer, SessionPool};

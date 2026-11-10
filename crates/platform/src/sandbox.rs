@@ -123,82 +123,101 @@ pub use base::interface::exec::{
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 
-/// What this process serves its clients on.
-static SERVED: RwLock<Served> = RwLock::new(Served {
-    sockets: Vec::new(),
-    ports: Vec::new(),
-    secrets: Vec::new(),
-});
+/// What this process serves its clients on, one entry per live [`Fence`].
+static SERVED: RwLock<Vec<(u64, Served)>> = RwLock::new(Vec::new());
 
-struct Served {
-    sockets: Vec<PathBuf>,
-    ports: Vec<SocketAddr>,
-    secrets: Vec<PathBuf>,
+static NEXT_FENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
+enum Served {
+    Socket(PathBuf),
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Port(SocketAddr),
+    Secret(PathBuf),
 }
 
-/// From now on, no command this process confines may connect to the unix
-/// socket at `path`. For a daemon's own listener, wherever `--socket` put it:
-/// a command connected to it would be its host.
-pub fn fence_socket(path: &Path) {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
-    if !served.sockets.contains(&path) {
-        served.sockets.push(path);
+/// One listener's or one file's place in what no confined command may reach,
+/// until it is dropped. Held as long as what it fences: a port or a path
+/// outlives the listener or file that had it, and whatever is there next is
+/// not this process's to fence.
+#[must_use = "the fence comes down when this is dropped"]
+pub struct Fence(u64);
+
+impl Drop for Fence {
+    fn drop(&mut self) {
+        let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
+        served.retain(|(id, _)| *id != self.0);
     }
+}
+
+fn fence(entry: Served) -> Fence {
+    let id = NEXT_FENCE.fetch_add(1, Ordering::Relaxed);
+    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
+    served.push((id, entry));
+    Fence(id)
+}
+
+/// No command this process confines may connect to the unix socket at
+/// `path` while the returned fence is held. For a daemon's own listener,
+/// wherever `--socket` put it: a command connected to it would be its host.
+pub fn fence_socket(path: &Path) -> Fence {
+    fence(Served::Socket(
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+    ))
 }
 
 /// [`fence_socket`] for a TCP listener. Only the macOS backend can refuse a
 /// port; bwrap can cut the network only as a whole.
-pub fn fence_port(addr: SocketAddr) {
-    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
-    if !served.ports.contains(&addr) {
-        served.ports.push(addr);
-    }
+pub fn fence_port(addr: SocketAddr) -> Fence {
+    fence(Served::Port(addr))
 }
 
-/// From now on, no command this process confines may read the file at
-/// `path`, whatever `sandbox.allow_read` says. For a credential the daemon
-/// writes for its own clients, such as the unix socket's token.
-pub fn fence_secret(path: &Path) {
-    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
-    if !served.secrets.contains(&path) {
-        served.secrets.push(path);
-    }
+/// No command this process confines may read the file at `path` while the
+/// returned fence is held, whatever `sandbox.allow_read` says. For a
+/// credential the daemon writes for its own clients, such as the unix
+/// socket's token.
+pub fn fence_secret(path: &Path) -> Fence {
+    fence(Served::Secret(
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+    ))
 }
 
+#[cfg(feature = "sandbox")]
+fn fenced<T: Ord>(pick: impl Fn(&Served) -> Option<T>) -> Vec<T> {
+    let served = SERVED.read().unwrap_or_else(|e| e.into_inner());
+    let mut found: Vec<T> = served.iter().filter_map(|(_, s)| pick(s)).collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The fenced secrets that are still there.
 #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
 fn fenced_secrets() -> Vec<PathBuf> {
-    let served = SERVED.read().unwrap_or_else(|e| e.into_inner());
-    served
-        .secrets
-        .iter()
-        .filter(|p| p.exists())
-        .cloned()
-        .collect()
+    fenced(|s| match s {
+        Served::Secret(p) if p.exists() => Some(p.clone()),
+        _ => None,
+    })
 }
 
 /// The fenced sockets that are still there.
 #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
 fn fenced_sockets() -> Vec<PathBuf> {
-    let served = SERVED.read().unwrap_or_else(|e| e.into_inner());
-    served
-        .sockets
-        .iter()
-        .filter(|p| is_socket(p))
-        .cloned()
-        .collect()
+    fenced(|s| match s {
+        Served::Socket(p) if is_socket(p) => Some(p.clone()),
+        _ => None,
+    })
 }
 
 #[cfg(all(feature = "sandbox", target_os = "macos"))]
 fn fenced_ports() -> Vec<SocketAddr> {
-    SERVED
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .ports
-        .clone()
+    fenced(|s| match s {
+        Served::Port(addr) => Some(*addr),
+        _ => None,
+    })
 }
 
 #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
@@ -1727,7 +1746,7 @@ mod tests {
         let served = elsewhere.path().join("served.sock");
         let _listeners =
             [&in_state, &served].map(|p| std::os::unix::net::UnixListener::bind(p).unwrap());
-        fence_socket(&served);
+        let _fence = fence_socket(&served);
 
         let mut o = opts("ls", Path::new("/tmp/work"));
         o.policy.state_root = Some(state.path().to_path_buf());
@@ -2438,7 +2457,7 @@ mod tests {
         let in_state = listening(scene.join("daemon.sock"));
         let served = listening(s.elsewhere.join("served.sock"));
         let other = listening(s.elsewhere.join("other.sock"));
-        fence_socket(&served);
+        let _fence = fence_socket(&served);
 
         let nc = |path: &Path| format!("nc -U '{}' < /dev/null", path.display());
         for socket in [&in_state, &served, &other] {
@@ -2471,13 +2490,20 @@ mod tests {
         let other = s.elsewhere.join("other.txt");
         std::fs::write(&secret, "t").unwrap();
         std::fs::write(&other, "o").unwrap();
-        fence_secret(&secret);
+        let fence = fence_secret(&secret);
         assert!(s.runs(&format!("cat '{}'", other.display())));
         assert!(!s.runs(&format!("cat '{}'", secret.display())));
+        drop(fence);
+        assert!(
+            s.runs(&format!("cat '{}'", secret.display())),
+            "the file stayed fenced after its fence was dropped"
+        );
     }
 
     /// The loopback port a daemon listens on is refused the same way: the
     /// token is not in a command's environment, but `--token` is in `ps`.
+    /// Once the fence is dropped with its listener, the port is anybody's
+    /// again.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_sandboxed_command_cannot_connect_to_the_daemons_port() {
@@ -2494,7 +2520,7 @@ mod tests {
             port
         };
         let served = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        fence_port(served.local_addr().unwrap());
+        let fence = fence_port(served.local_addr().unwrap());
         let served = accepting(served);
         let other = accepting(std::net::TcpListener::bind("127.0.0.1:0").unwrap());
 
@@ -2505,6 +2531,30 @@ mod tests {
                 "{host}:{served} was reached"
             );
         }
+        drop(fence);
+        assert!(
+            s.runs(&format!("nc -z 127.0.0.1 {served}")),
+            "the port stayed fenced after its fence was dropped"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_socket_is_fenced_until_its_fence_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = resolve_path(&dir.path().join("served.sock"));
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let fence = fence_socket(&path);
+        let twice = fence_socket(&path);
+        assert!(fenced_sockets().contains(&path));
+        drop(twice);
+        assert!(
+            fenced_sockets().contains(&path),
+            "one listener's fence came down with another's"
+        );
+        drop(fence);
+        assert!(!fenced_sockets().contains(&path));
     }
 
     #[cfg(target_os = "macos")]
@@ -2512,7 +2562,7 @@ mod tests {
     fn the_profile_refuses_unix_sockets_in_the_state_root_and_the_fenced_ones() {
         let socket = std::env::temp_dir().join(format!("fenced-{}.sock", std::process::id()));
         let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        fence_socket(&socket);
+        let _fence = fence_socket(&socket);
         let policy = SandboxPolicy {
             state_root: Some(PathBuf::from("/srv/agix-state")),
             network_mode: NetworkMode::Allowlist,
@@ -2543,7 +2593,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let secret = dir.path().join("unix.token");
         std::fs::write(&secret, "t").unwrap();
-        fence_secret(&secret);
+        let _fence = fence_secret(&secret);
         let policy = SandboxPolicy {
             deny_read: vec![PathBuf::from("/nowhere")],
             allow_read: vec![dir.path().to_path_buf()],

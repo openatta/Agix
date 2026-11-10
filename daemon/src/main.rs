@@ -469,22 +469,23 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
             Some(token) => (token, None),
             None => {
                 let path = daemon::discovery::unix_socket_token_path(&daemon_root, &instance_name);
-                let token = daemon::discovery::write_unix_socket_token(&path).map_err(|e| {
-                    anyhow::anyhow!(
-                        "--unix-socket-auth: could not write {}: {e}",
-                        path.display()
-                    )
-                })?;
-                platform::sandbox::fence_secret(&path);
-                (token, Some(path))
+                let (token, file) =
+                    daemon::discovery::UnixSocketTokenFile::create(&path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "--unix-socket-auth: could not write {}: {e}",
+                            path.display()
+                        )
+                    })?;
+                (token, Some(file))
             }
         })
     } else {
         None
     };
-    let token_file = unix_socket_token
-        .as_ref()
-        .and_then(|(_, path)| path.clone());
+    let (unix_socket_token, token_file) = match unix_socket_token {
+        Some((token, file)) => (Some(token), file),
+        None => (None, None),
+    };
     let identity = platform::process_identity::ProcessIdentity::current();
     let instance_file = daemon::discovery::InstanceFile {
         instance: instance_name.clone(),
@@ -494,7 +495,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         tcp: daemon_config.tcp_addr.map(|a| a.to_string()),
         ws: daemon_config.ws_addr.map(|a| a.to_string()),
         unix_socket_auth: unix_socket_token.is_some(),
-        token_file: token_file.clone(),
+        token_file: token_file.as_ref().map(|f| f.path().to_path_buf()),
         scenes: instance_scenes,
         protocol_version: daemon::discovery::INSTANCE_PROTOCOL_VERSION,
         started_at: rfc3339_now(),
@@ -594,7 +595,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     if let Some(token) = daemon_config.tcp_token.clone() {
         server.set_tcp_token(token).await;
     }
-    if let Some((token, _)) = unix_socket_token {
+    if let Some(token) = unix_socket_token {
         server.set_tcp_token(token).await;
         server.require_unix_socket_auth();
     }
@@ -652,9 +653,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     .await;
     drop(lock);
     let _ = std::fs::remove_file(&groups_file);
-    if let Some(path) = &token_file {
-        let _ = std::fs::remove_file(path);
-    }
+    drop(token_file);
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
     info!("daemon stopped");
     Ok(())

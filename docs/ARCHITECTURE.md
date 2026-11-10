@@ -859,6 +859,18 @@ socket(项目就在状态目录里时除外)和这个进程监听的 socket(`--s
 TCP / WebSocket 靠 token:子进程环境里没有 `AGIX_DAEMON_TOKEN`,但 `--token` 写在命令行上时
 `ps` 里谁都看得见,Linux 上这就是一条出口,所以用环境变量传 token。
 
+这个进程监听的 socket、端口和下面的 token 文件登记在 `platform::sandbox::fence_socket` /
+`fence_port` / `fence_secret` 返回的 `Fence` 上,跟它们护着的东西同生共死:监听器关了、token
+文件删了就注销,之后别的服务用到同一个端口或路径不再被挡。token 文件先删、后注销,存在期间
+始终挡着。
+
+**Linux 围不了单个端口。** bwrap 只有 `--unshare-net` 一个网络开关,没有按地址、端口过滤的
+原语,所以 `fence_port` 在 Linux 上什么也不做:网络开着(`network_mode: unrestricted`,缺省)时,
+沙箱里的命令连得上 daemon 的 TCP / WebSocket 端口,也连得上本机任何监听回环的服务。挡住它的只有
+token——子进程环境里没有 `AGIX_DAEMON_TOKEN`。要在 Linux 上把这条路也断掉,用
+`network_mode: deny_all` 或 `allowlist`(两者在 bwrap 上都是整个断网),或者不开 TCP /
+WebSocket、只用 unix socket。
+
 **已知的缺口。** 上面两道合起来,只有"命令在沙箱外、又 `setsid` 离开了 daemon 起的进程组"这一种
 情况挡不住:lineage 按进程组认,`setsid` 之后认不出来;沙箱本来能拦 connect,可这时根本没有沙箱。
 没有沙箱的情况有三种:Linux 上没装 bwrap、Windows、设置里开了 `dangerously_disable_sandbox`。

@@ -1336,6 +1336,10 @@ WebAssembly 载体整个移除。
   状态目录与各场景目录下的 `settings*.json`、`mcp.local.json` 和 `mcp/oauth/` 一律读不到。
   无人值守的会话另外读不了钥匙串(`security`)、连不上 tmux / screen。子模块 git 目录里的
   `config`、`hooks/` 等和主仓库的一样只读,沙箱里的 `git submodule sync` 之类会失败(§6.3)。
+- **监听关了,端口和 socket 不再被沙箱围着。** 以前进程里关掉的监听器的端口、socket 路径一直被
+  挡,之后别的服务用到也连不上;现在跟监听器一起注销,`--unix-socket-auth` 的 token 文件也是
+  删掉时注销。Linux 上本来就围不了单个端口,网络开着时沙箱里的命令连得上 TCP / WebSocket 端口,
+  要断就用 `network_mode: deny_all` / `allowlist`(§6.3)。
 
 #### hooks
 
@@ -1583,6 +1587,11 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
   也编得过。
 - `EngineConfig::process_groups` 删除。它只在 `Builder` 内部转手:会话的进程组台账一直经
   `Builder::process_groups(ledger)` 给,这条不变。
+- `platform::sandbox::fence_socket` / `fence_port` / `fence_secret` 返回 `Fence`,持有期间才挡,
+  丢掉就注销(`#[must_use]`);自己起监听器、写凭据文件的,把它和监听器或文件放在一起。
+  `DaemonServer::bind_unix` 返回 `UnixBinding`(监听器连同它的 `Fence`),`serve_unix_listener`
+  收它,只是转手的调用方不用改;`discovery::UnixSocketTokenFile::create` 写 token 文件并登记,
+  丢掉时先删文件再注销。
 
 **权限判断与执行用同一套 provider。**
 

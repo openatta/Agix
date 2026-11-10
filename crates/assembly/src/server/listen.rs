@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// A unix listener [`DaemonServer::bind_unix`] bound, and the sandbox fence
+/// around its socket, which comes down when the listener does.
+pub struct UnixBinding {
+    listener: UnixListener,
+    _fence: platform::sandbox::Fence,
+}
+
 /// The pid of the peer on `stream`, if this process started it.
 pub(super) fn started_by_this_daemon(stream: &tokio::net::UnixStream) -> Option<u32> {
     let pid = u32::try_from(stream.peer_cred().ok()?.pid()?).ok()?;
@@ -78,9 +85,10 @@ impl DaemonServer {
         if self.tcp_token.read().await.is_none() {
             anyhow::bail!("TCP requires token");
         }
-        if let Ok(addr) = listener.local_addr() {
-            platform::sandbox::fence_port(addr);
-        }
+        let _fence = listener
+            .local_addr()
+            .ok()
+            .map(platform::sandbox::fence_port);
         loop {
             tokio::select! {
                 _ = self.shutdown_token.cancelled() => break,
@@ -117,7 +125,7 @@ impl DaemonServer {
     /// every listener before announcing the daemon — a client that finds it
     /// must be able to connect. No command this process sandboxes can connect
     /// to it.
-    pub fn bind_unix(socket_path: &Path) -> anyhow::Result<UnixListener> {
+    pub fn bind_unix(socket_path: &Path) -> anyhow::Result<UnixBinding> {
         if let Some(parent) = socket_path.parent() {
             crate::discovery::create_private_dir(parent)?;
         }
@@ -130,9 +138,12 @@ impl DaemonServer {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
         }
-        platform::sandbox::fence_socket(socket_path);
+        let fence = platform::sandbox::fence_socket(socket_path);
         info!(path=%socket_path.display());
-        Ok(listener)
+        Ok(UnixBinding {
+            listener,
+            _fence: fence,
+        })
     }
 
     /// Accept loop over an already-bound unix listener.
@@ -143,10 +154,8 @@ impl DaemonServer {
     /// trust its own project or answer its own permission prompts. The
     /// lineage check misses a process that left its process group; under
     /// [`Self::require_unix_socket_auth`] such a process also needs the token.
-    pub async fn serve_unix_listener(
-        self: Arc<Self>,
-        listener: UnixListener,
-    ) -> anyhow::Result<()> {
+    pub async fn serve_unix_listener(self: Arc<Self>, bound: UnixBinding) -> anyhow::Result<()> {
+        let UnixBinding { listener, _fence } = bound;
         loop {
             tokio::select! {
                 _ = self.shutdown_token.cancelled() => break,
