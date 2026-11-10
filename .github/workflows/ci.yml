@@ -29,6 +29,11 @@ jobs:
       - name: fmt
         run: cargo fmt --all --check
 
+      # The architecture guards read only metadata and syntax trees, so they
+      # compile in seconds and a violation fails before the full build starts.
+      - name: architecture guards
+        run: cargo test -p guards
+
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

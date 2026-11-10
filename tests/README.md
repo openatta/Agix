@@ -321,6 +321,53 @@ OAuth 请求）不走 shell 的 `HTTP(S)_PROXY`，不用另设 `NO_PROXY`。
 在，文档在，测试也在，就是从来没跑过。所以 `carriers` job 里那两步现在跑的是
 `cargo test`。
 
+## 架构守卫
+
+代码结构上的不变量由 `tests/guards` 守，不跑引擎。`cargo test -p guards` 编一次之后几秒
+就跑完，CI 在 fmt 之后第一步就跑它，架构违规在前几分钟失败。
+
+守卫读的是同一份工作区画面：`cargo metadata` 给出包、target、依赖边和 feature；每个
+target 从根文件出发沿 `mod` 声明走模块树，只有编译器会读的文件才被扫描，测试代码按
+`cfg(test)` 在语法树里分辨，而不是看文件放在哪。`tests/guards/src` 是共用支撑
+（`scan`、`modgraph`、`allow`、`ratchet`、`fswalk`），`tests/guards/tests/<族>.rs` 是各
+族守卫，编进同一个测试程序，所以只跑一族：
+`cargo test -p guards --test integration process_state::`。
+
+机制按可靠程度依次选：编译期、运行时登记、`cargo metadata`、syn、文本。只有 markdown
+文档对账和 CI 里对 `cargo tree` 输出的 grep 用文本。
+
+名单类守卫（`PROCESS_STATE`、`HOME_READERS`、`DEP_EXCEPTIONS`……）两个方向都检查：代码里多出
+名单没写的会失败，名单里写了而代码里已经没有的也会失败；每一项都必须带理由。失败消息给出
+`文件:行: 片段`、违反了什么、怎么改、名单在哪。规模棘轮的数据在 `tests/guards/ratchet/`，
+只降不升：`AGIX_UPDATE_RATCHET=1` 把每条上限收紧到实测值，不会调高；要调高就在同一提交里改
+数据文件并在提交说明里写理由。`AGIX_UPDATE_RATCHET=seed` 只在新建棘轮时用一次。
+
+| 编号 | 内容 | 机制 | 位置 | 状态 |
+|---|---|---|---|---|
+| CT-1 | 只有 assembly 能构造 `SessionPool` | 编译期：`SessionPool::new` 是 `pub(crate)` | `crates/assembly/src/session_pool/mod.rs` | 已落地 |
+| CT-2 | base 不起进程、不读环境变量 | clippy `disallowed-*` | `crates/core/clippy.toml` | 未落地，归 base 瘦身（D7 S5a） |
+| CT-3 | 方法表只有一份 | 宏生成 | `crates/assembly/src/server/table.rs` | 未落地，归 RPC 层（D4 S8） |
+| DEP-1..7 | 分级、边的方向、platform、没有 wasm 运行时、脚本载体可选、内核不带模块 feature | `cargo metadata` | `tests/guards/tests/deps.rs` | 已落地 |
+| BASE-1..3 | base 的依赖白名单、tokio 特性子集 | `cargo metadata` | `tests/guards/tests/base.rs` | 文件已建、内容为空，归 base 瘦身（D7 S5c） |
+| UD-1 | 未用依赖和放错位置的依赖 | `cargo metadata` 加 syn | `tests/guards/tests/unused_deps.rs` | 已落地 |
+| PS-1..4 | 进程级状态：非朴素类型的 `static`、`thread_local!` 都登记，`static mut` 禁止 | syn | `tests/guards/tests/process_state.rs` | 已落地 |
+| WIR-1 | hook 接线，与 `UNWIRED_EVENTS` 双向比对 | `HookEvent::ALL` 加 syn | `tests/guards/tests/wiring.rs` | 已落地 |
+| WIR-2 | 每种遥测 kind 都有生产方 | `EventPayload::KINDS` 加 syn | 同上 | 已落地 |
+| WIR-3 | 组合根调用了接线用的函数 | syn | 同上 | 已落地 |
+| WIR-4 | 委派的 spawn 点只有一个，并带上整份继承 | syn | 同上 | 已落地，委派环境改造（D2）后改写 |
+| WIR-5 | 只有 tool_policy 询问场景 `permits_tool` | 文本 | `daemon/tests/wiring_coverage.rs` | 保留，归接口收口（D5 S1）改写或删除 |
+| SRC-1 | 只有入口点和机器事实读 `$HOME` | syn | `tests/guards/tests/sources.rs` | 已落地 |
+| SRC-2 | 插件披露不提脚本引擎 | syn | 同上 | 已落地 |
+| SRC-3 | 每个 `.rs` 文件都属于某个 target | 模块树加 fswalk | 同上 | 已落地 |
+| SRC-4 | 只有名单里的 crate 在生产代码里起子进程 | syn | 同上 | 未落地，等 D7 删完子进程入口后（D8-9） |
+| SZ-1..3 | 生产文件不超过 800 行、函数不超过 100 行，超限的按现值入棘轮 | syn 的行号 | `tests/guards/tests/size.rs`、`tests/guards/ratchet/size.txt` | 已落地，拆分（D6）后收紧 |
+| G1、G2a、G3–G5 | 会话池与线格式分层 | syn 加棘轮 | `tests/guards/tests/layering.rs` | 文件已建、内容为空，归 RPC 层（D4） |
+| A1–A8 | 接口面 | syn | `tests/guards/tests/api_surface.rs` | 文件已建、内容为空，归接口收口（D5） |
+| RT-1 | 协议文档对账 | 运行时加文档文本 | `daemon/tests/protocol_doc_matches_dispatch.rs` | 保留文本版，归 RPC 层（D4 S8）改成运行时 |
+| RT-5 | 两个池互不可见 | 运行时 | `daemon/tests/two_pools_one_process.rs` | 已落地 |
+| DOC-* | 扩展点、hook、README、遥测清单的文档对账 | 文档用文本，代码一侧用运行时常量或 `guards::scan` | 各自原位 | 已落地 |
+| CI-1 | base 和 platform 没有 http 栈（传递依赖） | `cargo tree` | `.github/workflows/ci.yml` | 已落地 |
+
 ## fixture 项目
 
 `tests/fixtures/template_project/` 是模板项目：有 `.agix/settings.json`（hooks +
