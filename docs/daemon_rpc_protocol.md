@@ -42,7 +42,7 @@ id 和路径换成真的)发给一个真实 daemon,不得被拒为 `INVALID_PARA
 
 | 传输 | 怎么开 | 认证 |
 |---|---|---|
-| Unix socket | 默认开(`--socket <path>` 可改) | 文件权限:socket 为 `0600`,daemon 为它新建的目录为 `0700`;daemon 自己起的进程连不上,见 §5.1 |
+| Unix socket | 默认开(`--socket <path>` 可改) | 文件权限:socket 为 `0600`,daemon 为它新建的目录为 `0700`;daemon 自己起的进程连不上,见 §5.1。`--unix-socket-auth` 时另要 `daemon.auth` 握手 |
 | TCP | `--listen <addr>` | `daemon.auth` 握手,见 §5.1 |
 | WebSocket | `--listen-ws <addr>` | `daemon.auth` 握手 + Origin 校验,见 §5.1 |
 
@@ -108,13 +108,16 @@ read-modify-write 同一个索引文件而丢更新。读取方 `read_dir` 汇�
   "socket": "/Users/x/.agix/daemon/desktop.sock",
   "tcp": "127.0.0.1:7878",              // 仅在 --listen 时出现
   "ws": "127.0.0.1:7879",               // 仅在 --listen-ws 时出现
+  "unix_socket_auth": true,             // 仅在 --unix-socket-auth 时出现:socket 也要先 daemon.auth
+  "token_file": "/Users/x/.agix/daemon/auth/desktop.token", // 仅在 daemon 自己生成了 token 时出现
   "scenes": ["code", "harnix", "mini"],
   "protocol_version": 3,
   "started_at": "2026-08-11T10:00:00Z" }
 ```
 
 写入是原子的(临时文件 + rename,`0600`),读取方不会读到半截 JSON。
-`tcp` / `ws` 缺省表示那条传输没有监听。**token 不在这里**,它是凭据,不是地址。
+`tcp` / `ws` 缺省表示那条传输没有监听。**token 不在这里**,它是凭据,不是地址;`token_file`
+只是它所在的路径(见 §5.1)。
 
 **陈旧条目**:daemon 崩溃时文件会残留。读取方必须按 `(pid, pid_start_time)`
 **两项一起**判定进程是否仍存活 —— 只比 `pid` 会在 pid 被系统复用时把已死的 daemon
@@ -482,7 +485,7 @@ bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会�
 
 ### 5.1 认证
 
-TCP 与 WebSocket 需要,两者用**同一个 token、同一段校验代码**。连接建立后的
+TCP 与 WebSocket 需要(开了 `--unix-socket-auth` 时 unix socket 也要),都用**同一个 token、同一段校验代码**。连接建立后的
 **第一帧**必须是:
 
 ```jsonc
@@ -505,7 +508,7 @@ daemon 的全部场景与会话,而且**没有任何逐方法的授权**。特�
 把 socket 或 token 暴露出去,等同于暴露模型凭据本身。连接不加密(§1),token 在不可信的
 网络上一过就算泄露了。
 
-Unix socket 靠文件系统权限(只有 daemon 的用户能连),不握手,一样是"能连上就全权"。
+Unix socket 靠文件系统权限(只有 daemon 的用户能连),缺省不握手,一样是"能连上就全权"。
 唯一的例外是 daemon 自己起的进程:对端是 daemon 的子孙(模型调用的 `Bash`、hook、stdio MCP
 服务器,以及它们留在后台的进程)时,daemon 先发一帧
 `{"jsonrpc":"2.0","id":null,"error":{"code":-32003,…}}` 再关连接,一个请求都不读。它们和宿主
@@ -513,6 +516,14 @@ Unix socket 靠文件系统权限(只有 daemon 的用户能连),不握手,一�
 自己的询问。沙箱里的命令另外连不上 socket(macOS 上也连不上 TCP / WebSocket 端口),见
 `ARCHITECTURE.md` §6.3。宿主要嵌 daemon 又要让自己起的子进程连它的,得另开一个不由 daemon
 进程起的客户端。
+
+**`--unix-socket-auth`(缺省关)让 unix socket 也握手**,第一帧同上必须是 `daemon.auth`,拒绝
+方式也相同。token 用 `--token` / `AGIX_DAEMON_TOKEN` 给的那个(与 TCP / WebSocket 共用);没给
+就每次启动新生成一个 64 位十六进制串,写进 `~/.agix/daemon/auth/<instance>.token`(`0600`,
+目录 `0700`,沙箱里的命令读不到),路径记在实例文件的 `token_file` 里(§2),daemon 退出时删除。
+自己起 daemon 的宿主用环境变量传 token,不落盘;连别人起的 daemon 的客户端读 `token_file`。
+实例文件里 `unix_socket_auth` 为真时就要握手。这个开关补的是"命令在沙箱外又 `setsid` 离开了
+进程组"这个缺口,它挡得住什么、挡不住什么见 `ARCHITECTURE.md` §6.3。
 
 #### WebSocket 的 Origin 校验
 

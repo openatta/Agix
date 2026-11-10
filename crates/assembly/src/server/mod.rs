@@ -18,7 +18,9 @@
 //! shared token (`--token`/`AGIX_DAEMON_TOKEN`, see
 //! [`DaemonServer::authenticate_tcp`]) before any other method is dispatched
 //! — once a connection passes the handshake it is trusted for its lifetime,
-//! same as a Unix socket connection. In particular, `config.setProvider` lets
+//! same as a Unix socket connection. With `--unix-socket-auth`
+//! ([`DaemonServer::require_unix_socket_auth`]) the unix socket takes the same
+//! handshake. In particular, `config.setProvider` lets
 //! any authenticated caller point future LLM traffic at an
 //! attacker-controlled `base_url`/`api_key` — treat socket/token exposure
 //! with the same care as exposing the LLM credentials themselves.
@@ -80,6 +82,7 @@ pub struct DaemonServer {
     started_at: Instant,
     shutdown_token: CancellationToken,
     tcp_token: tokio::sync::RwLock<Option<String>>,
+    unix_socket_auth: std::sync::atomic::AtomicBool,
 }
 
 impl DaemonServer {
@@ -90,6 +93,7 @@ impl DaemonServer {
             started_at: Instant::now(),
             shutdown_token,
             tcp_token: tokio::sync::RwLock::new(None),
+            unix_socket_auth: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -105,6 +109,14 @@ impl DaemonServer {
 
     pub async fn set_tcp_token(&self, token: String) {
         *self.tcp_token.write().await = Some(token);
+    }
+
+    /// From now on a unix socket connection, too, must open with
+    /// `daemon.auth`, against the token [`Self::set_tcp_token`] set. With no
+    /// token set, every such connection is refused.
+    pub fn require_unix_socket_auth(&self) {
+        self.unix_socket_auth
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn shutdown_token(&self) -> CancellationToken {

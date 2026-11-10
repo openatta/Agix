@@ -1,5 +1,6 @@
-//! The `daemon.auth` handshake for network transports: first-frame check and
-//! constant-time token comparison.
+//! The `daemon.auth` handshake for network transports, and for the unix
+//! socket under `--unix-socket-auth`: first-frame check and constant-time
+//! token comparison.
 
 use super::*;
 
@@ -19,7 +20,7 @@ pub(super) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 impl DaemonServer {
-    /// TCP-only handshake: the first line on the connection must be a
+    /// The handshake: the first line on the connection must be a
     /// `daemon.auth` request carrying `params.token` equal to the token
     /// configured via `--token`/`AGIX_DAEMON_TOKEN`. Writes back an ok/err
     /// response either way. Returns `true` if the connection may proceed to

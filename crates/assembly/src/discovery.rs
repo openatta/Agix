@@ -321,9 +321,51 @@ pub struct InstanceFile {
     /// A web front end reads this to know which port to connect to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws: Option<String>,
+    /// The unix socket, too, wants `daemon.auth` first (`--unix-socket-auth`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unix_socket_auth: bool,
+    /// Where the token for that handshake is, when the daemon made one up
+    /// rather than being given one. The path, never the token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<PathBuf>,
     pub scenes: Vec<String>,
     pub protocol_version: u32,
     pub started_at: String,
+}
+
+/// Where a daemon instance writes the token it made up for its unix socket.
+pub fn unix_socket_token_path(daemon_root: &Path, instance: &str) -> PathBuf {
+    daemon_root.join("auth").join(format!("{instance}.token"))
+}
+
+/// A fresh random token, written to `path` (`0600`, in a `0700` directory)
+/// and returned.
+pub fn write_unix_socket_token(path: &Path) -> io::Result<String> {
+    if let Some(parent) = path.parent() {
+        create_private_dir(parent)?;
+    }
+    let token: String = [base::id::Id::new(), base::id::Id::new()]
+        .iter()
+        .flat_map(|id| id.as_bytes().to_vec())
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    {
+        use std::io::Write;
+        let mut file = options.open(&tmp)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    Ok(token)
 }
 
 /// Atomically write `<dir>/<instance>.json` (tmp + rename, `0600` on Unix).
@@ -620,10 +662,28 @@ mod tests {
             socket: PathBuf::from(format!("/tmp/{instance}.sock")),
             tcp: None,
             ws: None,
+            unix_socket_auth: false,
+            token_file: None,
             scenes: vec!["code".to_string()],
             protocol_version: INSTANCE_PROTOCOL_VERSION,
             started_at: "2026-08-12T00:00:00Z".to_string(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_unix_socket_token_is_fresh_and_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = unix_socket_token_path(&dir.path().join("daemon"), "desktop");
+        let first = write_unix_socket_token(&path).unwrap();
+        let second = write_unix_socket_token(&path).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(first.len(), 64);
+        assert_eq!(fs::read_to_string(&path).unwrap(), second);
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
     }
 
     #[test]

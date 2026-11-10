@@ -19,18 +19,15 @@ impl DaemonServer {
         self: Arc<Self>,
         reader: Reader,
         sink: Sink,
-        tcp: bool,
+        needs_auth: bool,
     ) -> anyhow::Result<()> {
         let mut lines = FrameReader::new(reader);
         let client = self.accept_connection(sink);
         let in_flight = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_PER_CONNECTION));
 
-        // Unix socket connections are trusted for their lifetime by file
-        // permissions alone (see the module doc comment's trust-boundary
-        // note) — no handshake needed. TCP connections must authenticate
-        // once, up front, before any RPC method is dispatched. This one stays
-        // serial on purpose: nothing may be dispatched before it passes.
-        if tcp && !self.authenticate_lines(&mut lines, &client).await {
+        // The handshake stays serial on purpose: nothing may be dispatched
+        // before it passes.
+        if needs_auth && !self.authenticate_lines(&mut lines, &client).await {
             return Ok(());
         }
 

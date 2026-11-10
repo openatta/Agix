@@ -140,7 +140,9 @@ impl DaemonServer {
     /// A connection from a process this daemon started — a command, a hook,
     /// an MCP server, or what one of them left running — is refused: file
     /// permissions cannot tell it from the host, and as a client it could
-    /// trust its own project or answer its own permission prompts.
+    /// trust its own project or answer its own permission prompts. The
+    /// lineage check misses a process that left its process group; under
+    /// [`Self::require_unix_socket_auth`] such a process also needs the token.
     pub async fn serve_unix_listener(
         self: Arc<Self>,
         listener: UnixListener,
@@ -161,10 +163,13 @@ impl DaemonServer {
                                     refuse_own_descendant(stream, pid).await;
                                     return;
                                 }
+                                let needs_auth = this
+                                    .unix_socket_auth
+                                    .load(std::sync::atomic::Ordering::SeqCst);
                                 let (r, w) = stream.into_split();
                                 let writer: ByteWriter = Arc::new(AsyncMutex::new(Box::new(w)));
                                 let sink: Sink = Arc::new(LineSink(writer));
-                                if let Err(e) = this.handle_connection(Box::new(r), sink, false).await {
+                                if let Err(e) = this.handle_connection(Box::new(r), sink, needs_auth).await {
                                     warn!(error=%e);
                                 }
                             });

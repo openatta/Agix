@@ -317,11 +317,6 @@ skill、web 工具、WebSocket、载体与包方案。
 
 ### 部署 `agixd` 的
 
-- **`daemon.doctor` 新增 `sandbox.unattended_network`。** 服务无人值守场景、`sandbox.network_mode`
-  为 `unrestricted`、`sandbox.unattended_requires_network_policy` 关着,三条同时成立时报 `degraded`。
-  这个开关计划在后续 0.3.x 版本改为缺省开;现在就在全局 `settings.json` 里写
-  `"sandbox": {"unattended_requires_network_policy": true}`(或把 `network_mode` 改成 `deny_all` /
-  `allowlist`)即可消掉告警并按新缺省试跑。
 - **`release` 就是小体积构建**:fat LTO、`opt-level = "s"`、`panic = "abort"`,`agixd` 约 11 MB。
   `release-small` profile 没有了,原来用它的改成 `--release`。要 panic 时展开、任务里的 panic
   只结束那个任务的,用 `--profile release-fast`(`opt-level = 3`,体积翻倍)。按 `--release`
@@ -1298,6 +1293,17 @@ WebAssembly 载体整个移除。
   true` 让 bypass 一律按 `default` 运行。文件读不了、有别的键、值不对时拒绝所有工具调用,
   `daemon.doctor` 的 `settings.managed` 报 `failing`。没有这个文件的部署不受影响
   (`ARCHITECTURE.md` §6.1"用户规则与部署方规则")。
+- **新增 `--unix-socket-auth`(缺省关)。** 打开后 unix socket 连接也要先 `daemon.auth`:token 用
+  `--token` / `AGIX_DAEMON_TOKEN` 给的,没给就每次启动生成一个,写进
+  `~/.agix/daemon/auth/<instance>.token`(沙箱里的命令读不到),实例文件多 `unix_socket_auth` 与
+  `token_file` 两个字段。它缓解的是"沙箱外的命令 `setsid` 之后连上 socket"(没装 bwrap 的 Linux、
+  `dangerously_disable_sandbox`),细节见 `ARCHITECTURE.md` §6.3。之后的版本可能改为缺省开,
+  宿主现在就该支持在 unix socket 上握手:实例文件里 `unix_socket_auth` 为真时,先发 `daemon.auth`。
+- **`daemon.doctor` 新增 `sandbox.unattended_network`。** 服务无人值守场景、`sandbox.network_mode`
+  为 `unrestricted`、`sandbox.unattended_requires_network_policy` 关着,三条同时成立时报 `degraded`。
+  这个开关计划在后续 0.3.x 版本改为缺省开;现在就在全局 `settings.json` 里写
+  `"sandbox": {"unattended_requires_network_policy": true}`(或把 `network_mode` 改成 `deny_all` /
+  `allowlist`)即可消掉告警并按新缺省试跑。
 
 #### 插件
 
@@ -1436,4 +1442,7 @@ WebAssembly 载体整个移除。
   跳过;`Settings::load` 填写每个 `mcp_servers` 条目的 `command` 来自哪一层的目录):用结构体字面量
   构造 `Settings` 的要补 `mcp_server_dirs: Default::default()`。表里没有的 server 由会话池放在全局
   配置目录启动。
-
+- `assembly::discovery::InstanceFile` 多了 `unix_socket_auth: bool` 与 `token_file: Option<PathBuf>`
+  (旧文件缺这两个键照样读得进来);逐字段构造的要补上。新增 `DaemonServer::require_unix_socket_auth`、
+  `assembly::discovery::{unix_socket_token_path, write_unix_socket_token}` 与
+  `platform::sandbox::fence_secret`(登记一个沙箱里的命令一律读不到的文件)。

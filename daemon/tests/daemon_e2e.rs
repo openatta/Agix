@@ -2076,6 +2076,64 @@ async fn tcp_accepts_correct_token_then_dispatches_normally() {
     let _ = handle.await;
 }
 
+/// Under `require_unix_socket_auth` the unix socket takes the TCP handshake:
+/// nothing is served before `daemon.auth`, a wrong token is refused, and the
+/// right one opens the connection for everything else.
+#[tokio::test]
+async fn the_unix_socket_can_be_made_to_require_the_handshake() {
+    let (server, sock, _dir, handle) = start_server().await;
+    server.set_tcp_token("s3cr3t".into()).await;
+    server.require_unix_socket_auth();
+
+    async fn exchange(sock: &std::path::Path, lines: &[&str]) -> Vec<serde_json::Value> {
+        let mut client = UnixStream::connect(sock).await.unwrap();
+        let (r, mut w) = client.split();
+        let mut br = BufReader::new(r);
+        let mut answers = Vec::new();
+        for line in lines {
+            if w.write_all(format!("{line}\n").as_bytes()).await.is_err() {
+                break;
+            }
+            let mut buf = String::new();
+            if br.read_line(&mut buf).await.unwrap_or(0) == 0 {
+                break;
+            }
+            answers.push(serde_json::from_str(&buf).unwrap());
+        }
+        answers
+    }
+    let status = r#"{"jsonrpc":"2.0","method":"daemon.status","id":2}"#;
+
+    let refused = exchange(&sock, &[status, status]).await;
+    assert_eq!(refused.len(), 1, "served after the refusal: {refused:?}");
+    assert_eq!(refused[0]["error"]["code"], codes::UNAUTHORIZED);
+
+    let wrong = exchange(
+        &sock,
+        &[
+            r#"{"jsonrpc":"2.0","method":"daemon.auth","params":{"token":"nope"},"id":1}"#,
+            status,
+        ],
+    )
+    .await;
+    assert_eq!(wrong.len(), 1, "{wrong:?}");
+    assert_eq!(wrong[0]["error"]["code"], codes::UNAUTHORIZED);
+
+    let admitted = exchange(
+        &sock,
+        &[
+            r#"{"jsonrpc":"2.0","method":"daemon.auth","params":{"token":"s3cr3t"},"id":1}"#,
+            status,
+        ],
+    )
+    .await;
+    assert_eq!(admitted[0]["result"]["authenticated"], true, "{admitted:?}");
+    assert!(admitted[1]["result"]["version"].is_string(), "{admitted:?}");
+
+    server.shutdown_token().cancel();
+    let _ = handle.await;
+}
+
 #[tokio::test]
 async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
     // `serve_tcp_listener` is `pub` specifically so tests (and any other

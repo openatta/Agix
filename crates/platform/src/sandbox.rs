@@ -116,11 +116,13 @@ use std::sync::RwLock;
 static SERVED: RwLock<Served> = RwLock::new(Served {
     sockets: Vec::new(),
     ports: Vec::new(),
+    secrets: Vec::new(),
 });
 
 struct Served {
     sockets: Vec<PathBuf>,
     ports: Vec<SocketAddr>,
+    secrets: Vec<PathBuf>,
 }
 
 /// From now on, no command this process confines may connect to the unix
@@ -141,6 +143,28 @@ pub fn fence_port(addr: SocketAddr) {
     if !served.ports.contains(&addr) {
         served.ports.push(addr);
     }
+}
+
+/// From now on, no command this process confines may read the file at
+/// `path`, whatever `sandbox.allow_read` says. For a credential the daemon
+/// writes for its own clients, such as the unix socket's token.
+pub fn fence_secret(path: &Path) {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut served = SERVED.write().unwrap_or_else(|e| e.into_inner());
+    if !served.secrets.contains(&path) {
+        served.secrets.push(path);
+    }
+}
+
+#[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+fn fenced_secrets() -> Vec<PathBuf> {
+    let served = SERVED.read().unwrap_or_else(|e| e.into_inner());
+    served
+        .secrets
+        .iter()
+        .filter(|p| p.exists())
+        .cloned()
+        .collect()
 }
 
 /// The fenced sockets that are still there.
@@ -630,6 +654,12 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
             path(&socket)
         ));
     }
+    for secret in fenced_secrets() {
+        s.push_str(&format!(
+            "(deny file-read* (literal \"{}\"))\n",
+            path(&secret)
+        ));
+    }
     for addr in fenced_ports() {
         let host = if addr.ip().is_loopback() {
             "localhost"
@@ -870,6 +900,9 @@ fn linux_wrap(
     }
     for socket in daemon_sockets(roots.state_root.as_deref()) {
         bind_over(&mut args, Path::new("/dev/null"), &socket);
+    }
+    for secret in fenced_secrets() {
+        bind_over(&mut args, Path::new("/dev/null"), &secret);
     }
 
     // Deny-read: an empty tmpfs over a directory, /dev/null over a file.
@@ -2230,6 +2263,21 @@ mod tests {
         assert!(!s.runs(&relative), "reached by a relative name");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_command_cannot_read_a_fenced_secret() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let secret = s.elsewhere.join("unix.token");
+        let other = s.elsewhere.join("other.txt");
+        std::fs::write(&secret, "t").unwrap();
+        std::fs::write(&other, "o").unwrap();
+        fence_secret(&secret);
+        assert!(s.runs(&format!("cat '{}'", other.display())));
+        assert!(!s.runs(&format!("cat '{}'", secret.display())));
+    }
+
     /// The loopback port a daemon listens on is refused the same way: the
     /// token is not in a command's environment, but `--token` is in `ps`.
     #[cfg(target_os = "macos")]
@@ -2289,6 +2337,30 @@ mod tests {
                 .unwrap_or_else(|| panic!("{rule}\n{profile}"));
             assert!(at > allow, "an allowlist entry would reopen it:\n{profile}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_fenced_secret_stays_unreadable_whatever_allow_read_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("unix.token");
+        std::fs::write(&secret, "t").unwrap();
+        fence_secret(&secret);
+        let policy = SandboxPolicy {
+            deny_read: vec![PathBuf::from("/nowhere")],
+            allow_read: vec![dir.path().to_path_buf()],
+            ..Default::default()
+        };
+        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
+        let rule = format!(
+            "(deny file-read* (literal \"{}\"))",
+            resolve_path(&secret).display()
+        );
+        let denied = profile
+            .find(&rule)
+            .unwrap_or_else(|| panic!("{rule}\n{profile}"));
+        let allowed = profile.find("(allow file-read*").unwrap();
+        assert!(denied > allowed, "allow_read would reopen it:\n{profile}");
     }
 
     /// No root given: fall back to the conventional location rather than

@@ -35,6 +35,10 @@ Options:
       --listen-ws <ADDR>           Bind a WebSocket listener at a loopback ADDR
                                    (e.g. 127.0.0.1:7879); requires --token or AGIX_DAEMON_TOKEN
       --token <SECRET>             Shared secret for TCP and WebSocket auth [env: AGIX_DAEMON_TOKEN]
+      --unix-socket-auth           The unix socket, too, requires daemon.auth: with the
+                                   --token / AGIX_DAEMON_TOKEN secret when one is given, else
+                                   with a fresh one written to
+                                   ~/.agix/daemon/auth/<instance>.token
       --scene <ID>                 Scene this daemon serves; also selects the state root
                                    ~/.agix/scenes/<scene>/ [default: code]
       --scenes <ID,...>            Additional scenes to activate alongside --scene
@@ -140,6 +144,9 @@ struct Cli {
     /// The managed settings file, in place of the platform's. It must exist:
     /// one someone named and that is not there refuses every tool call.
     managed_settings: Option<PathBuf>,
+
+    /// The unix socket requires `daemon.auth` as TCP does.
+    unix_socket_auth: bool,
 }
 
 fn number<T: std::str::FromStr>(parser: &mut lexopt::Parser, flag: &str) -> Result<T, lexopt::Error>
@@ -209,6 +216,7 @@ impl Cli {
             worker_threads: None,
             mcp_policy: None,
             managed_settings: None,
+            unix_socket_auth: false,
         };
         let mut parser = lexopt::Parser::from_args(args);
         while let Some(arg) = parser.next()? {
@@ -242,6 +250,7 @@ impl Cli {
                 }
                 Long("mcp-policy") => cli.mcp_policy = Some(parser.value()?.into()),
                 Long("managed-settings") => cli.managed_settings = Some(parser.value()?.into()),
+                Long("unix-socket-auth") => cli.unix_socket_auth = true,
                 Short('h') | Long("help") => return Ok(Invocation::Help),
                 Short('V') | Long("version") => return Ok(Invocation::Version),
                 _ => return Err(arg.unexpected()),
@@ -449,6 +458,33 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         );
     }
     platform::orphans::persist_to(groups_file.clone());
+
+    let unix_socket_token = if cli.unix_socket_auth {
+        let given = cli
+            .token
+            .clone()
+            .or_else(|| std::env::var("AGIX_DAEMON_TOKEN").ok())
+            .or_else(|| daemon_config.tcp_token.clone());
+        Some(match given {
+            Some(token) => (token, None),
+            None => {
+                let path = daemon::discovery::unix_socket_token_path(&daemon_root, &instance_name);
+                let token = daemon::discovery::write_unix_socket_token(&path).map_err(|e| {
+                    anyhow::anyhow!(
+                        "--unix-socket-auth: could not write {}: {e}",
+                        path.display()
+                    )
+                })?;
+                platform::sandbox::fence_secret(&path);
+                (token, Some(path))
+            }
+        })
+    } else {
+        None
+    };
+    let token_file = unix_socket_token
+        .as_ref()
+        .and_then(|(_, path)| path.clone());
     let identity = platform::process_identity::ProcessIdentity::current();
     let instance_file = daemon::discovery::InstanceFile {
         instance: instance_name.clone(),
@@ -457,6 +493,8 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
         socket: socket.clone(),
         tcp: daemon_config.tcp_addr.map(|a| a.to_string()),
         ws: daemon_config.ws_addr.map(|a| a.to_string()),
+        unix_socket_auth: unix_socket_token.is_some(),
+        token_file: token_file.clone(),
         scenes: instance_scenes,
         protocol_version: daemon::discovery::INSTANCE_PROTOCOL_VERSION,
         started_at: rfc3339_now(),
@@ -556,6 +594,10 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     if let Some(token) = daemon_config.tcp_token.clone() {
         server.set_tcp_token(token).await;
     }
+    if let Some((token, _)) = unix_socket_token {
+        server.set_tcp_token(token).await;
+        server.require_unix_socket_auth();
+    }
 
     // Every listener is bound here, before the daemon is announced, so a port
     // already in use fails startup instead of leaving a daemon running without
@@ -610,6 +652,9 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     .await;
     drop(lock);
     let _ = std::fs::remove_file(&groups_file);
+    if let Some(path) = &token_file {
+        let _ = std::fs::remove_file(path);
+    }
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
     info!("daemon stopped");
     Ok(())
@@ -723,6 +768,8 @@ mod tests {
         assert_eq!(cli.worker_threads, None);
         assert_eq!(cli.mcp_policy, None);
         assert_eq!(cli.managed_settings, None);
+        assert!(!cli.unix_socket_auth);
+        assert!(parse(&["--unix-socket-auth"]).unix_socket_auth);
     }
 
     #[test]

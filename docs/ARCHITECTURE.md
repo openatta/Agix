@@ -837,6 +837,24 @@ socket(项目就在状态目录里时除外)和这个进程监听的 socket(`--s
 TCP / WebSocket 靠 token:子进程环境里没有 `AGIX_DAEMON_TOKEN`,但 `--token` 写在命令行上时
 `ps` 里谁都看得见,Linux 上这就是一条出口,所以用环境变量传 token。
 
+**已知的缺口。** 上面两道合起来,只有"命令在沙箱外、又 `setsid` 离开了 daemon 起的进程组"这一种
+情况挡不住:lineage 按进程组认,`setsid` 之后认不出来;沙箱本来能拦 connect,可这时根本没有沙箱。
+没有沙箱的情况有三种:Linux 上没装 bwrap、Windows、设置里开了 `dangerously_disable_sandbox`。
+这时一条用户批准过的命令(比如跑仓库脚本的 `npm test`)起的后台进程能连上 unix socket,当宿主用。
+这是接受下来的限制,不是疏漏:按对端 pid 往上找祖先在孤儿身上同样断链,文件权限分不出同一个用户
+的两个进程。
+
+缓解办法是 `--unix-socket-auth`(缺省关):unix socket 也要先 `daemon.auth`。token 是
+`--token` / `AGIX_DAEMON_TOKEN` 给的那个;没给就每次启动新生成一个,写进
+`~/.agix/daemon/auth/<instance>.token`(`0600`,目录 `0700`),实例文件的 `token_file` 指向它,
+退出时删掉。这个文件登记进沙箱的读禁止名单(`sandbox::fence_secret`):macOS profile 末尾
+`(deny file-read* (literal …))`,`sandbox.allow_read` 放不开;Linux 上 `/dev/null` 挂在它上面。
+要说清这个开关挡住的是什么:上面三种没有沙箱的情况里,命令同样能读这个文件,所以 token 文件
+在那里挡不住;真正起作用的写法是宿主自己起 daemon、经 `AGIX_DAEMON_TOKEN` 传 token、不落盘
+——这样连 socket 还得先拿到另一个进程的环境(Linux 上同一用户可以读 `/proc/<pid>/environ`,
+门槛高了,但不是没有)。打开它之后每个宿主都要在 unix socket 上握手,所以先做成可选,
+之后再考虑缺省开。
+
 包管理与构建工具要写自己的缓存(`pip`、`npm`、`cargo`、`go` …),所以沙箱里的 `Bash`
 另外可写 `sandbox.cache_directories`:按工具链分组的缓存目录,缺省列好了 python / node /
 rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置文件里写一个组名就整组替换

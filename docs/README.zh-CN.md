@@ -330,7 +330,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 ——每个文档里写的响应形状都有测试拿真实 daemon 的回答对照。
 
 常用参数:`--scene` / `--scenes`(服务哪些场景)、`--listen` / `--listen-ws` 加
-`--token`(带认证的 TCP / WebSocket)、`--session-cap`、`--worker-threads`、`--permission-prompt-timeout`、`--mcp-policy`、`--managed-settings`。
+`--token`(带认证的 TCP / WebSocket)、`--unix-socket-auth`(unix socket 也要认证)、`--session-cap`、`--worker-threads`、`--permission-prompt-timeout`、`--mcp-policy`、`--managed-settings`。
 每个运行中的 daemon 在 `~/.agix/daemon/instances.d/` 下写一个发现文件,客户端按场景
 找到它,不用拼路径。
 

@@ -411,7 +411,7 @@ project trust, MCP, plugins, scheduling — and every documented response shape 
 against a real daemon's answer by a test.
 
 Useful flags: `--scene` / `--scenes` (which scenes to serve), `--listen` /
-`--listen-ws` with `--token` (TCP / WebSocket, authenticated), `--session-cap`,
+`--listen-ws` with `--token` (TCP / WebSocket, authenticated), `--unix-socket-auth` (the unix socket authenticates too), `--session-cap`,
 `--worker-threads`, `--permission-prompt-timeout`, `--mcp-policy`, `--managed-settings`. Each running daemon writes a discovery file
 under `~/.agix/daemon/instances.d/`, so a client finds it by scene instead of
 by path.
