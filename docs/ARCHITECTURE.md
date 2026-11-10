@@ -26,9 +26,11 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
            │
  模块    agents(+team) · mcp · skills · script-host · plugin
            │                经 runtime::module::Module 进入会话
- 内核    runtime ────────── turn loop、提示词组装、工具调度、扩展点调度、Module 接口
+ 内核    runtime ────────── turn loop、提示词组装、工具调度、扩展点调度、Module 接口(K3)
            │
-         model · scene · history · session · compaction · telemetry · hooks · permissions · tools
+         hooks · tools · session · compaction ──────── K2
+           │
+         model · scene · history · telemetry · permissions · ptc ── K1
            │
  本机    platform ───────── 执行层的本机实现(进程、文件、网络、OS 沙箱)、崩溃钩子、进程身份
            │
@@ -37,21 +39,45 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 
 **依赖方向**(`tests/guards/tests/deps.rs` 检查):
 
-- 内核 crate 只依赖契约与其它内核 crate,**不依赖任何模块 crate**。
+- 守卫读 `cargo metadata`,不读 `Cargo.toml` 文本:target 段、build 依赖、optional 依赖都在内;
+  每个工作区成员在 `CRATES` 一张表里有一个级别,没登记的 crate 过不了。第一方的 normal / build
+  边只能向下指,dev 边不限。
+- 内核分三级,同级之间不互相依赖:**K1**(`model`、`history`、`telemetry`、`scene`、
+  `permissions`、`ptc`)只需要契约与本机层,**K2**(`hooks`、`tools`、`session`、`compaction`)
+  建在 K1 上,**K3**(`runtime`)建在两者之上。内核 crate **不依赖任何模块 crate**。
+- 级别不对的依赖只能登记在 `NOT_YET` 里,写明什么能去掉它;名单带陈旧检查,边没了条目就得删。
 - 模块依赖契约与内核;模块之间的依赖只经 `Module::requires` 声明的顺序。
 - 只有装配层与外壳知道有哪些模块;模块 feature 的 `#[cfg]` 只出现在
   `assembly`(模块清单、会话池的 MCP 部分、RPC 服务)与 `daemon` 里。
 - `platform` 只依赖契约,契约不依赖它。用它的是真要碰本机的 crate——`tools`、`runtime`、
-  `model`、`hooks`、`permissions`、`mcp`、`plugin`、`agents`、`assembly`、`daemon`,清单与
+  `model`、`hooks`、`permissions`、`mcp`、`plugin`、`assembly`、`daemon`,清单与
   各自的理由在 `MAY_USE_PLATFORM`;`scene`、`history`、`session`、`compaction`、
-  `telemetry`、`ptc`、`team`、`skills`、`script-host` 只经契约,测试里用到的除外。
+  `telemetry`、`ptc`、`team`、`skills`、`script-host`、`agents` 只经契约,测试里用到的除外。
+  子 Agent 要的执行层是父会话的那一套,经 `AgentTool::with_exec` 传下去,自己不碰本机。
+- 内核与模块不能带模块命名的 feature,也不转发模块 feature;模块开关只在 `assembly`
+  里以 `dep:<模块>` 的形式出现。`wasmtime` 一类的运行时任何成员都不依赖。
+- 唯一装配点由可见性保证:`SessionPool::new` 是 `pub(crate)`,`assembly` 之外建不出第二个池,
+  要池只能走 `assembly::assemble::pool`。
+- 进程级状态(`static`、`thread_local!`)由 `tests/guards/tests/process_state.rs` 按语法树
+  扫生产代码:类型不是朴素数据的 `static` 必须登记名字、种类与理由,`static mut` 不允许,
+  登记了而代码里没有的条目失败。
 
 RPC 服务和会话池在同一个 crate 里是体积上的取舍:两者共用大量泛型实例(serde_json、
 tokio、rmcp),分在两个 crate 时各编一份,release 的 `agixd` 因此大约 2.8 MB。
 
 **`core` 里没有任何第一方依赖。** 它定义 trait 与数据类型,别的 crate 实现它们。
 这条约束是整个扩展面成立的前提:一个宿主要替换某个子系统时,面对的是 `core` 里的
-一个 trait,而不是某个具体 crate 的内部结构。执行层的本机实现也不在 `core`:
+一个 trait,而不是某个具体 crate 的内部结构。
+
+**`base` 只有契约、数据、策略与判定,不起进程。** 子进程环境的策略与判定
+(`SubprocessEnv::resolve` 给出 `EnvPlan`)在 `base`,把它写进一个 `tokio::process::Command`
+的 `platform::apply_subprocess_env` 在 `platform`。引擎自己要起的进程(`git`、`pdftotext`)
+不直接 spawn,经 `base::engine_exec::EngineExec` 交给会话的 `exec.process`(§5);排空输出、
+收齐退出状态的 `base::interface::exec::capture` 对任何 `Process` 都能用。生产代码里真正
+`spawn` 的是 `platform` 的 `LocalProcess` 与沙箱探测,和 MCP stdio 服务(经 process-wrap)。
+这是约定,不是守卫:没有一条测试禁止别处 `Command::new`。
+
+执行层的本机实现也不在 `core`:
 "本机"是 `platform` 对这些 trait 的一种回答,`in_process()` 是另一种。本机 HTTP 客户端
 (`LocalNetwork`)在 `platform` 默认开启的 `http` feature 下,OS 沙箱后端在它的 `sandbox`
 feature 下(`assembly` / `daemon` 的同名 feature 转发过去)。
@@ -103,6 +129,15 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 `mcp_servers` 的,子会话拿到父会话连接按 server 收窄出的一份 `McpServers`
 (`McpServers::granted`,连接共用、不重连),经 `Builder::mcp_servers` 归子会话独占:
 授予的工具和父会话的一样宣告给模型、随 server 的变更通知刷新,没授予的 server 看不到(§3.4)。
+
+宿主能换掉的、会话读的几样东西,都有 `Builder` 上的注入口,缺省是本机的那一套,`build()` 里
+各接一处,子 Agent 的会话沿用父会话的:
+
+| 注入口 | 换掉的契约 | 说明 |
+|---|---|---|
+| `Builder::exec(ExecProviders)` | `exec.process` / `filesystem` / `network` / `sandbox` | 工具调用、引擎的 git 与 `pdftotext`、warmup 的预连接都落在它上面;与 `Builder::process_groups` 互斥,同设时 `build()` 报错——要记进程组就把台账带在传入的 provider 里(`platform::local_providers_with_ledger`) |
+| `Builder::token_counter(..)` | `token.count` | 压缩触发的那个数、请求开销与 `inspectContext` 的逐块计数、`compact_now` 的目标大小,同一口径 |
+| `Builder::rule_provider(..)` | `rules.source` | 缺省 `RuleTiers::for_paths`(全局、场景、项目三层,后来居上);每次组装提示词时取一次 |
 
 ### 1.2 档位
 
@@ -339,7 +374,8 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 会话的后台任务(子 Agent、团队成员、后台程序、Monitor)跑在它的运行体之下,停掉旧 `Agent`
 就停掉了它们,所以**还有后台任务在跑的会话不重建**:绑定失效的那种推迟,这一轮照旧用现在的
-引擎,标记留着下次再看;`session.setPrompt`、换厂商的 `session.setModel` 返回 `SESSION_BUSY`。
+引擎,标记留着下次再看;`session.setPrompt`、换厂商的 `session.setModel` 返回 `SESSION_BUSY`
+(`reason: "background_tasks"`,另带 `running_task_ids`)。
 真重建时,旧 `SessionState` 记着的任务(结束了的那些,`session.tasks` / `TaskOutput` 还查得到)
 和模型还没读到的通知(`<task-notification>` 等)带到新的上面。`plan` 模式与 todo 列表不靠这一步:
 它们记在日志里(`agix.session_state`,§4),驱逐、重启后恢复的会话同样读得回来。
@@ -376,6 +412,34 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 文件工具给模型看的路径由 `Scene::path_style()` 定缺省:`harnix` 用相对工作目录的路径
 (参数说明、Glob / Grep / Write / Edit 的输出都按相对写),其余场景用绝对路径;设置里写了
 `path_style` 就以设置为准。相对路径省掉的是每次调用都重复出现的那段项目前缀。
+
+### 3.2.4 会话池里一个会话的回合槽
+
+池里每个会话条目有一个 `TurnSlot`,回合状态不再由几个互相对得上的字段隐式表示:
+
+- **阶段** `SessionPhase`:`Idle`、`Running`(带回合 id、发起方、发起的订阅者)、`Rebuilding`。
+  所有转换在池的 `sessions` 锁里同步完成;`is_busy`、`interrupt`、`setModel` / `setPrompt` 的预检查、
+  `inspectContext` 一类的上下文请求、目标的换轮,读的都是阶段,不去 `try_lock` 别的东西。
+- **占槽与命名是一次转换。** `run_turn` 在一次锁里判定目标轮、占槽,`Idle` 直接进 `Running`,
+  回合从占住那一刻起就有名字:这时到达的 `session.interrupt` 发的是 `CancelTurn { turn_id }`,
+  引擎在消息到达时记得它已被取消,这一轮以 `cancelled` 结束。
+- **重建是 `Idle → Rebuilding`。** 失败回到 `Idle`,成功时新条目整个替换旧条目。重建期间
+  上下文请求与不换厂商的 `setModel` 报 `SESSION_BUSY`,`on_busy: "steer"` 的 `run_turn` 等重建结束,
+  不往正在停止的旧引擎里塞。
+- **代际号** `Generation`:池上的计数器,每次 `create` 取一个。"这还是不是同一个引擎"比较的是它,
+  不比较指针。旧回合在 `session.close` 之后用同一个 id 恢复的新条目上写回(`TurnComplete`
+  写 context、首轮命名、自动命名)时先核对代际号,不符就什么都不写。
+- **事件出口** `SessionHub` 每个会话一个(叶子锁:订阅者、待答提问、最近活动时间),事件当场同步交给
+  每个 `SessionWatcher::deliver`,不去锁池。池不拼 JSON 帧也不认识 `rpc::Client`:会话事件是领域类型
+  `SessionFrame`,线上的 §7 帧由 `rpc/events.rs` 的 `SessionEventPayload::project` 投影,
+  `server/watch.rs` 为连接实现 `SessionWatcher`。投递是同步入队,所以 `turn_complete`
+  一定排在同一连接上 `run_turn` 的响应之前。定时任务与目标轮的 `run_turn` 不带发起订阅者
+  (`Option<Arc<dyn SessionWatcher>>` 传 `None`),它们的帧照样发给全部订阅者。
+- **错误是领域类型。** 池的方法返回 `PoolError`,池里不出现错误码;`server/errors.rs` 一处 `match`
+  决定错误码、message 和 `data` 的形状。场景检查(`SCENE_MISMATCH`)在池里做,定时任务与目标轮不检查。
+- **`SESSION_BUSY` 带 `reason`**:`turn_running`(必带回合 id)、`rebuilding`、`background_tasks`、
+  `previous_engine`(上一个引擎在宽限期内没停下),说的是会话此刻在忙什么,不是哪个方法被拒
+  (协议文档 §9.1)。
 
 ### 3.3 Sidechain 会话
 
@@ -449,6 +513,17 @@ release 构建记一条 error。
 场景允许的,加上插件经 `Registrar::admit_tools` 放行的自己登记的工具(场景 `disallowed_tools()`
 里的除外)。注册表过滤、每次请求的工具宣告、MCP 适配器同步都读这一份;`runtime` 里别处不直接问
 `Scene::permits_tool`,`daemon/tests/wiring_coverage.rs` 守着这一条。
+
+**Tool 接口是 11 个方法**:`name`、`description`、`spec`、`input_schema(style)`、`guide`、
+`call_traits(input)`、`permission_match_content`、`accept_edits_allows`、`check_permissions`、
+`validate_input`、`call`。与调用输入无关的事实写在 `spec()` 返回的 `ToolSpec` 里:`origin`
+(`Builtin` / `Mcp { server }` / `Plugin { name }`,来源不再靠 `source` 字符串的前缀)、
+`traits`(只读、并发安全、破坏性)、`permission`(匹配内容的种类、自判放行是否压过模式、是否退出
+plan 模式的那一次调用)、`short_description`、`callable_from_code`、`code_result`、`needs_dispatch`;
+看输入才知道的(`Bash` 与 `Monitor` 的只读)覆写 `call_traits`。权限闸、并发分批、`RunCode`、
+工具表、`ToolSearch`、遥测都读 `spec()` 与 `call_traits()`,没有第二套能力方法。`ToolSpec`、
+`CallTraits`、`ToolOrigin`、`ToolPermissionSpec` 是 `#[non_exhaustive]`,加字段不破坏实现方。
+工具没有"我是延迟的""我被谁包过"这样的属性,见下面第 3 条。
 
 三条硬约束:
 
@@ -622,7 +697,7 @@ Agent 的上下文,本来就该在一处。
    连它们一起停。Bash、Monitor、command hook 经本机 provider 起,引擎自己跑的 git 与 `Read`
    调的 `pdftotext` 经会话的 `exec.process` 起(`base::engine_exec`),都是这条规矩;MCP
    stdio server 经 process-wrap 起,同样领一个会话、停的时候整组停。
-5. **子进程的环境只在一处决定。** `base::interface::exec::env::SubprocessEnv`:缺省
+5. **子进程的环境只在一处决定。** `base::interface::exec::SubprocessEnv`(策略与判定在 `base`,写进命令的 `platform::apply_subprocess_env` 在 `platform`):缺省
    继承宿主环境但去掉引擎自己的凭据,`allowlist` 模式只留 `PATH` / `HOME` / 语言环境等几项
    加上 `allow` 列出的。Bash、Monitor、command hook、MCP stdio 服务、引擎自己跑的 git 与
    `Read` 调的 `pdftotext` 都按它起——引擎的 git 与 `pdftotext` 经会话的 `exec.process` 起,

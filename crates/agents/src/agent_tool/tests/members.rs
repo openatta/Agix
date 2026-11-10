@@ -653,7 +653,7 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
 /// for their *general/uncertain* case (`Bash`'s own `check_permissions`
 /// returns `Allow` only for known-safe read-only commands, `Ask`
 /// otherwise) — unlike `NamedTool` above, which unconditionally reports
-/// `is_read_only() == true` and never overrides `check_permissions()`
+/// a read-only `call_traits()` and never overrides `check_permissions()`
 /// (so it always short-circuits to `Allow`, regardless of mode — not
 /// representative of a real mutating tool for this test's purpose).
 pub(super) struct AskingWriteTool;
@@ -695,7 +695,7 @@ impl base::tool::Tool for AskingWriteTool {
 /// Empirical check (not just reading the gate's source): does the
 /// `RuleSetPermission` built for team members under the zero-config
 /// `Plan` default actually deny `SendMessage`, the way `PermissionGate`'s
-/// bare mode-dispatch (`Plan if !is_read_only => Deny`) would suggest in
+/// bare mode-dispatch (`Plan if !read_only => Deny`) would suggest in
 /// isolation? `SendMessageTool::check_permissions()` returns `Allow`
 /// unconditionally, and `PermissionGate::check()`'s step 2 consults the
 /// tool's own `check_permissions()` *before* falling through to mode

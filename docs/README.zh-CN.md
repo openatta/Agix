@@ -146,9 +146,11 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
              │
  模块      agents(+team) · mcp · skills · script-host · plugin
              │                经 runtime::module::Module 进入会话
- 内核      runtime ────────── turn loop、提示词装配、工具调度、Module 接口
+ 内核      runtime ────────── turn loop、提示词装配、工具调度、Module 接口(K3)
              │
-           model · scene · history · session · compaction · telemetry · hooks · permissions · tools
+           hooks · tools · session · compaction ─────────────────────────────────────────── (K2)
+             │
+           model · scene · history · telemetry · permissions · ptc ──────────────────────── (K1)
              │
  本机      platform ───────── 执行层的本机实现、崩溃钩子、进程身份
              │

@@ -66,7 +66,7 @@ pub trait Permission: Send + Sync {
     /// against.
     ///
     /// A rule-engine implementation has to look a tool up by name to consult
-    /// its `check_permissions`/`is_read_only`/`permission_match_content` —
+    /// its `check_permissions`/`call_traits`/`permission_match_content` —
     /// which means the registry it holds must be *the same one* dispatch uses.
     /// It usually is not at construction time: a daemon builds the handler
     /// from its pool-level template of self-contained built-ins, and

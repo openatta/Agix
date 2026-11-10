@@ -204,9 +204,11 @@ other way.
               │
  modules    agents (+team) · mcp · skills · script-host · plugin
               │                enter a session through runtime::module::Module
- kernel     runtime ────────── turn loop, prompt assembly, tool dispatch, the Module interface
+ kernel     runtime ────────── turn loop, prompt assembly, tool dispatch, the Module interface (K3)
               │
-            model · scene · history · session · compaction · telemetry · hooks · permissions · tools
+            hooks · tools · session · compaction ─────────────────────────────────────────── (K2)
+              │
+            model · scene · history · telemetry · permissions · ptc ──────────────────────── (K1)
               │
  machine    platform ───────── this machine's execution providers, crash hook, process identity
               │

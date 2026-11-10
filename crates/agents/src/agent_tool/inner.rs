@@ -265,7 +265,7 @@ pub(super) struct Inner {
     /// Serializes `spawn_or_message_team_member`'s whole find-or-create
     /// decision. Without this, two concurrent calls for the same
     /// `(team_name, member_name)` key (the `Agent` tool is
-    /// `is_concurrency_safe`, so this is reachable — e.g. the model issuing
+    /// `concurrency_safe`, so this is reachable — e.g. the model issuing
     /// two parallel tool calls that both target the same not-yet-existing
     /// member) can both read "doesn't exist yet" before either has
     /// inserted, and both spawn — the second insert silently overwrites the

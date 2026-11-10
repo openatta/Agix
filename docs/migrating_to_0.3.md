@@ -1965,3 +1965,263 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `telemetry` 不再依赖 `regex`。写了这四个字段的结构体字面量要删掉它们。
 - `runtime::agent::Agent::compact_now` 多一个 `&CancellationToken` 参数:它取消时摘要放弃、历史不变,
   返回 `None`。不需要中断的传 `&CancellationToken::new()`。
+
+## 0.3.11 之后:到 0.3.12
+
+0.3.12 把几处"同一件事有几条路径"收成一条:Tool 接口、延迟加载、会话池的回合状态与事件出口、
+引擎自己起的进程、`Builder` 的注入口。对 RPC 客户端是几处边界行为变化(`SESSION_BUSY` 的 `data`、
+重建期间的拒绝、`interrupt`);对嵌入方是一批删除与改名,没有兼容层。
+
+最低 Rust 版本不变。0.3.11 一节里写到、这一版已删除或改名的路径,在本节的"路径去向"一栏集中说明,
+0.3.11 一节本身保持原样。
+
+### 部署 `agixd` 的
+
+#### 引擎自己起的进程
+
+- **引擎的 `git` 走会话的 `exec.process`。** 以前它直接用 `tokio::process` 起在宿主上,环境按缺省
+  策略取,超时只杀 `git` 本身,它派生的 filter driver 留在原地。现在每轮的 `git status`、worktree
+  的创建与清理、`ExitWorktree` 查未保存工作的 `git`,都经 `base::engine_exec::EngineExec` 交给
+  会话的 `exec.process`:环境用与会话命令同一份 `sandbox.subprocess_env`,进入 `LocalProcess` 的
+  进程组与台账,超时整组停;会话的命令进沙箱时它也进同一个沙箱(只写会话的 `TMPDIR` 与本次点名的
+  目录,不通网络)。要改的:设了 `sandbox.subprocess_env.mode = "allowlist"` 的部署,`git` 现在只看得到
+  `allow` 列出的变量(以前按缺省策略:继承宿主环境、去掉引擎自己的凭据),它需要的变量(如自定义的 `GIT_*`)要补进 `allow`。
+  `ExitWorktree` 的未保存工作检查另有 15 秒上限。
+- **`Read` 读 PDF 的 `pdftotext` 走 `EngineExec::helper`。** 以前在宿主上、沙箱外起,没有超时,环境
+  按缺省策略;现在经会话的 `exec.process`,会话命令进沙箱时它也进同一个沙箱(只写会话的 `TMPDIR`,
+  不通网络),环境取 `sandbox.subprocess_env`,单次上限 120 秒。拒绝、失败、超时都仍给"Install
+  pdftotext"的提示。要改的:`pdftotext` 装在沙箱读不到的位置、或需要 `allowlist` 之外的变量的,
+  按各自情况放开。
+
+#### 工具与延迟加载
+
+- **会话中途接入的 MCP 工具按场景的 `deferred_tools()` 名单延迟。** 以前延迟只在 `build()` 时对
+  当时已注册的工具生效,会话中途由 MCP 同步接入的工具,即使场景点名要延迟,请求里也带全量 schema;
+  现在同样只发名字和描述,模型经 `ToolSearch` 取 schema。提示词因此变小。要改的:不想让某个 MCP
+  工具延迟的,把它从场景的 `deferred_tools()` 里去掉。
+
+### RPC 客户端
+
+#### `SESSION_BUSY`
+
+- **`error.data` 多了 `reason`。** 取值 `turn_running`(必带 `current_turn_id`)、`rebuilding`、
+  `background_tasks`(另带 `running_task_ids`)、`previous_engine`,说的是会话此刻在忙什么,不是哪个
+  方法被拒(协议文档 §9.1)。以前只有 `{session_id, current_turn_id}`。要改的:按 `reason` 决定
+  等多久、要不要重试;不认识的取值按"稍后再试"处理,以后可能增加。
+- **以前不带 `data` 的三处 `SESSION_BUSY` 现在带。** 重建时旧引擎未停、上下文请求撞上正在跑的
+  turn、`session.setGoal` 恢复会话时旧引擎未停,现在和其余来源一样带 `data`。以前靠"没有 `data`"
+  区分来源的,改读 `reason`。
+- **`message` 文本变了。** `session.setPrompt` / 换厂商的 `session.setModel` 因旧引擎没停下而失败
+  时,`reason` 为 `previous_engine`,message 由 "session is busy" 改为 "session `…` could not be
+  brought back: … is still stopping on its previous engine; try again once it has";
+  `session.inspectContext` / `dropMessages` / `editMessage` 在有回合时由 "session `…` is running
+  turn `…`" 改为 "session is busy"。不要解析 message,认错误码与 `reason`。
+- **会话重建期间的拒绝。** `session.setModel`(不换厂商)与 `session.inspectContext` /
+  `dropMessages` / `editMessage` 在重建期间返回 `SESSION_BUSY`(`reason: "rebuilding"`,
+  `current_turn_id` 为 `null`)。以前前者改了规格并发给正在停止的旧引擎,后者报 `ENGINE_ERROR`。
+  `on_busy: "steer"` 的 `session.run_turn` 在重建期间不再往正在停止的旧引擎里 steer,而是等重建
+  结束。要改的:把 `SESSION_BUSY` 当作"稍后重试"的信号,而不是 `ENGINE_ERROR` 那样的失败。
+
+#### 中断与回合边界
+
+- **`session.interrupt` 在回合已占住、消息还没发给引擎时有效。** 以前这段窗口里它返回
+  `interrupted: false`、回合照跑;现在返回 `true`,这一轮以 `stop_reason: "cancelled"` 结束、不调用
+  模型。以前遇到 `false` 就重发 `interrupt` 的客户端可以去掉重试。
+- **会话被 `session.close` 后用同一 id 恢复,旧回合迟到的收尾不再写进新会话。** 以前旧回合的
+  `turn_complete` 可能改写新会话 `session.get` 里的 `context`,首轮自动命名也可能给新会话起名;现在
+  代际号不符时旧回合什么都不写,自动命名结果丢弃。
+
+#### 错误与参数
+
+- **`session.setGoal` / `updateGoal` 撞上已终态的侧链**,message 从 "session X is a finished
+  sub-agent session" 改为与 `session.resume` 相同的 "sidechain session already ran to completion",
+  `data` 同 `SIDECHAIN_TERMINAL`。
+- **`session.run_turn` 的参数校验(缺 `message`、`turn_id` 形式、`on_busy`)先于场景检查。** 两者同时
+  不满足时,以前报 `SCENE_MISMATCH`,现在报 `INVALID_PARAMS`。
+
+#### 事件帧
+
+- **`subagent_progress.event` 里嵌套的事件走与外层同一个投影。** 不再带 `turn_id`,`kind` 与外层
+  一致(`compact`、`prompt`);投影为空的嵌套事件(如子 Agent 的 `system_init`)整帧不发。协议文档
+  §5.5、§7 已补。其余帧与 0.3.11 逐项相同。
+- **`turn_complete` 一定排在同一连接上 `session.run_turn` 的响应之前。** 发起方和别的订阅方都先收到
+  `turn_complete`。以前没有写成保证;依赖相反顺序(先收响应、再收 `turn_complete`)的客户端要调整。
+
+### 嵌入方
+
+#### 路径去向
+
+0.3.11 一节与更早各节里出现、这一版已删除或改名的路径:
+
+| 以前 | 现在 |
+|---|---|
+| `base::interface::{event,memory,prompt,rules,settings}::*` | `base::{event,memory,prompt,rules,settings}::*`(那五个重导出本来标着 `#[deprecated]`,但加在 `pub use` 上不触发警告,所以一直没人发现;`base::interface::memory::MemoryStore` 等同理) |
+| `base::context::PromptCtx` | `base::tool::PromptContext` |
+| `base::frozen::git::{EngineGit, GitSandbox, ENGINE_GIT_OPTIONS}` | `base::engine_exec::{EngineExec, Confinement, GitAccess, Admission, EngineExecError, admit_git, ENGINE_GIT_OPTIONS}` |
+| `platform::env`(曾是 `base::interface::exec::env` 的再导出) | `platform::env` 现在是 `platform` 自己的模块,只有 `apply_subprocess_env(&SubprocessEnv, &mut tokio::process::Command)`;策略类型仍在 `base::interface::exec::env`(也可写 `base::interface::exec::{SubprocessEnv, SubprocessEnvMode, EnvPlan}`),`hold_back_credential`、`is_engine_credential` 留在原处 |
+| `platform::SubprocessEnv`、`platform::SubprocessEnvMode` | 删除,改用 `base::interface::exec::{SubprocessEnv, SubprocessEnvMode}`;0.3.11 迁移表里"整体替换也编得过"的说法不再成立,`mcp`、`hooks` 已按此改 |
+| `SubprocessEnv::apply(&mut Command)` | 删除,改用 `platform::apply_subprocess_env`;`base` 里是 `SubprocessEnv::resolve(host) -> EnvPlan`(纯判定,不读进程环境、不碰 `Command`) |
+| `tools` 的 `exec_capture`(crate 私有) | `base::interface::exec::capture(&dyn Process, spec, cancel) -> Captured`,任何 `Process` 都能用 |
+| `tools::bash::{engine_git, engine_git_for}` | `tools::bash::{engine_exec, engine_exec_for}`,后者参数 `(settings, &ExecProviders, sandbox_disabled, session_id, ProjectTrust)` |
+| `runtime::turn` 的 `engine_git_from` | `engine_exec_from(config, exec, session_id, trust)` |
+| `tools::deferred::{DeferredTool, apply_deferred_policy}` | 删除,见"延迟加载" |
+| `assembly::session_pool::{RpcError, ResumeError, SetModelError}`(含 0.3.7 的 `SetModelError::Busy`、0.3.11 的 `ResumeError::Busy`) | `PoolError`,见"会话池";线上的 `rpc::RpcError` 仍在,只是池不再产出它 |
+| `SessionManager::set_token_counter` | `SessionManager::with_token_counter(self, counter)`,另有 `token_counter(&self)` |
+| `base::rules::{default_rule_sources, discover_rules, discover_rules_from, build_rules_prompt}` | `RuleTiers::{new, for_paths}` 与 `render_rules_prompt(&[RuleEntry])` |
+| `AgentTool::with_process_groups` | `AgentTool::with_exec(ExecProviders)` |
+| `SessionPool::drop_connection(ConnectionId)`(`assembly::server` 上的同名方法仍在) | `SessionPool::drop_watcher(WatcherId)` |
+| `tests/` 里的 `dependency_direction.rs`、`one_assembly.rs`、`carrier_invariants.rs` 的依赖两条 | `tests/guards/tests/deps.rs`(读 `cargo metadata`)、`SessionPool::new` 的 `pub(crate)` 可见性;进程级状态守卫在 `tests/guards/tests/process_state.rs` |
+
+#### Tool 实现方
+
+0.3.11 一节说"旧方法仍然可用,没有 deprecate""`spec()` 缺省从旧方法读出、旧方法缺省取 `spec()` 的
+字段""`acceptEdits` 的分派缺省是 `is_read_only(input)`""包装器要转发 `accept_edits_allows`
+(`DeferredTool` 已转发)",这几句都不再成立:桥接已删除,`Tool` 收成 11 个方法。
+
+- **`Tool` 只剩 `name`、`description`、`spec`、`input_schema`、`guide`、`call_traits`、
+  `permission_match_content`、`accept_edits_allows`、`check_permissions`、`validate_input`、`call`。**
+  `description()` 与 `spec()` 必须实现(`spec()` 可以只是 `ToolSpec::new()`),没有缺省,也没有
+  互相推导。缺省只剩 `accept_edits_allows → call_traits → spec` 一条链。以前没写 `description()`
+  的实现(八个内建工具:`ListMcpResources`、`ReadMcpResource`、`MCP`、`TeamMemorySave`、
+  `TeamMemoryRead`、`SendMessage`、`ReadMail`、`ListPeers`)现在显式返回空串,请求字节不变。
+- **删除的方法与改法。** `is_read_only`、`is_concurrency_safe`、`is_destructive`、
+  `callable_from_code`、`code_result`、`needs_dispatch`、`short_description`、
+  `permission_content_kind`、`self_allow_overrides_mode`、`leaves_plan_mode`:常量答案写进
+  `spec()`(`ToolSpec::new().read_only(true)…`),看输入才知道的覆写 `call_traits(input) ->
+  CallTraits`。`prompt()`、`detailed_prompt()` 删除,改为 `async fn guide(&self, ctx) ->
+  Option<String>`,没有比 `description()` 更多的内容就返回 `None`(或不实现)。`source`、`is_enabled`、
+  `strict`、`is_dynamic`、`is_direct`、`affected_paths`、`interrupt_behavior` 没有读者,直接删掉
+  (`InterruptBehavior` 枚举也删了,从来没有代码读它)。
+- **`fn input_schema(&self)` 改为 `fn input_schema(&self, style: PathStyle)`,`input_schema_for` 删除。**
+  不关心路径风格的工具忽略参数;`Read` / `Write` / `Edit` 按风格改写 `file_path` 的说明。
+- **`ToolSpec` 重排。** `read_only` / `concurrency_safe` / `destructive` → `spec.traits.*`;
+  `permission_content_kind` / `self_allow_overrides_mode` / `leaves_plan_mode` →
+  `spec.permission.*`;`source: String` → `origin: ToolOrigin`(`Builtin`、`Mcp { server }`、
+  `Plugin { name }`,以前按 `"mcp:"` 前缀匹配字符串);去掉 `name`、`description`、`enabled`、
+  `interrupt_behavior`、`strict`、`dynamic`、`direct`、`deferred`。`ToolSpec::defaults_for` 删除,用
+  `ToolSpec::new()` 加链式 setter。`ToolSpec`、`CallTraits`、`ToolOrigin`、`ToolPermissionSpec`
+  都是 `#[non_exhaustive]`:在 `base` 之外不能用结构体字面量构造,对 `ToolOrigin` 做 `match` 要带通配
+  分支;以后加字段不再算破坏性变化。
+- **包装另一个 `Tool` 的包装器**只要转发上面 11 个方法。0.3.11 一节要求转发的 `spec()` 的缺省
+  推导、`accept_edits_allows` 之外的旧能力方法都不存在了;`DeferredTool` 这个唯一的转发式包装器
+  已删除。
+- **`ToolRegistry`。** `all`、`find`、`has_direct_tool` 删除,用 `list`、`get`;实现 `ToolRegistry`
+  必须提供 `list`、`get`、`register`、`replace`、`remove`。`LayeredToolRegistry` 不再用 Tombstone 工具
+  标记隐藏(以前靠"未启用且描述为空"的约定),改为持有隐藏名集合。
+- **插件工具来源。** `ToolOrigin::Plugin { name }` 让 `inspectContext` 里插件工具的来源报
+  `plugin:<name>`,与 `plugin_development.md` 的承诺一致。
+
+#### 延迟加载
+
+- **延迟是会话属性,不是工具属性。** `tools::deferred`(`DeferredTool`、`apply_deferred_policy`)
+  删除;`Tool::is_deferred`、`full_input_schema`、`prompt_fragment` 删除,`ToolSpec` 没有 `deferred`
+  字段。名单是 `EngineConfig::deferred_tools`,`Builder::build` 按场景的 `deferred_tools()` 填写(去掉
+  `ToolSearch`;宿主绑定了输出 schema 时去掉 `StructuredOutput`)。要判断一个工具在会话里是否延迟,
+  读 `EngineConfig::deferred_tools`(`ToolContext.config`)或新增的 `Agent::deferred_tools()`。
+  请求的工具表、`ToolSearch`、调用失败时附 schema 都读这份名单;`code` 场景的请求工具表逐字节不变。
+- **延迟的 MCP 工具在 `ToolDef.source` 上报 `mcp:<server>`**(以前被包装器伪造成 `builtin`);这个字段
+  不上线。校验失败或返回 `Schema` / `InvalidInput` / `Validation` 错误时附 schema 的逻辑搬进
+  `tool_exec`,`RunCode` 的子调用走同一条路径。
+
+#### 会话池
+
+- **池的错误是 `PoolError`。** 新增 `session_pool::api::{PoolError, Busy, BusyReason, EngineFailure}`;
+  `session_pool::{RpcError, ResumeError, SetModelError}` 删除;`SceneCheck` 与 `check_scene` 改为池内部。
+  原来返回 `Result<_, RpcError>`、`Result<_, ResumeError>`、`Result<_, SetModelError>` 的池方法一律
+  返回 `Result<_, PoolError>`,池里不再出现 `codes::`;错误码、message 与 `data` 形状由
+  `server/errors.rs` 一处 `match` 决定,`Display` 复现原来的 message。忙的情形是 `PoolError::SessionBusy(Busy)`:
+  构造用 `Busy::{turn_running, rebuilding, background_tasks, previous_engine}`,`BusyReason` 是
+  `#[non_exhaustive]`,`turn_running` 必带回合 id。`shutdown_session` 返回 `Result<usize, PoolError>`
+  (场景不符时拒绝);`resume_session` 的结果自带 `scene_inferred`;`task_output` 返回
+  `Result<Value, PoolError>`(会话不存在、任务不存在、偏移越界各是一个变体),不再是
+  `Option<Result<Value, u64>>`;`export::ExportError` 转成 `PoolError`。
+- **场景检查在池里做。** `close`、`delete`、`fork`、`rename`、`subscribe`、`resume`、`interrupt`、
+  `setModel`、`setPrompt`、`setGoal` / `updateGoal`、`appendEntry`、client 发起的 `run_turn`(含
+  compact / clear)由池自己拒绝 `SCENE_MISMATCH`;定时任务与目标轮不检查。直接调池的嵌入方不用再在
+  外面先判。
+- **事件出口是 `SessionWatcher`,池不再持有 `rpc::Client`。** 新增 `session_pool::api::
+  {SessionWatcher, WatcherId, SessionFrame, SessionEvent, AskKind, PendingAsk, Subscribed,
+  emitted_outside_turns}`。`SessionWatcher::deliver(&SessionFrame) -> bool` 在会话的锁下被调用,只能
+  非阻塞入队,返回 `false` 即退订。`subscribe_session` 收 `Arc<dyn SessionWatcher>`、返回 `Subscribed`
+  (待答提问是 `PendingAsk`,不再是拼好的 JSON 帧);`unsubscribe_session` 收 `WatcherId`;
+  `drop_connection` 改名 `drop_watcher(WatcherId)`;`PromptAnswer::prompt_type()` 改为 `kind() ->
+  AskKind`。`SessionEvent::Agent` 是引擎原话、不过滤;线上帧由 `rpc::events::{SessionEventPayload,
+  SessionEventNotification}` 投影,`SessionEventPayload::KINDS` 是 §7 的 kind 全集;
+  `rpc::StreamFrame` 只剩 `daemon_event`。嵌入方要自己的订阅者就实现 `SessionWatcher`;
+  `server/watch.rs` 为 `rpc::Client` 的实现可作参考。
+- **没调 `start_scheduler` 的池现在也转发轮间事件、任务事件和目标事件。** 转发器只持有会话的 hub,
+  不再依赖 `start_scheduler` 设置的 `this`(嵌入方、单元测试因此多收到这些事件)。
+- **`run_turn` 的签名。** `SessionPool::run_turn(TurnRequest, Option<Arc<dyn SessionWatcher>>) ->
+  Result<TurnOutcome, PoolError>`。发起方是可选的订阅者:给了就在这一轮开始时加入订阅、本轮出错时
+  不另收 `error` 帧;定时任务与目标轮传 `None`,它们的帧照样发给全部订阅者(以前为它们造了内部
+  连接)。`TurnRequest` 的发起方由 `&'static str` 改为 `Initiator { Client, Schedule, Goal }`
+  (`daemon.event` 里的字符串不变);`TurnOutcome` 是 `#[non_exhaustive]`,有 `Completed`、
+  `Steered`、`Skipped`;去掉原来的 `id` 参数;`session.run_turn` 的结果 JSON 由 server 从
+  `TurnOutcome` 拼出,字段不变。
+- **`SessionPool::new` 是 `pub(crate)`。** `assembly` 之外不能再直接建池,要池走
+  `assembly::assemble::pool`(daemon 里是 `daemon::assemble::pool`);第二份装配在 `assembly` 之外
+  编不过。
+- **回合状态收进 `TurnSlot`。** 池内部的 `LiveSession` 不再有 `event_rx`、`idle`、`current_turn`、
+  `turn_initiator`、`turn_watcher`、`turn_terminated`,由阶段 `SessionPhase`(`Idle` / `Running` /
+  `Rebuilding`)与代际号 `Generation` 取代;这些都是池私有的,通过公开 API 的嵌入方看到的只是上面的
+  行为变化(`interrupt`、重建期间的 `SESSION_BUSY`)。设计见 `ARCHITECTURE.md` §3.2.4。
+
+#### `Builder` 的注入口与执行层
+
+- **`Builder::exec(ExecProviders)`:换掉会话的四个执行契约。** `exec.process` /
+  `filesystem` / `network` / `sandbox` 以前写死为本机的一套(`build()` 里解析),宿主没有注入口;现在
+  `build()` 一处解析:只设 `exec` 就用它,都没设走原来的缺省(本机 providers,出网按
+  `sandbox.network_mode`)。**`exec` 与 `process_groups` 同时设置时 `build()` 返回错误**,不再悄悄
+  丢掉一方;要记进程组,就在传入的 providers 里带上台账(`platform::local_providers_with_ledger`)。
+  工具调用、引擎的 `git` 与 `pdftotext`、`Agent::warmup` 的预连接(以前新建
+  `platform::LocalNetwork`,绕过会话的 `exec.network`,现在走它,`Origin::Operator`)都落在传入的
+  providers 上。
+- **`runtime::module::SessionContext`:删掉 `process_groups`,新增 `exec: &ExecProviders`、
+  `token_counter`、`rules`。** 模块里读 `ctx.process_groups` 的改读 `ctx.exec`;`AgentTool::
+  with_process_groups` 删除,改为 `with_exec(ExecProviders)`,`AgentsModule` 把父会话的 `exec`
+  交给它,子会话沿用,不再单独传台账(父会话的 `LocalProcess` 本来就带着)。`ParentPermission` 在子会话
+  还没绑定 providers 时用父会话的那套,不再退回 `platform::local_providers`;`agents` 的普通依赖
+  去掉了 `platform`。
+- **`Builder::token_counter(..)`。** `SessionManager::set_token_counter` 在生产代码里没有调用方,
+  `runtime` 另有几处直接调 `compaction::grouping::estimate_tokens`,宿主换不掉"压缩据以触发的
+  那个数字"。现在 `SessionManager` 的 `token_counter` 是非 `Option` 的 `Arc<dyn TokenCounter>`
+  (缺省 `model::tokens::default_counter()`),换用 `with_token_counter(self, c)`;请求开销估算、
+  `inspectContext` 的逐块与消息计数、`compact_now` 的目标大小都用会话的计数器,与 `token_count()`
+  同一口径。`compaction` 内部的估算不动。子 Agent 沿用父会话的计数器。
+- **`Builder::rule_provider(..)` 与 `RuleTiers`。** `base::rules` 里的 `default_rule_sources`、
+  `discover_rules`、`discover_rules_from`、`build_rules_prompt` 删除,新增 `RuleTiers`(
+  `Vec<Arc<dyn RuleProvider>>`,后来居上合并、按名排序,本身也实现 `RuleProvider`),
+  `RuleTiers::for_paths(&PathSettings)` 给出全局、场景、项目三层,`render_rules_prompt(&[RuleEntry])`
+  只负责渲染。`base::interface::prompt_assembler::AssemblyRequest` 新增 `rules: &[RuleEntry]` 字段
+  (字面量构造的要补上);`base::prompt::assemble_prompt_with` 的参数改为 `&AssemblyRequest`;
+  `DefaultAssembler` 原样转给它;`assemble_prompt` 仍按 `settings.paths` 的三层取。`Builder` 缺省
+  `RuleTiers::for_paths`,每次组装提示词时取一次 `rules()`,与以前每次组装都扫目录的频率一致;子 Agent
+  沿用父会话的 provider。
+- **引擎的 `git` 与辅助程序统一经 `base::engine_exec::EngineExec`。** `EngineExec` 持有会话的
+  `ExecProviders`、`Confinement`(`Unconfined` / `Sandboxed { policy, require_enforcement, tmpdir }`)
+  与 `ProjectTrust`,是引擎起 `git`(`EngineExec::git`)和辅助程序(`EngineExec::helper`)的唯一入口。
+  `FrozenContext::{collect, collect_without_project, collect_with_options, refresh_git,
+  refresh_git_status}` 的 git 参数由 `&EngineGit` 改为 `&EngineExec`;`tools::worktree::
+  {create_worktree, prune_orphan_worktrees}` 同样改收 `&EngineExec`。原来传 `EngineGit::Direct` 的
+  (不想进沙箱),改为 `Confinement::Unconfined`。`read_pdf_text` 改收 `&EngineExec`。
+  **`ExecProviders::in_process()` 的会话不再有 `git` 上下文**:`ScriptedProcess` 对没写脚本的命令
+  返回失败,除非脚本应答——要在测试里得到 git 上下文,给 `ScriptedProcess` 写 `git` 的应答。
+  `.git` 是否为 worktree 链接改经 `exec.filesystem` 读。
+- **`EngineExec` 是会话进程组的一部分。** 引擎的 `git` 进入 `LocalProcess` 的进程组与台账,
+  超时整组停;`setsid` 与无控制终端由 `LocalProcess` 给,0.3.11 为此在旁路上临时补的 `setsid` 与
+  `apply_subprocess_env` 随文件删除。
+
+#### 测试与守卫
+
+- **测试支撑。** 用真 `git`、真进程的几条测试(五条快照测试、`capture` 的三条)挪到 `platform` 的
+  integration 测试;`base` 里用 `ExecProviders::in_process()` 与 `ScriptedProcess`。在 `base` 或别的
+  不依赖 `platform` 的 crate 里写类似测试的,照这个办法,不要为了真进程去依赖 `platform`。
+- **架构守卫。** 新增 `tests/guards` 支撑 crate(`cargo metadata` 加模块树加 `syn` 语法树,测试判定
+  看 cfg 谓词)。`dependency_direction.rs`、`one_assembly.rs` 删除,`carrier_invariants.rs` 里依赖相关的
+  两条并入 `deps.rs`;进程级状态守卫改为 `process_state.rs`(默认拒绝:非朴素数据的 `static` 必须
+  登记)。向工作区加 crate 的,要在 `deps.rs` 的 `CRATES` 里给它一个级别。工作区成员数变为 28。
+- **golden。** 新增三份冻结的 golden:`crates/tools/tests/spec_snapshot.rs`(工具声明与权限答案)、
+  `crates/runtime/src/turn/tests/tool_defs_golden.rs`(请求的 tools 数组字节)、
+  `crates/scene/tests/prompt_golden.rs`(场景系统提示字节);会话帧的线上 JSON 冻结在
+  `crates/assembly/testdata/session_events.golden.json`。确实要改时分别用 `UPDATE_GOLDEN=1` 与
+  `AGIX_UPDATE_GOLDEN=1` 重新生成。

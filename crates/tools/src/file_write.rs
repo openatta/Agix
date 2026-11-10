@@ -1,6 +1,6 @@
 //! FileWriteTool —— "Write".
 //!
-//! 写文件全覆盖：是 destructive，is_read_only=false。
+//! 写文件全覆盖：是 destructive，不是只读。
 //! 目录不在则自动创建。：路径白名单 / 黑名单（`.env*` 等）由上层权限闸做，
 //! 这里只做 schema + 大小校验。
 
