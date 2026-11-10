@@ -31,54 +31,53 @@
 
 <!-- BEGIN GENERATED TABLE — see base::interface::catalog::render_markdown -->
 
-| 扩展点 | 类型 | 时机 | 可改什么 | 频率 | 配置 | 脚本 | 插件 |
-|---|---|---|---|---|---|---|---|
-| `tool.registry` | 契约 | 会话构建时,以及之后任何时候 | 有哪些工具、它们各是什么 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `tool.around` | 拦截 | 分发前后,在权限和 hooks 的外侧 | 取消信号和结果;改不了输入 | 每次工具调用(10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `tool.result` | 拦截 | 所有 hook 之后,模型看到它之前的最后一步 | 结果文本和其中的图片 | 每次工具调用(10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `prompt.block` | 注册 | 提示组装时,每轮一次 | 只能新增 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
-| `prompt.context` | 注册 | 提示组装时,每轮一次 | 只能新增 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
-| `prompt.variable` | 注册 | 提示组装时,块合并之后 | 只有自己那个占位符,别的都不行 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
-| `prompt.assembler` | 契约 | 提示组装时,取代引擎自己那套 | 顺序、缓存边界、合并策略——整个结果 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `prompt.assemble` | 拦截 | 提示组装的最后一步 | 块的内容、顺序和取舍 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `prompt.submit` | 拦截 | 每条用户消息进转录之前,开一轮的与 steer 进来的都算;在 UserPromptSubmit hook 之后 | 消息文本;或者拒收这条 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `event.sink` | 契约 | 每次发射,在 sink 自己的 task 上 | 什么都改不了——只能观察 | 每个流式分片(10³–10⁴ 量级) | 不开放 | 不开放 | 不开放 |
-| `health.check` | 注册 | 每当有人要一份健康报告 | 什么都改不了——检查只汇报,不修复 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `elicitation.ask` | 契约 | 每当一个决定需要人来做 | 答案 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `permission.check` | 契约 | 每次工具调用之前 | 放行、拒绝,或者问人 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `permission.grants` | 契约 | skill 的 allowed-tools 生效、人答"总是允许"时 | 本轮、本会话、本项目的放行 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `scene` | 契约 | 会话构建时 | 一个 agent 怎么呈现自己,全部 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `model` | 契约 | 每次模型请求 | 整场交互 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `model.factory` | 注册 | 启动时,读 provider 配置的那一刻 | 哪些协议可以被配置出来 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `model.request` | 拦截 | 每次模型调用之前的最后一刻 | 请求里的一切 | 每次模型调用(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `model.message` | 拦截 | 承载它的那段流结束之后 | 消息内容 | 每次模型调用(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `credentials` | 契约 | 启动时,读 provider 配置的那一刻 | 凭据本身 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `config.source` | 契约 | 进程启动,任何东西被构建之前 | 有哪些层、每层里是什么 JSON;合并本身动不了 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `token.count` | 契约 | 每次预算检查 | 压缩据以触发的那个数字 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `history.store` | 契约 | 每次追加,以及恢复时 | 日志怎么持久化、存到哪 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `history.query` | 契约 | 每当有人要的是若干会话而不是某一个会话 | 返回哪些会话、按什么顺序、怎么算匹配 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `history.blob` | 契约 | 每次追加带图片或大负载时,以及加载时 | 大块内容存在哪、怎么寻址 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `history.projection` | 契约 | 每次读取转录:恢复、分叉、搜索、翻页 | 哪些条目变成消息、它们说了什么 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `history.extension_entry` | 注册 | 任何时候;和其余条目同序 | 只能新增;内核从不解析 payload | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
-| `memory.storage` | 契约 | 召回时,以及每次写入记忆时 | 记忆怎么持久化、存到哪 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `memory.retriever` | 契约 | 每条用户消息一次,在后台 | 召回的集合 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `memory.retrieval_hook` | 拦截 | 召回前后 | 查询,以及召回的记忆名 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `history.append_observer` | 拦截 | 每次追加成功之后 | 什么都改不了——只读是类型定死的,不是约定的 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
-| `skill.source` | 契约 | 会话构建时,以及每当有 MCP server 接入 | 有哪些 skill、每个展开成什么文本 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `instruction.source` | 契约 | 会话构建时 | 每会话注入一次的 AGENTS.md 文本 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `rules.source` | 契约 | 系统提示组装期间 | 告诉模型存在哪些规则文档 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `turn.policy` | 契约 | 每次模型调用之前,以及每次返回之后 | 循环还走不走下一步,以及上报的停止原因 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `model.recovery` | 契约 | 出错时,以及响应撞上输出上限被截断、被厂商暂停时 | 换模型、压缩后重试、抬高上限、续上暂停的回复,还是直接失败 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `model.backoff` | 契约 | 在 client 内部、模型契约之下,每次失败的尝试 | 重试前等多久,以及到底有没有重试 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `budget` | 契约 | 每次模型调用之后,以及每个请求组装之前 | 这轮还继不继续、被告知了什么、压缩的上限 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `environment` | 契约 | 每当一个答案是被写下来而不是被测量出来的 | 日志时间戳、条目 id、提示里带的日期 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `exec.process` | 契约 | 工具启动的每一条命令 | 活儿在哪台机器上干 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `exec.filesystem` | 契约 | 工具的每一次读、写、stat | 工具看到的是哪个文件系统 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `exec.network` | 契约 | 每个出站请求;出网策略约束的是模型选的那些 | 请求去哪、去不去、谁来应答 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `exec.sandbox` | 契约 | 命令启动之前 | 真正跑起来的那条命令,以及它能碰什么 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `compaction` | 契约 | 每轮一次:两趟老化、一趟预测,最后是阈值 | 消息历史,以及到底要不要重写 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
-| `script.carrier` | 契约 | 载体被绑到哪就在哪;受每轮配额约束 | 所绑那个点允许的一切,按脚本自己的来源定级 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
-| `hooks` | 拦截 | 三十个具名时刻;见 docs/hooks.md | 按事件而异:拦截、改写输入、结束这一轮 | 每次工具调用(10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| 扩展点 | 类型 | 接线 | 时机 | 可改什么 | 频率 | 配置 | 脚本 | 插件 |
+|---|---|---|---|---|---|---|---|---|
+| `tool.registry` | 契约 | `Builder::tools`、`Registrar::tool` | 会话构建时,以及之后任何时候 | 有哪些工具、它们各是什么 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `tool.around` | 拦截 | `Builder::tool_middleware`、`Registrar::tool_middleware`、脚本绑定 | 分发前后,在权限和 hooks 的外侧 | 取消信号和结果;改不了输入 | 每次工具调用(10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `tool.result` | 拦截 | `Builder::tool_result_transformer`、`Registrar::tool_result`、脚本绑定 | 所有 hook 之后,模型看到它之前的最后一步 | 结果文本和其中的图片 | 每次工具调用(10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `prompt.block` | 注册 | `Builder::prompt_registry`、`Registrar::prompt_block`、脚本绑定 | 提示组装时,每轮一次 | 只能新增 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
+| `prompt.context` | 注册 | `Builder::prompt_registry`、`Registrar::prompt_context`、脚本绑定 | 提示组装时,每轮一次 | 只能新增 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
+| `prompt.variable` | 注册 | `Builder::prompt_registry`、`Registrar::prompt_variable`、脚本绑定 | 提示组装时,块合并之后 | 只有自己那个占位符,别的都不行 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
+| `prompt.assembler` | 契约 | `Builder::prompt_assembler` | 提示组装时,取代引擎自己那套 | 顺序、缓存边界、合并策略——整个结果 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `prompt.assemble` | 拦截 | `Builder::prompt_registry`、`Registrar::assembly_hook`、`Registrar::async_assembly_hook`、脚本绑定 | 提示组装的最后一步 | 块的内容、顺序和取舍 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `prompt.submit` | 拦截 | `Builder::prompt_middleware`、`Registrar::prompt_middleware` | 每条用户消息进转录之前,开一轮的与 steer 进来的都算;在 UserPromptSubmit hook 之后 | 消息文本;或者拒收这条 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `event.sink` | 契约 | `Builder::event_sink` | 每次发射,在 sink 自己的 task 上 | 什么都改不了——只能观察 | 每个流式分片(10³–10⁴ 量级) | 不开放 | 不开放 | 不开放 |
+| `health.check` | 注册 | `Builder::health_check`、`Registrar::health_check` | 每当有人要一份健康报告 | 什么都改不了——检查只汇报,不修复 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `elicitation.ask` | 契约 | `Builder::elicitation` | 每当一个决定需要人来做 | 答案 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `permission.check` | 契约 | `Builder::permission` | 每次工具调用之前 | 放行、拒绝,或者问人 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `permission.grants` | 契约 | `Builder::permission` | skill 的 allowed-tools 生效、人答"总是允许"时 | 本轮、本会话、本项目的放行 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `scene` | 契约 | `Builder::scene` | 会话构建时 | 一个 agent 怎么呈现自己,全部 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `model` | 契约 | `Builder::model` | 每次模型请求 | 整场交互 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `model.factory` | 注册 | 进程级:`base::interface::model_factory::ModelFactoryRegistry::register` | 启动时,读 provider 配置的那一刻 | 哪些协议可以被配置出来 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `model.request` | 拦截 | `Builder::model_interceptor`、`Registrar::model_interceptor`、脚本绑定 | 每次模型调用之前的最后一刻 | 请求里的一切 | 每次模型调用(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `model.message` | 拦截 | `Builder::model_interceptor`、`Registrar::model_interceptor`、脚本绑定 | 承载它的那段流结束之后 | 消息内容 | 每次模型调用(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `credentials` | 契约 | 进程级:`base::interface::model_factory::ModelFactoryRegistry::with_credentials` | 启动时,读 provider 配置的那一刻 | 凭据本身 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `config.source` | 契约 | 进程级:`base::settings::Settings::load_from` | 进程启动,任何东西被构建之前 | 有哪些层、每层里是什么 JSON;合并本身动不了 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `token.count` | 契约 | `Builder::token_counter` | 每次预算检查 | 压缩据以触发的那个数字 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `history.store` | 契约 | `Builder::history_store` | 每次追加,以及恢复时 | 日志怎么持久化、存到哪 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `history.query` | 契约 | 随 `history.store`:`HistoryStore::find_sessions` | 每当有人要的是若干会话而不是某一个会话 | 返回哪些会话、按什么顺序、怎么算匹配 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `history.blob` | 契约 | 随 `history.store`:`JsonlHistoryStore::with_blob_store` | 每次追加带图片或大负载时,以及加载时 | 大块内容存在哪、怎么寻址 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `history.projection` | 契约 | 随 `history.store`:`JsonlHistoryStore::with_projection` | 每次读取转录:恢复、分叉、搜索、翻页 | 哪些条目变成消息、它们说了什么 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `history.extension_entry` | 注册 | 随 `history.store`:`HistoryStore::append` | 任何时候;和其余条目同序 | 只能新增;内核从不解析 payload | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
+| `memory.retriever` | 契约 | `Builder::memory_retriever` | 每条用户消息一次,在后台 | 召回的集合 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `memory.retrieval_hook` | 拦截 | `Builder::retrieval_hook`、`Registrar::retrieval_hook`、脚本绑定 | 召回前后 | 查询,以及召回的记忆名 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `history.append_observer` | 拦截 | 随 `history.store`:`ObservedHistoryStore::new` | 每次追加成功之后 | 什么都改不了——只读是类型定死的,不是约定的 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 只能新增 |
+| `skill.source` | 契约 | 模块:`skills::SkillsModule::provider` | 会话构建时,以及每当有 MCP server 接入 | 有哪些 skill、每个展开成什么文本 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `instruction.source` | 契约 | `Builder::instruction_provider` | 会话构建时 | 每会话注入一次的 AGENTS.md 文本 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `rules.source` | 契约 | `Builder::rule_provider` | 系统提示组装期间 | 告诉模型存在哪些规则文档 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `turn.policy` | 契约 | `Builder::turn_policy` | 每次模型调用之前,以及每次返回之后 | 循环还走不走下一步,以及上报的停止原因 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `model.recovery` | 契约 | `Builder::recovery_policy` | 出错时,以及响应撞上输出上限被截断、被厂商暂停时 | 换模型、压缩后重试、抬高上限、续上暂停的回复,还是直接失败 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `model.backoff` | 契约 | 随 `model`:`AnthropicClient::with_backoff_policy` | 在 client 内部、模型契约之下,每次失败的尝试 | 重试前等多久,以及到底有没有重试 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `budget` | 契约 | `Builder::budget_policy` | 每次模型调用之后,以及每个请求组装之前 | 这轮还继不继续、被告知了什么、压缩的上限 | 每次模型调用(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `environment` | 契约 | `Builder::environment` | 每当一个答案是被写下来而不是被测量出来的 | 日志时间戳、条目 id、提示里带的日期 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `exec.process` | 契约 | `Builder::exec` | 工具启动的每一条命令，以及引擎替会话跑的 git 和辅助程序 | 活儿在哪台机器上干 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `exec.filesystem` | 契约 | `Builder::exec` | 工具的每一次读、写、stat | 工具看到的是哪个文件系统 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `exec.network` | 契约 | `Builder::exec` | 每个出站请求;出网策略约束的是模型选的那些 | 请求去哪、去不去、谁来应答 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `exec.sandbox` | 契约 | `Builder::exec` | 命令启动之前 | 真正跑起来的那条命令,以及它能碰什么 | 每次工具调用(10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `compaction` | 契约 | `Builder::compactor` | 每轮一次:两趟老化、一趟预测,最后是阈值 | 消息历史,以及到底要不要重写 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
+| `script.carrier` | 契约 | 模块:`script_host::bindings::bind`、`Builder::plugin` | 载体被绑到哪就在哪;受每轮配额约束 | 所绑那个点允许的一切,按脚本自己的来源定级 | 每轮(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
+| `hooks` | 拦截 | `Builder::hooks`、设置项 `hooks` | 三十个具名时刻;见 docs/hooks.md | 按事件而异:拦截、改写输入、结束这一轮 | 每次工具调用(10¹ 量级) | 完全 | 完全 | 需声明能力 |
 <!-- END GENERATED TABLE -->
 
 上面这张表由 `base::interface::catalog` 生成,这份文件一旦和它对不上,
@@ -480,10 +479,9 @@ JsonlHistoryStore::with_roots(cwd, roots).await?.with_blob_store(my_store)
 `history.extension_entry` 是同一条规矩,理由也一样:因为一段对话有一部分够不着就
 拒绝打开它,是拿一个降级的会话换了一个没有的会话。
 
-### 记忆 — `memory.storage`、`memory.retriever`
+### 记忆 — `memory.retriever`
 
-storage 是记忆待的地方;retriever 决定一轮能看见其中哪些。自带的 retriever 去问
-模型,代价是一次调用:
+retriever 决定一轮能看见记忆里的哪些。自带的 retriever 去问模型,代价是一次调用:
 
 ```rust
 Builder::new().memory_retriever(Arc::new(MyIndexRetriever))

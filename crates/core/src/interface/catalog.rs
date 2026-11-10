@@ -165,6 +165,41 @@ pub struct ExtensionPoint {
     pub trust: Trust,
     /// Where the contract is defined, as a Rust path.
     pub defined_in: &'static str,
+    /// Every way a host or extension author gets an implementation in.
+    pub wired_by: &'static [Wiring],
+}
+
+/// How an implementation of a point reaches the engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wiring {
+    /// `runtime::agent::Builder::<method>`.
+    Builder(&'static str),
+    /// `runtime::plugin::Registrar::<method>`; a host reaches it through `Builder::plugin`.
+    Registrar(&'static str),
+    /// One of the points `script_host::bindings::BINDABLE_POINTS` binds.
+    Script,
+    /// Set on the object another point wires.
+    Carried { by: &'static str, via: &'static str },
+    /// Once per process, by whoever assembles models or settings.
+    Process(&'static str),
+    /// A module's own builder.
+    Module(&'static str),
+    /// A settings key.
+    Settings(&'static str),
+}
+
+impl Wiring {
+    pub fn label(&self) -> String {
+        match self {
+            Self::Builder(m) => format!("`Builder::{m}`"),
+            Self::Registrar(m) => format!("`Registrar::{m}`"),
+            Self::Script => "脚本绑定".to_string(),
+            Self::Carried { by, via } => format!("随 `{by}`:`{via}`"),
+            Self::Process(p) => format!("进程级:`{p}`"),
+            Self::Module(p) => format!("模块:`{p}`"),
+            Self::Settings(k) => format!("设置项 `{k}`"),
+        }
+    }
 }
 
 /// Every extension point the engine has.
@@ -172,7 +207,7 @@ pub fn all() -> &'static [ExtensionPoint] {
     &POINTS
 }
 
-static POINTS: [ExtensionPoint; 46] = [
+static POINTS: [ExtensionPoint; 45] = [
     ExtensionPoint {
         id: "tool.registry",
         kind: Kind::Contract,
@@ -182,6 +217,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
         defined_in: "base::interface::tool::ToolRegistry",
+        wired_by: &[Wiring::Builder("tools"), Wiring::Registrar("tool")],
     },
     ExtensionPoint {
         id: "tool.around",
@@ -192,6 +228,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerToolCall,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::tool_middleware::ToolMiddleware",
+        wired_by: &[
+            Wiring::Builder("tool_middleware"),
+            Wiring::Registrar("tool_middleware"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "tool.result",
@@ -202,6 +243,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerToolCall,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::tool_result::ToolResultTransformer",
+        wired_by: &[
+            Wiring::Builder("tool_result_transformer"),
+            Wiring::Registrar("tool_result"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "prompt.block",
@@ -212,6 +258,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_adds(),
         defined_in: "base::interface::prompt_registry::PromptRegistry::register_block",
+        wired_by: &[
+            Wiring::Builder("prompt_registry"),
+            Wiring::Registrar("prompt_block"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "prompt.context",
@@ -222,6 +273,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_adds(),
         defined_in: "base::interface::prompt_registry::PromptRegistry::register_context",
+        wired_by: &[
+            Wiring::Builder("prompt_registry"),
+            Wiring::Registrar("prompt_context"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "prompt.variable",
@@ -232,6 +288,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_adds(),
         defined_in: "base::interface::prompt_registry::PromptRegistry::register_variable",
+        wired_by: &[
+            Wiring::Builder("prompt_registry"),
+            Wiring::Registrar("prompt_variable"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "prompt.assembler",
@@ -242,6 +303,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::prompt_assembler::PromptAssembler",
+        wired_by: &[Wiring::Builder("prompt_assembler")],
     },
     ExtensionPoint {
         id: "prompt.assemble",
@@ -252,6 +314,12 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::prompt_assembly::AssemblyHook",
+        wired_by: &[
+            Wiring::Builder("prompt_registry"),
+            Wiring::Registrar("assembly_hook"),
+            Wiring::Registrar("async_assembly_hook"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "prompt.submit",
@@ -262,6 +330,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "base::interface::prompt_middleware::PromptMiddleware",
+        wired_by: &[
+            Wiring::Builder("prompt_middleware"),
+            Wiring::Registrar("prompt_middleware"),
+        ],
     },
     ExtensionPoint {
         id: "event.sink",
@@ -272,6 +344,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerStreamChunk,
         trust: Trust::host_only(),
         defined_in: "base::interface::event_sink::EventSink",
+        wired_by: &[Wiring::Builder("event_sink")],
     },
     ExtensionPoint {
         id: "health.check",
@@ -282,6 +355,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerProcess,
         trust: Trust::host_only(),
         defined_in: "base::interface::health::HealthCheck",
+        wired_by: &[
+            Wiring::Builder("health_check"),
+            Wiring::Registrar("health_check"),
+        ],
     },
     ExtensionPoint {
         id: "elicitation.ask",
@@ -292,6 +369,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "base::interface::elicitation::Elicitation",
+        wired_by: &[Wiring::Builder("elicitation")],
     },
     ExtensionPoint {
         id: "permission.check",
@@ -302,6 +380,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerToolCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::permission::PermissionPolicy",
+        wired_by: &[Wiring::Builder("permission")],
     },
     ExtensionPoint {
         id: "permission.grants",
@@ -312,6 +391,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "base::interface::permission::PermissionGrants",
+        wired_by: &[Wiring::Builder("permission")],
     },
     ExtensionPoint {
         id: "scene",
@@ -322,6 +402,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
         defined_in: "base::interface::scene::Scene",
+        wired_by: &[Wiring::Builder("scene")],
     },
     ExtensionPoint {
         id: "model",
@@ -332,6 +413,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::model::Model",
+        wired_by: &[Wiring::Builder("model")],
     },
     ExtensionPoint {
         id: "model.factory",
@@ -342,6 +424,9 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerProcess,
         trust: Trust::host_only(),
         defined_in: "base::interface::model_factory::ModelFactory",
+        wired_by: &[Wiring::Process(
+            "base::interface::model_factory::ModelFactoryRegistry::register",
+        )],
     },
     ExtensionPoint {
         id: "model.request",
@@ -352,6 +437,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::model_interceptor::ModelInterceptor::on_request",
+        wired_by: &[
+            Wiring::Builder("model_interceptor"),
+            Wiring::Registrar("model_interceptor"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "model.message",
@@ -362,6 +452,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::model_interceptor::ModelInterceptor::on_message",
+        wired_by: &[
+            Wiring::Builder("model_interceptor"),
+            Wiring::Registrar("model_interceptor"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "credentials",
@@ -372,6 +467,9 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerProcess,
         trust: Trust::host_only(),
         defined_in: "base::interface::credentials::CredentialSource",
+        wired_by: &[Wiring::Process(
+            "base::interface::model_factory::ModelFactoryRegistry::with_credentials",
+        )],
     },
     ExtensionPoint {
         id: "config.source",
@@ -382,6 +480,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerProcess,
         trust: Trust::host_only(),
         defined_in: "base::interface::config_source::ConfigSource",
+        wired_by: &[Wiring::Process("base::settings::Settings::load_from")],
     },
     ExtensionPoint {
         id: "token.count",
@@ -392,6 +491,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "base::interface::token_counter::TokenCounter",
+        wired_by: &[Wiring::Builder("token_counter")],
     },
     ExtensionPoint {
         id: "history.store",
@@ -402,6 +502,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "history::store::HistoryStore",
+        wired_by: &[Wiring::Builder("history_store")],
     },
     ExtensionPoint {
         id: "history.query",
@@ -412,6 +513,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
         defined_in: "history::store::HistoryStore::find_sessions",
+        wired_by: &[Wiring::Carried {
+            by: "history.store",
+            via: "HistoryStore::find_sessions",
+        }],
     },
     ExtensionPoint {
         id: "history.blob",
@@ -422,6 +527,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "history::blob::BlobStore",
+        wired_by: &[Wiring::Carried {
+            by: "history.store",
+            via: "JsonlHistoryStore::with_blob_store",
+        }],
     },
     ExtensionPoint {
         id: "history.projection",
@@ -432,6 +541,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
         defined_in: "history::transcript::TranscriptProjection",
+        wired_by: &[Wiring::Carried {
+            by: "history.store",
+            via: "JsonlHistoryStore::with_projection",
+        }],
     },
     ExtensionPoint {
         id: "history.extension_entry",
@@ -442,16 +555,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_adds(),
         defined_in: "history::entry::LogEntry::Extension",
-    },
-    ExtensionPoint {
-        id: "memory.storage",
-        kind: Kind::Contract,
-        summary: "长期记忆存在哪",
-        timing: "召回时,以及每次写入记忆时",
-        rewrites: "记忆怎么持久化、存到哪",
-        frequency: Frequency::PerTurn,
-        trust: Trust::host_only(),
-        defined_in: "base::interface::memory_contracts::MemoryStorage",
+        wired_by: &[Wiring::Carried {
+            by: "history.store",
+            via: "HistoryStore::append",
+        }],
     },
     ExtensionPoint {
         id: "memory.retriever",
@@ -462,6 +569,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "base::interface::memory_contracts::MemoryRetriever",
+        wired_by: &[Wiring::Builder("memory_retriever")],
     },
     ExtensionPoint {
         id: "memory.retrieval_hook",
@@ -472,6 +580,11 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::memory_contracts::RetrievalHook",
+        wired_by: &[
+            Wiring::Builder("retrieval_hook"),
+            Wiring::Registrar("retrieval_hook"),
+            Wiring::Script,
+        ],
     },
     ExtensionPoint {
         id: "history.append_observer",
@@ -487,6 +600,10 @@ static POINTS: [ExtensionPoint; 46] = [
             plugin: Access::AddOnly,
         },
         defined_in: "history::store::AppendObserver",
+        wired_by: &[Wiring::Carried {
+            by: "history.store",
+            via: "ObservedHistoryStore::new",
+        }],
     },
     ExtensionPoint {
         id: "skill.source",
@@ -497,6 +614,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
         defined_in: "base::interface::skill_provider::SkillProvider",
+        wired_by: &[Wiring::Module("skills::SkillsModule::provider")],
     },
     ExtensionPoint {
         id: "instruction.source",
@@ -507,6 +625,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
         defined_in: "base::interface::instruction_provider::InstructionProvider",
+        wired_by: &[Wiring::Builder("instruction_provider")],
     },
     ExtensionPoint {
         id: "rules.source",
@@ -517,6 +636,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::instruction_provider::RuleProvider",
+        wired_by: &[Wiring::Builder("rule_provider")],
     },
     ExtensionPoint {
         id: "turn.policy",
@@ -527,6 +647,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::turn_policy::TurnPolicy",
+        wired_by: &[Wiring::Builder("turn_policy")],
     },
     ExtensionPoint {
         id: "model.recovery",
@@ -537,6 +658,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::recovery_policy::RecoveryPolicy",
+        wired_by: &[Wiring::Builder("recovery_policy")],
     },
     ExtensionPoint {
         id: "model.backoff",
@@ -547,6 +669,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::backoff::BackoffPolicy",
+        wired_by: &[Wiring::Carried {
+            by: "model",
+            via: "AnthropicClient::with_backoff_policy",
+        }],
     },
     ExtensionPoint {
         id: "budget",
@@ -557,6 +683,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerModelCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::budget_policy::BudgetPolicy",
+        wired_by: &[Wiring::Builder("budget_policy")],
     },
     ExtensionPoint {
         id: "environment",
@@ -567,16 +694,18 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "base::interface::environment::Environment",
+        wired_by: &[Wiring::Builder("environment")],
     },
     ExtensionPoint {
         id: "exec.process",
         kind: Kind::Contract,
         summary: "程序在哪跑",
-        timing: "工具启动的每一条命令",
+        timing: "工具启动的每一条命令，以及引擎替会话跑的 git 和辅助程序",
         rewrites: "活儿在哪台机器上干",
         frequency: Frequency::PerToolCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::exec::process::Process",
+        wired_by: &[Wiring::Builder("exec")],
     },
     ExtensionPoint {
         id: "exec.filesystem",
@@ -587,6 +716,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerToolCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::exec::filesystem::FileSystem",
+        wired_by: &[Wiring::Builder("exec")],
     },
     ExtensionPoint {
         id: "exec.network",
@@ -597,6 +727,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerToolCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::exec::network::Network",
+        wired_by: &[Wiring::Builder("exec")],
     },
     ExtensionPoint {
         id: "exec.sandbox",
@@ -607,6 +738,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerToolCall,
         trust: Trust::host_only(),
         defined_in: "base::interface::exec::sandbox::Sandbox",
+        wired_by: &[Wiring::Builder("exec")],
     },
     ExtensionPoint {
         id: "compaction",
@@ -617,6 +749,7 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::host_only(),
         defined_in: "compaction::compact::Compactor",
+        wired_by: &[Wiring::Builder("compactor")],
     },
     ExtensionPoint {
         id: "script.carrier",
@@ -627,6 +760,10 @@ static POINTS: [ExtensionPoint; 46] = [
         frequency: Frequency::PerTurn,
         trust: Trust::operator_full_plugin_declares(),
         defined_in: "base::interface::script::ScriptEngine",
+        wired_by: &[
+            Wiring::Module("script_host::bindings::bind"),
+            Wiring::Builder("plugin"),
+        ],
     },
     ExtensionPoint {
         id: "hooks",
@@ -642,6 +779,7 @@ static POINTS: [ExtensionPoint; 46] = [
             plugin: Access::Declared,
         },
         defined_in: "hooks::runner::HookRunner",
+        wired_by: &[Wiring::Builder("hooks"), Wiring::Settings("hooks")],
     },
 ];
 
@@ -658,8 +796,8 @@ pub fn find(id: &str) -> Option<&'static ExtensionPoint> {
 /// stale row behind.
 pub fn render_markdown() -> String {
     let mut out = String::new();
-    out.push_str("| 扩展点 | 类型 | 时机 | 可改什么 | 频率 | 配置 | 脚本 | 插件 |\n");
-    out.push_str("|---|---|---|---|---|---|---|---|\n");
+    out.push_str("| 扩展点 | 类型 | 接线 | 时机 | 可改什么 | 频率 | 配置 | 脚本 | 插件 |\n");
+    out.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for p in all() {
         let kind = match p.kind {
             Kind::Contract => "契约",
@@ -667,9 +805,14 @@ pub fn render_markdown() -> String {
             Kind::Interception => "拦截",
         };
         out.push_str(&format!(
-            "| `{}` | {} | {} | {} | {}({}) | {} | {} | {} |\n",
+            "| `{}` | {} | {} | {} | {} | {}({}) | {} | {} | {} |\n",
             p.id,
             kind,
+            p.wired_by
+                .iter()
+                .map(Wiring::label)
+                .collect::<Vec<_>>()
+                .join("、"),
             p.timing,
             p.rewrites,
             p.frequency.label(),
@@ -765,6 +908,35 @@ mod tests {
             all().len() + 2,
             "header, separator, and one row each"
         );
+    }
+
+    #[test]
+    fn every_contract_can_be_wired_somehow() {
+        for p in all() {
+            if p.kind == Kind::Contract {
+                assert!(
+                    !p.wired_by.is_empty(),
+                    "contract '{}' says nothing about how an implementation gets in",
+                    p.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_carried_point_names_a_point_that_exists() {
+        for p in all() {
+            for w in p.wired_by {
+                if let Wiring::Carried { by, .. } = w {
+                    assert!(
+                        find(by).is_some(),
+                        "'{}' is carried by '{by}', which is not a point",
+                        p.id
+                    );
+                    assert_ne!(*by, p.id, "'{}' cannot carry itself", p.id);
+                }
+            }
+        }
     }
 
     #[test]

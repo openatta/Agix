@@ -8,6 +8,7 @@ file  crates/assembly/src/session_pool/mod.rs              -                    
 file  crates/compaction/src/compact.rs                     -                                        1158
 file  crates/core/src/context/session.rs                   -                                        1195
 file  crates/core/src/interface/tool.rs                    -                                        1070
+file  crates/core/src/interface/catalog.rs                   -                                        827
 file  crates/core/src/memory.rs                            -                                        1102
 file  crates/core/src/settings.rs                          -                                        1644
 file  crates/history/src/store.rs                          -                                        1995
@@ -42,7 +43,7 @@ fn    crates/assembly/src/telemetry_otel.rs                start_otel           
 fn    crates/compaction/src/compact.rs                     build_post_compact_recovery              128
 fn    crates/core/src/context/goal.rs                      GoalSlot::update                         110
 fn    crates/core/src/frozen/mod.rs                        FrozenContext::collect_with_options      104
-fn    crates/core/src/interface/script.rs                  PromptAssemblyScript::on_assemble_async  145
+fn    crates/script-host/src/adapters/prompt_assembly.rs   PromptAssemblyScript::on_assemble_async  145
 fn    crates/core/src/memory.rs                            select_memories_from                     193
 fn    crates/core/src/project_trust.rs                     gate_sandbox                             112
 fn    crates/core/src/prompt.rs                            assemble_prompt_with                     150
