@@ -513,7 +513,9 @@ Builder::new().event_sink(sink)
 ### 判断上下文有多大 — `token.count`
 
 `base::interface::token_counter::TokenCounter`。默认是本地的字符类估算(不加载词表),
-与 BPE 分词相差约 ±12%,因为 Anthropic 没有公开 tokenizer;算得准的宿主就该自己算。
+与 BPE 分词相差约 ±12%,因为 Anthropic 没有公开 tokenizer;算得准的宿主就该自己算,
+经 `Builder::token_counter` 接进会话,子 Agent 沿用。它管的是压缩据以触发的那个数字,
+compaction 内部挑哪些轮次丢弃时用的仍是缺省估算。
 
 ### 够到机器 — `exec.process`、`exec.filesystem`、`exec.network`、`exec.sandbox`
 
@@ -521,9 +523,14 @@ Builder::new().event_sink(sink)
 策略又必须伸进沙箱里面去。推理过程在 `ARCHITECTURE.md` §5,这里是摘要。
 
 ```rust
-let mut ctx = /* … */;
-ctx.exec = ExecProviders::in_process();   // switching is this call
+Builder::new().exec(ExecProviders::in_process())   // switching is this call
 ```
+
+整个会话——工具调用、引擎自己的 git 与 `pdftotext`、warmup 的预连接——都跑在这一套上,
+子 Agent 沿用同一套。这时出网策略和子进程环境由传进来的 provider 负责,
+`sandbox.network_mode`、`sandbox.subprocess_env` 只配置缺省的那一套。它与
+`Builder::process_groups` 不能同时设置:要记录进程组,就在传进来的 provider 里带上
+ledger(`platform::local_providers_with_ledger`)。
 
 自带两套 provider。`platform::local_providers()` 就是本机,生产里会话用的都是它。
 `ExecProviders::in_process()` 是一棵内存里的树、一批事先定好的命令、一个只回答被
