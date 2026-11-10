@@ -178,35 +178,11 @@ pub enum KeyFileNames {
     Project,
 }
 
-/// [`KeyFileNames::StateRoot`]'s stems.
-pub const STATE_ROOT_KEY_FILE_STEMS: &[&str] = &["settings", "mcp.local"];
-
-/// [`KeyFileNames::Project`]'s stems.
-pub const PROJECT_KEY_FILES: &[&str] = &["settings.local.json", "mcp.local.json"];
-
-/// The [`Secret::Tree`]s of the state root and each scene directory.
-pub const STATE_ROOT_TOKEN_DIRS: &[&str] = &["mcp/oauth"];
-
-/// The [`Secret::Tree`]s of the state root only.
-pub const DAEMON_TOKEN_DIRS: &[&str] = &["daemon/auth"];
-
-/// Whether a file of this name in the state root or a scene directory holds
-/// keys.
-pub fn is_state_root_key_file(name: &str) -> bool {
-    KeyFileNames::StateRoot.admits(name)
-}
-
-/// Whether a file of this name in a project's `.agix` holds the project's
-/// keys.
-pub fn is_project_key_file(name: &str) -> bool {
-    KeyFileNames::Project.admits(name)
-}
-
 impl KeyFileNames {
     pub fn stems(self) -> &'static [&'static str] {
         match self {
-            Self::StateRoot => STATE_ROOT_KEY_FILE_STEMS,
-            Self::Project => PROJECT_KEY_FILES,
+            Self::StateRoot => &["settings", "mcp.local"],
+            Self::Project => &["settings.local.json", "mcp.local.json"],
         }
     }
 
