@@ -382,7 +382,7 @@ fn describe_agent_types_lists_every_type_sorted_by_name() {
     assert!(claude_pos < explore_pos);
 }
 
-/// `AgentTool` implements `Tool::prompt()` with the whole of
+/// `AgentTool` implements `Tool::guide()` with the whole of
 /// `agent_tool.prompt.md`. The real tool is classified as documented (so
 /// `build_tool_defs` points at it) and what `ToolSearch` would hand back
 /// is the actual file, not a paraphrase of its description.
@@ -395,15 +395,14 @@ async fn the_real_agent_tools_guide_is_reachable() {
         Arc::new(InMemoryToolRegistry::new()),
     );
     let guide = agent_tool
-        .detailed_prompt(&base::tool::PromptContext::default())
+        .guide(&base::tool::PromptContext::default())
         .await
         .expect("AgentTool ships agent_tool.prompt.md and must count as documented");
     assert_eq!(guide, include_str!("../agent_tool.prompt.md"));
     assert_ne!(
         guide.trim(),
         agent_tool.description().trim(),
-        "the guide must be distinguishable from the short description — \
-         that difference is exactly what the default derivation keys on"
+        "the guide must say more than the short description"
     );
 }
 
@@ -475,14 +474,18 @@ impl base::tool::Tool for NamedTool {
     fn name(&self) -> &str {
         self.0
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .read_only(true)
+            .concurrency_safe(true)
+    }
+
+    fn description(&self) -> &str {
+        "named tool (test tool)"
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({})
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
     }
     async fn call(
         &self,

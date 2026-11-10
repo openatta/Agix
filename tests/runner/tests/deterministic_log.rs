@@ -162,17 +162,17 @@ impl base::interface::tool::Tool for Echo {
     fn name(&self) -> &str {
         "GoldenEcho"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .concurrency_safe(true)
+            .read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"say": {"type": "string"}}})
-    }
-    fn is_concurrency_safe(&self, _: &serde_json::Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
     }
     async fn check_permissions(
         &self,
@@ -180,9 +180,6 @@ impl base::interface::tool::Tool for Echo {
         _: &base::interface::tool::ToolContext,
     ) -> base::interface::tool::PermissionDecision {
         base::interface::tool::PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &base::interface::tool::PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,

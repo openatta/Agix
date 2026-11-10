@@ -87,6 +87,14 @@ impl base::tool::Tool for CountingProbeTool {
     fn name(&self) -> &str {
         "Probe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "counting probe tool (test tool)"
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({})
     }

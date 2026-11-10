@@ -272,6 +272,14 @@ async fn a_result_transformer_is_the_last_thing_to_touch_a_tool_result() {
         fn name(&self) -> &str {
             "Leak"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "leaks a token tool (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
@@ -688,6 +696,14 @@ async fn the_egress_policy_reaches_the_tool_that_has_to_obey_it() {
         fn name(&self) -> &str {
             "Probe"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "egress probe (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }

@@ -113,8 +113,8 @@ impl Tool for FileEditTool {
         crate::file_read::workspace_relative_file_path(self.input_schema(), style, "edit")
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/file_edit.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/file_edit.prompt.md").to_string())
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

@@ -20,9 +20,7 @@
 //! a build that *has* the carrier cannot observe the build that does not.
 
 use base::interface::script::{ScriptError, ScriptOutcome};
-use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
 use std::sync::Arc;
 use test_runner::script_session::{drive, Ran, Session};
 use test_runner::scripted_model::Reply;
@@ -634,14 +632,15 @@ impl Tool for Guarded {
     fn name(&self) -> &str {
         "Guarded"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new().read_only(false)
+    }
+
     fn description(&self) -> &str {
         "Does nothing, but insists on being approved first."
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
-    }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        false
     }
     async fn check_permissions(
         &self,
@@ -649,9 +648,6 @@ impl Tool for Guarded {
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::ask("this tool always asks")
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -672,6 +668,10 @@ impl Tool for Echo {
     fn name(&self) -> &str {
         "Echo"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new().read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
@@ -682,18 +682,12 @@ impl Tool for Echo {
             "required": ["say"]
         })
     }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
-    }
     async fn check_permissions(
         &self,
         _: &serde_json::Value,
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,

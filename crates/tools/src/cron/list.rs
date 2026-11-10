@@ -39,8 +39,8 @@ impl Tool for CronListTool {
         })
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("../prompts/coding/cron_list.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("../prompts/coding/cron_list.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

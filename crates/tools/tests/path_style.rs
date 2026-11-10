@@ -111,7 +111,7 @@ async fn default_style_leaves_schemas_and_guide_as_generated() {
             .unwrap()
             .starts_with(doc));
     }
-    let guide = FileReadTool.prompt(&PromptContext::default()).await;
+    let guide = FileReadTool.guide(&PromptContext::default()).await.unwrap();
     assert!(guide.contains("must be an absolute path, not a relative path"));
 }
 
@@ -192,7 +192,7 @@ async fn workspace_relative_rewords_argument_docs_and_the_read_guide() {
         path_style: PathStyle::WorkspaceRelative,
         ..PromptContext::default()
     };
-    let guide = FileReadTool.prompt(&ctx).await;
+    let guide = FileReadTool.guide(&ctx).await.unwrap();
     assert!(guide
         .contains("relative to the current working directory; an absolute path is also accepted"));
     assert!(!guide.contains("must be an absolute path"));

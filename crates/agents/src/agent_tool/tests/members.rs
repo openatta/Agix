@@ -662,14 +662,18 @@ impl base::tool::Tool for AskingWriteTool {
     fn name(&self) -> &str {
         "Write"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .read_only(false)
+            .concurrency_safe(false)
+    }
+
+    fn description(&self) -> &str {
+        "asking write tool (test tool)"
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({})
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        false
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
     }
     async fn check_permissions(
         &self,

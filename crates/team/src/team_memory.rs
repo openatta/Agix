@@ -308,18 +308,23 @@ impl Tool for TeamMemorySaveTool {
     fn name(&self) -> &str {
         "TeamMemorySave"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamMemorySaveInput))
             .expect("schemars output is valid JSON")
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Save a fact to this team's shared memory, where every member of the team will see it \
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Save a fact to this team's shared memory, where every member of the team will see it \
          in the memory index. Use a kebab-case `name`; saving under an existing name replaces \
          that entry. Never save credentials or tokens: content that looks like a secret is \
          refused."
-            .to_string()
+                .to_string(),
+        )
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -407,15 +412,20 @@ impl Tool for TeamMemoryReadTool {
     fn name(&self) -> &str {
         "TeamMemoryRead"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamMemoryReadInput))
             .expect("schemars output is valid JSON")
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Read one entry of this team's shared memory by the name the memory index lists."
-            .to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Read one entry of this team's shared memory by the name the memory index lists."
+                .to_string(),
+        )
     }
 
     fn spec(&self) -> ToolSpec {

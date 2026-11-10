@@ -12,9 +12,7 @@
 //! tool result that becomes empty is still a visible difference.
 
 use base::event::AgentEvent;
-use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
 use std::sync::Arc;
 
 /// Echoes its `say` argument. Concurrency-safe, so a batch of them exercises
@@ -27,6 +25,12 @@ impl Tool for GoldenEcho {
     fn name(&self) -> &str {
         "GoldenEcho"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .concurrency_safe(true)
+            .read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
@@ -37,21 +41,12 @@ impl Tool for GoldenEcho {
             "required": ["say"]
         })
     }
-    fn is_concurrency_safe(&self, _: &serde_json::Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
-    }
     async fn check_permissions(
         &self,
         _: &serde_json::Value,
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -77,17 +72,17 @@ impl Tool for GoldenFlood {
     fn name(&self) -> &str {
         "GoldenFlood"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .concurrency_safe(true)
+            .read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Return a very large result."
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
-    }
-    fn is_concurrency_safe(&self, _: &serde_json::Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
     }
     async fn check_permissions(
         &self,
@@ -95,9 +90,6 @@ impl Tool for GoldenFlood {
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -126,6 +118,10 @@ impl Tool for GoldenReports {
     fn name(&self) -> &str {
         "GoldenReports"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Runs, and reports that the work failed."
     }
@@ -138,9 +134,6 @@ impl Tool for GoldenReports {
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -162,6 +155,10 @@ impl Tool for GoldenBoom {
     fn name(&self) -> &str {
         "GoldenBoom"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Always fails."
     }
@@ -174,9 +171,6 @@ impl Tool for GoldenBoom {
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -200,6 +194,10 @@ impl Tool for GoldenAsk {
     fn name(&self) -> &str {
         "GoldenAsk"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Requires approval."
     }
@@ -215,9 +213,6 @@ impl Tool for GoldenAsk {
             message: "GoldenAsk wants to run".into(),
             decision_reason: None,
         }
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -245,17 +240,17 @@ impl Tool for GoldenReadFile {
     fn name(&self) -> &str {
         "Read"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .concurrency_safe(true)
+            .read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Return a kilobyte of file contents."
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
-    }
-    fn is_concurrency_safe(&self, _: &serde_json::Value) -> bool {
-        true
-    }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
     }
     async fn check_permissions(
         &self,
@@ -263,9 +258,6 @@ impl Tool for GoldenReadFile {
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,

@@ -14,6 +14,14 @@ impl base::tool::Tool for ProbeTool {
     fn name(&self) -> &str {
         "Probe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "probe tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -37,6 +45,14 @@ impl base::tool::Tool for PickyTool {
     fn name(&self) -> &str {
         "Picky"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "picky tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -66,6 +82,14 @@ impl base::tool::Tool for FailingTool {
     fn name(&self) -> &str {
         "Failing"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "failing tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -371,6 +395,14 @@ impl base::tool::Tool for NeedsPath {
     fn name(&self) -> &str {
         "NeedsPath"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "needs path (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}},
                            "required": ["path"]})
@@ -510,6 +542,14 @@ impl base::tool::Tool for FakePushNotification {
     fn name(&self) -> &str {
         "PushNotification"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "fake push notification (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -972,6 +1012,14 @@ impl base::tool::Tool for ContentProbeTool {
     fn name(&self) -> &str {
         "Probe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "content probe tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }

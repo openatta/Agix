@@ -45,8 +45,8 @@ impl Tool for TodoWriteTool {
         crate::input_schema::<TodoWriteInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/todo_write.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/todo_write.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

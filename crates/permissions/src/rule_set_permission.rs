@@ -297,14 +297,19 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new().read_only(self.read_only)
+        }
+
+        fn description(&self) -> &str {
+            "fake tool (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             json!({"type": "object"})
         }
-        async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-            "fake".into()
-        }
-        fn is_read_only(&self, _: &serde_json::Value) -> bool {
-            self.read_only
+        async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+            Some("fake".into())
         }
         async fn check_permissions(
             &self,
@@ -343,14 +348,19 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new().read_only(false)
+        }
+
+        fn description(&self) -> &str {
+            "content aware fake tool (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             json!({"type": "object"})
         }
-        async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-            "fake".into()
-        }
-        fn is_read_only(&self, _: &serde_json::Value) -> bool {
-            false
+        async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+            Some("fake".into())
         }
         async fn check_permissions(
             &self,
@@ -514,14 +524,19 @@ mod tests {
         fn name(&self) -> &str {
             "StructuredOutput"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new().read_only(true)
+        }
+
+        fn description(&self) -> &str {
+            "hand in (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             json!({"type": "object"})
         }
-        async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-            "hand in".into()
-        }
-        fn is_read_only(&self, _: &serde_json::Value) -> bool {
-            true
+        async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+            Some("hand in".into())
         }
         async fn check_permissions(
             &self,
@@ -973,6 +988,14 @@ mod tests {
         fn name(&self) -> &str {
             "FilesystemProbe"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "filesystem probe (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             json!({"type": "object"})
         }

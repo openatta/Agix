@@ -648,17 +648,22 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+                .permission_content(self.kind)
+                .read_only(self.read_only)
+                .leaves_plan_mode(self.leaves_plan)
+        }
+
+        fn description(&self) -> &str {
+            "fake tool (test tool)"
+        }
+
         fn input_schema(&self) -> Value {
             json!({"type":"object"})
         }
-        async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-            "fake".into()
-        }
-        fn is_read_only(&self, _: &Value) -> bool {
-            self.read_only
-        }
-        fn leaves_plan_mode(&self) -> bool {
-            self.leaves_plan
+        async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+            Some("fake".into())
         }
         async fn validate_input(
             &self,
@@ -682,9 +687,6 @@ mod tests {
         }
         fn permission_match_content(&self, _: &Value) -> Option<String> {
             self.match_content.clone()
-        }
-        fn permission_content_kind(&self) -> PermissionContentKind {
-            self.kind
         }
         async fn call(
             &self,

@@ -113,12 +113,12 @@ impl Tool for WebFetchTool {
         crate::input_schema::<WebFetchInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        if self.extracts() {
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(if self.extracts() {
             include_str!("prompts/coding/web_fetch.extract.prompt.md").to_string()
         } else {
             include_str!("prompts/coding/web_fetch.prompt.md").to_string()
-        }
+        })
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
@@ -739,15 +739,19 @@ not found";
         let ctx = PromptContext::default();
         let plain = WebFetchTool::new();
         assert!(plain.description().contains("plain text"));
-        let plain_prompt = plain.prompt(&ctx).await;
+        let plain_prompt = plain.guide(&ctx).await.unwrap();
         assert!(plain_prompt.contains("not acted on"));
 
         let model = ExtractingModel::new(Ok("x"));
         let extracting = extracting(&model);
         assert!(extracting.description().contains("answer `prompt`"));
-        assert!(extracting.prompt(&ctx).await.contains("separate model"));
+        assert!(extracting
+            .guide(&ctx)
+            .await
+            .unwrap()
+            .contains("separate model"));
 
-        for prompt in [plain_prompt, extracting.prompt(&ctx).await] {
+        for prompt in [plain_prompt, extracting.guide(&ctx).await.unwrap()] {
             assert!(!prompt.contains("HTTPS"), "no upgrade happens");
             assert!(!prompt.contains("cache"), "nothing is cached");
             assert!(prompt.contains("external-content"), "{prompt}");

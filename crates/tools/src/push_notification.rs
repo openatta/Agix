@@ -47,8 +47,8 @@ impl Tool for PushNotificationTool {
         crate::input_schema::<PushNotificationInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/push_notification.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/push_notification.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

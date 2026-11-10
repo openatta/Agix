@@ -113,8 +113,8 @@ impl Tool for SkillTool {
         ToolSpec::new()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/skill_tool.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/skill_tool.prompt.md").to_string())
     }
 
     async fn call(
@@ -1138,11 +1138,19 @@ mod tests {
             fn name(&self) -> &str {
                 "Bash"
             }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec::new()
+            }
+
+            fn description(&self) -> &str {
+                "fake bash tool (test tool)"
+            }
+
             fn input_schema(&self) -> Value {
                 serde_json::json!({"type": "object"})
             }
-            async fn prompt(&self, _: &PromptContext) -> String {
-                "fake bash".into()
+            async fn guide(&self, _: &PromptContext) -> Option<String> {
+                Some("fake bash".into())
             }
             async fn check_permissions(
                 &self,
@@ -1364,11 +1372,19 @@ mod tests {
             fn name(&self) -> &str {
                 "Bash"
             }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec::new()
+            }
+
+            fn description(&self) -> &str {
+                "asking bash (test tool)"
+            }
+
             fn input_schema(&self) -> Value {
                 serde_json::json!({"type": "object"})
             }
-            async fn prompt(&self, _: &PromptContext) -> String {
-                "fake bash".into()
+            async fn guide(&self, _: &PromptContext) -> Option<String> {
+                Some("fake bash".into())
             }
             async fn check_permissions(
                 &self,

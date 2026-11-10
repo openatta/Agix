@@ -221,6 +221,14 @@ impl base::tool::Tool for GateTool {
     fn name(&self) -> &str {
         "Gate"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "gate tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }

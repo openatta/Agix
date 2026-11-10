@@ -10,6 +10,14 @@ impl base::tool::Tool for ProbeTool {
     fn name(&self) -> &str {
         "Probe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "probe tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -31,6 +39,14 @@ impl base::tool::Tool for SecondProbeTool {
     fn name(&self) -> &str {
         "SecondProbe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "second probe tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -53,6 +69,14 @@ impl base::tool::Tool for HangingTool {
     fn name(&self) -> &str {
         "Hang"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "hanging tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -241,6 +265,14 @@ impl base::tool::Tool for PanickingTool {
     fn name(&self) -> &str {
         "Panicky"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "panicking tool (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
@@ -969,6 +1001,14 @@ async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
         fn name(&self) -> &str {
             "Probe"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "probe tool (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }

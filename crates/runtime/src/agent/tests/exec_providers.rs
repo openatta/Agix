@@ -17,6 +17,14 @@ impl base::tool::Tool for ExecProbe {
     fn name(&self) -> &str {
         "ExecProbe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "exec probe (test tool)"
+    }
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }

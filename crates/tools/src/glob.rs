@@ -77,8 +77,8 @@ impl Tool for GlobTool {
         crate::input_schema::<GlobInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/glob.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/glob.prompt.md").to_string())
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

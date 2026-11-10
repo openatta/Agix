@@ -490,8 +490,8 @@ impl base::tool::Tool for AgentTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(AgentInput)).unwrap_or(Value::Null)
     }
-    async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-        include_str!("agent_tool.prompt.md").to_string()
+    async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+        Some(include_str!("agent_tool.prompt.md").to_string())
     }
 
     async fn call(

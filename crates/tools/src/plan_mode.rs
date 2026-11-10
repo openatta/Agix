@@ -53,8 +53,8 @@ impl Tool for EnterPlanModeTool {
         crate::input_schema::<EnterPlanModeInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/plan_mode.enter.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/plan_mode.enter.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {
@@ -150,8 +150,8 @@ impl Tool for ExitPlanModeTool {
         crate::input_schema::<ExitPlanModeInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/plan_mode.exit.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/plan_mode.exit.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

@@ -471,6 +471,12 @@ impl Tool for ServiceStatus {
     fn name(&self) -> &str {
         "ServiceStatus"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+            .read_only(true)
+            .concurrency_safe(true)
+    }
+
     fn description(&self) -> &str {
         "The current status of one production service, with its open incident if any."
     }
@@ -480,12 +486,6 @@ impl Tool for ServiceStatus {
             "required": ["service"],
             "properties": { "service": { "type": "string", "description": "The service's name" } }
         })
-    }
-    fn is_read_only(&self, _: &Value) -> bool {
-        true
-    }
-    fn is_concurrency_safe(&self, _: &Value) -> bool {
-        true
     }
     async fn call(
         &self,

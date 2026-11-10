@@ -43,8 +43,8 @@ impl Tool for CronDeleteTool {
         crate::input_schema::<CronDeleteInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("../prompts/coding/cron_delete.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("../prompts/coding/cron_delete.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

@@ -64,8 +64,8 @@ impl Tool for CronCreateTool {
         crate::input_schema::<CronCreateInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("../prompts/coding/cron_create.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("../prompts/coding/cron_create.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

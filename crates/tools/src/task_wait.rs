@@ -62,15 +62,17 @@ impl Tool for TaskWaitTool {
         crate::input_schema::<TaskWaitInput>()
     }
 
-    async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-        "Wait for background tasks (sub-agents started with `background: true`, shell \
+    async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+        Some(
+            "Wait for background tasks (sub-agents started with `background: true`, shell \
          commands, team members' replies) to end.\n\n\
          - `mode: \"any\"` returns as soon as one ends; `\"all\"` once every one has.\n\
          - Returns each task's status and the tail of its output; tasks still running \
          when the wait ends are listed as running.\n\
          - You are told about a finished background sub-agent anyway, so wait only when \
          you have nothing else to do until it is done."
-            .to_string()
+                .to_string(),
+        )
     }
 
     fn spec(&self) -> ToolSpec {

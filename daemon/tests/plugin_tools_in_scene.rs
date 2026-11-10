@@ -53,6 +53,10 @@ impl base::tool::Tool for Echo {
     fn name(&self) -> &str {
         self.0
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Answers with its own name."
     }

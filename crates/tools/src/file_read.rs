@@ -73,12 +73,12 @@ impl Tool for FileReadTool {
         workspace_relative_file_path(self.input_schema(), style, "read")
     }
 
-    async fn prompt(&self, ctx: &PromptContext) -> String {
+    async fn guide(&self, ctx: &PromptContext) -> Option<String> {
         let guide = include_str!("prompts/coding/file_read.prompt.md");
-        match ctx.path_style {
+        Some(match ctx.path_style {
             PathStyle::Absolute => guide.to_string(),
             PathStyle::WorkspaceRelative => guide.replace(ABSOLUTE_PATH_LINE, RELATIVE_PATH_LINE),
-        }
+        })
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

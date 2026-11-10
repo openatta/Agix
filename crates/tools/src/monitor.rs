@@ -20,8 +20,8 @@ use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
 use base::error::ToolError;
 use base::interface::exec::{OutputStream, ProcessHandle};
 use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    CallTraits, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
+    ToolSpec, ValidationResult,
 };
 use futures::StreamExt;
 use schemars::JsonSchema;
@@ -87,13 +87,14 @@ impl Tool for MonitorTool {
         crate::input_schema::<MonitorInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/monitor.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/monitor.prompt.md").to_string())
     }
 
-    fn is_read_only(&self, input: &Value) -> bool {
-        serde_json::from_value::<MonitorInput>(input.clone())
-            .is_ok_and(|p| crate::bash::classify::is_read_only(&p.command))
+    fn call_traits(&self, input: &Value) -> CallTraits {
+        let read_only = serde_json::from_value::<MonitorInput>(input.clone())
+            .is_ok_and(|p| crate::bash::classify::is_read_only(&p.command));
+        self.spec().traits.read_only(read_only)
     }
 
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {

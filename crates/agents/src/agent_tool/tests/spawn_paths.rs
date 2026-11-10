@@ -150,6 +150,14 @@ impl base::tool::Tool for AskingProbe {
     fn name(&self) -> &str {
         "Probe"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
+    fn description(&self) -> &str {
+        "asking probe (test tool)"
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({})
     }

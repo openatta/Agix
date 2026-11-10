@@ -35,8 +35,8 @@ impl Tool for SleepTool {
         crate::input_schema::<SleepInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/sleep.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/sleep.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

@@ -97,7 +97,7 @@ impl Tool for WebSearchTool {
         crate::input_schema::<WebSearchInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
         let prompt = include_str!("prompts/coding/web_search.prompt.md");
         let now = time::OffsetDateTime::now_utc();
         let current_month_year = now
@@ -105,7 +105,7 @@ impl Tool for WebSearchTool {
                 "[month repr:long] [year]"
             ))
             .unwrap_or_else(|_| "May 2026".to_string());
-        prompt.replace("{currentMonthYear}", &current_month_year)
+        Some(prompt.replace("{currentMonthYear}", &current_month_year))
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

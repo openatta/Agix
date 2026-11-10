@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 const GUIDE_BODY: &str = "# Sub-agent usage guide\n\nDispatch a sub-agent when \
                               the search space is wide and only the conclusion matters.";
 
-/// A tool with a substantial `Tool::prompt()` — the `AgentTool` /
+/// A tool with a substantial `Tool::guide()` — the `AgentTool` /
 /// `TeamCreateTool` shape, whose guides were unreachable.
 struct GuidedTool;
 #[async_trait::async_trait]
@@ -30,14 +30,18 @@ impl Tool for GuidedTool {
     fn name(&self) -> &str {
         "Guided"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Launch a sub-agent."
     }
     fn input_schema(&self) -> Value {
         json!({"type": "object", "properties": {"prompt": {"type": "string"}}})
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        GUIDE_BODY.to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(GUIDE_BODY.to_string())
     }
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
@@ -52,7 +56,7 @@ impl Tool for GuidedTool {
     }
 }
 
-/// A tool that never overrides `prompt()` — must be left completely
+/// A tool that never overrides `guide()` — must be left completely
 /// alone, both in `build_tool_defs` and in `ToolSearch`.
 struct PlainTool;
 #[async_trait::async_trait]
@@ -60,6 +64,10 @@ impl Tool for PlainTool {
     fn name(&self) -> &str {
         "Plain"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Reads a file."
     }
@@ -247,9 +255,7 @@ async fn tool_defs_point_at_the_guide_instead_of_carrying_it() {
     );
 }
 
-/// A tool without a `prompt()` override comes through byte-identical —
-/// the default `Tool::detailed_prompt` derivation must report `None` for
-/// it rather than "the description differs from itself".
+/// A tool without a `guide()` comes through byte-identical.
 #[tokio::test]
 async fn undocumented_tool_def_is_untouched() {
     let dir = tempfile::tempdir().unwrap();

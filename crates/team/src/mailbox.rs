@@ -293,6 +293,9 @@ impl base::tool::Tool for SendMessageTool {
     fn name(&self) -> &str {
         "SendMessage"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn spec(&self) -> ToolSpec {
         // Writing to a teammate's in-memory mailbox touches no file, no shell and
@@ -310,8 +313,9 @@ impl base::tool::Tool for SendMessageTool {
             .expect("schemars output is valid JSON")
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Send a message to another agent in your team.\n\
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Send a message to another agent in your team.\n\
          \n\
          ```json\n\
          {\"peer\": \"researcher\", \"message\": \"start on task #1\"}\n\
@@ -321,7 +325,8 @@ impl base::tool::Tool for SendMessageTool {
          broadcast. Your plain text output is NOT visible to other agents -- to \
          communicate, you MUST call this tool. Messages sent to you wait in your \
          mailbox until you call `ReadMail`."
-            .to_string()
+                .to_string(),
+        )
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -398,6 +403,9 @@ impl base::tool::Tool for ReadMailTool {
     fn name(&self) -> &str {
         "ReadMail"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
@@ -408,8 +416,9 @@ impl base::tool::Tool for ReadMailTool {
             .expect("schemars output is valid JSON")
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Read messages sent to you by other agents in the current team.\n\
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Read messages sent to you by other agents in the current team.\n\
          \n\
          Usage:\n\
          - Messages are returned and removed from the mailbox (FIFO, oldest first)\n\
@@ -418,7 +427,8 @@ impl base::tool::Tool for ReadMailTool {
          \n\
          Input:\n\
          - max (optional, default 10): maximum number of messages to read"
-            .to_string()
+                .to_string(),
+        )
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -489,6 +499,9 @@ impl base::tool::Tool for ListPeersTool {
     fn name(&self) -> &str {
         "ListPeers"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
@@ -502,13 +515,15 @@ impl base::tool::Tool for ListPeersTool {
         })
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "List all known agent labels in the current team.\n\
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "List all known agent labels in the current team.\n\
          \n\
          - Returns a list of agent names/labels that you can communicate with\n\
          - Use this to discover which agents you can send messages to via `SendMessage`\n\
          - Useful when you join an existing team and need to know your teammates"
-            .to_string()
+                .to_string(),
+        )
     }
 
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {

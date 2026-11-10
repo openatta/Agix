@@ -3,9 +3,7 @@
 //! Rust also registers — whichever of the two the builder was handed first.
 
 use base::interface::prompt_registry::{InMemoryPromptRegistry, PromptRegistry, RegisteredBlock};
-use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
 use base::interface::tool_middleware::{
     NextDispatch, ToolCall, ToolExec, ToolMiddleware, ToolOutcome,
 };
@@ -177,6 +175,10 @@ impl Tool for ScriptEcho {
     fn name(&self) -> &str {
         "ScriptEcho"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new().read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
@@ -187,18 +189,12 @@ impl Tool for ScriptEcho {
             "required": ["say"]
         })
     }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
-    }
     async fn check_permissions(
         &self,
         _: &serde_json::Value,
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,
@@ -232,14 +228,15 @@ impl Tool for PluginEcho {
     fn name(&self) -> &str {
         "PluginEcho"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back, from a plugin."
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"say": {"type": "string"}}})
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,

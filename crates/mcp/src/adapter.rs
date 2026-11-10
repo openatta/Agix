@@ -161,8 +161,10 @@ impl Tool for McpToolAdapter {
         self.input_schema.clone()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.full_description.clone()
+    /// The server's whole description, when the advertised one had to be cut.
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        let full = self.full_description.trim();
+        (!full.is_empty() && full != self.description.trim()).then(|| self.full_description.clone())
     }
 
     fn permission_match_content(&self, _: &Value) -> Option<String> {
@@ -379,10 +381,7 @@ mod tests {
         let client = Arc::new(MockMcpClient::new("github", vec![]));
         let adapter = McpToolAdapter::new(client, meta("create_issue"));
         assert_eq!(adapter.description(), "desc for create_issue");
-        assert!(adapter
-            .detailed_prompt(&PromptContext::default())
-            .await
-            .is_none());
+        assert!(adapter.guide(&PromptContext::default()).await.is_none());
     }
 
     #[tokio::test]
@@ -396,10 +395,7 @@ mod tests {
             adapter.description().chars().count(),
             MAX_ADVERTISED_DESCRIPTION_CHARS + 1
         );
-        assert_eq!(
-            adapter.detailed_prompt(&PromptContext::default()).await,
-            Some(long)
-        );
+        assert_eq!(adapter.guide(&PromptContext::default()).await, Some(long));
     }
 
     #[tokio::test]

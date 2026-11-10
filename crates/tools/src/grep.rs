@@ -89,8 +89,8 @@ impl Tool for GrepTool {
         crate::input_schema::<GrepInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/grep.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/grep.prompt.md").to_string())
     }
 
     fn permission_match_content(&self, input: &Value) -> Option<String> {

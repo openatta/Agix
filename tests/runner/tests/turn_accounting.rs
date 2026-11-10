@@ -17,8 +17,7 @@
 use base::interface::model::{Model, Usage};
 use base::interface::scene::Scene;
 use base::interface::tool::{
-    InMemoryToolRegistry, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
-    ToolResult,
+    InMemoryToolRegistry, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
 };
 use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use runtime::agent::Builder;
@@ -160,6 +159,10 @@ impl Tool for Echo {
     fn name(&self) -> &str {
         "Echo"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new().read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
@@ -170,18 +173,12 @@ impl Tool for Echo {
             "required": ["say"]
         })
     }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
-    }
     async fn check_permissions(
         &self,
         _: &serde_json::Value,
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,

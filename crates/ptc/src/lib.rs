@@ -280,8 +280,8 @@ impl Tool for RunCodeTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(RunCodeInput)).unwrap_or(Value::Null)
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.guide.clone()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(self.guide.clone())
     }
 
     fn spec(&self) -> ToolSpec {

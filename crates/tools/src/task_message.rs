@@ -57,12 +57,14 @@ impl Tool for TaskMessageTool {
         crate::input_schema::<TaskMessageInput>()
     }
 
-    async fn prompt(&self, _: &base::tool::PromptContext) -> String {
-        "Send a message to a background sub-agent while it is still working: a correction, \
+    async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
+        Some(
+            "Send a message to a background sub-agent while it is still working: a correction, \
          a constraint it did not have, or a request to stop and report what it has. It \
          reads the message at its next step, as you read a message the user sends while \
          you work. Refused for tasks that have ended or that are not sub-agents."
-            .to_string()
+                .to_string(),
+        )
     }
 
     fn spec(&self) -> ToolSpec {

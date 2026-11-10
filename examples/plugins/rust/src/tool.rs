@@ -5,8 +5,7 @@ use std::sync::Arc;
 
 use base::error::ToolError;
 use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolOrigin, ToolResult,
-    ToolSpec,
+    PermissionDecision, ProgressSender, Tool, ToolContext, ToolOrigin, ToolResult, ToolSpec,
 };
 use serde_json::Value;
 
@@ -62,10 +61,6 @@ impl Tool for StampTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
 
     async fn call(

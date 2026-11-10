@@ -39,6 +39,9 @@ impl Tool for ListMcpResourcesTool {
     fn name(&self) -> &str {
         "ListMcpResources"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
@@ -46,11 +49,13 @@ impl Tool for ListMcpResourcesTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(ListMcpResourcesInput)).expect("schema")
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "List resources exposed by connected MCP servers (files, URIs, db schemas, \
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "List resources exposed by connected MCP servers (files, URIs, db schemas, \
          etc — non-tool readable objects). Pass `server` to filter to one server. \
          Returns array of {server, uri, name, description, mime_type}."
-            .into()
+                .into(),
+        )
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
@@ -143,6 +148,9 @@ impl Tool for ReadMcpResourceTool {
     fn name(&self) -> &str {
         "ReadMcpResource"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
@@ -150,10 +158,12 @@ impl Tool for ReadMcpResourceTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(ReadMcpResourceInput)).expect("schema")
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Read a single MCP resource by URI. Returns text content (or base64 blob for \
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Read a single MCP resource by URI. Returns text content (or base64 blob for \
          binary). Use ListMcpResources first to find available URIs."
-            .into()
+                .into(),
+        )
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<ReadMcpResourceInput>(input.clone()) {
@@ -283,6 +293,9 @@ impl Tool for DispatchMcpTool {
     fn name(&self) -> &str {
         "MCP"
     }
+    fn description(&self) -> &str {
+        ""
+    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
@@ -290,11 +303,13 @@ impl Tool for DispatchMcpTool {
     fn input_schema(&self) -> Value {
         serde_json::to_value(schemars::schema_for!(DispatchMcpInput)).expect("schema")
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Introspect MCP server tools. Agix flat-mounts each MCP server's tools \
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Introspect MCP server tools. Agix flat-mounts each MCP server's tools \
          under `mcp__<server>__<tool>` names — call them directly, no dispatcher \
          needed. This tool just lists what's available so you know the names."
-            .into()
+                .into(),
+        )
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok

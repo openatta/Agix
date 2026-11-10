@@ -31,9 +31,7 @@
 //! reason.
 
 use base::interface::script::ScriptOutcome;
-use base::interface::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult};
 use base::memory::{DurableMemory, MemoryStore, MemoryType};
 use std::sync::Arc;
 use test_runner::script_session::{drive, Ran, Session};
@@ -778,6 +776,10 @@ impl Tool for ScriptEcho {
     fn name(&self) -> &str {
         "ScriptEcho"
     }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new().read_only(true)
+    }
+
     fn description(&self) -> &str {
         "Echo the `say` argument back."
     }
@@ -788,18 +790,12 @@ impl Tool for ScriptEcho {
             "required": ["say"]
         })
     }
-    fn is_read_only(&self, _: &serde_json::Value) -> bool {
-        true
-    }
     async fn check_permissions(
         &self,
         _: &serde_json::Value,
         _: &ToolContext,
     ) -> PermissionDecision {
         PermissionDecision::allow()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
     async fn call(
         &self,

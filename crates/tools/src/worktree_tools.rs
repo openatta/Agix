@@ -90,8 +90,8 @@ impl Tool for EnterWorktreeTool {
     fn input_schema(&self) -> Value {
         crate::input_schema::<EnterWorktreeInput>()
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/worktree_enter.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/worktree_enter.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {
@@ -204,8 +204,8 @@ impl Tool for ExitWorktreeTool {
     fn input_schema(&self) -> Value {
         crate::input_schema::<ExitWorktreeInput>()
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/worktree_exit.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/worktree_exit.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

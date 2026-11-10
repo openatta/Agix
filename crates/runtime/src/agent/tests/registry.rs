@@ -73,6 +73,14 @@ async fn build_registers_what_a_rust_plugin_registers() {
         fn name(&self) -> &str {
             "Exported"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "exported (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
@@ -134,6 +142,14 @@ async fn admit_tools_reaches_only_the_plugins_own_tools_and_yields_to_disallowed
         fn name(&self) -> &str {
             self.0
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "named (test tool)"
+        }
+
         fn input_schema(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
@@ -572,6 +588,14 @@ async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
                 fn name(&self) -> &str {
                     "TaskStop"
                 }
+                fn spec(&self) -> base::tool::ToolSpec {
+                    base::tool::ToolSpec::new()
+                }
+
+                fn description(&self) -> &str {
+                    "fake task stop (test tool)"
+                }
+
                 fn input_schema(&self) -> serde_json::Value {
                     serde_json::json!({"type": "object"})
                 }

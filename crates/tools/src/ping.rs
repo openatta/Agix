@@ -46,8 +46,8 @@ impl Tool for PingTool {
         crate::input_schema::<PingInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/ping.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/ping.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {

@@ -681,7 +681,7 @@ async fn the_description_lists_call_shapes_and_the_guide_says_the_rest() {
         allowed_agent_types: vec![],
         path_style: Default::default(),
     };
-    let guide = tool.detailed_prompt(&ctx).await.expect("a guide");
+    let guide = tool.guide(&ctx).await.expect("a guide");
     assert!(
         guide.contains("tools.Read({file_path, limit?}) → text — Read a file (text/image/PDF) with optional line range."),
         "{guide}"

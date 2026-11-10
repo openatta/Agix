@@ -182,8 +182,8 @@ impl Tool for ToolSearchTool {
         crate::input_schema::<ToolSearchInput>()
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/tool_search.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/tool_search.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {
@@ -435,11 +435,15 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
+        fn description(&self) -> &str {
+            "late tool (test tool)"
+        }
+
         fn input_schema(&self) -> Value {
             json!({"type": "object"})
         }
-        async fn prompt(&self, _: &PromptContext) -> String {
-            self.desc.to_string()
+        async fn guide(&self, _: &PromptContext) -> Option<String> {
+            Some(self.desc.to_string())
         }
         fn spec(&self) -> ToolSpec {
             ToolSpec::new().short_description(self.desc)
@@ -461,11 +465,19 @@ mod tests {
         fn name(&self) -> &str {
             "Active"
         }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new()
+        }
+
+        fn description(&self) -> &str {
+            "active tool (test tool)"
+        }
+
         fn input_schema(&self) -> Value {
             json!({"type": "object"})
         }
-        async fn prompt(&self, _: &PromptContext) -> String {
-            "always active".into()
+        async fn guide(&self, _: &PromptContext) -> Option<String> {
+            Some("always active".into())
         }
         async fn call(
             &self,
@@ -610,6 +622,10 @@ mod tests {
             fn name(&self) -> &str {
                 self.0
             }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec::new()
+            }
+
             fn description(&self) -> &str {
                 "Look up a ticket"
             }
@@ -729,7 +745,7 @@ mod tests {
         );
     }
 
-    /// `select:` on a documented tool returns the *body* of `Tool::prompt()`.
+    /// `select:` on a documented tool returns the *body* of `Tool::guide()`.
     /// `Documented` is deliberately **not** deferred — tools like `Agent` and
     /// `TeamCreate` ship full schemas and must still be discoverable here.
     #[tokio::test]
@@ -741,14 +757,18 @@ mod tests {
             fn name(&self) -> &str {
                 "Agent"
             }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec::new()
+            }
+
             fn description(&self) -> &str {
                 "Launch a sub-agent."
             }
             fn input_schema(&self) -> Value {
                 json!({"type": "object"})
             }
-            async fn prompt(&self, _: &PromptContext) -> String {
-                GUIDE.to_string()
+            async fn guide(&self, _: &PromptContext) -> Option<String> {
+                Some(GUIDE.to_string())
             }
             async fn call(
                 &self,
@@ -786,7 +806,7 @@ mod tests {
         assert_eq!(sc["guides_returned"], json!(["Agent"]));
     }
 
-    /// A deferred tool with no `prompt()` override must still resolve — the
+    /// A deferred tool with no `guide()` must still resolve — the
     /// original schema-activation behaviour cannot regress just because
     /// guides were added alongside it.
     #[tokio::test]
@@ -797,6 +817,10 @@ mod tests {
             fn name(&self) -> &str {
                 "Bare"
             }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec::new()
+            }
+
             fn description(&self) -> &str {
                 "Does one thing."
             }
@@ -830,7 +854,7 @@ mod tests {
         assert_eq!(
             sc["guides_returned"],
             json!([]),
-            "a tool with no prompt() override must report no guide, not an \
+            "a tool with no guide() must report no guide, not an \
              echo of its own description"
         );
         match result.content {
@@ -853,6 +877,10 @@ mod tests {
             fn name(&self) -> &str {
                 "Plain"
             }
+            fn spec(&self) -> ToolSpec {
+                ToolSpec::new()
+            }
+
             fn description(&self) -> &str {
                 "Plain tool."
             }

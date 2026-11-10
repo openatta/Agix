@@ -5,9 +5,7 @@
 use async_trait::async_trait;
 use base::context::goal::{GoalAction, GoalError, TurnOrigin};
 use base::error::ToolError;
-use base::tool::{
-    PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
-};
+use base::tool::{PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -92,9 +90,6 @@ impl Tool for GoalCreateTool {
     fn input_schema(&self) -> Value {
         crate::input_schema::<GoalCreateInput>()
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
-    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
@@ -142,9 +137,6 @@ impl Tool for GoalGetTool {
     fn input_schema(&self) -> Value {
         crate::input_schema::<GoalGetInput>()
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
-    }
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().read_only(true).concurrency_safe(true)
@@ -184,9 +176,6 @@ impl Tool for GoalUpdateTool {
     }
     fn input_schema(&self) -> Value {
         crate::input_schema::<GoalUpdateInput>()
-    }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        self.description().to_string()
     }
 
     fn spec(&self) -> ToolSpec {

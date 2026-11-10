@@ -168,8 +168,8 @@ impl base::tool::Tool for TeamCreateTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("tool.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("tool.prompt.md").to_string())
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<TeamCreateInput>(input.clone()) {
@@ -262,11 +262,13 @@ impl base::tool::Tool for TeamDeleteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "Delete a team by name. This cancels any running sub-agents and \
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "Delete a team by name. This cancels any running sub-agents and \
          cleans up team-scoped resources (task lists, scratchpads). \
          Use when the team's work is complete or the user asks to stop."
-            .into()
+                .into(),
+        )
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
@@ -319,8 +321,9 @@ impl base::tool::Tool for TeamListTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
-    async fn prompt(&self, _: &PromptContext) -> String {
-        "List teams created via TeamCreate that are still tracked (i.e. haven't been \
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(
+            "List teams created via TeamCreate that are still tracked (i.e. haven't been \
          cleaned up with TeamDelete yet), along with each member's label and last-known \
          status. Call this before TeamDelete if you're not certain of the exact team \
          name — don't guess a name or create a new placeholder team instead of looking \
@@ -330,7 +333,8 @@ impl base::tool::Tool for TeamListTool {
          An idle duration next to a member is how long it's been waiting since its last \
          reply; a long idle time doesn't mean anything went wrong, it just means nobody \
          has messaged it since."
-            .into()
+                .into(),
+        )
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok

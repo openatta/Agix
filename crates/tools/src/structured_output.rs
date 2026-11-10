@@ -60,8 +60,8 @@ impl Tool for StructuredOutputTool {
         }
     }
 
-    async fn prompt(&self, _: &PromptContext) -> String {
-        include_str!("prompts/coding/structured_output.prompt.md").to_string()
+    async fn guide(&self, _: &PromptContext) -> Option<String> {
+        Some(include_str!("prompts/coding/structured_output.prompt.md").to_string())
     }
 
     fn spec(&self) -> ToolSpec {
