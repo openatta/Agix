@@ -35,6 +35,7 @@ impl Model for DummyModel {
     }
 }
 
+#[allow(deprecated)]
 fn settings() -> Settings {
     let dir = std::env::temp_dir().join("agix-agents-module-tests");
     Settings {

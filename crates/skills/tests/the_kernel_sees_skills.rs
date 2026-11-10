@@ -38,6 +38,7 @@ impl Model for DummyModel {
     }
 }
 
+#[allow(deprecated)]
 fn test_settings() -> Settings {
     let dir = std::env::temp_dir().join("agix-skills-module-tests");
     Settings {

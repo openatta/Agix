@@ -986,7 +986,8 @@
     },
     "session_dir": {
       "default": null,
-      "description": "Not read. Transcripts always go under the state directory\n(`paths.local_data_dir`); the field is kept so existing settings files\nand struct literals still compile.",
+      "deprecated": true,
+      "description": "Not read. Transcripts always go under the state directory\n(`paths.local_data_dir`); the field is kept so existing settings files\nand struct literals still compile, and a settings file that sets it\ngets a warning when it loads.",
       "type": [
         "string",
         "null"

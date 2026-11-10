@@ -3,6 +3,7 @@
 use base::interface::model::ModelMessage;
 use base::interface::settings::ThinkingMode;
 
+#[allow(deprecated)]
 pub(super) fn recall_test_settings(root: &std::path::Path) -> base::interface::settings::Settings {
     base::interface::settings::Settings {
         model: base::interface::settings::ModelSettings {

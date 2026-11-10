@@ -415,6 +415,7 @@ mod tests {
         }
     }
 
+    #[allow(deprecated)]
     fn test_settings() -> Settings {
         Settings {
             model: ModelSettings {

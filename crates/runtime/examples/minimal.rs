@@ -23,6 +23,7 @@ use model::adapter::AnthropicModel;
 use model::client::{AuthMode, HttpAnthropicClient};
 use tokio_util::sync::CancellationToken;
 
+#[allow(deprecated)]
 fn settings(
     model_name: String,
     data_dir: std::path::PathBuf,

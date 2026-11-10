@@ -66,7 +66,9 @@ pub struct Settings {
     pub telemetry_url: Option<String>,
     /// Not read. Transcripts always go under the state directory
     /// (`paths.local_data_dir`); the field is kept so existing settings files
-    /// and struct literals still compile.
+    /// and struct literals still compile, and a settings file that sets it
+    /// gets a warning when it loads.
+    #[deprecated(note = "not read: transcripts always go under `paths.local_data_dir`")]
     #[serde(default)]
     pub session_dir: Option<PathBuf>,
 
@@ -1077,6 +1079,9 @@ impl Settings {
             for key in unknown_settings_keys(&layer.value) {
                 tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
             }
+            for key in deprecated_settings_keys(&layer.value) {
+                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key is deprecated and not read; remove it");
+            }
             let mut layer_json = layer.value;
             if let Some(obj) = layer_json.as_object_mut() {
                 // `paths` is resolved from this function's own arguments,
@@ -1223,6 +1228,7 @@ impl Settings {
     }
 
     /// Quick default for a given model name.
+    #[allow(deprecated)]
     pub fn defaults_for(model_name: &str) -> Self {
         Self {
             model: ModelSettings {
@@ -1303,6 +1309,27 @@ pub fn unknown_settings_keys(layer: &serde_json::Value) -> Vec<String> {
     fields
         .keys()
         .filter(|key| key.as_str() != "$schema" && !KNOWN.contains(key))
+        .cloned()
+        .collect()
+}
+
+/// The top-level keys of one settings file that the schema marks deprecated.
+pub fn deprecated_settings_keys(layer: &serde_json::Value) -> Vec<String> {
+    static DEPRECATED: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+        settings_json_schema()["properties"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, property)| property["deprecated"] == true)
+            .map(|(key, _)| key.clone())
+            .collect()
+    });
+    let Some(fields) = layer.as_object() else {
+        return Vec::new();
+    };
+    fields
+        .keys()
+        .filter(|key| DEPRECATED.contains(key))
         .cloned()
         .collect()
 }
@@ -1912,6 +1939,26 @@ mod tests {
         unknown.sort();
         assert_eq!(unknown, ["hooks", "permision_mode"]);
         assert!(unknown_settings_keys(&serde_json::json!([1])).is_empty());
+    }
+
+    #[test]
+    fn session_dir_is_reported_as_deprecated_and_still_loads() {
+        let layer = serde_json::json!({"session_dir": "/tmp/x", "language": "en"});
+        assert_eq!(deprecated_settings_keys(&layer), ["session_dir"]);
+        assert!(unknown_settings_keys(&layer).is_empty());
+        assert!(deprecated_settings_keys(&serde_json::json!([1])).is_empty());
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), layer.to_string()).unwrap();
+        let settings = Settings::load(
+            dir.path().to_path_buf(),
+            dir.path().join("scene"),
+            dir.path().join("project"),
+            "code",
+            "m",
+        );
+        assert_eq!(settings.language.as_deref(), Some("en"));
+        assert!(settings.ignored_values.is_empty());
     }
 
     #[test]

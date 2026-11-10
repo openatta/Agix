@@ -137,6 +137,7 @@ fn test_scene(allowed: Vec<String>) -> Arc<dyn Scene> {
     })
 }
 
+#[allow(deprecated)]
 fn test_settings(root: &std::path::Path) -> Settings {
     use base::interface::settings::*;
     Settings {

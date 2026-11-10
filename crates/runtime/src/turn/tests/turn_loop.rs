@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
+#[allow(deprecated)]
 fn prompt_context_includes_os() {
     let settings = base::interface::settings::Settings {
         model: base::interface::settings::ModelSettings {

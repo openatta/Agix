@@ -76,6 +76,7 @@ impl Model for RecordingAnswerModel {
     }
 }
 
+#[allow(deprecated)]
 fn recall_test_settings(root: &std::path::Path) -> Settings {
     Settings {
         model: ModelSettings {

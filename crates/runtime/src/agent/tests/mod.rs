@@ -3,6 +3,7 @@
 use super::builder::build_hook_runner;
 use super::*;
 
+#[allow(deprecated)]
 pub(super) fn test_settings() -> base::interface::settings::Settings {
     use base::interface::settings::*;
     Settings {

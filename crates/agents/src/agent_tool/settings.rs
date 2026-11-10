@@ -107,6 +107,7 @@ pub(super) fn settings_from_parent(
 /// The user-level roots hang off `local_data_dir`, not `$HOME`: with no
 /// instance configuration in hand, the invoking user's home is the one
 /// directory this has no grounds to assume it owns.
+#[allow(deprecated)]
 pub(super) fn fallback_settings(
     model_name: String,
     max_tokens: u32,

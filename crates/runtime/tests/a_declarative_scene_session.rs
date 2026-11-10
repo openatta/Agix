@@ -56,6 +56,7 @@ impl Model for CapturingModel {
     }
 }
 
+#[allow(deprecated)]
 fn settings(dir: &Path) -> Settings {
     Settings {
         model: ModelSettings {

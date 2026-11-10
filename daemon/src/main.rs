@@ -349,7 +349,6 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     }
     daemon_config.mcp_policy_path = cli.mcp_policy.clone();
     daemon_config.managed_settings_path = cli.managed_settings.clone();
-    daemon_config.settings.session_dir = Some(daemon_config.settings.paths.local_data_dir.clone());
     let daemon_root = daemon_config.paths.global_root().join("daemon");
     platform::crash::install(
         daemon_root.join("crashes"),

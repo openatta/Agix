@@ -1306,6 +1306,10 @@ WebAssembly 载体整个移除。
 - `plugin.install` 现在在临时目录里读回 manifest、检查披露,通过了才放进 cache,失败不再先放进去再删;
   同一版本已装过时,若这次给的 `checksum` 与安装时记下的压缩包 SHA-256 不一致,cache 里的会被替换。
 
+- **`session_dir` 已弃用。** 它从来不读(transcript 总在状态目录下),现在设置文件里写了它,加载时
+  每个写了它的文件记一条 warn;settings schema 里标了 `deprecated`。删掉这一行即可,行为不变。
+  计划在之后的版本里删除这个字段。
+
 ### RPC 客户端
 
 - `daemon.doctor` 的 `health.checks` 多一项 `settings.managed`(查找的路径、是否存在、来源与
@@ -1389,3 +1393,8 @@ WebAssembly 载体整个移除。
 - `RuleSetPermission` 与子 Agent 的权限包装构造 `ToolContext` 时取被判会话的
   `SessionState::exec()`,没绑过的(自己拼 `SessionState`、不经 `Builder` 的)仍用本机,与以前相同。
   自己实现 `Permission` 并构造 `ToolContext` 的照此改。
+
+- `base::settings::Settings::session_dir` 标了 `#[deprecated]`:结构体字面量里写 `session_dir: None`
+  会出 deprecation warning(`-D warnings` 下是错误)。改用 `..Settings::defaults_for(..)` 补齐,或者在
+  那个函数上 `#[allow(deprecated)]`,等字段删除时再去掉。新增 `base::settings::deprecated_settings_keys`。
+

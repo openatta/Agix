@@ -483,7 +483,7 @@ agent 跑的命令各有自己的进程组,daemon 崩了它们还活着,所以 d
 | `execution.team_enabled` | `false` | 给场景支持团队(`code`、`harnix`)的会话注册 `TeamCreate` / `TeamList` / `TeamDelete` |
 | `execution.team_member_idle_timeout_secs` | `1800` | 团队成员空闲这么久就停掉 |
 | `sandbox.network_mode` | `unrestricted` | 沙箱里命令的出网:`unrestricted`、`deny_all` 或 `allowlist`(`sandbox.allowed_domains`) |
-| `session_dir` | — | 不读;transcript 总在状态目录下 |
+| `session_dir` | — | 已弃用,不读;transcript 总在状态目录下。设置文件里写了会在加载时 warn |
 
 | 变量 | 作用 |
 |---|---|
