@@ -10,6 +10,7 @@ use base::interface::exec::{
     ExecError, OutputChunk, OutputStream, Process, ProcessSpec, OUTPUT_GRACE_AFTER_EXIT,
 };
 use futures::StreamExt;
+use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -116,18 +117,14 @@ impl HookRunner {
         input: &HookInput,
         timeout: Duration,
     ) -> HookOutcome {
+        let cwd = Some(Path::new(&input.cwd))
+            .filter(|dir| !input.cwd.is_empty() && dir.is_dir())
+            .unwrap_or(Path::new("."));
         if self.project_untrusted {
-            if let Some(word) = relative_program(shell, command) {
-                return HookOutcome::Error(format!(
-                    "hook program `{word}` is a relative path and the project is not trusted: \
-                     it would run the project's file of that name; write an absolute path, \
-                     or trust the project"
-                ));
+            if let Some(found) = project_supplied(shell, command, cwd) {
+                return HookOutcome::Error(found.refusal());
             }
         }
-        let cwd = Some(std::path::Path::new(&input.cwd))
-            .filter(|dir| !input.cwd.is_empty() && dir.is_dir())
-            .unwrap_or(std::path::Path::new("."));
         let mut spec = ProcessSpec::new(shell, cwd).args(["-c", command]);
 
         // Let `command` reference a bare script name (e.g. `check.sh`) that
@@ -202,69 +199,155 @@ impl HookRunner {
     }
 }
 
-/// The word that names a program by a path relative to where the hook runs:
-/// `shell` itself, a command's program (`./x`, `bin/x`, after `cd`, inside
-/// `sh -c`, behind `env` and the other wrappers), or the script a shell or
-/// `.` / `source` reads (`bash x.sh`). Read as the hook `if` reads a command.
-/// A program spelled through a variable is not judged here.
-fn relative_program(shell: &str, command: &str) -> Option<String> {
-    use permissions::invocation::{invocations, Invocation};
+/// What a command hook would take from the project it runs in.
+#[derive(Debug, PartialEq, Eq)]
+enum ProjectSupplied {
+    /// A program started by a path relative to where the hook runs: `shell`
+    /// itself, or a command's program (`./x`, `bin/x`, after `cd`, inside
+    /// `sh -c`, behind `env` and the other wrappers).
+    Program(String),
+    /// A word naming a file that is there under the hook's working directory
+    /// or a directory a `cd` in the command goes to: the script an interpreter
+    /// runs (`python3 x.py`, `awk -f x.awk`, `. env.sh`), an option's value
+    /// (`--require=./x.js`), what `<` feeds in.
+    File(String),
+}
+
+impl ProjectSupplied {
+    fn refusal(&self) -> String {
+        match self {
+            Self::Program(word) => format!(
+                "hook program `{word}` is a relative path and the project is not trusted: \
+                 it would run the project's file of that name; write an absolute path, \
+                 or trust the project"
+            ),
+            Self::File(word) => format!(
+                "hook command names the project's file `{word}` and the project is not \
+                 trusted: the hook would run or read the project's copy; write an absolute \
+                 path, or trust the project"
+            ),
+        }
+    }
+}
+
+/// Reads `command` as the hook `if` reads it. Which interpreter takes which
+/// argument as code is not guessed: any argument that is a file in the
+/// project counts. A program spelled through a variable is not judged here.
+fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSupplied> {
+    use permissions::invocation::{program_name, traced_invocations, Invocation};
     if shell.contains('/') && is_relative(shell) {
-        return Some(shell.to_string());
+        return Some(ProjectSupplied::Program(shell.to_string()));
     }
-    permissions::shell::segments(command)
+    let mut argvs = Vec::new();
+    // `segments` drops a command's leading `NAME=value` words.
+    let mut operands: Vec<String> = permissions::shell::lex(command)
         .iter()
-        .flat_map(|segment| invocations(&segment.source))
-        .find_map(|invocation| match invocation {
-            Invocation::Runs(argv) => relative_word_in(&argv).map(str::to_string),
-            Invocation::Unknown => None,
+        .filter(|word| permissions::shell::is_assignment(&word.text))
+        .flat_map(|word| word.text.split_whitespace())
+        .map(str::to_string)
+        .collect();
+    for segment in permissions::shell::segments(command) {
+        let words = permissions::shell::lex(&segment.source);
+        operands.extend(read_from(&words));
+        for traced in traced_invocations(&segment.source) {
+            operands.extend(
+                traced
+                    .assignments
+                    .iter()
+                    .flat_map(|assignment| assignment.split_whitespace())
+                    .map(str::to_string),
+            );
+            match traced.invocation {
+                Invocation::Runs(argv) => argvs.push(argv),
+                Invocation::Unknown => operands.extend(
+                    without_redirections(&words)
+                        .skip(1)
+                        .map(|word| word.text.clone()),
+                ),
+            }
+        }
+    }
+    if let Some(program) = argvs
+        .iter()
+        .filter_map(|argv| argv.first())
+        .find(|program| program.contains('/') && is_relative(program))
+    {
+        return Some(ProjectSupplied::Program(program.clone()));
+    }
+
+    let mut bases = vec![cwd.to_path_buf()];
+    for argv in &argvs {
+        if !matches!(program_name(&argv[0]), "cd" | "pushd") {
+            continue;
+        }
+        let Some(dir) = argv[1..].iter().find(|arg| !arg.starts_with('-')) else {
+            continue;
+        };
+        if is_relative(dir) {
+            let reached: Vec<_> = bases.iter().map(|base| base.join(dir)).collect();
+            bases.extend(reached);
+            bases.truncate(MAX_CD_BASES);
+        } else if Path::new(dir).starts_with(cwd) {
+            bases.push(dir.into());
+        }
+    }
+
+    argvs
+        .iter()
+        .flat_map(|argv| argv.iter().skip(1))
+        .chain(&operands)
+        .find(|word| {
+            paths_in(word).any(|path| {
+                !path.is_empty()
+                    && is_relative(path)
+                    && bases.iter().any(|base| base.join(path).is_file())
+            })
         })
+        .map(|word| ProjectSupplied::File(word.clone()))
 }
 
-const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
+const MAX_CD_BASES: usize = 32;
 
-fn relative_word_in(argv: &[String]) -> Option<&str> {
-    let program = argv.first()?;
-    if program.contains('/') && is_relative(program) {
-        return Some(program);
-    }
-    let name = permissions::invocation::program_name(program);
-    let script = if SHELLS.contains(&name) {
-        shell_script_operand(&argv[1..])
-    } else if matches!(name, "." | "source") {
-        argv.get(1).map(String::as_str)
-    } else {
-        None
-    };
-    script.filter(|word| is_relative(word))
+/// The paths a word may name: itself, and what follows each `=` of an
+/// `--opt=value` or `NAME=--opt=value`. A short option's attached value
+/// (`-r./x`) is not split off.
+fn paths_in(word: &str) -> impl Iterator<Item = &str> {
+    let whole = (!word.starts_with('-')).then_some(word);
+    let values = word.match_indices('=').map(|(at, _)| &word[at + 1..]);
+    whole.into_iter().chain(values)
 }
 
-/// The script file a shell started with `args` reads; `None` when it runs a
-/// `-c` string or reads stdin.
-fn shell_script_operand(args: &[String]) -> Option<&str> {
-    let mut args = args.iter().map(String::as_str);
-    while let Some(arg) = args.next() {
-        if matches!(arg, "--" | "-") {
-            return args.next();
+fn without_redirections(
+    words: &[permissions::shell::Word],
+) -> impl Iterator<Item = &permissions::shell::Word> {
+    let mut target_next = false;
+    words.iter().filter(move |word| {
+        if word.redirect {
+            target_next = true;
+            false
+        } else {
+            !std::mem::take(&mut target_next)
         }
-        if let Some(long) = arg.strip_prefix("--") {
-            if matches!(long, "rcfile" | "init-file") {
-                args.next();
-            }
-            continue;
-        }
-        if let Some(flags) = arg.strip_prefix('-').or_else(|| arg.strip_prefix('+')) {
-            if flags.contains(['c', 's']) {
-                return None;
-            }
-            if flags.contains(['o', 'O']) {
-                args.next();
-            }
-            continue;
-        }
-        return Some(arg);
-    }
-    None
+    })
+}
+
+/// The files a simple command's `<` / `<>` redirections read. What `>`
+/// writes to is not handed to anything, and a here-doc's delimiter or a
+/// here-string is not a file.
+fn read_from(words: &[permissions::shell::Word]) -> Vec<String> {
+    words
+        .windows(2)
+        .filter(|pair| {
+            pair[0].redirect
+                && matches!(
+                    pair[0]
+                        .text
+                        .trim_start_matches(|c: char| c.is_ascii_digit()),
+                    "<" | "<>"
+                )
+        })
+        .map(|pair| pair[1].text.clone())
+        .collect()
 }
 
 fn is_relative(word: &str) -> bool {
@@ -398,22 +481,39 @@ pub(super) fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    fn project_with(files: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "agix-hooks-project-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        for file in files {
+            let path = dir.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap_or_default();
+            }
+            std::fs::write(path, "").unwrap_or_default();
+        }
+        dir
+    }
+
     #[test]
     fn relative_programs_are_told_apart_from_absolute_and_looked_up_ones() {
+        let project = project_with(&["x.sh", "env.sh", "check.sh"]);
         for (shell, command, word) in [
             ("bash", "./x.sh", "./x.sh"),
             ("bash", "ls && bin/x", "bin/x"),
             ("bash", "exec ../x", "../x"),
             ("bash", "sudo -u me ./x", "./x"),
-            ("bash", "zsh -o pipefail x.sh", "x.sh"),
-            ("bash", "sh -- x.sh", "x.sh"),
-            ("bash", "source env.sh", "env.sh"),
             ("bash", "sh -c 'cd sub; ./y'", "./y"),
             ("./my-shell", "true", "./my-shell"),
         ] {
             assert_eq!(
-                relative_program(shell, command).as_deref(),
-                Some(word),
+                project_supplied(shell, command, &project),
+                Some(ProjectSupplied::Program(word.into())),
                 "`{command}`"
             );
         }
@@ -428,8 +528,83 @@ mod tests {
             "$HOME/bin/x.sh",
             "python3 -m pytest",
         ] {
-            assert_eq!(relative_program("bash", command), None, "`{command}`");
+            assert_eq!(
+                project_supplied("bash", command, &project),
+                None,
+                "`{command}`"
+            );
         }
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn any_argument_that_is_a_file_in_the_project_is_the_projects() {
+        let project = project_with(&[
+            "x.sh",
+            "env.sh",
+            "scripts/x.py",
+            "scripts/hook.js",
+            "sub/deeper/y.rb",
+        ]);
+        for (command, word) in [
+            ("python3 scripts/x.py", "scripts/x.py"),
+            (
+                "python3 -X dev -W ignore scripts/x.py --fix",
+                "scripts/x.py",
+            ),
+            ("node scripts/hook.js", "scripts/hook.js"),
+            ("deno run -A scripts/hook.js", "scripts/hook.js"),
+            ("awk -f x.sh", "x.sh"),
+            ("zsh -o pipefail x.sh", "x.sh"),
+            ("sh -- x.sh", "x.sh"),
+            ("source env.sh", "env.sh"),
+            ("env A=1 timeout 5 perl x.sh", "x.sh"),
+            (
+                "node --require=./scripts/hook.js -e 0",
+                "--require=./scripts/hook.js",
+            ),
+            (
+                "PYTHONSTARTUP=scripts/x.py python3 -i",
+                "PYTHONSTARTUP=scripts/x.py",
+            ),
+            (
+                "NODE_OPTIONS='--require ./scripts/hook.js' node -e 0",
+                "./scripts/hook.js",
+            ),
+            ("cat x.sh | sh", "x.sh"),
+            ("sh < x.sh", "x.sh"),
+            ("python3 0<scripts/x.py", "scripts/x.py"),
+            ("cd scripts && python3 x.py", "x.py"),
+            ("cd sub; cd deeper; ruby y.rb", "y.rb"),
+            ("sh -c 'cd scripts; node hook.js'", "hook.js"),
+            ("$RUNNER scripts/x.py", "scripts/x.py"),
+            ("echo $(cat x.sh)", "x.sh"),
+        ] {
+            assert_eq!(
+                project_supplied("bash", command, &project),
+                Some(ProjectSupplied::File(word.into())),
+                "`{command}`"
+            );
+        }
+        for command in [
+            "python3 scripts/missing.py",
+            "python3 --version",
+            "python3 -m pytest -q",
+            "node -e 0",
+            "true --flag -- . .. scripts sub/deeper",
+            "python3 /opt/x.py",
+            "python3 ~/x.py",
+            "echo done >> x.sh",
+            "echo done > env.sh 2>&1",
+            "check.sh x",
+        ] {
+            assert_eq!(
+                project_supplied("bash", command, &project),
+                None,
+                "`{command}`"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]

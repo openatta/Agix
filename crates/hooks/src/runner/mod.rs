@@ -1072,6 +1072,7 @@ mod tests {
             "sh -e ./scripts/check.sh",
             "bash -c './scripts/check.sh'",
             ". scripts/check.sh",
+            "echo scripts/check.sh",
         ] {
             let result = runner(command, OnError::Allow, true)
                 .run(HookEvent::PreToolUse, &input)
@@ -1088,7 +1089,12 @@ mod tests {
             .await;
         assert!(blocked.blocked().is_some(), "{:?}", blocked.outcomes);
 
-        for command in ["own.sh", "/bin/echo '{}'", "echo scripts/check.sh", "true"] {
+        for command in [
+            "own.sh",
+            "/bin/echo '{}'",
+            "echo scripts/missing.sh",
+            "true",
+        ] {
             let result = runner(command, OnError::Allow, true)
                 .run(HookEvent::PreToolUse, &input)
                 .await;
@@ -1100,6 +1106,115 @@ mod tests {
         }
 
         runner("./scripts/check.sh", OnError::Allow, false)
+            .run(HookEvent::PreToolUse, &input)
+            .await;
+        assert!(marker.exists(), "a trusted project's script runs as before");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An interpreter the user's hook starts by name is not the project's
+    /// file, but the script it is handed is.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_untrusted_project_does_not_hand_a_hook_its_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile_dir();
+        let project = root.join("project");
+        let marker = project.join("ran");
+        let scripts = project.join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        let touch = format!("touch '{}'", marker.display());
+        std::fs::write(
+            scripts.join("check.awk"),
+            format!("BEGIN {{ system(\"{touch}\") }}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            scripts.join("check.py"),
+            format!("open('{}', 'w')\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            scripts.join("check.js"),
+            format!("require('fs').writeFileSync('{}', '')\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::write(scripts.join("check.sh"), format!("{touch}\n")).unwrap();
+        let hooks_dir = root.join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        for (dir, body) in [
+            (&hooks_dir, "#!/bin/sh\nexit 0\n".to_string()),
+            (&project, format!("#!/bin/sh\n{touch}\n")),
+        ] {
+            let own = dir.join("own.sh");
+            std::fs::write(&own, body).unwrap();
+            std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut input = input_for_bash("ls");
+        input.cwd = project.display().to_string();
+        let runner = |command: &str, untrusted: bool| {
+            let mut s: HooksSettings = HashMap::new();
+            s.insert(
+                HookEvent::PreToolUse,
+                vec![HookConfig::Command {
+                    command: command.into(),
+                    shell: None,
+                    timeout: None,
+                    if_pattern: None,
+                    only_on_error: None,
+                    once: None,
+                    async_rewake: None,
+                    on_error: OnError::Allow,
+                }],
+            );
+            HookRunner::new(s)
+                .with_hooks_search_dirs(vec![hooks_dir.clone()])
+                .with_project_untrusted(untrusted)
+        };
+
+        for command in [
+            "awk -f scripts/check.awk",
+            "python3 scripts/check.py",
+            "python3 -W ignore scripts/check.py",
+            "node scripts/check.js",
+            "node --require=./scripts/check.js -e 0",
+            "cd scripts && python3 check.py",
+            "cat scripts/check.sh | sh",
+            "sh < scripts/check.sh",
+        ] {
+            let result = runner(command, true)
+                .run(HookEvent::PreToolUse, &input)
+                .await;
+            assert!(!marker.exists(), "`{command}` ran the project's script");
+            match &result.outcomes[0] {
+                HookOutcome::Error(e) => assert!(
+                    e.contains("not trusted") && e.contains("check."),
+                    "`{command}`: {e}"
+                ),
+                other => panic!("`{command}`: expected a hook failure, got {other:?}"),
+            }
+        }
+
+        for command in [
+            "own.sh",
+            "true --flag ./scripts/missing.py scripts /etc/hosts",
+            "awk -f /dev/null",
+            "echo log >> scripts/check.sh.log",
+        ] {
+            let result = runner(command, true)
+                .run(HookEvent::PreToolUse, &input)
+                .await;
+            assert!(
+                matches!(result.outcomes[0], HookOutcome::Ran { .. }),
+                "`{command}`: {:?}",
+                result.outcomes
+            );
+            assert!(!marker.exists(), "`{command}` ran the project's script");
+        }
+
+        runner("awk -f scripts/check.awk", false)
             .run(HookEvent::PreToolUse, &input)
             .await;
         assert!(marker.exists(), "a trusted project's script runs as before");

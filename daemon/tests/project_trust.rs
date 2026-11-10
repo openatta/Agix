@@ -612,6 +612,55 @@ async fn an_untrusted_project_does_not_supply_a_global_hooks_script() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn an_untrusted_project_does_not_hand_a_global_hook_its_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+    let finished = dir.path().join("finished");
+    let mut global = untrusted_by_default();
+    global["hooks_config"] = json!({
+        "UserPromptSubmit": [
+            {"type": "command", "command": "awk -f scripts/check.awk"},
+            {"type": "command", "command": format!("echo done >> '{}'", finished.display())},
+        ],
+    });
+    let daemon = Daemon::start(global, json!({})).await;
+    let script = daemon.work.join("scripts/check.awk");
+    std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+    std::fs::write(
+        &script,
+        format!(
+            "BEGIN {{ print \"project-script\" >> \"{}\" }}\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    let lines = |path: &std::path::Path| {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+
+    daemon.turn().await;
+    assert_eq!(lines(&finished), 1, "the turn waits for its prompt hooks");
+    assert_eq!(
+        lines(&marker),
+        0,
+        "the user's hook ran the untrusted project's scripts/check.awk"
+    );
+
+    daemon.trust(true).await;
+    daemon.turn().await;
+    assert_eq!(lines(&finished), 2);
+    assert_eq!(
+        lines(&marker),
+        1,
+        "once trusted the hook runs the project's script as before"
+    );
+}
+
 #[cfg(all(unix, feature = "mcp"))]
 #[tokio::test]
 async fn a_projects_own_mcp_servers_wait_for_trust() {

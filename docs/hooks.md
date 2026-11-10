@@ -64,12 +64,20 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
   (`sandbox.subprocess_env`)。command hook **不进 OS 沙箱**,以 daemon 的身份运行。
 - **未信任的项目里不跑项目给的程序。** 工作目录照旧是项目里的 `cwd`,所以 `./scripts/check.sh`、
   `scripts/x.sh` 这类相对路径落到的是仓库放在那里的文件。项目未被信任时(ARCHITECTURE §6.6),
-  在场的 hook 都来自全局层、场景层,它们若以相对路径起程序——`command` 里任何一段启动的程序
-  (`cd` 之后、`sh -c` 里、`env` / `sudo` 等 wrapper 后面的都算)、`sh` / `bash` 等 shell 或
-  `.` / `source` 读的脚本、`shell` 本身——就不跑,算这个 hook 失败(按 `on_error` 处理,缺省
-  记 warn、放行),失败原因里写着是哪个词。继承来的 `PATH` 里的相对条目(`.`、空条目)同时去掉,
-  裸程序名只在 hooks 目录与绝对路径的目录里找。自己的脚本写绝对路径(`~/` 也算)或放进
+  在场的 hook 都来自全局层、场景层。它们若以相对路径起程序——`command` 里任何一段启动的程序
+  (`cd` 之后、`sh -c` 里、`env` / `sudo` 等 wrapper 后面的都算)或 `shell` 本身——或者命令里
+  有哪个相对路径的词此刻就是项目里的一个文件——解释器读的脚本(`python3 scripts/check.py`、
+  `node hook.js`、`awk -f x.awk`、`bash x.sh`、`. env.sh`)、选项的值(`--require=./x.js`)、
+  `NAME=value` 的值、`<` 读进来的、`cat x.sh | sh` 里的——就不跑,算这个 hook 失败(按 `on_error`
+  处理,缺省记 warn、放行),失败原因里写着是哪个词。文件按工作目录和命令里 `cd` 去的目录找;
+  哪个程序把哪个参数当代码执行不去猜,所以把项目文件当数据读的(`grep x README.md`)同样不跑。
+  `>` 写到的文件、不存在的路径、目录、选项本身不算。继承来的 `PATH` 里的相对条目(`.`、空条目)
+  同时去掉,裸程序名只在 hooks 目录与绝对路径的目录里找。自己的脚本写绝对路径(`~/` 也算)或放进
   `~/.agix/hooks/` 写裸名;`$VAR/…` 这种拼出来的路径不在检查之列。项目信任之后照旧。
+
+  这条只看命令里写出来的词。程序自己去项目里找来执行的东西不在其中:`git` 读项目的
+  `.git/config`(`core.fsmonitor` 等)、`make` / `npm run` / `cargo build` 跑项目定义的步骤、
+  `python3 -c` / `-m` 从工作目录导入模块。用户层 hook 要在未信任的项目里跑这类命令,自己先想清楚。
 - stdin 收到一行 JSON payload(见下)。
 - **退出码只认 0 和 2。**
   - `0`:stdout 是 JSON 回答;stdout 为空等于什么都不说;不是 JSON 的记 warn,当作没说。
