@@ -764,3 +764,53 @@ async fn audit2_a_session_evicted_at_the_cap_comes_back_still_in_plan_mode() -> 
     run.finish().await;
     Ok(())
 }
+
+/// `ARCHITECTURE.md` §3.4: a sub-agent's tools are narrowed by the caller's
+/// lists, a skill's `allowed-tools` among them. A `context: fork` skill that
+/// lists only `Read` forks a sub-agent that is offered `Read`, not `Write`,
+/// `Edit` or `Bash`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_forked_skill_is_narrowed_to_its_allowed_tools() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("fork-allowed", &stub)
+        .settings(json!({
+            "permission_rules": [{ "tool": "Skill", "action": "allow" }]
+        }))
+        .start()
+        .await?;
+    run.write_file(
+        ".agents/skills/reader/SKILL.md",
+        "---\nname: reader\ndescription: reads a file\ncontext: fork\nallowed-tools: Read\n---\n\
+         FORK-MARK read the readme\n",
+    )?;
+    let session = run.session().await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls("s-1", "Skill", json!({ "skill": "reader" })),
+            Reply::text("parent done"),
+        ],
+    );
+    stub.script_when("FORK-MARK", [Reply::text("fork done")]);
+    run.turn(&session, "PARENT-MARK use the reader skill")
+        .await?;
+
+    let fork = turns_with(&stub, "FORK-MARK", &["PARENT-MARK"]);
+    anyhow::ensure!(!fork.is_empty(), "the skill never forked");
+    let names = fork[0].tool_names();
+    anyhow::ensure!(
+        names.iter().any(|n| n == "Read"),
+        "the fork has no Read at all: {names:?}"
+    );
+    let beyond: Vec<&String> = names
+        .iter()
+        .filter(|n| ["Write", "Edit", "Bash"].contains(&n.as_str()))
+        .collect();
+    assert!(
+        beyond.is_empty(),
+        "a fork of a skill with `allowed-tools: Read` was offered {beyond:?}"
+    );
+    run.finish().await;
+    Ok(())
+}
