@@ -798,7 +798,9 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 
 可写范围之内,引擎或 git 之后会在沙箱外照着执行的东西不可写:项目的 `.git`、`.agix`、
 `.claude` 这几个目录项本身(不能改名挪走或换成符号链接,不存在时也建不出来)、`.git/config`、
-`.git/config.worktree`、`.git/commondir`、`.git/hooks/`、`.agix` 与 `.claude` 下的配置
+`.git/config.worktree`、`.git/commondir`、`.git/hooks/`,每个子模块的 git 目录(`.git/modules/`
+下,嵌套的子模块在上一层的 `modules/` 下)里的同样几项以及通向它的各级目录(不能挪走换一个;
+查找不跟符号链接,深度和个数有上限)、`.agix` 与 `.claude` 下的配置
 (`settings.json`、`settings.local.json`、`mcp.local.json`,以及 `mcp`、`hooks`、`agents`、
 `skills`、`plugins`、`rules`、`scenes`、`policy`、`scripts`、`output-styles` 目录)、引擎
 worktree 的 `.git` 链接;状态目录除

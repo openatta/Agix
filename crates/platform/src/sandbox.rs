@@ -23,7 +23,9 @@
 //!
 //! Inside those, what the engine or git later acts on outside the sandbox is
 //! read-only: the project's `.git`, `.agix` and `.claude` entries themselves,
-//! `.git/{config,config.worktree,commondir}` and `.git/hooks/`, the
+//! `.git/{config,config.worktree,commondir}` and `.git/hooks/`, the same in
+//! the git directory of every submodule under `.git/modules/` (nested ones
+//! included, and the directories leading down to them), the
 //! configuration under `.agix/` and `.claude/` (`base::paths::ENGINE_CONFIG_*`:
 //! settings, MCP, hooks, agents, skills, plugins, rules, scenes, policy,
 //! scripts, output styles), and the `.git` links of the engine's worktrees.
@@ -446,14 +448,70 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// How many directories deep below a git directory's `modules/` the search
+/// for submodules goes, counting both the levels of a name with slashes in
+/// it and the `modules/` of each nested submodule.
+#[cfg(feature = "sandbox")]
+const SUBMODULE_SEARCH_DEPTH: usize = 12;
+
+/// The most submodule git directories one project gets rules for.
+#[cfg(feature = "sandbox")]
+const SUBMODULE_LIMIT: usize = 256;
+
+/// The submodules of the repository whose git directory is `git_dir`, nested
+/// ones included.
+#[cfg(feature = "sandbox")]
+#[derive(Default)]
+struct Submodules {
+    /// Every directory from `git_dir/modules` down to each submodule's git
+    /// directory, outermost first: what would let a command move a guarded
+    /// file's directory aside and put another in its place.
+    dirs: Vec<PathBuf>,
+    git_dirs: Vec<PathBuf>,
+}
+
+/// A submodule's git directory sits at `modules/<name>`, `<name>` possibly
+/// several directories deep, and has a `modules/` of its own. It is known by
+/// its `HEAD` or its `config`: the `config` is what a command cannot remove,
+/// so removing `HEAD` does not take a submodule off the list. Symbolic links
+/// are not followed: the rules are written against the paths found, and a
+/// link would lead them somewhere the repository chose.
+#[cfg(feature = "sandbox")]
+fn submodules_of(git_dir: &Path) -> Submodules {
+    let mut found = Submodules::default();
+    let mut pending = vec![(git_dir.join("modules"), 0)];
+    while let Some((dir, depth)) = pending.pop() {
+        if depth >= SUBMODULE_SEARCH_DEPTH || found.git_dirs.len() >= SUBMODULE_LIMIT {
+            continue;
+        }
+        if !dir.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        found.dirs.push(dir.clone());
+        for child in subdirs(&dir) {
+            let is_git_dir = ["HEAD", "config"]
+                .iter()
+                .any(|f| child.join(f).symlink_metadata().is_ok());
+            if is_git_dir {
+                found.dirs.push(child.clone());
+                pending.push((child.join("modules"), depth + 1));
+                found.git_dirs.push(child);
+            } else {
+                pending.push((child, depth + 1));
+            }
+        }
+    }
+    found
+}
+
 /// What in the project a sandboxed command must not write, because the
 /// engine, or the user's own git, acts on it later outside the sandbox.
 #[cfg(feature = "sandbox")]
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct ProjectGuard {
-    /// `.git` and the configuration roots themselves: renaming one away, or
-    /// replacing it with a symlink, would put every rule below on a path
-    /// nobody reads.
+    /// `.git`, the directories down to each submodule's git directory and
+    /// the configuration roots themselves: renaming one away, or replacing
+    /// it with a symlink, would put every rule below on a path nobody reads.
     entries: Vec<PathBuf>,
     files: Vec<PathBuf>,
     trees: Vec<PathBuf>,
@@ -470,8 +528,17 @@ fn project_guard(cwd: &Path) -> ProjectGuard {
     if git_dir != git {
         entries.push(git_dir.clone());
     }
-    let mut files: Vec<PathBuf> = GIT_CONTROL_FILES.iter().map(|f| git_dir.join(f)).collect();
-    let mut trees = vec![git_dir.join("hooks")];
+    let submodules = submodules_of(&git_dir);
+    entries.extend(submodules.dirs);
+    let mut files = Vec::new();
+    let mut trees = Vec::new();
+    for repo in std::iter::once(&git_dir).chain(&submodules.git_dirs) {
+        files.extend(GIT_CONTROL_FILES.iter().map(|f| repo.join(f)));
+        trees.push(repo.join("hooks"));
+        for worktree in subdirs(&repo.join("worktrees")) {
+            files.extend(GIT_CONTROL_FILES.iter().map(|f| worktree.join(f)));
+        }
+    }
     for name in ENGINE_CONFIG_ROOTS {
         let root = cwd.join(name);
         let real = resolve_path(&root);
@@ -483,9 +550,6 @@ fn project_guard(cwd: &Path) -> ProjectGuard {
         entries.push(root);
     }
 
-    for worktree in subdirs(&git_dir.join("worktrees")) {
-        files.extend(GIT_CONTROL_FILES.iter().map(|f| worktree.join(f)));
-    }
     for worktree in subdirs(&agix_dir.join(PROJECT_WORKTREES_DIR)) {
         files.push(worktree.join(".git"));
     }
@@ -724,7 +788,9 @@ fn writable_by_us(dir: &Path) -> bool {
 /// directory is read-only. `.git` cannot be treated that way — git creates
 /// its lock files directly in it — so it is bound onto itself, which makes it
 /// a mount point that cannot be renamed or removed, and its control files are
-/// mounted read-only where they exist.
+/// mounted read-only where they exist. Each submodule's git directory, and
+/// every directory on the way down to it, is bound onto itself the same way,
+/// so that none of them can be moved aside for one with other contents.
 ///
 /// A `.git` or `.agix` no writable root reaches is read-only already, and is
 /// left alone: binding it writable would open it, and a mount point for an
@@ -734,21 +800,27 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
     let git = roots.cwd.join(".git");
     if git.is_dir() {
         let open = roots.opens(&git);
+        let submodules = submodules_of(&git);
         if open {
             bind(args, "--bind", &git);
-        }
-        for f in GIT_CONTROL_FILES {
-            bind(args, "--ro-bind-try", &git.join(f));
-        }
-        for worktree in subdirs(&git.join("worktrees")) {
-            for f in GIT_CONTROL_FILES {
-                bind(args, "--ro-bind-try", &worktree.join(f));
+            for dir in &submodules.dirs {
+                bind(args, "--bind", dir);
             }
         }
-        if open {
-            read_only(args, &git.join("hooks"));
-        } else {
-            bind(args, "--ro-bind-try", &git.join("hooks"));
+        for repo in std::iter::once(&git).chain(&submodules.git_dirs) {
+            for f in GIT_CONTROL_FILES {
+                bind(args, "--ro-bind-try", &repo.join(f));
+            }
+            for worktree in subdirs(&repo.join("worktrees")) {
+                for f in GIT_CONTROL_FILES {
+                    bind(args, "--ro-bind-try", &worktree.join(f));
+                }
+            }
+            if open {
+                read_only(args, &repo.join("hooks"));
+            } else {
+                bind(args, "--ro-bind-try", &repo.join("hooks"));
+            }
         }
     } else if git.exists() {
         bind(args, "--ro-bind", &git);
@@ -2378,6 +2450,145 @@ mod tests {
             "(deny file-write* (literal \"{}/.agix/settings.json\"))",
             home.display()
         )));
+    }
+
+    /// Whether this machine has a backend that actually runs. Where it has
+    /// none the real-run cases below skip, saying why, unless
+    /// `AGIX_REQUIRE_SANDBOX` is set — CI sets it, so that a runner whose
+    /// bubblewrap cannot make namespaces fails rather than passes empty.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn a_backend_runs() -> bool {
+        #[cfg(target_os = "macos")]
+        let works = std::process::Command::new("sandbox-exec")
+            .args(["-p", "(version 1)(allow default)", "true"])
+            .status()
+            .is_ok_and(|s| s.success());
+        #[cfg(target_os = "linux")]
+        let works = bwrap_available()
+            && std::process::Command::new("bwrap")
+                .args(["--ro-bind", "/", "/", "true"])
+                .status()
+                .is_ok_and(|s| s.success());
+        if !works {
+            assert!(
+                std::env::var_os("AGIX_REQUIRE_SANDBOX").is_none(),
+                "AGIX_REQUIRE_SANDBOX is set and no sandbox backend runs here"
+            );
+            eprintln!(
+                "skipped: no sandbox backend runs here (Linux: install bubblewrap and \
+                 allow unprivileged user namespaces)"
+            );
+        }
+        works
+    }
+
+    /// `command` under the real backend, in `cwd`, with `env` added.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[allow(clippy::unwrap_used)]
+    fn run_confined(
+        cwd: &Path,
+        policy: &SandboxPolicy,
+        env: &[(&str, &Path)],
+        command: &str,
+    ) -> std::process::Output {
+        let confined = PlatformSandbox.confine(
+            ProcessSpec::new("bash", cwd).args(["-c".to_string(), command.to_string()]),
+            policy,
+        );
+        assert_eq!(
+            confined.enforcement,
+            Enforcement::Full,
+            "{:?}",
+            confined.unmet
+        );
+        let mut run = std::process::Command::new(&confined.spec.program);
+        run.args(&confined.spec.args).current_dir(cwd);
+        for (k, v) in env {
+            run.env(k, v);
+        }
+        run.output().unwrap()
+    }
+
+    /// A submodule's git directory, `modules/<name>` under the git directory
+    /// of the repository that holds it, as `git submodule` lays it out.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[allow(clippy::unwrap_used)]
+    fn plant_git_dir(dir: &Path) {
+        std::fs::create_dir_all(dir.join("hooks")).unwrap();
+        std::fs::write(dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(dir.join("config"), "[core]\n\tbare = false\n").unwrap();
+    }
+
+    /// A submodule's configuration and hooks are git's as much as the
+    /// superproject's: `core.fsmonitor` planted in one runs the next time
+    /// the user's git, outside the sandbox, looks at the submodule. Nested
+    /// submodules have git directories of their own under `modules/`, and
+    /// the name a submodule is filed under may itself contain a slash.
+    /// Removing a submodule's `HEAD` first does not unguard it.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_sandboxed_command_cannot_rewrite_a_submodules_configuration_or_hooks() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let state = dir.path().join("state");
+        let elsewhere = dir.path().join("elsewhere");
+        for d in [&project, &state, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::create_dir_all(project.join(".agix")).unwrap();
+        let git = project.join(".git");
+        plant_git_dir(&git);
+        let modules = git.join("modules");
+        for module in ["sub", "a", "a/modules/b", "libs/c"] {
+            plant_git_dir(&modules.join(module));
+        }
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        let runs = |command: &str| {
+            run_confined(&project, &policy, &[], command)
+                .status
+                .success()
+        };
+
+        let fsmonitor = "printf '[core]\\n\\tfsmonitor = touch pwned\\n' >>";
+        runs("rm .git/modules/sub/HEAD");
+        let elsewhere = elsewhere.display();
+        for command in [
+            format!("{fsmonitor} .git/modules/sub/config"),
+            format!("{fsmonitor} .git/modules/a/modules/b/config"),
+            format!("{fsmonitor} .git/modules/libs/c/config"),
+            "echo /tmp > .git/modules/sub/commondir".to_string(),
+            "echo 'touch pwned' > .git/modules/sub/hooks/post-checkout".to_string(),
+            "echo 'touch pwned' > .git/modules/a/modules/b/hooks/x".to_string(),
+            "mv .git/modules/sub .git/modules/gone".to_string(),
+            "mv .git/modules/a/modules .git/modules/a/gone".to_string(),
+            format!("mv .git/modules/libs '{elsewhere}/libs'"),
+        ] {
+            assert!(!runs(&command), "`{command}` was allowed");
+        }
+        for module in ["sub", "a/modules/b", "libs/c"] {
+            let module = modules.join(module);
+            assert!(
+                module.symlink_metadata().unwrap().is_dir(),
+                "{} was replaced",
+                module.display()
+            );
+            let config = std::fs::read_to_string(module.join("config")).unwrap();
+            assert!(!config.contains("fsmonitor"), "{config}");
+            assert!(!module.join("commondir").exists());
+        }
+        assert!(!modules.join("a/modules/b/hooks/x").exists());
+
+        assert!(
+            runs("echo x > .git/modules/sub/index && echo x > .git/modules/a/modules/b/FETCH_HEAD"),
+            "a submodule's own bookkeeping must stay writable"
+        );
     }
 }
 
