@@ -105,9 +105,10 @@ fn has_python() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Whether this machine has an OS sandbox that runs. The sandboxed cases
-/// say so and skip where it has none, unless `AGIX_REQUIRE_SANDBOX` is set —
-/// CI sets it on the runner that installs bubblewrap.
+/// Whether this build has a sandbox backend and this machine runs it. The
+/// sandboxed cases say so and skip where either is missing, unless
+/// `AGIX_REQUIRE_SANDBOX` is set — CI sets it on the runner that installs
+/// bubblewrap.
 fn sandbox_runs() -> bool {
     let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
         (
@@ -119,7 +120,8 @@ fn sandbox_runs() -> bool {
     } else {
         ("", &[])
     };
-    let runs = !program.is_empty()
+    let runs = cfg!(feature = "sandbox")
+        && !program.is_empty()
         && std::process::Command::new(program)
             .args(args)
             .status()
@@ -285,10 +287,12 @@ async fn a_sandboxed_command_cannot_reach_the_daemon() {
         "the command got an answer: {printed}"
     );
     #[cfg(target_os = "macos")]
-    assert!(
-        printed.starts_with("connect failed:"),
-        "the sandbox let it connect: {printed}"
-    );
+    if sandbox_runs() {
+        assert!(
+            printed.starts_with("connect failed:"),
+            "the sandbox let it connect: {printed}"
+        );
+    }
     #[cfg(target_os = "linux")]
     if sandbox_runs() {
         assert!(
