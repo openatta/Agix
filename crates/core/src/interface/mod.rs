@@ -96,4 +96,5 @@ pub mod tool;
 pub mod tool_dispatch;
 pub mod tool_middleware;
 pub mod tool_result;
+pub mod tool_selector;
 pub mod turn_policy;
