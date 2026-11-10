@@ -2975,21 +2975,27 @@ async fn a_no_project_session_works_in_its_own_scratch_directory() {
             .find(|r| r["id"] == id)
             .unwrap_or_else(|| panic!("no tool_result for {id}: {frames:?}"))
     };
-    for id in ["w1", "r1", "b1", "w2"] {
+    // Without an OS sandbox an unattended session's commands are refused,
+    // not run unconfined, so `Bash` only goes through in a sandboxed build.
+    let sandboxed = cfg!(feature = "sandbox");
+    for id in ["w1", "r1", "w2"] {
         assert_eq!(result(id)["is_error"], false, "{id}: {}", result(id));
     }
+    assert_eq!(result("b1")["is_error"], !sandboxed, "b1: {}", result("b1"));
     assert_eq!(
         std::fs::read_to_string(work.join("notes.md")).unwrap(),
         "NOTE-ONE\n"
     );
     assert!(result("r1")["content"].to_string().contains("NOTE-ONE"));
-    assert_eq!(
-        std::fs::read_to_string(work.join("copy.md")).unwrap(),
-        "NOTE-ONE\n"
-    );
-    assert!(result("b1")["content"]
-        .to_string()
-        .contains(&format!("sessions/{sid}")));
+    if sandboxed {
+        assert_eq!(
+            std::fs::read_to_string(work.join("copy.md")).unwrap(),
+            "NOTE-ONE\n"
+        );
+        assert!(result("b1")["content"]
+            .to_string()
+            .contains(&format!("sessions/{sid}")));
+    }
     assert_eq!(
         std::fs::read_to_string(state_root.join("scratchpad").join("shared.md")).unwrap(),
         "SHARED\n"
