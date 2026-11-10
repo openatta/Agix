@@ -415,6 +415,67 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
     );
 }
 
+/// The `Delegator` a session's agents module serves, over the same runs as
+/// its `AgentSpawner`: a waited delegate finishes with its answer, a
+/// background one needs the parent session it is a task of, and a narrowed
+/// tool selector is refused rather than ignored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_delegator_maps_each_mode_onto_the_existing_runs() {
+    use base::interface::delegate::*;
+    let agent_tool = Arc::new(agent_tool_with_model(Arc::new(LineageModel {
+        seen: Default::default(),
+    })));
+    let delegator = crate::spawner::RuntimeAgentSpawner::new(agent_tool.clone());
+    let call = || StopsWith::Call(tokio_util::sync::CancellationToken::new());
+    let mut waited = DelegateRequest::new("look", DelegateMode::Wait, call());
+    waited.workdir = Workdir::At(std::env::temp_dir());
+    match delegator.delegate(waited).await {
+        Ok(Delegated::Finished(outcome)) => {
+            assert_eq!(outcome.text, "done");
+            assert_eq!(outcome.end, DelegateEnd::Completed);
+        }
+        Ok(Delegated::Started(_)) => panic!("a waited delegate was started in the background"),
+        Err(e) => panic!("the waited delegate did not run: {e}"),
+    }
+
+    let background = || {
+        DelegateRequest::new(
+            "look",
+            DelegateMode::Background {
+                notify_parent: false,
+            },
+            call(),
+        )
+    };
+    assert!(matches!(
+        delegator.delegate(background()).await,
+        Err(DelegateError::Unsupported(_))
+    ));
+
+    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    agent_tool.set_parent_permission(
+        PermissionSet::without_grants(Arc::new(AlwaysPermit)),
+        session.clone(),
+    );
+    let Ok(Delegated::Started(started)) = delegator.delegate(background()).await else {
+        panic!("the background delegate was not started");
+    };
+    let task = session
+        .find_running_task(&started.task_id)
+        .expect("a task of the parent session");
+    tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+        .await
+        .expect("the background delegate finishes");
+
+    let mut narrowed = DelegateRequest::new("look", DelegateMode::Wait, call());
+    narrowed.tools =
+        base::interface::tool_selector::ToolSelector::from_lists(&["Read".to_string()], &[]);
+    assert!(matches!(
+        delegator.delegate(narrowed).await,
+        Err(DelegateError::Unsupported(_))
+    ));
+}
+
 struct KeepsEverything;
 impl base::interface::memory_contracts::RetrievalHook for KeepsEverything {}
 

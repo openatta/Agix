@@ -69,6 +69,7 @@ pub mod budget_policy;
 pub mod catalog;
 pub mod config_source;
 pub mod credentials;
+pub mod delegate;
 pub mod elicitation;
 pub mod environment;
 pub mod event_sink;

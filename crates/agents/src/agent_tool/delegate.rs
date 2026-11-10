@@ -4,6 +4,22 @@
 use super::*;
 
 impl AgentTool {
+    /// The parent session's state, once wired: where a delegate's task is
+    /// registered and whose directory it inherits.
+    pub(crate) fn parent_session_state(&self) -> Option<Arc<base::context::SessionState>> {
+        self.inner.parent_permission.get().map(|p| p.session)
+    }
+
+    /// Cancelled when the parent session ends.
+    pub(crate) fn parent_session_ended(&self) -> tokio_util::sync::CancellationToken {
+        self.inner.session_ended()
+    }
+
+    /// The parent's permission, refusing what it would ask about.
+    pub(crate) fn sub_permission_refusing_questions(&self) -> PermissionSet {
+        self.inner.permission_handler_asking(None, false)
+    }
+
     /// Core: run sub-agent and collect text output.
     ///
     /// `subagent_type` — when it names a type in the merged catalog (built-in
