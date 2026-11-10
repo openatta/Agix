@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RpcRequest {
     /// JSON-RPC version (must be "2.0")
     #[serde(default = "default_jsonrpc")]
@@ -25,7 +25,7 @@ fn default_jsonrpc() -> String {
     "2.0".to_string()
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcResponse {
     pub jsonrpc: &'static str,
     pub id: Value,
@@ -76,7 +76,7 @@ impl RpcResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RpcError {
     pub code: i32,
     pub message: String,
@@ -393,7 +393,7 @@ pub mod codes {
 }
 
 /// `session.startAgent`'s params.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct StartAgentParams {
     pub session_id: String,
     pub prompt: String,

@@ -19,6 +19,7 @@ pub mod model_router;
 pub mod modules;
 pub mod plugins;
 pub mod rpc;
+pub mod rpc_schema;
 pub mod server;
 pub mod session_pool;
 #[cfg(feature = "otel")]

@@ -139,7 +139,7 @@ pub enum DecisionReason {
     Other(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 pub struct PermissionRule {
     pub source: RuleSource,
     pub behavior: RuleBehavior,
@@ -149,7 +149,7 @@ pub struct PermissionRule {
     pub rule_content: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RuleSource {
     /// `~/.agix/scenes/<scope>/settings.json`
@@ -188,7 +188,7 @@ impl RuleSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RuleBehavior {
     Allow,

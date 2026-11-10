@@ -482,3 +482,108 @@ fn the_capability_table_lists_what_the_daemon_reports() {
     reported.sort();
     assert_eq!(documented, reported);
 }
+
+fn sorted(mut v: Vec<String>) -> Vec<String> {
+    v.sort();
+    v.dedup();
+    v
+}
+
+fn schema_names(path: &[&str]) -> Vec<String> {
+    let text = std::fs::read_to_string(repo_root().join("docs/schemas/rpc.schema.json")).unwrap();
+    let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let mut node = &root;
+    for key in path {
+        node = &node[*key];
+    }
+    sorted(node.as_object().unwrap().keys().cloned().collect())
+}
+
+/// `docs/schemas/rpc.schema.json` lists the methods `dispatch` answers.
+/// `daemon.auth` is the connection handshake and is in none of the three.
+#[test]
+fn the_rpc_schema_lists_the_dispatched_methods_and_the_documented_ones() {
+    let root = repo_root();
+    let dispatch =
+        std::fs::read_to_string(root.join("crates/assembly/src/server/dispatch.rs")).unwrap();
+    let doc = std::fs::read_to_string(root.join("docs/daemon_rpc_protocol.md")).unwrap();
+    let schema = schema_names(&["methods"]);
+    let table = sorted(
+        assembly::rpc_schema::method_names()
+            .iter()
+            .map(|m| m.to_string())
+            .collect(),
+    );
+    let documented: Vec<String> = documented_methods(&doc)
+        .into_iter()
+        .filter(|m| !UNDOCUMENTED_BY_DESIGN.contains(&m.as_str()))
+        .collect();
+
+    assert_eq!(schema, table, "committed schema is out of date");
+    assert_eq!(table, dispatched_methods(&dispatch), "schema vs dispatch");
+    assert_eq!(table, documented, "schema vs protocol doc");
+}
+
+fn documented_daemon_event_kinds(doc: &str) -> Vec<String> {
+    let section = doc
+        .split("## 8. 异步通知")
+        .nth(1)
+        .and_then(|s| s.split("## 9. 错误码").next())
+        .expect("the doc still has §8");
+    let table = section
+        .split("\n\n")
+        .find(|block| block.trim_start().starts_with("| `kind`"))
+        .expect("§8 still opens with the kind table");
+    sorted(
+        table
+            .lines()
+            .filter(|line| line.starts_with("| `"))
+            .filter_map(|line| line.split('`').nth(1).map(str::to_string))
+            .filter(|kind| kind != "kind")
+            .collect(),
+    )
+}
+
+#[test]
+fn the_rpc_schema_lists_the_documented_event_kinds() {
+    let doc = std::fs::read_to_string(repo_root().join("docs/daemon_rpc_protocol.md")).unwrap();
+    let to_vec = |kinds: &[&str]| sorted(kinds.iter().map(|k| k.to_string()).collect());
+
+    assert_eq!(
+        schema_names(&["notifications", "session.event", "kinds"]),
+        to_vec(assembly::rpc_schema::session_event_kinds())
+    );
+    assert_eq!(
+        to_vec(assembly::rpc_schema::session_event_kinds()),
+        documented_event_kinds(&doc)
+    );
+    assert_eq!(
+        schema_names(&["notifications", "daemon.event", "kinds"]),
+        to_vec(assembly::rpc_schema::daemon_event_kinds())
+    );
+    assert_eq!(
+        to_vec(assembly::rpc_schema::daemon_event_kinds()),
+        documented_daemon_event_kinds(&doc)
+    );
+}
+
+#[test]
+fn the_rpc_schema_error_codes_are_the_declared_constants() {
+    let rpc = std::fs::read_to_string(repo_root().join("crates/assembly/src/rpc.rs")).unwrap();
+    let in_schema: Vec<String> = assembly::rpc_schema::error_codes()
+        .iter()
+        .map(|(code, name)| format!("{name}: i32 = {code};"))
+        .collect();
+    for declaration in &in_schema {
+        assert!(rpc.contains(declaration), "{declaration} is not in rpc.rs");
+    }
+    let declared = rpc
+        .lines()
+        .filter(|l| l.trim_start().starts_with("pub const ") && l.contains(": i32 = -"))
+        .count();
+    assert_eq!(
+        in_schema.len(),
+        declared,
+        "rpc::codes and the schema's error table differ in size"
+    );
+}

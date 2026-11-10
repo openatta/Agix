@@ -169,6 +169,7 @@ dependencies = [
  "reqwest",
  "runtime",
  "scene",
+ "schemars",
  "script-host",
  "serde",
  "serde_json",

@@ -5,6 +5,8 @@ daemon(`agixd`)把一个多会话 Agent 引擎池暴露成 JSON-RPC 2.0 服务�
 
 **协议版本:3**(`daemon.auth`、`daemon.ping`、`daemon.status` 的 `protocol_version`,以及发现文件里的同名字段)。
 
+机器可读的接口描述:[`schemas/rpc.schema.json`](schemas/rpc.schema.json)(方法名、事件 `kind`、错误码,以及已有强类型的 params;其余标注"未类型化"),由 `cargo test -p assembly write_rpc_schema -- --ignored` 生成。
+
 场景、会话、侧链这些概念本身是什么,以及它们在磁盘上怎么落,见
 [`ARCHITECTURE.md`](ARCHITECTURE.md);本文只讲它们在 RPC 上长什么样。
 
