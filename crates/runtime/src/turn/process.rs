@@ -162,7 +162,7 @@ impl Agent {
                                         self.handle_clear_command().await;
                                         "Session cleared. All messages removed.".into()
                                     }
-                                    "compact" => match self.compact_now().await {
+                                    "compact" => match self.compact_now(&cancel).await {
                                         Some(c) => format!(
                                             "Compacted ({}): {} → {} messages, ~{} → ~{} tokens.",
                                             c.strategy,
@@ -171,6 +171,9 @@ impl Agent {
                                             c.tokens_before,
                                             c.tokens_after
                                         ),
+                                        None if cancel.is_cancelled() => {
+                                            "Compaction interrupted; nothing changed.".into()
+                                        }
                                         None => "Nothing to compact.".into(),
                                     },
                                     "cost" => self.handle_cost_command(),
@@ -181,8 +184,13 @@ impl Agent {
                                     turn_id: self.current_turn_id.clone(),
                                 });
                                 self.last_had_tool_uses = false;
+                                let stop_reason = if cancel.is_cancelled() {
+                                    "cancelled"
+                                } else {
+                                    "command_executed"
+                                };
                                 return self
-                                    .finish_turn(Ok(TurnOutcome::stopped("command_executed")))
+                                    .finish_turn(Ok(TurnOutcome::stopped(stop_reason)))
                                     .await;
                             }
                         }
@@ -267,7 +275,7 @@ impl Agent {
                 match kind {
                     EngineCommand::Shutdown => Err(TurnError::Shutdown),
                     EngineCommand::CompactNow => {
-                        self.compact_now().await;
+                        self.compact_now(&cancel).await;
                         Ok(TurnOutcome::default())
                     }
                     EngineCommand::SetSessionId => {

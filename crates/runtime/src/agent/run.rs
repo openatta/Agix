@@ -508,8 +508,12 @@ impl Agent {
     /// path automatic compaction takes, with an LLM summary whenever a
     /// summarizer is configured. Without one, the compactor's cascade aims at
     /// half of the history's current size. `None` when there was nothing to
-    /// compact or a `PreCompact` hook declined.
-    pub async fn compact_now(&mut self) -> Option<crate::turn::CompactSummary> {
+    /// compact, a `PreCompact` hook declined, or `cancel` fired while the
+    /// summary was being written.
+    pub async fn compact_now(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Option<crate::turn::CompactSummary> {
         let target = (compaction::grouping::estimate_tokens(self.session.messages()) / 2).max(1);
         // Asked for, so it must compact something: a keep floor of every
         // round there is would leave the summary nothing to cover, and the
@@ -522,14 +526,9 @@ impl Agent {
             .compact_keep_recent
             .min(rounds.saturating_sub(1))
             .max(1);
-        self.run_compaction(
-            target,
-            keep,
-            crate::turn::CompactTrigger::Manual,
-            &CancellationToken::new(),
-        )
-        .await
-        .ok()
+        self.run_compaction(target, keep, crate::turn::CompactTrigger::Manual, cancel)
+            .await
+            .ok()
     }
 
     /// Convenience: run a single turn from a user message string.

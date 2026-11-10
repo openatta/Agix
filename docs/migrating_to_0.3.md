@@ -1513,6 +1513,8 @@ WebAssembly 载体整个移除。
   `kind`、错误码表与请求 / 响应 / 错误帧,已有强类型的 params(目前只有 `session.startAgent`)带 schema,
   其余标"未类型化"。由 `cargo test -p assembly write_rpc_schema -- --ignored` 生成,可以拿去生成客户端。
 - **请求因过长被拒、为重试而压缩时中断,以 `cancelled` 结束。** 以前这一轮报 `ENGINE_ERROR`。
+- **`session.compact` 写摘要时可以中断。** 以前 `session.interrupt` 报 `true` 却不起作用,摘要
+  写完照样替换历史;现在历史不变,这一轮以 `turn_complete{stop_reason:"cancelled"}` 结束。
 
 ### 嵌入方
 
@@ -1631,3 +1633,5 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。
   `platform::sandbox::fence_secret`(登记一个沙箱里的命令一律读不到的文件)。
 - `telemetry::RedactionPolicy` 只剩 `redact_error_messages`:`apply()` 与 `emails` / `env_vars` / `paths` /
   `ip` 四个开关(从来没有走到过)删除,`telemetry` 不再依赖 `regex`。
+- `runtime::agent::Agent::compact_now` 多一个 `&CancellationToken` 参数:它取消时摘要放弃、历史不变,
+  返回 `None`。不需要中断的传 `&CancellationToken::new()`。

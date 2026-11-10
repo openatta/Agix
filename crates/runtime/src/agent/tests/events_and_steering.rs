@@ -429,7 +429,10 @@ async fn compacting_on_request_works_far_below_the_threshold() {
         "the point is that the budget would not have compacted this"
     );
 
-    let done = agent.compact_now().await.expect("something was compacted");
+    let done = agent
+        .compact_now(&CancellationToken::new())
+        .await
+        .expect("something was compacted");
     assert_eq!(done.messages_before, before);
     assert!(done.messages_after < before, "{done:?}");
     assert!(done.tokens_after < done.tokens_before, "{done:?}");
@@ -459,7 +462,11 @@ async fn compacting_on_request_works_far_below_the_threshold() {
         .build()
         .expect("build should succeed")
         .0;
-    assert_eq!(empty.compact_now().await, None, "nothing to compact");
+    assert_eq!(
+        empty.compact_now(&CancellationToken::new()).await,
+        None,
+        "nothing to compact"
+    );
 }
 
 /// Runs one turn whose tool step is held open while `steered` is sent,

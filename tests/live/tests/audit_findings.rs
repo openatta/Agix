@@ -440,7 +440,6 @@ async fn audit_an_interrupt_during_the_compaction_for_a_size_refusal_is_not_an_e
 /// `session.compact` is a turn of its own; an interrupt while its summary is
 /// being written ends it, and the late summary is never applied.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_an_interrupt_stops_session_compact_while_its_summary_is_written(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;

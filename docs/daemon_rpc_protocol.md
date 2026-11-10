@@ -1285,6 +1285,9 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 重试之间)、正在写自动压缩的摘要(含请求因过长被拒、为重试而做的那次压缩),也立即生效,不等它答;
 压缩作废,会话历史保持原样。这一轮以 `stop_reason: "cancelled"` 结束。
 
+**`session.compact` 本身就是一轮**,可以这样中断:摘要请求立即放弃,迟到的摘要不会写进历史,
+会话历史保持原样,这一轮以 `cancelled` 结束。
+
 #### `session.compact`
 
 **流式方法**,与 `session.run_turn` 发 `"/compact"` 相同。
@@ -1298,7 +1301,8 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 **不看阈值,现在就压。** 配了摘要模型时由它写全文摘要(`FullCompact`),否则按引擎的
 级联压到历史当前大小的一半左右。压了会推一帧 `compact`(§7.1),没什么可压时没有这
 一帧;两种情况都以 `turn_complete`(`stop_reason: "command_executed"`)结束,正文
-里有一句结果说明。会话正在跑 turn 时返回 `SESSION_BUSY`。
+里有一句结果说明。写摘要期间被 `session.interrupt` 中断时历史不变,以 `cancelled` 结束。
+会话正在跑 turn 时返回 `SESSION_BUSY`。
 
 #### `session.clear`
 
