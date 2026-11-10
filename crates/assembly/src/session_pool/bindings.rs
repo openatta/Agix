@@ -50,7 +50,7 @@ impl SessionPool {
             let Some(tier) = existing.appeared().cloned() else {
                 return existing;
             };
-            info!(tier = ?tier, "a settings file or skill directory was created; reloading");
+            info!(tier = ?tier, "a settings file, skill or agent-type directory was created; reloading");
             if is_default_pair {
                 Box::pin(self.reload_settings_from(None, scene_id, Some(&tier))).await;
             } else {
@@ -137,11 +137,9 @@ impl SessionPool {
     /// ancestor of `~/.agix/settings.json` is `~/.agix` — which also holds
     /// every transcript this daemon writes. Watching that would turn each
     /// turn's own log writes into a settings-change notification. The
-    /// settings files and skill directories left out are returned alongside
-    /// the subscriptions: one created later is noticed the next time the
-    /// binding is asked for (`ProjectBinding::appeared`). An agent directory
-    /// created later is picked up the next time this binding is built, or by
-    /// an explicit `config.reload`.
+    /// paths left out are returned alongside the subscriptions: one created
+    /// later is noticed the next time the binding is asked for
+    /// (`ProjectBinding::appeared`).
     #[allow(clippy::type_complexity)]
     pub(super) fn watch_tiers_of(
         &self,
@@ -188,7 +186,7 @@ impl SessionPool {
                     },
                     &path,
                 ));
-            } else if matches!(target, WatchTarget::Settings | WatchTarget::Skills) {
+            } else {
                 unwatched.push((tier.clone(), path));
             }
         };

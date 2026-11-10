@@ -303,3 +303,32 @@ async fn a_skills_directory_created_later_is_picked_up_and_watched() {
         &pool.binding_for(Some(pool.cwd()), "mini").await
     ));
 }
+
+/// A project with no `.agix/agents/` when its binding was built gets its
+/// first agent type the next time the binding is asked for, and the
+/// directory is watched from then on.
+#[cfg(feature = "agents")]
+#[tokio::test]
+async fn an_agents_directory_created_later_is_picked_up_and_watched() {
+    let (pool, _dir) = test_pool().await;
+    let agents = pool.cwd().join(".agix").join("agents");
+    assert!(!agents.exists());
+    let before = pool.binding_for(Some(pool.cwd()), "mini").await;
+    assert!(!before.modules.has_agent_type("late-reviewer"));
+
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("late-reviewer.md"),
+        "---\ndescription: the project's first agent type\n---\nbody\n",
+    )
+    .unwrap();
+
+    let after = pool.binding_for(Some(pool.cwd()), "mini").await;
+    assert!(is_stale(&before));
+    assert!(after.modules.has_agent_type("late-reviewer"));
+    assert!(after.appeared().is_none());
+    assert!(Arc::ptr_eq(
+        &after,
+        &pool.binding_for(Some(pool.cwd()), "mini").await
+    ));
+}

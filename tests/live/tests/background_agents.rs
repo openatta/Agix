@@ -2,6 +2,8 @@
 //! and a host can reach it through the daemon while it runs. A foreground one
 //! stays listed under its parent once its turn is over, and its questions
 //! reach the host inside the parent's turn, its task waiting until answered.
+//! An agent type in a `.agix/agents/` created after the daemon started is
+//! offered to the next session and runs.
 
 use live::{Block, Daemon, DaemonOptions, ProviderStub, Reply, Watcher, World};
 use serde_json::json;
@@ -283,6 +285,57 @@ async fn a_foreground_agents_question_comes_through_its_parents_turn() -> anyhow
         .events("subagent_progress")
         .iter()
         .all(|f| f["event"]["task_id"] == task_id));
+    daemon.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_directory_created_after_startup_is_used() -> anyhow::Result<()> {
+    let world = World::new()?;
+    let project = world.project("late-agents")?;
+    world.write_project_settings(
+        "late-agents",
+        &json!({
+            "memory_enabled": false,
+            "permission_rules": [{ "tool": "Agent", "action": "allow" }]
+        }),
+    )?;
+    assert!(!project.join(".agix/agents").exists());
+    let provider = ProviderStub::start().await?;
+    let daemon = Daemon::start(&world, &provider, DaemonOptions::new(project.clone())).await?;
+    let mut client = daemon.connect().await?;
+    let params = json!({ "project_root": project.to_string_lossy() });
+    client.session_create(params.clone()).await?;
+
+    std::fs::create_dir_all(project.join(".agix/agents"))?;
+    std::fs::write(
+        project.join(".agix/agents/late-reviewer.md"),
+        "---\ndescription: reviews what it is shown\n---\nYou are the LATE-REVIEWER-MARK.\n",
+    )?;
+    provider.script_when("LATE-REVIEWER-MARK", [Reply::text("REVIEW-DONE-7")]);
+    provider.script([
+        Reply::Blocks(vec![Block::tool(
+            "c1",
+            "Agent",
+            json!({
+                "description": "review",
+                "prompt": "review the project",
+                "subagent_type": "late-reviewer",
+            }),
+        )]),
+        Reply::text("relayed"),
+    ]);
+
+    let session = client.session_create(params).await?;
+    let events = client
+        .session_run_turn(&session, "get a review", "t1", None)
+        .await?;
+    let agent = events
+        .tool_results
+        .iter()
+        .find(|(name, _, _)| name == "Agent")
+        .expect("an Agent result");
+    assert!(!agent.2 && agent.1.contains("REVIEW-DONE-7"), "{agent:?}");
     daemon.stop().await;
     Ok(())
 }

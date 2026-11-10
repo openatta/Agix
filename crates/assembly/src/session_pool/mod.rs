@@ -157,9 +157,9 @@ struct ProjectBinding {
     /// releases its share of the watch (`WatchHub` refcounts, so the tiers
     /// several projects have in common are watched once).
     _watch: Vec<crate::watch_hub::WatchToken>,
-    /// The settings files and skill directories of this binding's tiers that
-    /// did not exist when it was built, so are not watched — see
-    /// [`ProjectBinding::appeared`].
+    /// The settings files, skill and agent-type directories of this
+    /// binding's tiers that did not exist when it was built, so are not
+    /// watched — see [`ProjectBinding::appeared`].
     unwatched_settings: Vec<(crate::watch_hub::Tier, PathBuf)>,
     /// Set once a tier this binding was merged from changed. Every session
     /// built on it holds the same flag and rebuilds before its next turn.
@@ -202,12 +202,12 @@ impl ProjectBinding {
         self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The tier of a settings file or skill directory that has been created
-    /// since this binding was built. Nothing watched it — a missing path is
-    /// not subscribed, see `SessionPool::watch_tiers_of` — so this is the
-    /// only way its first contents (a rule `permit_always` wrote to a new
-    /// `settings.local.json`, a project's first skill) reach the sessions
-    /// without a `config.reload`.
+    /// The tier of a settings file, skill or agent-type directory that has
+    /// been created since this binding was built. Nothing watched it — a
+    /// missing path is not subscribed, see `SessionPool::watch_tiers_of` — so
+    /// this is the only way its first contents (a rule `permit_always` wrote
+    /// to a new `settings.local.json`, a project's first skill or agent type)
+    /// reach the sessions without a `config.reload`.
     fn appeared(&self) -> Option<&crate::watch_hub::Tier> {
         self.unwatched_settings
             .iter()

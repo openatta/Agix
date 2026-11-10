@@ -200,6 +200,15 @@ impl ProjectModules {
         &self.skills
     }
 
+    #[cfg(all(test, feature = "agents"))]
+    pub(crate) fn has_agent_type(&self, name: &str) -> bool {
+        self.agent_types
+            .handle()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(name)
+    }
+
     /// Everything after MCP, in order. Pushed one by one because each push
     /// is behind its own feature.
     #[allow(clippy::vec_init_then_push)]
