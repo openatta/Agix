@@ -2,6 +2,30 @@
 
 use super::*;
 
+/// A message on its way to the turn loop, with the token its turn runs under.
+type Forwarded = (InputMessage, CancellationToken);
+
+/// Hand `msg` to the turn loop under a fresh child of the session token. A
+/// `User` message's token is what `CancelTurn` cancels from the moment it is
+/// queued, not from when its turn starts: the loop may still be finishing the
+/// turn before or re-running rewake hooks, and an interrupt the host sent for
+/// this turn must not land on the finished one, whose background tasks still
+/// hang off its token.
+fn hand_to_turn_loop(
+    fwd_tx: &mpsc::UnboundedSender<Forwarded>,
+    current_turn_cancel: &std::sync::Mutex<CancellationToken>,
+    session_cancel: &CancellationToken,
+    msg: InputMessage,
+) -> bool {
+    let turn_cancel = session_cancel.child_token();
+    if matches!(msg, InputMessage::User { .. }) {
+        *current_turn_cancel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
+    }
+    fwd_tx.send((msg, turn_cancel)).is_ok()
+}
+
 impl Agent {
     pub fn steer_handle(&self) -> crate::steering::SteerHandle {
         crate::steering::SteerHandle(self.channels.steering.clone())
@@ -150,6 +174,7 @@ impl Agent {
             let questions = self.gate.pending_questions.clone();
             let denials = self.gate.permission_denial_count.clone();
             let turn_cancel = self.channels.current_turn_cancel.clone();
+            let session_cancel = cancel.clone();
             let steering = self.channels.steering.clone();
             tokio::spawn(async move {
                 while let Some(msg) = raw_rx.recv().await {
@@ -179,7 +204,12 @@ impl Agent {
                                         attachments: vec![],
                                         turn_id: m.message_id,
                                     };
-                                    if fwd_tx.send(turn).is_err() {
+                                    if !hand_to_turn_loop(
+                                        &fwd_tx,
+                                        &turn_cancel,
+                                        &session_cancel,
+                                        turn,
+                                    ) {
                                         break;
                                     }
                                 }
@@ -211,7 +241,7 @@ impl Agent {
                         // Receiver gone means the engine loop has exited;
                         // nothing left to forward to.
                         other => {
-                            if fwd_tx.send(other).is_err() {
+                            if !hand_to_turn_loop(&fwd_tx, &turn_cancel, &session_cancel, other) {
                                 break;
                             }
                         }
@@ -241,27 +271,25 @@ impl Agent {
                 }
                 msg = fwd_rx.recv() => {
                     match msg {
-                        Some(input) if self.identity.drive_goals && !self.claims_goal_round(&input) => {
+                        Some((input, _)) if self.identity.drive_goals && !self.claims_goal_round(&input) => {
                             tracing::debug!("dropped a goal round that is no longer wanted");
                         }
-                        Some(input) => {
-                            // Each turn runs under its own child token, so
-                            // `CancelTurn` interrupts one turn and leaves the
-                            // session able to take the next message.
-                            // Cancelling the session's own token still
-                            // cascades into whatever turn is in flight.
-                            let turn_cancel = cancel.child_token();
-                            *self.channels.current_turn_cancel.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
+                        Some((input, turn_cancel)) => {
                             match self.process_turn(input, turn_cancel).await {
                                 Ok(outcome) => {
                                     if self.identity.drive_goals {
                                         if let Some(round) = self.goal_round_after(&outcome.stop_reason).await {
                                             if let Some(tx) = own_input.upgrade() {
-                                                let _ = tx.send(InputMessage::User {
-                                                    content: round.message,
-                                                    attachments: vec![],
-                                                    turn_id: round.turn_id,
-                                                });
+                                                hand_to_turn_loop(
+                                                    &tx,
+                                                    &self.channels.current_turn_cancel,
+                                                    &cancel,
+                                                    InputMessage::User {
+                                                        content: round.message,
+                                                        attachments: vec![],
+                                                        turn_id: round.turn_id,
+                                                    },
+                                                );
                                             }
                                         }
                                     }

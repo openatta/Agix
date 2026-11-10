@@ -263,7 +263,6 @@ async fn audit_a_forked_skill_gets_its_agent_types_tools_and_no_parents_agent() 
 /// gets interrupted — not the finished one before it, nor the background
 /// command that one started.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit_an_interrupt_sent_between_turns_reaches_the_turn_it_was_sent_for(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;

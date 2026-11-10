@@ -225,9 +225,11 @@ pub(crate) struct Telemetry {
 pub(crate) struct Channels {
     pub(crate) input_rx: InputReceiver,
     pub(crate) event_tx: EventSender,
-    /// Replaced before each turn and cancelled by the input demultiplexer,
-    /// which holds no `&mut self`. Between turns it holds the finished turn's
-    /// token, so a `CancelTurn` while idle does not poison the next turn.
+    /// The token of the turn last handed to the turn loop, replaced when its
+    /// `User` message is queued and cancelled by the input demultiplexer,
+    /// which holds no `&mut self`. Until the next one is queued it holds the
+    /// finished turn's token, so a `CancelTurn` while idle does not poison
+    /// the next turn.
     pub(crate) current_turn_cancel: Arc<std::sync::Mutex<CancellationToken>>,
     pub(crate) steering: crate::steering::SharedSteerQueue,
 }
