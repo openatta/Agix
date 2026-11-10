@@ -896,6 +896,95 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
     ));
 }
 
+/// A question a sub-agent running as a task asks is put to the parent's host
+/// naming that task, and the host's answer decides the call.
+#[tokio::test]
+async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
+    use base::interface::permission::PermissionOutcome;
+    let agent_tool = test_agent_tool();
+    wire_parent(&agent_tool, Arc::new(PromptsForEverything));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
+    let pending: runtime::agent::PendingPermissions = Arc::default();
+    agent_tool.set_parent_pending_permissions(pending.clone());
+    let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
+    let task = parent_session.register_task(
+        "task-1",
+        base::context::TaskType::Agent,
+        tokio_util::sync::CancellationToken::new(),
+        serde_json::json!({}),
+    );
+    let sub = agent_tool.inner.permission_handler_for(Some(task));
+    let asked = tokio::spawn(async move {
+        sub_decides(
+            &sub,
+            None,
+            "Bash",
+            &serde_json::json!({}),
+            Path::new("/tmp"),
+            &Arc::new(base::context::SessionState::new("/tmp".into())),
+        )
+        .await
+    });
+    let (prompt_id, task_id) = loop {
+        match rx.recv().await.expect("the question reaches the parent") {
+            AgentEvent::PermissionPrompt {
+                prompt_id, task_id, ..
+            } => break (prompt_id, task_id),
+            _ => continue,
+        }
+    };
+    assert_eq!(task_id.as_deref(), Some("task-1"));
+    pending
+        .lock()
+        .unwrap()
+        .remove(&prompt_id)
+        .expect("registered with the parent")
+        .send(runtime::agent::PermissionDecision::Deny {
+            reason: "HOST-SAYS-NO".into(),
+        })
+        .unwrap();
+    match asked.await.unwrap() {
+        PermissionOutcome::Deny { reason } => assert_eq!(reason, "HOST-SAYS-NO"),
+        other => panic!("the host's answer did not decide the call: {other:?}"),
+    }
+}
+
+/// An unattended sub-agent is handed the parent's question as it is, for its
+/// own session to refuse; nothing is put to the parent's host.
+#[tokio::test]
+async fn an_unattended_sub_agent_is_handed_the_parents_question_unasked() {
+    let agent_tool = test_agent_tool();
+    wire_parent(&agent_tool, Arc::new(PromptsForEverything));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
+    agent_tool.set_parent_pending_permissions(Arc::default());
+    let mut sub_session = base::context::SessionState::new("/tmp".into());
+    sub_session.unattended = true;
+    let outcome = sub_decides(
+        &agent_tool.sub_permission(),
+        None,
+        "Bash",
+        &serde_json::json!({}),
+        Path::new("/tmp"),
+        &Arc::new(sub_session),
+    )
+    .await;
+    assert!(
+        matches!(
+            outcome,
+            base::interface::permission::PermissionOutcome::Prompt { .. }
+        ),
+        "{outcome:?}"
+    );
+    while let Ok(event) = rx.try_recv() {
+        assert!(
+            !matches!(event, AgentEvent::PermissionPrompt { .. }),
+            "an unattended sub-agent's question was put to the host: {event:?}"
+        );
+    }
+}
+
 pub(super) struct PromptsForEverything;
 #[async_trait]
 impl PermissionPolicy for PromptsForEverything {

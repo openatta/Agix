@@ -160,3 +160,95 @@ async fn a_project_memory_is_indexed_with_the_global_ones() -> anyhow::Result<()
     run.finish().await;
     Ok(())
 }
+
+/// A forked skill's `allowed-tools` are the fork's own turn grants, as they
+/// are the turn's when the skill runs inline: its granted command runs without
+/// asking, the parent is still asked about that command once the fork is
+/// done, and a managed `ask` is asked about inside the fork all the same.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "D2: a forked skill's allowed-tools are dropped instead of granted in the fork (G1, after D1)"]
+async fn a_forked_skills_allowed_tools_are_granted_in_the_fork_only() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let managed = tempfile::tempdir()?;
+    let managed_file = managed.path().join("managed-settings.json");
+    std::fs::write(
+        &managed_file,
+        serde_json::to_string(&json!({
+            "permission_rules": [{ "tool": "Bash(echo managed > managed.txt)", "action": "ask" }]
+        }))?,
+    )?;
+    let managed_arg = managed_file.to_string_lossy().to_string();
+    let mut run = stubbed("fork-grants", &stub)
+        .settings(json!({
+            "permission_mode": "default",
+            "permission_rules": [{ "tool": "Skill", "action": "allow" }]
+        }))
+        .mode(live::Mode::Spawned)
+        .options(move |o| o.arg("--managed-settings").arg(managed_arg.clone()))
+        .before_start(|_, project| {
+            let dir = project.join(".agents/skills/forker");
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(
+                dir.join("SKILL.md"),
+                "---\nname: forker\ndescription: writes two files\ncontext: fork\n\
+                 allowed-tools: [Bash(echo hi > fork.txt), Bash(echo managed > managed.txt)]\n---\n\
+                 FORK-MARK write the files\n",
+            )?;
+            Ok(())
+        })
+        .start()
+        .await?;
+    let session = run.session().await?;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let watcher = run
+        .watch_with(&session, {
+            let asked = asked.clone();
+            move |event| {
+                if event["prompt_type"] == "permission" {
+                    asked.lock().unwrap().push(format!(
+                        "{} | {}",
+                        event["input"]["command"].as_str().unwrap_or_default(),
+                        event["message"].as_str().unwrap_or_default()
+                    ));
+                }
+                Some(live::Answer::deny("not asked for"))
+            }
+        })
+        .await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls("s-1", "Skill", json!({ "skill": "forker" })),
+            Reply::calls("p-1", "Bash", json!({ "command": "echo hi > fork.txt" })),
+            Reply::text("parent done"),
+        ],
+    );
+    stub.script_when(
+        "FORK-MARK",
+        [
+            Reply::calls("f-1", "Bash", json!({ "command": "echo hi > fork.txt" })),
+            Reply::calls(
+                "f-2",
+                "Bash",
+                json!({ "command": "echo managed > managed.txt" }),
+            ),
+            Reply::text("fork done"),
+        ],
+    );
+    run.turn(&session, "PARENT-MARK fork it, then write again")
+        .await?;
+    drop(watcher);
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(
+        run.read_file("fork.txt").as_deref(),
+        Some("hi\n"),
+        "the fork's granted command did not run; asked {asked:?}"
+    );
+    assert!(
+        asked.len() == 2 && asked[0].contains("managed.txt") && asked[1].contains("fork.txt"),
+        "the managed ask in the fork, then the parent's own call, and nothing else: {asked:?}"
+    );
+    assert!(run.read_file("managed.txt").is_none());
+    run.finish().await;
+    Ok(())
+}

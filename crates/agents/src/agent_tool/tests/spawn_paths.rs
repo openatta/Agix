@@ -411,3 +411,112 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
         "the delegate's rule index did not come from the parent's provider"
     );
 }
+
+fn team_of(members: &[&str]) -> Value {
+    serde_json::json!({
+        "name": "crew",
+        "agents": members
+            .iter()
+            .map(|m| serde_json::json!({ "label": m, "prompt": format!("MEMBER-MARK {m}") }))
+            .collect::<Vec<_>>()
+    })
+}
+
+/// A sub-agent already holding the session's only slot asks for its team's
+/// members without waiting, so they are refused, and the refusal is what
+/// its team reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "D2: TeamCreate members take no sub-agent slot (T2)"]
+async fn a_team_started_by_a_sub_agent_holding_the_only_slot_is_refused_its_members() {
+    use super::scripted::*;
+    let members = Gate::new(2, std::time::Duration::from_secs(5));
+    let model = Arc::new(
+        RoutedModel::default()
+            .route(
+                "ROOT-MARK",
+                [
+                    call(
+                        "Agent",
+                        serde_json::json!({
+                            "prompt": "LEAD-MARK run a team", "description": "lead",
+                            "background": true
+                        }),
+                    ),
+                    text("root done"),
+                ],
+            )
+            .route(
+                "LEAD-MARK",
+                [call("TeamCreate", team_of(&["a", "b"])), text("lead done")],
+            )
+            .route(
+                "MEMBER-MARK",
+                [
+                    Step::Gather(members.clone(), "member done".into()),
+                    Step::Gather(members.clone(), "member done".into()),
+                ],
+            ),
+    );
+    let mut root = assembled_root(model.clone(), |s| {
+        s.execution.team_enabled = true;
+        s.execution.max_concurrent_subagents = 1;
+    });
+    root.turn("ROOT-MARK start the lead").await;
+    root.tasks_settled(std::time::Duration::from_secs(60)).await;
+
+    assert_eq!(
+        members.peak(),
+        0,
+        "members ran beside the lead holding the only slot"
+    );
+    let lead = model.seen_with("LEAD-MARK");
+    let reported = lead.last().map(|s| s.text.clone()).unwrap_or_default();
+    assert!(
+        reported.contains("max_concurrent_subagents"),
+        "the team did not report its members being refused a slot: {reported}"
+    );
+}
+
+/// A root session holds no slot, so the members of a team it starts wait
+/// for one: every member runs, never more at once than the cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "D2: TeamCreate members take no sub-agent slot (T2)"]
+async fn a_root_sessions_team_waits_for_slots_and_every_member_runs() {
+    use super::scripted::*;
+    let members = Gate::new(3, std::time::Duration::from_secs(3));
+    let model = Arc::new(
+        RoutedModel::default()
+            .route(
+                "ROOT-MARK",
+                [
+                    call("TeamCreate", team_of(&["a", "b", "c"])),
+                    text("root done"),
+                ],
+            )
+            .route(
+                "MEMBER-MARK",
+                (0..3).map(|_| Step::Gather(members.clone(), "MEMBER-FINISHED".into())),
+            ),
+    );
+    let mut root = assembled_root(model.clone(), |s| {
+        s.execution.team_enabled = true;
+        s.execution.max_concurrent_subagents = 2;
+    });
+    root.turn("ROOT-MARK run the team").await;
+
+    assert!(
+        members.peak() <= 2,
+        "{} members ran at once under a cap of 2",
+        members.peak()
+    );
+    let reported = model
+        .seen_with("ROOT-MARK")
+        .last()
+        .map(|s| s.text.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        reported.matches("MEMBER-FINISHED").count(),
+        3,
+        "not every member ran: {reported}"
+    );
+}

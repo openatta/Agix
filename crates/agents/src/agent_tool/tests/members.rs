@@ -764,3 +764,111 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
         "an ordinary non-read-only tool must still be denied under Plan mode — got {write_outcome:?}"
     );
 }
+
+/// Holds a turn call whose conversation carries `mark` until the call is
+/// cancelled; answers every other one at once.
+struct HoldsUntilCancelled {
+    mark: &'static str,
+    held: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl Model for HoldsUntilCancelled {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        messages: Vec<ModelMessage>,
+        _params: base::interface::model::StreamParams,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::ModelEvent;
+        if serde_json::to_string(&messages)
+            .unwrap_or_default()
+            .contains(self.mark)
+        {
+            self.held.notify_one();
+            cancel.cancelled().await;
+        }
+        Ok(Box::new(futures::stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                text: "done".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+            }),
+        ])))
+    }
+}
+
+/// A member stopped while one message runs and more wait behind it ends the
+/// waiting messages' tasks as stopped: none is left running for `TaskWait`
+/// to hang on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "D2: a stopped member drops its queued messages with their tasks still running (A3)"]
+async fn stopping_a_member_ends_the_tasks_of_its_queued_messages() {
+    let held = Arc::new(tokio::sync::Notify::new());
+    let agent_tool = agent_tool_with_model(Arc::new(HoldsUntilCancelled {
+        mark: "FIRST-MESSAGE-MARK",
+        held: held.clone(),
+    }));
+    let registry = Arc::new(team::registry::TeamRegistry::new());
+    agent_tool.set_team_registry(registry.clone());
+    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    let send = |prompt: &str| {
+        agent_tool.spawn_or_message_team_member(
+            "team".into(),
+            "worker".into(),
+            prompt.into(),
+            None,
+            std::env::temp_dir(),
+            session.clone(),
+            None,
+        )
+    };
+    send("FIRST-MESSAGE-MARK work")
+        .await
+        .expect("the member is spawned");
+    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+        .await
+        .expect("the first message reaches the model");
+    let mut queued = Vec::new();
+    for i in 0..4 {
+        queued.push(
+            send(&format!("queued message {i}"))
+                .await
+                .expect("the message is queued"),
+        );
+    }
+    agent_tool.stop_team_member("team", "worker").await;
+
+    let shut_down = || {
+        registry.list().iter().any(|t| {
+            t.members.iter().any(|m| {
+                m.label == "worker" && m.lifecycle == team::coordinator::TeammateLifecycle::Shutdown
+            })
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !shut_down() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the member's loop ends");
+    let still_running: Vec<_> = session
+        .task_infos()
+        .into_iter()
+        .filter(|t| {
+            queued.contains(&t.task_id) && t.status == base::context::task::TaskStatus::Running
+        })
+        .collect();
+    assert!(
+        still_running.is_empty(),
+        "queued messages' tasks left running: {still_running:?}"
+    );
+}

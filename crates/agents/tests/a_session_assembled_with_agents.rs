@@ -186,3 +186,271 @@ async fn the_agent_tool_goes_when_its_session_does() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
+
+/// What one turn call carried: the mark that routed it, the system prompt
+/// and conversation as text, and the tools it offered.
+#[derive(Clone)]
+struct Seen {
+    mark: Option<String>,
+    text: String,
+    tools: Vec<String>,
+}
+
+/// Answers each turn call from the first queue whose mark the call carries;
+/// "done" when none has a reply left.
+#[derive(Default)]
+struct RoutedModel {
+    queues: std::sync::Mutex<Vec<(String, std::collections::VecDeque<ModelEventSet>)>>,
+    seen: std::sync::Mutex<Vec<Seen>>,
+}
+
+type ModelEventSet = Vec<base::interface::model::ModelEvent>;
+
+fn says(text: &str) -> ModelEventSet {
+    vec![
+        base::interface::model::ModelEvent::TextDelta { text: text.into() },
+        base::interface::model::ModelEvent::EndTurn {
+            stop_reason: "end_turn".into(),
+            usage: Default::default(),
+        },
+    ]
+}
+
+fn calls(tool: &str, input: serde_json::Value) -> ModelEventSet {
+    vec![
+        base::interface::model::ModelEvent::ToolUse {
+            id: format!("toolu_{tool}"),
+            name: tool.into(),
+            input,
+        },
+        base::interface::model::ModelEvent::EndTurn {
+            stop_reason: "tool_use".into(),
+            usage: Default::default(),
+        },
+    ]
+}
+
+impl RoutedModel {
+    fn route(self, mark: &str, replies: impl IntoIterator<Item = ModelEventSet>) -> Self {
+        self.queues
+            .lock()
+            .unwrap()
+            .push((mark.into(), replies.into_iter().collect()));
+        self
+    }
+
+    fn seen_with(&self, mark: &str) -> Vec<Seen> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.mark.as_deref() == Some(mark))
+            .cloned()
+            .collect()
+    }
+}
+
+#[async_trait]
+impl Model for RoutedModel {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        prompt_blocks: Vec<base::prompt::PromptBlock>,
+        tools: Vec<base::interface::model::ToolDef>,
+        messages: Vec<ModelMessage>,
+        params: base::interface::model::StreamParams,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        let turn_call = params
+            .origin
+            .as_ref()
+            .is_some_and(|o| matches!(o.kind, base::interface::model::CallKind::Turn { .. }));
+        if !turn_call {
+            return Ok(Box::new(futures::stream::iter(
+                says("[]").into_iter().map(Ok),
+            )));
+        }
+        let text = format!(
+            "{}\n{}",
+            prompt_blocks
+                .iter()
+                .map(|b| b.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            serde_json::to_string(&messages).unwrap_or_default()
+        );
+        let routed = self
+            .queues
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .find(|(mark, replies)| !replies.is_empty() && text.contains(mark.as_str()))
+            .map(|(mark, replies)| (mark.clone(), replies.pop_front().unwrap_or_default()));
+        let (mark, reply) = match routed {
+            Some((mark, reply)) => (Some(mark), reply),
+            None => (None, says("done")),
+        };
+        self.seen.lock().unwrap().push(Seen {
+            mark,
+            text,
+            tools: tools.into_iter().map(|t| t.name).collect(),
+        });
+        Ok(Box::new(futures::stream::iter(reply.into_iter().map(Ok))))
+    }
+}
+
+/// A root session that delegates once, `delegation` being the `Agent` call's
+/// input, and whose delegate makes one `Glob` call; `adjust` sets up the
+/// root's builder.
+async fn delegate_once(
+    delegation: serde_json::Value,
+    adjust: impl FnOnce(Builder) -> Builder,
+) -> Arc<RoutedModel> {
+    let model = Arc::new(
+        RoutedModel::default()
+            .route("ROOT-MARK", [calls("Agent", delegation), says("root done")])
+            .route(
+                "CHILD-MARK",
+                [
+                    calls("Glob", serde_json::json!({ "pattern": "*.nothing" })),
+                    says("child done"),
+                ],
+            ),
+    );
+    let mut s = settings();
+    s.memory_enabled = false;
+    let builder = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .model(model.clone())
+        .settings(Arc::new(s))
+        .tools({
+            let t = Arc::new(InMemoryToolRegistry::new());
+            tools::register_builtin_tools(&t);
+            t
+        })
+        .skip_warmup(true)
+        .module(Arc::new(AgentsModule::new()));
+    let (mut agent, _events, _input) = adjust(builder).build().expect("the root builds");
+    agent
+        .run_turn(
+            "ROOT-MARK delegate it".into(),
+            "t1".into(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("the turn runs");
+    model
+}
+
+fn plain_delegation() -> serde_json::Value {
+    serde_json::json!({ "prompt": "CHILD-MARK look around", "description": "look" })
+}
+
+/// The date the host fixed for a session is the date its delegates are told.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "D2: a delegate does not inherit the host's environment (R1)"]
+async fn a_delegate_is_told_the_date_its_host_fixed() {
+    let start = time::OffsetDateTime::from_unix_timestamp(978_307_200).expect("2001-01-01");
+    let model = delegate_once(plain_delegation(), |b| {
+        b.environment(Arc::new(
+            base::interface::environment::FixedEnvironment::new(start, time::Duration::seconds(1)),
+        ))
+    })
+    .await;
+    let root = model.seen_with("ROOT-MARK");
+    assert!(
+        root[0].text.contains("2001-01-01"),
+        "the root itself is not told the fixed date, so this case proves nothing"
+    );
+    let child = model.seen_with("CHILD-MARK");
+    assert!(!child.is_empty(), "the delegate never ran");
+    assert!(
+        child[0].text.contains("2001-01-01"),
+        "the delegate was told another date"
+    );
+}
+
+struct CountsCalls(Arc<std::sync::Mutex<Vec<String>>>);
+
+#[async_trait]
+impl base::interface::tool_middleware::ToolMiddleware for CountsCalls {
+    async fn around(
+        &self,
+        call: &base::interface::tool_middleware::ToolCall,
+        exec: &mut base::interface::tool_middleware::ToolExec,
+        next: base::interface::tool_middleware::NextDispatch<'_>,
+    ) -> base::interface::tool_middleware::ToolOutcome {
+        self.0.lock().unwrap().push(call.name.clone());
+        next.run(call, exec).await
+    }
+}
+
+/// A host's tool middleware wraps its delegates' tool calls too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "D2: a delegate does not inherit the host's tool middleware (R1)"]
+async fn a_hosts_tool_middleware_wraps_its_delegates_calls() {
+    let wrapped = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let model = delegate_once(plain_delegation(), |b| {
+        b.tool_middleware(Arc::new(CountsCalls(wrapped.clone())))
+    })
+    .await;
+    assert!(
+        !model.seen_with("CHILD-MARK").is_empty(),
+        "the delegate never ran"
+    );
+    let wrapped = wrapped.lock().unwrap().clone();
+    assert!(
+        wrapped.iter().any(|n| n == "Agent"),
+        "the root's own call is not wrapped, so this case proves nothing: {wrapped:?}"
+    );
+    assert!(
+        wrapped.iter().any(|n| n == "Glob"),
+        "the delegate's call went around the host's middleware: {wrapped:?}"
+    );
+}
+
+/// Scheduled jobs belong to the session its host keeps: a delegate is not
+/// given the tools to schedule its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "D2 §7.7: a delegate registers the Cron tools and keeps its own store"]
+async fn a_delegate_is_offered_no_cron_tools() {
+    let model = delegate_once(plain_delegation(), |b| b).await;
+    let root = model.seen_with("ROOT-MARK");
+    assert!(
+        root[0].tools.iter().any(|t| t == "CronCreate"),
+        "the root has no CronCreate, so this case proves nothing: {:?}",
+        root[0].tools
+    );
+    let child = model.seen_with("CHILD-MARK");
+    let cron: Vec<&String> = child[0]
+        .tools
+        .iter()
+        .filter(|t| t.starts_with("Cron"))
+        .collect();
+    assert!(cron.is_empty(), "the delegate was offered {cron:?}");
+}
+
+/// A type's tool list holds whatever the delegate's own engine and modules
+/// register, not only what it inherits: a read-only type gets none of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "D2: a type's tool list does not reach engine and module tools (T1)"]
+async fn an_explore_delegate_is_offered_only_its_types_tools() {
+    let model = delegate_once(
+        serde_json::json!({
+            "prompt": "CHILD-MARK look around", "description": "look",
+            "subagent_type": "explore"
+        }),
+        |b| b,
+    )
+    .await;
+    let child = model.seen_with("CHILD-MARK");
+    assert!(!child.is_empty(), "the delegate never ran");
+    let beyond: Vec<&String> = child[0]
+        .tools
+        .iter()
+        .filter(|t| ["EnterWorktree", "CronCreate", "Skill", "Agent"].contains(&t.as_str()))
+        .collect();
+    assert!(beyond.is_empty(), "a read-only type was offered {beyond:?}");
+}

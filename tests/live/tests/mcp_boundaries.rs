@@ -908,3 +908,66 @@ async fn the_part_of_a_page_webfetch_keeps_reaches_the_model() -> anyhow::Result
     run.finish().await;
     Ok(())
 }
+
+/// `disallowed_tools` names a server as it is configured; a server whose name
+/// the tool names cannot carry is still the one taken away.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "D2: mcp__<server> is matched against the sanitized tool name, not the server (T1)"]
+async fn a_host_agent_denied_a_dotted_server_is_offered_none_of_its_tools() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("dotted-deny", &stub)
+        .settings(json!({ "mcp_servers": { "my.docs": McpToy::stdio_config(&[])? } }))
+        .before_start(|world, _| {
+            world.write_project_file(
+                "dotted-deny",
+                ".agix/agents/reader.md",
+                "---\ndescription: reads the docs server\nmcp_servers: [my.docs]\n---\nYou read.\n",
+            )?;
+            Ok(())
+        })
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script_when("PARENT-MARK", [Reply::text("ok")]);
+    run.turn(&session, "PARENT-MARK hello").await?;
+    let docs_tools = |names: Vec<String>| -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|n| n.starts_with("mcp__my_docs"))
+            .collect()
+    };
+    let parent = stub.calls()[0].tool_names();
+    assert!(
+        !docs_tools(parent.clone()).is_empty(),
+        "the parent has none of the server's tools, so this case proves nothing: {parent:?}"
+    );
+
+    stub.script_when("CHILD-MARK", [Reply::text("child done")]);
+    let started = run
+        .client
+        .call(
+            "session.startAgent",
+            json!({
+                "session_id": session,
+                "prompt": "CHILD-MARK read",
+                "subagent_type": "reader",
+                "disallowed_tools": ["mcp__my.docs"]
+            }),
+        )
+        .await?;
+    anyhow::ensure!(started.error.is_none(), "{started:?}");
+    run.wait_tasks_settled(&session, Duration::from_secs(30))
+        .await?;
+    let child = stub
+        .calls()
+        .into_iter()
+        .find(|c| c.messages_contain("CHILD-MARK"))
+        .expect("the agent's request");
+    assert!(
+        docs_tools(child.tool_names()).is_empty(),
+        "the denied server's tools were offered: {:?}",
+        child.tool_names()
+    );
+    run.finish().await;
+    Ok(())
+}

@@ -1876,4 +1876,73 @@ mod tests {
             .expect("orchestrate ok");
         assert!(!result.is_error);
     }
+
+    /// Cancels the lead's turn from inside the first stage's spawn and hands
+    /// back partial text, as a member cut short by an interrupt does.
+    struct CancelsTheLead {
+        lead: tokio_util::sync::CancellationToken,
+        spawned: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl AgentSpawner for CancelsTheLead {
+        async fn spawn(
+            &self,
+            request: SpawnRequest,
+        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            let task = task_text(&request.prompt);
+            self.spawned
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(task.clone());
+            if task == "first" {
+                self.lead.cancel();
+            }
+            Ok(format!("partial-{task}"))
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "D2: TeamCreate goes on after the lead is interrupted and reports success (C1)"]
+    async fn an_interrupted_team_starts_no_further_stage_and_ends_cancelled() {
+        let stage = |name: &str, prompt: &str| TeamStage {
+            name: name.into(),
+            agents: vec![TeamAgentSpec {
+                label: name.into(),
+                prompt: prompt.into(),
+                agent_type: None,
+            }],
+            aggregate: None,
+        };
+        let (dir, ctx) = make_ctx();
+        let spawner = Arc::new(CancelsTheLead {
+            lead: ctx.cancel.clone(),
+            spawned: Default::default(),
+        });
+        let registry = Arc::new(crate::registry::TeamRegistry::new());
+        let coordinator =
+            DefaultCoordinator::with_agent_spawner(spawner.clone()).with_registry(registry.clone());
+        let result = coordinator
+            .orchestrate(make_request(
+                ctx,
+                vec![stage("one", "first"), stage("two", "second")],
+            ))
+            .await
+            .expect("orchestrate returns a result");
+
+        let spawned = spawner
+            .spawned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(spawned, ["first"], "no member of a later stage is started");
+        assert!(result.is_error, "an interrupted team is not a success");
+        let team_dir = registry.list()[0].team_dir.clone();
+        assert!(team_dir.starts_with(dir.path()));
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(team_dir.join("state.json")).expect("state.json"),
+        )
+        .expect("state.json is json");
+        assert_eq!(state["status"], "cancelled", "{state}");
+    }
 }

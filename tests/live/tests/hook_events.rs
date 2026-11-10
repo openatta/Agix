@@ -1508,3 +1508,135 @@ async fn an_http_hook_that_allows_local_reaches_this_machine_and_its_verdict_cou
     run.finish().await;
     Ok(())
 }
+
+/// A turn interrupted while an `"agent"` hook is still judging its call ends
+/// at once, and the hook's sub-agent is stopped with it rather than left to
+/// run out the hook's timeout.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "D2: an agent hook does not stop on the turn's cancellation (C3, EXT F14)"]
+async fn an_interrupt_stops_an_agent_hook_still_judging() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let ledger = Ledger::new()?;
+    let mut run = stubbed("agent-hook-interrupted", &stub)
+        .settings(json!({
+            "hooks_config": {
+                "PreToolUse": [{
+                    "type": "agent",
+                    "prompt": "AGENT-JUDGE: decide whether this call may run; answer {\"ok\": bool, \"reason\": str}.",
+                    "timeout": 600000
+                }],
+                "SubagentStop": [ledger.hook()]
+            }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script_when(
+        "AGENT-JUDGE",
+        [Reply::delayed(
+            Duration::from_secs(600),
+            Reply::text("{\"ok\": true}"),
+        )],
+    );
+    stub.script([
+        Reply::calls("b1", "Bash", json!({ "command": "echo x > judged.txt" })),
+        Reply::text("done"),
+    ]);
+    let handle = run.spawn_turn(&session, "go", json!({})).await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !stub
+        .calls()
+        .iter()
+        .any(|c| c.messages_contain("AGENT-JUDGE"))
+    {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "the hook's sub-agent never called the model"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let interrupted = run
+        .client
+        .call("session.interrupt", json!({ "session_id": session }))
+        .await?;
+    assert_eq!(
+        interrupted.result.unwrap_or_default()["interrupted"],
+        json!(true)
+    );
+    let events = tokio::time::timeout(Duration::from_secs(60), handle)
+        .await
+        .map_err(|_| anyhow::anyhow!("the turn waited on the hook past the interrupt"))???;
+    let stop = events
+        .turn_complete_event
+        .as_ref()
+        .map(|e| e["stop_reason"].clone())
+        .unwrap_or_default();
+    assert_eq!(stop, "cancelled", "{:?}", events.events);
+    let stopped = ledger
+        .wait_for("SubagentStop", Duration::from_secs(30))
+        .await?;
+    assert_eq!(stopped["stop_reason"], "cancelled", "{stopped}");
+    assert!(run.read_file("judged.txt").is_none());
+    run.finish().await;
+    Ok(())
+}
+
+/// What an `"agent"` hook's sub-agent delegates in turn is part of the
+/// hook's own judging: its calls are not judged by the hook again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "D2: a hook agent's descendants still fire agent hooks (C3, hook lineage)"]
+async fn a_hook_agents_own_sub_agent_does_not_fire_the_agent_hook() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("agent-hook-lineage", &stub)
+        .settings(json!({
+            "permission_rules": [
+                { "tool": "Agent", "action": "allow" },
+                { "tool": "Bash", "action": "allow" }
+            ],
+            "hooks_config": {
+                "PreToolUse": [{
+                    "type": "agent",
+                    "prompt": "AGENT-JUDGE: decide whether this call may run; answer {\"ok\": bool, \"reason\": str}.",
+                    "timeout": 60000
+                }]
+            }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script_when(
+        "AGENT-JUDGE",
+        [
+            Reply::calls(
+                "a1",
+                "Agent",
+                json!({ "prompt": "GRANDCHILD-MARK check it", "description": "check" }),
+            ),
+            Reply::text("{\"ok\": true}"),
+        ],
+    );
+    stub.script_when(
+        "GRANDCHILD-MARK",
+        [
+            Reply::calls("g1", "Bash", json!({ "command": "echo GRANDCHILD-CALL" })),
+            Reply::text("grandchild done"),
+        ],
+    );
+    stub.script([
+        Reply::calls("b1", "Bash", json!({ "command": "echo x > judged.txt" })),
+        Reply::text("done"),
+    ]);
+    run.turn(&session, "go").await?;
+    let judged_again: Vec<String> = stub
+        .calls()
+        .iter()
+        .filter(|c| c.messages_contain("AGENT-JUDGE") && c.messages_contain("GRANDCHILD-CALL"))
+        .map(|c| c.messages_text())
+        .collect();
+    assert!(
+        judged_again.is_empty(),
+        "the hook judged its own sub-agent's call: {judged_again:?}"
+    );
+    run.finish().await;
+    Ok(())
+}

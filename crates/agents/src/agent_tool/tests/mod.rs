@@ -13,6 +13,7 @@ mod programs;
 mod resolve;
 mod run;
 mod scenes;
+mod scripted;
 mod spawn_paths;
 mod wiring;
 
