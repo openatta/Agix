@@ -247,7 +247,7 @@ impl SessionPool {
             .map_err(|e| SetModelError::Rpc((codes::INVALID_PARAMS, e)))?;
 
         let switching_provider = provider.is_some_and(|p| current_provider.as_deref() != Some(p));
-        let record = self.update_spec(session_id, |spec| {
+        let change = |spec: &mut SessionSpec| {
             if let Some(p) = provider {
                 spec.provider = Some(p.to_string());
                 // A model chosen for the old provider means nothing to the new
@@ -259,23 +259,23 @@ impl SessionPool {
             if let Some(m) = model {
                 spec.model = Some(m.to_string());
             }
-        });
+        };
 
         // A provider is a different client, which an engine is built around
         // rather than handed mid-life: rebuild the session on the new spec.
-        // The turn slot is taken before the change is recorded, so a turn
-        // that started since the check above refuses both rather than being
-        // cut off or finding the change applied by some later rebuild.
+        // The turn slot is taken before the change is made, so a turn that
+        // started since the check above refuses both rather than being cut
+        // off or finding the change applied by some later rebuild.
         if switching_provider {
             self.with_session_lock(session_id, async {
                 let held = self.take_idle_slot(session_id).await?;
-                record.await;
-                self.rebuild_holding(session_id, held, None).await
+                self.rebuild_on_changed_spec(session_id, held, change).await
             })
             .await
             .map_err(SetModelError::from)?;
         } else {
-            record.await;
+            let spec = self.change_spec(session_id, change).1;
+            self.persist_spec(session_id, &spec).await;
         }
         if let (false, Some(m)) = (switching_provider, model) {
             if input_tx
@@ -336,31 +336,27 @@ impl SessionPool {
             let recorded = self.recorded_spec(session_id).await;
             self.lock_specs().insert(session_id.to_string(), recorded);
         }
-        let record = self.update_spec(session_id, |spec| {
+        let change = |spec: &mut SessionSpec| {
             let mut prompt = spec.prompt().unwrap_or_default();
             change(&mut prompt);
             spec.prompt = Some(prompt);
-        });
+        };
         let prompt = self
             .with_session_lock(session_id, async {
-                let held = match self.take_idle_slot(session_id).await {
-                    Ok(held) => Some(held),
-                    Err(Rebuild::NotLive) => None,
+                let spec = match self.take_idle_slot(session_id).await {
+                    Ok(held) => {
+                        self.rebuild_on_changed_spec(session_id, held, change)
+                            .await?
+                    }
+                    Err(Rebuild::NotLive) => {
+                        let spec = self.change_spec(session_id, change).1;
+                        self.persist_spec(session_id, &spec).await;
+                        self.release_spec(session_id);
+                        spec
+                    }
                     Err(busy) => return Err(busy),
                 };
-                record.await;
-                let prompt = self
-                    .lock_specs()
-                    .get(session_id)
-                    .and_then(SessionSpec::prompt)
-                    .unwrap_or_default();
-                match held {
-                    Some(held) => {
-                        self.rebuild_holding(session_id, held, None).await?;
-                    }
-                    None => self.release_spec(session_id),
-                }
-                Ok(prompt)
+                Ok(spec.prompt().unwrap_or_default())
             })
             .await
             .map_err(SetModelError::from)?;

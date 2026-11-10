@@ -910,7 +910,7 @@ impl Builder {
                 channels: Channels {
                     input_rx,
                     event_tx,
-                    current_turn_cancel: Arc::new(std::sync::Mutex::new(CancellationToken::new())),
+                    current_turn_cancel: Default::default(),
                     steering: Default::default(),
                 },
             },

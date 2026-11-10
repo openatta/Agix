@@ -1631,8 +1631,13 @@ WebAssembly 载体整个移除。
   `session.setModel`、`session.setPrompt` 让空闲会话在下一轮前重建引擎,以前重建出来的会话回到
   设置里的模式(`EnterPlanMode` 进的 `plan` 悄悄失效),todo 列表、`ToolSearch` 加载过的 deferred
   工具、读过的文件记录(`Edit` 前要先 `Read` 的依据)和 `/rewind` 的文件快照也都丢了;现在都留着。
-  `plan` 之外的模式仍取重建时的设置:`plan` 里退出回到的是新设置的模式,不在 `plan` 里的会话
-  直接换成新设置的模式。
+  `plan` 里退出回到的是进入 `plan` 之前的模式;不在 `plan` 里的会话直接换成新设置的模式。
+- **被驱逐、daemon 重启后恢复的会话也还在 `plan` 模式里。** 以前会话被 `--session-cap` 挤出池子
+  或空闲超时回收后,下一轮从转录恢复出来的是设置里的模式和空的 todo 列表:`EnterPlanMode` 进的
+  `plan` 悄悄失效,下一轮的 `Write` 不经 `ExitPlanMode` 询问就落盘。现在 `plan` 模式、退出后回到
+  的模式和 todo 列表在每轮结束时有变化就记进转录(新扩展条目 `agix.session_state` / `change`,
+  格式见 `ARCHITECTURE.md` §4),恢复时读回来。`session.entries` 不列 `agix.*`,导出的
+  `transcript.jsonl` 里看得到它;只认识旧条目的工具照"未知 `ns` 跳过"处理即可。
 - managed 层的 `ask` 不再被 `PreToolUse` hook 的 `approve` 吞掉:配了这种 hook 的会话,也会收到
   managed 规则要求的 permission `prompt` 帧,宿主要能回答。
 - `options.permission_rules` 里 `WebFetch` / `Ping` 的 `rule_content` 按 URL 的各部分匹配
@@ -1695,6 +1700,20 @@ WebAssembly 载体整个移除。
   跑完,上一轮起的 `Monitor` / 后台 `Agent` / 后台 `RunCode` 任务反被停掉。现在新的一轮以
   `cancelled` 结束,上一轮的后台任务不受影响。中断仍会停掉被中断那一轮自己起的后台任务(协议
   `session.interrupt`)。
+- **目标轮的两头,中断也落在那一轮上。** 以前目标轮报了 `turn_started`、还在把认领记进转录时
+  中断,`interrupted` 报 `true`,取消的却是上一轮(连带它的后台任务),目标轮照样调模型;一轮
+  答完、还在记目标时中断,同样打在这一轮已经结束的令牌上,下一个目标轮照开。现在中断只认
+  `turn_started` 报的那个 `turn_id`:前一种以 `cancelled` 结束、不调模型;后一种这一轮的后台任务
+  不受影响,目标解除武装,不再开下一轮。**中断一律让目标解除武装**(以取消结束的一轮本来就会),
+  要继续用 `session.updateGoal {action:"resume"}`。
+- **重建时旧引擎停得慢,会话不再卡死。** `session.setPrompt`、换厂商的 `session.setModel` 让会话
+  原地重建,旧引擎 5 秒内没停下时返回 `SESSION_BUSY`;以前选择照样记进了转录,已取消的旧引擎却
+  还留在池里,下一轮的消息发给它,`run_turn` 永远不返回。现在这次选择不生效、不记录,会话移出
+  内存(`daemon.event` `session_evicted` 多了 `reason: "rebuild"`),下一轮等旧引擎停下后从转录恢复。
+- **`session.close` / `session.delete` 截断的一轮有终止帧了。** 以前旁观这一轮的订阅者什么也收
+  不到(违反 §5.5),发起者的 `run_turn` 还可能返回成功。现在其他订阅者收到这一轮的
+  `error{code:"session_closed"}`,发起者收到 `ENGINE_ERROR`,`message` 以 `session_closed:` 开头;
+  关闭前已经推出 `turn_complete` 的一轮不受影响。
 - **请求因过长被拒、为重试而压缩时中断,以 `cancelled` 结束。** 以前这一轮报 `ENGINE_ERROR`。
 - **`session.compact` 写摘要时可以中断。** 以前 `session.interrupt` 报 `true` 却不起作用,摘要
   写完照样替换历史;现在历史不变,这一轮以 `turn_complete{stop_reason:"cancelled"}` 结束。
@@ -1861,7 +1880,18 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - `base::context::SessionState::carry_goal_arming_from` 与 `carry_tasks_and_notices_from` 合成
   `carry_session_state_from(&previous)`:重建引擎时把旧状态里跨回合的部分(`plan` 模式、todo、
   已加载的 deferred 工具、后台任务、未读通知、目标的 arming、文件快照与回合号、读文件记录)搬到
-  新状态上,在新状态读回转录之后调。调旧的两个的嵌入方改调它。
+  新状态上,在新状态读回转录之后调。调旧的两个的嵌入方改调它。在 `plan` 里的,搬过去之后退出
+  回到进入 `plan` 之前的模式(和从转录恢复的一致),不是新状态建起来时的模式。
+- `base::context::SessionState` 新增 `durable_state()` / `unrecorded_durable_state()` /
+  `restore_durable_state(..)` 与类型 `DurableState { plan: Option<PlanState>, todos }`、
+  `PlanState { exit_to }`,常量 `SESSION_STATE_NS` / `SESSION_STATE_EVENT`(`agix.session_state` /
+  `change`)。`Agent` 每轮结束和停下时有变化就写这条扩展条目,`Agent::resume_session` 读回;
+  自己写会话日志的嵌入方不用做什么。这是 0.3.12 让会话持有 `SessionState`、去掉 `carry_*` 的
+  第一步:跨引擎的状态以日志为准。
+- `runtime::agent::EngineCommand::CancelTurn` 改为 `CancelTurn { turn_id: Option<String> }`。
+  `Some(id)` 只取消那一轮,它的消息还没进引擎时,进来就是取消的;`None` 是最近交给引擎的那一轮,
+  即以前的行为。两种都不再碰已经结束的一轮(以前空闲时发它会取消刚结束那一轮的令牌,连带停掉
+  它起的后台任务)。原来写 `EngineCommand::CancelTurn` 的改成 `CancelTurn { turn_id: None }`。
 - `telemetry::RedactionPolicy` 只剩 `redact_error_messages`:`apply()` 与 `emails` / `env_vars` / `paths` /
   `ip` 四个开关(从来没有走到过)删除,`telemetry` 不再依赖 `regex`。
 - `runtime::agent::Agent::compact_now` 多一个 `&CancellationToken` 参数:它取消时摘要放弃、历史不变,

@@ -54,6 +54,28 @@ impl Agent {
         }
     }
 
+    /// Write the part of the session state that outlives the engine, when it
+    /// changed since the log last had it.
+    pub(crate) async fn record_session_state(&mut self) {
+        let Some(state) = self.session_state.unrecorded_durable_state() else {
+            return;
+        };
+        let Ok(payload) = serde_json::to_value(&state) else {
+            return;
+        };
+        if let Err(e) = self
+            .session
+            .record_extension(
+                base::context::SESSION_STATE_NS,
+                base::context::SESSION_STATE_EVENT,
+                payload,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to record the session state");
+        }
+    }
+
     /// Process one input message — the core turn loop.
     /// Internal turn processing. Consumers should use [`Agent::run`] or [`Agent::run_turn`].
     pub(crate) async fn process_turn(
@@ -309,7 +331,7 @@ impl Agent {
                     }
                     // `CancelTurn` is handled by the input demultiplexer, not
                     // here — see its doc comment on `EngineCommand`.
-                    EngineCommand::CancelTurn => Ok(TurnOutcome::default()),
+                    EngineCommand::CancelTurn { .. } => Ok(TurnOutcome::default()),
                 }
             }
         }
@@ -560,6 +582,7 @@ impl Agent {
             self.session_state.goal_disarm();
         }
         self.record_goal_changes().await;
+        self.record_session_state().await;
         if let Some(seat) = self.identity.team_seat.clone() {
             let stop_reason = match &outcome {
                 Ok(o) => o.stop_reason.clone(),
@@ -580,6 +603,8 @@ impl Agent {
             })
             .await;
         }
+        crate::agent::lock_turn_cancel(&self.channels.current_turn_cancel)
+            .ended(&self.current_turn_id);
         if let Ok(o) = &outcome {
             self.telemetry.spent.usage = self.telemetry.spent.usage.plus(o.total_usage);
             self.telemetry.spent.api_calls =

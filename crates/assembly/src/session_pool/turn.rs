@@ -27,6 +27,8 @@ impl SessionPool {
         };
         if live.current_turn.as_deref() == Some(turn_id) {
             live.current_turn = None;
+            live.turn_connection = None;
+            live.turn_terminated = false;
             self.emit_session_event(
                 "turn_completed",
                 sid,
@@ -219,6 +221,8 @@ impl SessionPool {
                     if wanted {
                         live.current_turn = Some(turn_id.clone());
                         live.turn_initiator = Some(initiator);
+                        live.turn_connection = Some(client.id());
+                        live.turn_terminated = false;
                         self.emit_session_event(
                             "turn_started",
                             &sid,
@@ -500,7 +504,16 @@ impl SessionPool {
                         event["truncated"] = serde_json::json!(true);
                     }
                     let f = StreamFrame::event(&sid, &turn_id, event);
-                    self.broadcast_to_session(&sid, &f).await;
+                    if !self
+                        .broadcast_terminal(&sid, &event_rx_mutex, &f, None)
+                        .await
+                    {
+                        return RpcResponse::err(
+                            id,
+                            codes::ENGINE_ERROR,
+                            format!("{SESSION_CLOSED}: {SESSION_CLOSED_MESSAGE}"),
+                        );
+                    }
                     break;
                 }
                 Some(AgentEvent::Error { code, message, .. }) => {
@@ -511,7 +524,7 @@ impl SessionPool {
                         &turn_id,
                         serde_json::json!({"kind":"error","code":code,"message":message}),
                     );
-                    self.broadcast_to_session_except(&sid, &f, Some(client.id()))
+                    self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
                         .await;
                     self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                         .await;
@@ -529,7 +542,7 @@ impl SessionPool {
                             "message":"engine stopped before the turn completed"
                         }),
                     );
-                    self.broadcast_to_session_except(&sid, &f, Some(client.id()))
+                    self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
                         .await;
                     let dead = {
                         let mut sessions = self.sessions.lock().await;

@@ -447,6 +447,10 @@ const SPEC_NS: &str = "agix.session";
 const ENGINE_NS_PREFIX: &str = "agix.";
 const SPEC_EVENT: &str = "spec";
 
+/// The engine error code a turn cut off by `session.close` ends with.
+const SESSION_CLOSED: &str = "session_closed";
+const SESSION_CLOSED_MESSAGE: &str = "the session was closed before the turn completed";
+
 /// Where a session's first-turn naming call goes: the session's own `title`
 /// route when its project has one, else its conversation model.
 ///
@@ -594,6 +598,11 @@ struct LiveSession {
     idle: Arc<tokio::sync::Notify>,
     /// Who started the running turn: `"client"`, `"schedule"` or `"goal"`.
     turn_initiator: Option<&'static str>,
+    /// The connection that started the running turn; it hears how the turn
+    /// ended from its `run_turn` response rather than from an `error` frame.
+    turn_connection: Option<crate::rpc::ConnectionId>,
+    /// The running turn's `turn_complete` or `error` frame has gone out.
+    turn_terminated: bool,
     /// The engine's own session state: the tasks `session.tasks` lists.
     state: Option<Arc<base::context::SessionState>>,
     /// How the engine starts sub-agents, for `session.startAgent`.

@@ -43,6 +43,8 @@ pub struct SessionState {
     permission_mode: std::sync::Mutex<ModeSlot>,
     /// 模型自己维护的 todo 列表（TodoWrite 工具更新；/tasks 命令读取）。
     todos: std::sync::Mutex<Vec<TodoItem>>,
+    /// The [`DurableState`] the session log last had.
+    recorded_durable: std::sync::Mutex<DurableState>,
     /// 本会话已激活的 deferred 工具名集合。`Tool::is_deferred()`
     /// 为 true 的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
@@ -85,6 +87,28 @@ pub struct SessionState {
     /// Weak: the registry's tools may hold this session.
     tools: std::sync::RwLock<Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>>,
     exec: std::sync::RwLock<Option<crate::interface::exec::ExecProviders>>,
+}
+
+/// Log namespace and event under which [`DurableState`] is recorded.
+pub const SESSION_STATE_NS: &str = "agix.session_state";
+pub const SESSION_STATE_EVENT: &str = "change";
+
+/// The part of a session's state that outlives its engine: what the model
+/// set up for itself, which an engine brought back from the log must still
+/// hold. The rest is derived from settings again or ends with the engine.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DurableState {
+    #[serde(default)]
+    pub plan: Option<PlanState>,
+    #[serde(default)]
+    pub todos: Vec<TodoItem>,
+}
+
+/// In plan mode, and where `ExitPlanMode` returns to: `None` is `Default`,
+/// for a session that started out in plan mode.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PlanState {
+    pub exit_to: Option<PermissionMode>,
 }
 
 #[derive(Debug, Default)]
@@ -203,6 +227,7 @@ impl SessionState {
             sandbox_disabled: false,
             permission_mode: std::sync::Mutex::new(ModeSlot::default()),
             todos: std::sync::Mutex::new(Vec::new()),
+            recorded_durable: std::sync::Mutex::new(DurableState::default()),
             activated_tools: std::sync::Mutex::new(HashSet::new()),
             running_tasks: std::sync::Mutex::new(HashMap::new()),
             task_events: tokio::sync::broadcast::channel(256).0,
@@ -474,8 +499,9 @@ impl SessionState {
     /// session's state before its engine was rebuilt in place — holds that
     /// outlives a turn. Called once the log has been loaded into this one.
     ///
-    /// Plan mode stays on; the mode outside it is the one this state was
-    /// built with, so a settings change still reaches the session.
+    /// Plan mode stays on, exiting to where it would have, as it does for a
+    /// session brought back from its log; a session not in plan mode runs in
+    /// the mode this state was built with, so a settings change reaches it.
     pub fn carry_session_state_from(&self, previous: &SessionState) {
         let SessionState {
             // Built from the session's settings, which a rebuild re-reads.
@@ -496,6 +522,8 @@ impl SessionState {
             exec: _,
             // Already in the log, which the resume read the goal back from.
             unrecorded_goal_changes: _,
+            // What the log has, which the resume read back.
+            recorded_durable: _,
             // A turn's own, and a rebuild happens between turns.
             turn_origin: _,
             structured_output: _,
@@ -511,9 +539,14 @@ impl SessionState {
             last_read_path,
         } = previous;
 
-        if lock(permission_mode).current == PermissionMode::Plan {
-            self.enter_plan_mode();
+        let before = lock(permission_mode);
+        if before.current == PermissionMode::Plan {
+            *self.mode_slot() = ModeSlot {
+                current: PermissionMode::Plan,
+                before_plan: before.before_plan,
+            };
         }
+        drop(before);
         lock(&self.todos).clone_from(&lock(todos));
         lock(&self.activated_tools).extend(lock(activated_tools).iter().cloned());
         let tasks: Vec<(String, std::sync::Arc<RunningTask>)> = lock(running_tasks)
@@ -832,6 +865,44 @@ impl SessionState {
         let mut slot = self.mode_slot();
         slot.current = slot.before_plan.take().unwrap_or_default();
         slot.current
+    }
+
+    pub fn durable_state(&self) -> DurableState {
+        let plan = {
+            let slot = self.mode_slot();
+            (slot.current == PermissionMode::Plan).then_some(PlanState {
+                exit_to: slot.before_plan,
+            })
+        };
+        DurableState {
+            plan,
+            todos: self.todos(),
+        }
+    }
+
+    /// The durable state, when it differs from what the log last had. The
+    /// caller writes it; from here on it counts as recorded.
+    pub fn unrecorded_durable_state(&self) -> Option<DurableState> {
+        let now = self.durable_state();
+        let mut recorded = lock(&self.recorded_durable);
+        if *recorded == now {
+            return None;
+        }
+        *recorded = now.clone();
+        Some(now)
+    }
+
+    /// Put back what the session log recorded. Outside plan mode the session
+    /// keeps the mode it was built with.
+    pub fn restore_durable_state(&self, state: DurableState) {
+        if let Some(plan) = state.plan {
+            *self.mode_slot() = ModeSlot {
+                current: PermissionMode::Plan,
+                before_plan: plan.exit_to,
+            };
+        }
+        lock(&self.todos).clone_from(&state.todos);
+        *lock(&self.recorded_durable) = state;
     }
 
     /// 读取当前 todo 列表（克隆给调用方）
@@ -1157,8 +1228,8 @@ mod tests {
         assert_eq!(after.permission_mode(), PermissionMode::Plan);
         assert_eq!(
             after.exit_plan_mode(),
-            PermissionMode::Default,
-            "outside plan mode the rebuilt session runs in the mode it was built with"
+            PermissionMode::AcceptEdits,
+            "leaving plan mode goes back to the mode the session entered it from"
         );
         assert_eq!(after.todos(), vec![todo("step one")]);
         assert!(after.activated_tools().contains("TodoWrite"));
@@ -1176,5 +1247,41 @@ mod tests {
         let after = SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::Default);
         after.carry_session_state_from(&before);
         assert_eq!(after.permission_mode(), PermissionMode::Default);
+    }
+
+    #[test]
+    fn plan_mode_and_todos_come_back_from_what_the_log_recorded() {
+        let before =
+            SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::AcceptEdits);
+        assert_eq!(before.unrecorded_durable_state(), None);
+        before.enter_plan_mode();
+        before.set_todos(vec![todo("step one")]);
+        let recorded = before.unrecorded_durable_state().expect("a change");
+        assert_eq!(before.unrecorded_durable_state(), None);
+        let logged = serde_json::to_value(&recorded).unwrap();
+        assert_eq!(
+            logged,
+            serde_json::json!({
+                "plan": { "exit_to": "acceptEdits" },
+                "todos": [{ "content": "step one", "status": "pending", "active_form": "step one" }]
+            })
+        );
+
+        let after =
+            SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::AcceptEdits);
+        after.restore_durable_state(serde_json::from_value(logged).unwrap());
+        assert_eq!(after.permission_mode(), PermissionMode::Plan);
+        assert_eq!(after.todos(), vec![todo("step one")]);
+        assert_eq!(after.unrecorded_durable_state(), None);
+        assert_eq!(after.exit_plan_mode(), PermissionMode::AcceptEdits);
+        assert!(after.unrecorded_durable_state().is_some());
+    }
+
+    #[test]
+    fn a_session_restored_out_of_plan_mode_keeps_the_mode_it_was_built_with() {
+        let after = SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::Default);
+        after.restore_durable_state(serde_json::from_value(serde_json::json!({})).unwrap());
+        assert_eq!(after.permission_mode(), PermissionMode::Default);
+        assert!(after.todos().is_empty());
     }
 }

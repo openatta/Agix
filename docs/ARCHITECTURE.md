@@ -313,13 +313,17 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着原来的进度。
 
 重建之前先停掉旧 `Agent` 并等它收尾(有时限),然后才从盘上读 transcript——否则新
-`Agent` 读到的是旧的那个还没写完的历史。关停时同样等所有 `Agent` 收尾。
+`Agent` 读到的是旧的那个还没写完的历史。关停时同样等所有 `Agent` 收尾。超过时限的旧 `Agent`
+已经取消、不再读输入,它的条目随即移出内存,像被驱逐的会话一样等下一次调用把它从日志
+恢复;所以换规格的调用(`setModel` 换厂商、`setPrompt`)先只改内存里的规格,重建成功之后才
+记进日志,失败就退回原来的规格,日志与正在跑的引擎不会各说各的。
 
 会话的后台任务(子 Agent、团队成员、后台程序、Monitor)跑在它的运行体之下,停掉旧 `Agent`
 就停掉了它们,所以**还有后台任务在跑的会话不重建**:绑定失效的那种推迟,这一轮照旧用现在的
 引擎,标记留着下次再看;`session.setPrompt`、换厂商的 `session.setModel` 返回 `SESSION_BUSY`。
 真重建时,旧 `SessionState` 记着的任务(结束了的那些,`session.tasks` / `TaskOutput` 还查得到)
-和模型还没读到的通知(`<task-notification>` 等)带到新的上面。
+和模型还没读到的通知(`<task-notification>` 等)带到新的上面。`plan` 模式与 todo 列表不靠这一步:
+它们记在日志里(`agix.session_state`,§4),驱逐、重启后恢复的会话同样读得回来。
 
 会话可以指定自己的厂商(`options.provider`):对话走那个厂商的 client,子 Agent、压缩
 等其余路由任务仍按绑定的路由走。首轮结束后的自动命名也是这个会话的调用:按会话自己绑定的
@@ -521,7 +525,18 @@ Agent 的上下文,本来就该在一处。
   否则 resume / fork / 搜索会看见三个不同的过去
 - `LogEntry::Extension { ns, event, payload }` 让内核之外的东西(插件、脚本、宿主)
   把状态放进同一条时间线。**未知 `ns` 必须可跳过**:卸载插件后旧日志仍能加载。
-  daemon 自己也用这条通道:会话规格记在 `agix.session` 下(§3.2.2)。
+  引擎和 daemon 自己也用这条通道,`agix.` 开头的命名空间是会话日志格式的一部分。除
+  `agix.context` 逐条生效、改变模型看到的内容外,其余都是"最后一条为准"的快照:
+
+  | `ns` / `event` | 谁写 | `payload` | 读回 |
+  |---|---|---|---|
+  | `agix.session` / `spec` | 会话池,规格变化时 | `{options?, model?, provider?, prompt?}` | 重建、恢复时照它建引擎(§3.2.2) |
+  | `agix.goal` / `change` | 引擎与会话池,目标变化时 | `{goal}`,清除后为 `null` | 恢复时取回目标,不武装(§3.4) |
+  | `agix.session_state` / `change` | 引擎,一轮结束和引擎停下时,有变化才写 | `{plan: null \| {exit_to: <模式> \| null}, todos: [{content, status, active_form}]}` | `Agent::resume_session` 放回 `plan` 模式(`exit_to` 为 `null` 即退出到 `default`)和 todo 列表 |
+  | `agix.context` / `drop`、`edit` | 会话池,宿主改上下文时 | `{at, text?, at_ms}` | 投影时套到消息上 |
+
+  `agix.session_state` 只记会话自己定下、设置里推不出来的那部分(`base::context::DurableState`)。
+  不在 `plan` 里的会话,权限模式仍由恢复时的设置与 `options` 决定,不由这条决定。
   `ExtensionsAreVisible::all()` 不分 `ns` 地把扩展条目渲染给模型,这些也在其内——
   要让模型读到某个扩展的条目,按 `ns` 列名单
 - **模型可见即可从日志重建**。一个靠询问活着的插件来渲染条目的投影,会产出一个

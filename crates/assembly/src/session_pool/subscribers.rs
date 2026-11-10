@@ -161,6 +161,69 @@ impl SessionPool {
         });
     }
 
+    /// Send the running turn's last frame, if `slot` is still the session's
+    /// turn slot. Marked under the same lock `session.close` takes the
+    /// session out with, so every watcher gets exactly one: this one, or the
+    /// one the close sends ([`Self::end_cut_off_turn`]). Returns whether the
+    /// session was still there to send it to.
+    pub(super) async fn broadcast_terminal<T: serde::Serialize>(
+        &self,
+        session_id: &str,
+        slot: &Arc<AsyncMutex<Option<EventReceiver>>>,
+        frame: &T,
+        except: Option<crate::rpc::ConnectionId>,
+    ) -> bool {
+        let json = serde_json::to_string(frame)
+            .inspect_err(
+                |e| tracing::warn!(error = %e, "could not serialize a session frame; dropping it"),
+            )
+            .ok();
+        let mut sessions = self.sessions.lock().await;
+        let Some(live) = sessions
+            .get_mut(session_id)
+            .filter(|live| Arc::ptr_eq(&live.event_rx, slot))
+        else {
+            return false;
+        };
+        live.turn_terminated = true;
+        live.last_active = Instant::now();
+        if let Some(json) = json {
+            live.subscribers.retain(|id, client| {
+                Some(*id) == except || client.try_send_for(session_id, json.clone())
+            });
+        }
+        true
+    }
+
+    /// `live`, just taken out of the map, was running a turn whose last
+    /// frame has not gone out: send its watchers an `error` frame in its
+    /// place. Its initiator learns the same from its `run_turn` response.
+    pub(super) fn end_cut_off_turn(&self, session_id: &str, live: &LiveSession) {
+        let Some(turn_id) = live.current_turn.as_deref() else {
+            return;
+        };
+        if live.turn_terminated {
+            return;
+        }
+        let frame = StreamFrame::event(
+            session_id,
+            turn_id,
+            serde_json::json!({
+                "kind": "error",
+                "code": SESSION_CLOSED,
+                "message": SESSION_CLOSED_MESSAGE,
+            }),
+        );
+        let Ok(json) = serde_json::to_string(&frame) else {
+            return;
+        };
+        for (id, client) in &live.subscribers {
+            if Some(*id) != live.turn_connection {
+                client.try_send_for(session_id, json.clone());
+            }
+        }
+    }
+
     /// The turn currently running on `session_id`, if any. `session.get`
     /// reports it as `turn_state`; a missing or unknown session reads as idle,
     /// same as one sitting between turns.
@@ -176,10 +239,14 @@ impl SessionPool {
     ///
     /// `EngineCommand::CancelTurn` cancels the turn's own child token, not
     /// the session's — the agent loop keeps running and the next `run_turn`
-    /// is served normally. Returns whether there was a turn to interrupt;
-    /// there being none is an answer, not an error.
+    /// is served normally. It names the turn, so it lands on that one even
+    /// when its message has not reached the engine yet, and on nothing when
+    /// it has already ended. Disarming the goal is what stops a goal round
+    /// from following a turn that has ended but not yet given its slot back.
+    /// Returns whether there was a turn to interrupt; there being none is an
+    /// answer, not an error.
     pub async fn interrupt_session(&self, session_id: &str) -> Result<bool, RpcError> {
-        let (input_tx, running) = {
+        let (input_tx, running, state) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Err((
@@ -187,13 +254,22 @@ impl SessionPool {
                     format!("session not found: {session_id}"),
                 ));
             };
-            (live.input_tx.clone(), live.current_turn.is_some())
+            (
+                live.input_tx.clone(),
+                live.current_turn.clone(),
+                live.state.clone(),
+            )
         };
-        if !running {
+        let Some(turn_id) = running else {
             return Ok(false);
+        };
+        if let Some(state) = state {
+            state.goal_disarm();
         }
         let _ = input_tx.send(InputMessage::System {
-            kind: EngineCommand::CancelTurn,
+            kind: EngineCommand::CancelTurn {
+                turn_id: Some(turn_id),
+            },
             content: String::new(),
         });
         Ok(true)

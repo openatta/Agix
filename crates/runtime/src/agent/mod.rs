@@ -226,13 +226,62 @@ pub(crate) struct Telemetry {
 pub(crate) struct Channels {
     pub(crate) input_rx: InputReceiver,
     pub(crate) event_tx: EventSender,
-    /// The token of the turn last handed to the turn loop, replaced when its
-    /// `User` message is queued and cancelled by the input demultiplexer,
-    /// which holds no `&mut self`. Until the next one is queued it holds the
-    /// finished turn's token, so a `CancelTurn` while idle does not poison
-    /// the next turn.
-    pub(crate) current_turn_cancel: Arc<std::sync::Mutex<CancellationToken>>,
+    /// The turn last handed to the turn loop, replaced when its `User`
+    /// message is queued and cancelled by the input demultiplexer, which
+    /// holds no `&mut self`.
+    pub(crate) current_turn_cancel: Arc<std::sync::Mutex<TurnCancel>>,
     pub(crate) steering: crate::steering::SharedSteerQueue,
+}
+
+/// Which turn `EngineCommand::CancelTurn` lands on.
+#[derive(Default)]
+pub(crate) struct TurnCancel {
+    turn_id: String,
+    token: CancellationToken,
+    ended: bool,
+    /// Turns cancelled by id before their message was queued.
+    cancelled_ahead: std::collections::VecDeque<String>,
+}
+
+impl TurnCancel {
+    const AHEAD_KEPT: usize = 16;
+
+    pub(crate) fn queued(&mut self, turn_id: &str, token: CancellationToken) {
+        if let Some(at) = self.cancelled_ahead.iter().position(|id| id == turn_id) {
+            self.cancelled_ahead.remove(at);
+            token.cancel();
+        }
+        self.turn_id = turn_id.to_string();
+        self.token = token;
+        self.ended = false;
+    }
+
+    pub(crate) fn cancel(&mut self, turn_id: Option<&str>) {
+        match turn_id {
+            Some(id) if id != self.turn_id => {
+                if self.cancelled_ahead.len() == Self::AHEAD_KEPT {
+                    self.cancelled_ahead.pop_front();
+                }
+                self.cancelled_ahead.push_back(id.to_string());
+            }
+            _ if self.ended => {}
+            _ => self.token.cancel(),
+        }
+    }
+
+    pub(crate) fn ended(&mut self, turn_id: &str) {
+        if self.turn_id == turn_id {
+            self.ended = true;
+        }
+    }
+}
+
+pub(crate) fn lock_turn_cancel(
+    cancel: &std::sync::Mutex<TurnCancel>,
+) -> std::sync::MutexGuard<'_, TurnCancel> {
+    cancel
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// A session's model calls and tool calls, summed over its turns.

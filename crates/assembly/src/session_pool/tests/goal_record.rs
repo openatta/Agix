@@ -166,14 +166,7 @@ impl base::interface::model::Model for CountsTurnCalls {
     }
 }
 
-/// `session.interrupt` lands on the turn `turn_started` reported. A goal
-/// round reports it, then writes the claimed round to the log before its
-/// message reaches the engine; an interrupt in between is answered
-/// `interrupted: true`, so the round must not then run to the model.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: confirmed defect, fix pending"]
-async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_round() {
-    let (pool, store, _dir) = pool_with_gated_goal_writes().await;
+async fn answered_by_a_counting_model(pool: &SessionPool) -> Arc<CountsTurnCalls> {
     let model = Arc::new(CountsTurnCalls::default());
     let mut settings = (**pool.settings.read().await).clone();
     settings.memory_enabled = false;
@@ -190,6 +183,17 @@ async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_rou
         (Some(pool.cwd().to_path_buf()), "code".to_string()),
         Arc::new(binding),
     );
+    model
+}
+
+/// `session.interrupt` lands on the turn `turn_started` reported. A goal
+/// round reports it, then writes the claimed round to the log before its
+/// message reaches the engine; an interrupt in between is answered
+/// `interrupted: true`, so the round must not then run to the model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_round() {
+    let (pool, store, _dir) = pool_with_gated_goal_writes().await;
+    let model = answered_by_a_counting_model(&pool).await;
     let (sid, state) = session_with_a_goal(&pool).await;
     let round = state.goal_next_round().expect("a round");
     pool.record_goal_changes(&sid, &state).await;
@@ -219,5 +223,137 @@ async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_rou
         model.turn_calls.load(std::sync::atomic::Ordering::SeqCst),
         0,
         "the interrupt was answered true, yet the goal round it was sent for ran to the model"
+    );
+}
+
+/// A store that edits the goal once the turn's reply is on disk, and again
+/// as the engine records that edit, then holds the next goal write — the
+/// pool's, made after the turn ended and before it gives its slot back —
+/// while the test holds `gate`.
+struct HoldsTheGoalWriteAfterTheTurn {
+    inner: InMemoryHistoryStore,
+    state: std::sync::OnceLock<Arc<base::context::SessionState>>,
+    edits: std::sync::atomic::AtomicUsize,
+    gate: Arc<AsyncMutex<()>>,
+    writing: tokio::sync::Notify,
+}
+
+impl HoldsTheGoalWriteAfterTheTurn {
+    fn edit_the_goal(&self) {
+        let state = self.state.get().expect("the session's state");
+        let view = state.goal_view();
+        state
+            .goal_update(
+                view["id"].as_str().unwrap(),
+                view["revision"].as_u64().unwrap(),
+                base::context::goal::GoalAction::Edit {
+                    objective: Some("ship it, again".into()),
+                    max_rounds: None,
+                },
+                TurnOrigin::Human,
+            )
+            .unwrap();
+    }
+}
+
+#[async_trait::async_trait]
+impl HistoryStore for HoldsTheGoalWriteAfterTheTurn {
+    async fn append(
+        &self,
+        session: base::session::SessionId,
+        entry: LogEntry,
+    ) -> Result<(), HistoryError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let goal_write =
+            matches!(&entry, LogEntry::Extension { ns, .. } if ns == base::context::goal::GOAL_NS);
+        match (&entry, self.edits.load(SeqCst)) {
+            (LogEntry::Assistant { .. }, 0) => {
+                self.edits.store(1, SeqCst);
+                self.edit_the_goal();
+            }
+            (_, 1) if goal_write => {
+                self.edits.store(2, SeqCst);
+                self.edit_the_goal();
+            }
+            (_, 2) if goal_write => {
+                self.edits.store(3, SeqCst);
+                self.writing.notify_one();
+                let _open = self.gate.lock().await;
+            }
+            _ => {}
+        }
+        self.inner.append(session, entry).await
+    }
+
+    async fn load(
+        &self,
+        session: base::session::SessionId,
+    ) -> Result<Vec<EnvelopedEntry>, HistoryError> {
+        self.inner.load(session).await
+    }
+
+    async fn list_sessions(&self) -> Result<Vec<base::session::SessionId>, HistoryError> {
+        self.inner.list_sessions().await
+    }
+
+    async fn delete(&self, session: base::session::SessionId) -> Result<(), HistoryError> {
+        self.inner.delete(session).await
+    }
+}
+
+/// The other end of the round: it has answered and the pool is recording
+/// the goal before it gives the slot back and starts the next round. An
+/// interrupt then is answered `interrupted: true`, so no next round follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_interrupt_while_an_answered_goal_round_records_the_goal_stops_the_next_round() {
+    let store = Arc::new(HoldsTheGoalWriteAfterTheTurn {
+        inner: InMemoryHistoryStore::new(),
+        state: Default::default(),
+        edits: Default::default(),
+        gate: Arc::default(),
+        writing: tokio::sync::Notify::new(),
+    });
+    let (pool, _dir) = test_pool_with_store(Some(store.clone())).await;
+    let model = answered_by_a_counting_model(&pool).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")["session_id"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+    let state = pool.live_state(&sid).await.expect("a live session");
+    state
+        .goal_create("ship it".into(), Some(5), TurnOrigin::Human)
+        .unwrap();
+    pool.record_goal_changes(&sid, &state).await;
+    store.state.set(state.clone()).unwrap();
+    let round = state.goal_next_round().expect("a round");
+
+    let gate = store.gate.clone().lock_owned().await;
+    let writing = store.writing.notified();
+    tokio::pin!(writing);
+    writing.as_mut().enable();
+    let pool = Arc::new(pool);
+    let _ = pool.this.set(Arc::downgrade(&pool));
+    let running = {
+        let pool = pool.clone();
+        let sid = sid.clone();
+        tokio::spawn(async move { pool.run_goal_round(sid, round).await })
+    };
+    writing.await;
+    let interrupted = pool.interrupt_session(&sid).await.expect("the session");
+    drop(gate);
+    running.await.unwrap();
+
+    assert!(interrupted, "the interrupt found no turn");
+    assert_eq!(
+        state.goal_view()["armed"],
+        false,
+        "the interrupt was answered true, yet the goal stays armed for the next round"
+    );
+    assert_eq!(
+        model.turn_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
     );
 }

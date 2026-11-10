@@ -388,6 +388,11 @@ agent 类型的 frontmatter 里都收,解析出来就是 `bypassPermissions`,夹
 模式;会话一开始就是 `plan` 的,退出后是 `default`。活着的会话,`session.resume` 的
 `permission.mode` 报的是它此刻所在的模式。
 
+`plan` 是会话的状态,不随引擎走:在不在 `plan` 里、退出后回到哪个模式,连同 todo 列表,
+每轮结束时有变化就记进会话日志(扩展条目 `ns:"agix.session_state"`,ARCHITECTURE §4)。会话被
+驱逐(空闲超时、池子满了)后再用、daemon 重启后恢复、原地重建,回来都还在 `plan` 里,退出后
+回到进入前的那个模式。不在 `plan` 里的会话恢复时取它当时的设置与 `options` 给的模式。
+
 **越界不报错。** 经 RPC 传进来的 `permission_mode` 无论是什么,都不会被拒绝:比
 settings 宽的被**静默夹到 settings 允许的最宽处**并记一条 warn 日志,程序专用的 `bubble`
 也只是这样被夹掉,不会有错误响应。所以客户端拿不到"你要的模式没生效"的信号 ——
@@ -640,7 +645,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | 同一 turn 内 `text_delta` 严格有序 | 按到达顺序拼接即得完整文本 |
 | 每个 `tool_result` 必有先行的同 `id` `tool_use` | 反之不然:被取消的工具可能没有 result |
 | `turn_complete` 是本 turn 最后一个事件 | 其后只有 `run_turn` 的最终响应 |
-| 每个开始了的 turn 都有且只有一个 `turn_complete`(出错时发起者收到 `run_turn` 的错误响应,其他订阅者收到 `error` 帧) | 被 hook 拦下、被中断、被预算或策略截停的 turn 同样以它结束 |
+| 每个开始了的 turn 都有且只有一个 `turn_complete`(出错时发起者收到 `run_turn` 的错误响应,其他订阅者收到 `error` 帧) | 被 hook 拦下、被中断、被预算或策略截停的 turn 同样以它结束;被 `session.close` / `session.delete` 截断的,其他订阅者收到 `code` 为 `session_closed` 的 `error` 帧,发起者收到 `ENGINE_ERROR`(`message` 以 `session_closed:` 开头) |
 | 收到 `turn_complete` 时本轮已写进 transcript | 此刻读 `session.history` 能看到这一轮 |
 
 > **⚠️ 按 `id` 配对,不要按位置配对。** 并发安全的工具是并行执行的,谁先跑完谁先发
@@ -683,7 +688,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 
 **会话回收**:超过 `--session-idle-timeout`(默认 3600 秒)没活动的会话,以及池子
 满(`--session-cap`,默认 32)时最久未活动的那个,运行体会被回收。transcript 不
-受影响,下次 `run_turn` / `session.resume` 会自动从磁盘恢复。
+受影响,下次 `run_turn` / `session.resume` 会自动从磁盘恢复,`plan` 模式与 todo 列表也一起
+回来(§4.5)。
 
 ---
 
@@ -1307,9 +1313,14 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 重试之间)、正在写自动压缩的摘要(含请求因过长被拒、为重试而做的那次压缩),也立即生效,不等它答;
 压缩作废,会话历史保持原样。这一轮以 `stop_reason: "cancelled"` 结束。
 
-中断的是最近一次提交、还没结束的那一轮(`turn_started` 报的那一轮)。它提交时引擎可能还在收
-上一轮的尾、在重跑 `async_rewake` hook,这时中断照样落在它身上:它一开始就是取消的,以
-`cancelled` 结束;上一轮不受影响。
+中断的是最近一次提交、还没结束的那一轮(`turn_started` 报的那一轮),只认这一轮的 `turn_id`。
+它提交时引擎可能还在收上一轮的尾、在重跑 `async_rewake` hook,目标轮可能还在把认领记进会话
+日志、消息还没送到引擎,这时中断照样落在它身上:它一开始就是取消的,以 `cancelled` 结束,不调
+模型;上一轮不受影响。
+
+**中断也让目标解除武装**(`session.goal`),和以取消结束的一轮一样,要人说继续。所以一轮已经
+推了 `turn_complete`、还在收尾(记目标)时到达的中断,`interrupted` 照样是 `true`:这一轮已经
+结束,它起的后台任务不受影响,但它之后不再开下一个目标轮。
 
 **这一轮起的后台任务跟着结束。** 这一轮里 `Monitor`、后台 `Agent`、后台 `RunCode` 起的任务挂在
 这一轮下面,中断这一轮会连带停掉它们,哪怕它们本来要活过这一轮(`task_finished` 照常推)。更早的轮
@@ -1400,7 +1411,8 @@ sidecar),不是某个宿主自己的一层覆盖 —— 各宿主各存一份的
   配置变化)保留武装;重建之后推一次 `goal_changed`。
 - 宿主经这两个方法的操作都按「用户亲自发起」对待。模型那一侧:设定、修改、暂停、恢复
   只能在用户发起的那一轮做;自动轮里只能标完成或受阻,受阻要从自武装起的第 3 个自动轮起。
-- 一轮以取消、hook 中止、预算耗尽、出错结束,目标就解除武装,等人决定。以 `max_tokens`
+- 一轮以取消、hook 中止、预算耗尽、出错结束,目标就解除武装,等人决定;`session.interrupt`
+  报 `interrupted: true` 时也解除武装,哪怕那一轮已经答完、正在收尾。以 `max_tokens`
   结束的一轮和正常结束一样,接着开下一轮。
 - 在空闲会话上设定或恢复目标,第一轮马上开始;`pause` 碰上正在跑的自动轮会中断它。
 - 同一时刻至多有一个自动轮在等着开始:别的轮(客户端的、定时任务的)在它之前结束,不会
@@ -1475,6 +1487,11 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 任务在跑(子 Agent、团队成员、后台程序、Monitor)时同样 `SESSION_BUSY`,`data` 多一个
 `running_task_ids` 列出它们 —— 重建会停掉它们;等它们结束,或先 `session.stopTask`。
 
+重建时旧引擎 5 秒内没停下(卡在不理会取消的 `SessionEnd` hook 里之类),也返回 `SESSION_BUSY`
+(`current_turn_id` 为 `null`、没有 `running_task_ids`):这次的选择**没有生效,也不记进日志**;
+旧引擎已经取消,会话被移出内存(`daemon.event` `session_evicted`,`reason: "rebuild"`),下一次
+`run_turn` / `session.resume` 等旧引擎停下后按原来的选择从转录恢复。要换,稍后再调一次。
+
 **只对内存里的会话有效**,冷会话返回 `SESSION_NOT_FOUND`(先 `session.resume`)。
 选择记在会话日志里(见 `session.create` 的 `options`):会话被驱逐后重建、
 `config.reload` 之后重建、daemon 重启后恢复,选的都还是这个模型和厂商。
@@ -1499,7 +1516,8 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 重建、空闲回收后再用、daemon 重启后恢复都保留;settings 文件不被改动。只作用于这个会话
 自己的 agent,它派生的子 agent 用各自类型与场景的提示。
 
-有一轮正在跑、或有后台任务在跑时拒绝,`SESSION_BUSY`,`data` 同 `session.setModel`。`append` 与 `override`
+有一轮正在跑、或有后台任务在跑时拒绝,`SESSION_BUSY`,`data` 同 `session.setModel`;重建时旧引擎
+没停下也是 `SESSION_BUSY`,提示词不变,会话被移出内存,同 `session.setModel`。`append` 与 `override`
 都没给,或类型不对 → `INVALID_PARAMS`;会话不存在 → `SESSION_NOT_FOUND`。
 
 #### `session.history`
@@ -1745,6 +1763,11 @@ recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
 但**磁盘上记着它作父会话的那些会话全部被删除**:侧链,以及从它分叉出去的会话
 (§3.3)。仍在跑的先取消再删;删除失败只写日志,不会让 `close` 失败。返回时这个会话
 目标的每次变化都已记进日志,紧接着的 `session.goal` 从日志读到的就是关闭前的目标。
+
+这个会话正在跑的一轮被截断:它在内存里的订阅者(发起者除外)收到这一轮的终止帧
+`error{code:"session_closed"}`(§5.5),发起者的 `run_turn` 返回 `ENGINE_ERROR`,`message` 以
+`session_closed:` 开头。截断之前这一轮已经推出 `turn_complete` 的,就以那一帧为准,不再补发。
+`session.delete` 同样如此。
 
 #### `session.delete`
 
@@ -2095,7 +2118,7 @@ daemon 自己的会话池在 `health.checks` 里还有一项 `settings.managed`,
 配置,任务都结束之后才重建,所以后台任务不会因为配置变化被停掉。重建保留会话结束了的任务
 (`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`,也保留
 `plan` 模式、todo 列表、`ToolSearch` 加载过的 deferred 工具、读过的文件记录与 `/rewind` 的文件
-快照;`plan` 之外的权限模式取新配置(在 `plan` 里的,退出后回到新配置的模式)。重建时转录读不
+快照;`plan` 之外的权限模式取新配置(在 `plan` 里的仍在 `plan` 里,退出后回到进入前的模式,§4.5)。重建时转录读不
 出来,会话不重建、照旧在原来的引擎上跑,这次 `run_turn` 返回 `INTERNAL_ERROR`(见 `session.resume`)。
 
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /
@@ -2626,7 +2649,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?,truncated?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
-| `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知 |
+| `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知。会话在这一轮中途被关闭或删除时 `code` 为 `session_closed` |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
 | `task_progress` | `{task_id,appended,skipped_bytes,from_byte,next_byte}` | 一件报过开始的 Shell 命令、监视器或 `RunCode` 程序新打出来的输出,`appended` 是偏移 `from_byte..next_byte` 那段(偏移同 `session.taskOutput`)。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,恒等于本帧 `from_byte` 减上一帧 `next_byte`;漏帧或跳过的用 `session.taskOutput {from_byte}` 补;`turn_id` 为 `null` |
@@ -2784,7 +2807,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 | `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
 | `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
-| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限。再用被驱逐的会话时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建,两者不会同时在跑 |
+| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)、`rebuild`(原地重建时旧引擎 5 秒内没停下,见 `session.setModel`)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限。再用被驱逐的会话时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建,两者不会同时在跑 |
 | `session_closed` | `{session_id, reason}` | 会话被关闭。`reason`:`closed`(`session.close` / `session.delete`)、`engine_stopped`(引擎在一轮中途退出) |
 | `session_deleted` | `{session_id, parent_session_id?}` | 会话连同 transcript 被删除;级联删除的侧链带 `parent_session_id` |
 | `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7)、`goal`(目标的自动轮) |

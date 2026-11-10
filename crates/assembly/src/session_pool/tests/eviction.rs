@@ -32,6 +32,8 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
         binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         current_turn: None,
         turn_initiator: None,
+        turn_connection: None,
+        turn_terminated: false,
         state: None,
         spawner: None,
         idle: Arc::new(tokio::sync::Notify::new()),

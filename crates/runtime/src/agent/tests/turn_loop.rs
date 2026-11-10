@@ -1111,7 +1111,7 @@ async fn cancel_turn_interrupts_the_turn_and_leaves_the_session_usable() {
 
     input_tx
         .send(InputMessage::System {
-            kind: EngineCommand::CancelTurn,
+            kind: EngineCommand::CancelTurn { turn_id: None },
             content: String::new(),
         })
         .unwrap();
@@ -1153,6 +1153,62 @@ async fn cancel_turn_interrupts_the_turn_and_leaves_the_session_usable() {
     .await
     .expect("the session must still serve turns after one was cancelled");
     assert_eq!(second, "end_turn");
+
+    drop(input_tx);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;
+}
+
+/// `CancelTurn` with a `turn_id` lands on that turn: sent before the turn's
+/// message, the turn starts cancelled; sent for a turn that has ended, the
+/// next one runs as usual.
+#[tokio::test]
+async fn cancel_turn_lands_on_the_turn_it_names() {
+    let (mut agent, mut event_rx, input_tx) = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .model(Arc::new(super::events_and_steering::PlainReplyModel) as Arc<dyn Model>)
+        .settings(Arc::new(test_settings()))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
+    let cancel = |turn_id: &str| {
+        input_tx
+            .send(InputMessage::System {
+                kind: EngineCommand::CancelTurn {
+                    turn_id: Some(turn_id.into()),
+                },
+                content: String::new(),
+            })
+            .unwrap()
+    };
+    let turn = |turn_id: &str| {
+        input_tx
+            .send(InputMessage::User {
+                content: "hello".into(),
+                attachments: vec![],
+                turn_id: turn_id.into(),
+            })
+            .unwrap()
+    };
+    async fn ended(event_rx: &mut EventReceiver) -> String {
+        match super::events_and_steering::next_event(
+            event_rx,
+            |e| matches!(e, AgentEvent::TurnComplete { .. }),
+            "the end of the turn",
+        )
+        .await
+        {
+            AgentEvent::TurnComplete { stop_reason, .. } => stop_reason,
+            _ => unreachable!(),
+        }
+    }
+
+    cancel("t1");
+    turn("t1");
+    assert_eq!(ended(&mut event_rx).await, "cancelled");
+    cancel("t1");
+    turn("t2");
+    assert_eq!(ended(&mut event_rx).await, "end_turn");
 
     drop(input_tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine).await;

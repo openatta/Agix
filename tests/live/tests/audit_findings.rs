@@ -714,7 +714,6 @@ async fn audit_a_programs_sub_call_progress_names_a_tool_use_the_host_saw() -> a
 /// it is `ExitPlanMode`'s question to the user, not the pool's to answer by
 /// dropping the engine.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_session_evicted_at_the_cap_comes_back_still_in_plan_mode() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("evicted-plan", &stub)
@@ -1050,7 +1049,6 @@ async fn audit2_a_background_agent_stopped_by_an_interrupt_ends_stopped() -> any
 /// to stop the rebuild fails, but the session left behind still serves the
 /// next turn rather than swallowing it.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_next_turn(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
@@ -1122,7 +1120,6 @@ async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_
 /// A turn cut off by `session.close` still ends for every subscriber with a
 /// terminal frame (§5.5): a tab watching it is not left waiting.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit2_a_turn_cut_off_by_close_ends_with_a_terminal_frame_for_its_watchers(
 ) -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;

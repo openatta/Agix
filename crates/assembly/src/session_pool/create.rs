@@ -633,6 +633,8 @@ impl SessionPool {
             binding_stale: binding.stale.clone(),
             current_turn: None,
             turn_initiator: None,
+            turn_connection: None,
+            turn_terminated: false,
             state: Some(state.clone()),
             spawner: Some(spawner),
             idle,
@@ -785,19 +787,18 @@ impl SessionPool {
         }
     }
 
-    /// Change this session's spec and record the change in its log.
-    pub(super) async fn update_spec(
+    /// Change this session's spec in memory only, returning it as it was and
+    /// as it is now.
+    pub(super) fn change_spec(
         &self,
         session_id: &str,
         change: impl FnOnce(&mut SessionSpec),
-    ) {
-        let spec = {
-            let mut specs = self.lock_specs();
-            let spec = specs.entry(session_id.to_string()).or_default();
-            change(spec);
-            spec.clone()
-        };
-        self.persist_spec(session_id, &spec).await;
+    ) -> (Option<SessionSpec>, SessionSpec) {
+        let mut specs = self.lock_specs();
+        let previous = specs.get(session_id).cloned();
+        let spec = specs.entry(session_id.to_string()).or_default();
+        change(spec);
+        (previous, spec.clone())
     }
 
     /// Longest name `session.rename` accepts.

@@ -193,6 +193,7 @@ impl SessionPool {
                     {
                         let mut sessions = self.sessions.lock().await;
                         if let Some(live) = sessions.remove(&child_str) {
+                            self.end_cut_off_turn(&child_str, &live);
                             self.stop_removed(&child_str, &live);
                             reap_process_groups_later(&live);
                         }
@@ -238,6 +239,7 @@ impl SessionPool {
         let removed = {
             let mut sessions = self.sessions.lock().await;
             sessions.remove(session_id).map(|live| {
+                self.end_cut_off_turn(session_id, &live);
                 self.stop_removed(session_id, &live);
                 info!(%session_id, "session removed");
                 self.emit_session_event(
@@ -361,6 +363,7 @@ impl SessionPool {
             sessions
                 .drain()
                 .map(|(sid, live)| {
+                    self.end_cut_off_turn(&sid, &live);
                     live.cancel.cancel();
                     info!(%sid, "session removed (shutdown)");
                     (live.exited, live.process_groups)
@@ -389,20 +392,45 @@ impl SessionPool {
 
     /// Stops the Agent running under `session_id`, if any, and waits for it
     /// to finish — so whatever reads its transcript next reads all of it.
+    ///
+    /// One that does not stop in time is cancelled all the same, so its
+    /// entry is taken out of memory with it: left in the map, it would take
+    /// the next turn into an engine that is no longer reading. Whoever brings
+    /// the session back waits for that engine instead.
     pub(super) async fn stop_live_agent(&self, session_id: &str) -> Result<(), CreateError> {
-        let exited = {
+        let (exited, slot) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Ok(());
             };
             live.cancel.cancel();
-            live.exited.clone()
+            (live.exited.clone(), live.event_rx.clone())
         };
         if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
             .await
             .is_err()
         {
             warn!(%session_id, "previous agent did not stop within the grace period");
+            let stopping = {
+                let mut sessions = self.sessions.lock().await;
+                let ours = sessions
+                    .get(session_id)
+                    .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &slot));
+                if ours {
+                    sessions.remove(session_id)
+                } else {
+                    None
+                }
+            };
+            if let Some(stopping) = stopping {
+                self.evict(session_id, &stopping);
+                stopping.idle.notify_waiters();
+                self.emit_session_event(
+                    "session_evicted",
+                    session_id,
+                    serde_json::json!({"reason": "rebuild"}),
+                );
+            }
             return Err(CreateError::previous_engine_running(session_id));
         }
         Ok(())

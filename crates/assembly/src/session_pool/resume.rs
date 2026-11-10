@@ -503,6 +503,34 @@ impl SessionPool {
         Ok(HeldSlot { slot, event_rx })
     }
 
+    /// Rebuild `sid` on its spec as `change` leaves it, recording the change
+    /// in its log once the rebuild has taken it. A failed rebuild leaves the
+    /// spec as it was, so the session, wherever it is now, is not left
+    /// running on one spec while its log says another.
+    pub(super) async fn rebuild_on_changed_spec(
+        &self,
+        sid: &str,
+        held: HeldSlot,
+        change: impl FnOnce(&mut SessionSpec),
+    ) -> Result<SessionSpec, Rebuild> {
+        let (previous, spec) = self.change_spec(sid, change);
+        if let Err(e) = self.rebuild_holding(sid, held, None).await {
+            {
+                let mut specs = self.lock_specs();
+                match previous {
+                    Some(previous) => specs.insert(sid.to_string(), previous),
+                    None => specs.remove(sid),
+                };
+            }
+            if !self.sessions.lock().await.contains_key(sid) {
+                self.release_spec(sid);
+            }
+            return Err(e);
+        }
+        self.persist_spec(sid, &spec).await;
+        Ok(spec)
+    }
+
     /// Rebuild `sid` while `held` keeps turns off it. A failed rebuild gives
     /// the slot back to the session that is still there.
     pub(super) async fn rebuild_holding(

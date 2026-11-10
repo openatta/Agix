@@ -527,7 +527,7 @@ async fn an_interrupted_turn_hands_back_what_it_never_delivered() {
     );
     input_tx
         .send(InputMessage::System {
-            kind: EngineCommand::CancelTurn,
+            kind: EngineCommand::CancelTurn { turn_id: None },
             content: String::new(),
         })
         .unwrap();

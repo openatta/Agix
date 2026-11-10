@@ -153,9 +153,13 @@ pub enum EngineCommand {
     /// meant to interrupt had already finished. Same reason
     /// `PermissionResponse` is handled there.
     ///
-    /// A no-op when no turn is running (the token it cancels belongs to the
-    /// turn that just ended); it does not arm the next one.
-    CancelTurn,
+    /// `turn_id` names the turn to cancel; one whose message has not been
+    /// queued yet starts cancelled when it is. `None` is the turn last
+    /// queued. Either way a turn that has already ended is left alone: its
+    /// background tasks were meant to outlive it.
+    CancelTurn {
+        turn_id: Option<String>,
+    },
     Shutdown,
 }
 

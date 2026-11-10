@@ -13,15 +13,13 @@ type Forwarded = (InputMessage, CancellationToken);
 /// hang off its token.
 fn hand_to_turn_loop(
     fwd_tx: &mpsc::UnboundedSender<Forwarded>,
-    current_turn_cancel: &std::sync::Mutex<CancellationToken>,
+    current_turn_cancel: &std::sync::Mutex<TurnCancel>,
     session_cancel: &CancellationToken,
     msg: InputMessage,
 ) -> bool {
     let turn_cancel = session_cancel.child_token();
-    if matches!(msg, InputMessage::User { .. }) {
-        *current_turn_cancel
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = turn_cancel.clone();
+    if let InputMessage::User { turn_id, .. } = &msg {
+        lock_turn_cancel(current_turn_cancel).queued(turn_id, turn_cancel.clone());
     }
     fwd_tx.send((msg, turn_cancel)).is_ok()
 }
@@ -229,14 +227,11 @@ impl Agent {
                             );
                         }
                         InputMessage::System {
-                            kind: EngineCommand::CancelTurn,
+                            kind: EngineCommand::CancelTurn { turn_id },
                             ..
                         } => {
-                            tracing::info!("Cancelling in-flight turn");
-                            turn_cancel
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .cancel();
+                            tracing::info!(?turn_id, "Cancelling in-flight turn");
+                            lock_turn_cancel(&turn_cancel).cancel(turn_id.as_deref());
                         }
                         // Receiver gone means the engine loop has exited;
                         // nothing left to forward to.
@@ -275,7 +270,15 @@ impl Agent {
                             tracing::debug!("dropped a goal round that is no longer wanted");
                         }
                         Some((input, turn_cancel)) => {
-                            match self.process_turn(input, turn_cancel).await {
+                            let user_turn = match &input {
+                                InputMessage::User { turn_id, .. } => Some(turn_id.clone()),
+                                _ => None,
+                            };
+                            let processed = self.process_turn(input, turn_cancel).await;
+                            if let Some(turn_id) = &user_turn {
+                                lock_turn_cancel(&self.channels.current_turn_cancel).ended(turn_id);
+                            }
+                            match processed {
                                 Ok(outcome) => {
                                     if self.identity.drive_goals {
                                         if let Some(round) = self.goal_round_after(&outcome.stop_reason).await {
@@ -322,6 +325,7 @@ impl Agent {
             tracing::warn!(error = %e, "failed to persist session");
         }
         self.record_goal_changes().await;
+        self.record_session_state().await;
         crate::turn::finish_within(
             &mut self.memory.extractions,
             crate::turn::MEMORY_EXTRACTION_GRACE,
@@ -445,6 +449,17 @@ impl Agent {
             .await
             .and_then(|payload| serde_json::from_value(payload["goal"].clone()).ok());
         self.session_state.restore_goal(goal);
+        if let Some(state) = self
+            .session
+            .latest_extension(
+                base::context::SESSION_STATE_NS,
+                base::context::SESSION_STATE_EVENT,
+            )
+            .await
+            .and_then(|payload| serde_json::from_value(payload).ok())
+        {
+            self.session_state.restore_durable_state(state);
+        }
         Ok(())
     }
 
