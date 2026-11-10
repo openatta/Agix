@@ -2,6 +2,39 @@
 
 use super::*;
 
+/// `session.run_turn`'s result for how the turn went.
+pub(super) fn turn_result(outcome: crate::session_pool::api::TurnOutcome) -> serde_json::Value {
+    use crate::session_pool::api::TurnOutcome;
+    match outcome {
+        TurnOutcome::Completed {
+            session_id,
+            turn_id,
+            name,
+            api_calls,
+        } => serde_json::json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "delivery": "turn",
+            "name": name,
+            "api_calls": api_calls,
+        }),
+        TurnOutcome::Steered {
+            session_id,
+            turn_id,
+            into_turn_id,
+        } => serde_json::json!({
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "delivery": "steer",
+            "into_turn_id": into_turn_id,
+        }),
+        TurnOutcome::Skipped {
+            session_id,
+            turn_id,
+        } => serde_json::json!({"session_id": session_id, "turn_id": turn_id, "skipped": true}),
+    }
+}
+
 impl DaemonServer {
     pub(super) async fn method_session_run_turn(
         &self,
@@ -86,20 +119,17 @@ impl DaemonServer {
             },
         };
 
-        let ran = self
-            .pool
-            .run_turn(
-                session_id,
-                user_msg,
-                attachments,
-                turn_id,
-                client,
-                options,
-                on_busy,
-                "client",
-            )
-            .await;
-        reporting_ignored(respond(id, ran), ignored_options)
+        let request = crate::session_pool::api::TurnRequest {
+            session_id,
+            message: user_msg,
+            attachments,
+            turn_id,
+            options,
+            on_busy,
+            initiator: crate::session_pool::api::Initiator::Client,
+        };
+        let ran = self.pool.run_turn(request, Some(client)).await;
+        reporting_ignored(respond(id, ran.map(turn_result)), ignored_options)
     }
 
     /// `session.inspectContext {session_id}`, `session.dropMessages

@@ -3,9 +3,11 @@
 
 mod error;
 mod events;
+mod turn;
 
 pub use error::{Busy, EngineFailure, PoolError};
 pub use events::{
     emitted_outside_turns, AskKind, PendingAsk, SessionEvent, SessionFrame, SessionWatcher,
     Subscribed, WatcherId,
 };
+pub use turn::{Initiator, TurnOutcome, TurnRequest};

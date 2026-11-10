@@ -38,25 +38,17 @@ impl SessionPool {
     }
 
     pub(super) async fn run_goal_round(&self, sid: String, round: base::context::goal::GoalRound) {
-        let connection = crate::rpc::ConnectionId(
-            self.internal_connections
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed),
-        );
-        let client = Arc::new(crate::rpc::Client::new(connection, Arc::new(Discard)));
         info!(%sid, turn_id = %round.turn_id, "goal round started");
-        let response = self
-            .run_turn(
-                Some(sid.clone()),
-                round.message,
-                Vec::new(),
-                round.turn_id.clone(),
-                client,
-                None,
-                OnBusy::Queue,
-                "goal",
-            )
-            .await;
-        self.drop_watcher(WatcherId(connection.0)).await;
+        let request = TurnRequest {
+            session_id: Some(sid.clone()),
+            message: round.message,
+            attachments: Vec::new(),
+            turn_id: round.turn_id.clone(),
+            options: None,
+            on_busy: OnBusy::Queue,
+            initiator: Initiator::Goal,
+        };
+        let response = self.run_turn(request, None).await;
         if let Some(state) = self.live_state(&sid).await {
             state.goal_abandon_round(&round.turn_id);
         }
@@ -194,7 +186,7 @@ impl SessionPool {
             .get(sid)
             .map(|live| (live.current_turn.is_some(), live.turn_initiator));
         match initiator {
-            Some((true, Some("goal"))) if pausing => {
+            Some((true, Some(Initiator::Goal))) if pausing => {
                 self.interrupt_turn(sid).await?;
             }
             Some((false, _)) => self.continue_goal(sid).await,

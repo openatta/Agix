@@ -141,25 +141,17 @@ impl SessionPool {
             self.schedule.remove(&job.id);
             return;
         };
-        let connection = crate::rpc::ConnectionId(
-            self.internal_connections
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed),
-        );
-        let client = Arc::new(crate::rpc::Client::new(connection, Arc::new(Discard)));
         info!(job_id = %job.id, %session_id, "scheduled job fired");
-        let response = self
-            .run_turn(
-                Some(session_id.clone()),
-                job.prompt.clone(),
-                Vec::new(),
-                format!("schedule-{}-{}", job.id, Id::new()),
-                client,
-                None,
-                OnBusy::Queue,
-                "schedule",
-            )
-            .await;
-        self.drop_watcher(WatcherId(connection.0)).await;
+        let request = TurnRequest {
+            session_id: Some(session_id.clone()),
+            message: job.prompt.clone(),
+            attachments: Vec::new(),
+            turn_id: format!("schedule-{}-{}", job.id, Id::new()),
+            options: None,
+            on_busy: OnBusy::Queue,
+            initiator: Initiator::Schedule,
+        };
+        let response = self.run_turn(request, None).await;
         if let Err(e) = response {
             warn!(job_id = %job.id, %session_id, error = %e, "scheduled job's turn failed");
         }

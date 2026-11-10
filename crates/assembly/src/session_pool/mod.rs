@@ -57,8 +57,8 @@ mod tests;
 mod turn;
 
 use api::{
-    emitted_outside_turns, AskKind, Busy, EngineFailure, PoolError, SessionEvent, SessionFrame,
-    SessionWatcher, Subscribed, WatcherId,
+    emitted_outside_turns, AskKind, Busy, EngineFailure, Initiator, PoolError, SessionEvent,
+    SessionFrame, SessionWatcher, Subscribed, TurnOutcome, TurnRequest, WatcherId,
 };
 use helpers::*;
 use history_rpc::*;
@@ -557,8 +557,8 @@ struct LiveSession {
     /// Woken whenever the session stops running a turn — a `run_turn` with
     /// `on_busy: queue` waits on it for its slot.
     idle: Arc<tokio::sync::Notify>,
-    /// Who started the running turn: `"client"`, `"schedule"` or `"goal"`.
-    turn_initiator: Option<&'static str>,
+    /// Who started the running turn.
+    turn_initiator: Option<Initiator>,
     /// Who started the running turn, when a watcher did; it hears how the
     /// turn ended from its `run_turn` result rather than from an `error`
     /// frame.
@@ -693,10 +693,6 @@ pub struct SessionPool {
     /// Every session's scheduled jobs, fired by this pool's scheduler (see
     /// `start_scheduler`) whether or not the session is in memory.
     schedule: Arc<tools::cron::CronStore>,
-    /// Ids for the connections the pool opens for itself — a scheduled turn
-    /// has no client — counted down from the top so they never meet the ids
-    /// the server hands to real connections.
-    internal_connections: std::sync::atomic::AtomicU64,
     /// This pool, for the tasks it starts that outlive the call that started
     /// them. Set when the pool is started (`start_scheduler`).
     this: std::sync::OnceLock<std::sync::Weak<SessionPool>>,
@@ -1164,7 +1160,6 @@ impl SessionPool {
             managed_settings_path: base::managed_settings::managed_settings_path(),
             managed_settings: None,
             schedule,
-            internal_connections: std::sync::atomic::AtomicU64::new(u64::MAX),
             this: std::sync::OnceLock::new(),
             events_tx,
             health: std::sync::RwLock::new(base::interface::health::HealthChecks::new()),
@@ -1478,13 +1473,4 @@ pub enum GoalChange {
     Pause,
     Resume,
     Clear,
-}
-
-struct Discard;
-
-#[async_trait::async_trait]
-impl crate::rpc::FrameSink for Discard {
-    async fn send_json(&self, _json: String) -> bool {
-        true
-    }
 }

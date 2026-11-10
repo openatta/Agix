@@ -34,7 +34,7 @@ impl SessionPool {
                 sid,
                 serde_json::json!({
                     "turn_id": turn_id,
-                    "initiator": live.turn_initiator.take(),
+                    "initiator": live.turn_initiator.take().map(Initiator::as_str),
                 }),
             );
             live.hub.retain_task_asks();
@@ -43,26 +43,30 @@ impl SessionPool {
         true
     }
 
-    /// 执行一个 turn：发送消息 → 流式返回事件 → 返回结果。
-    /// session_id 为 None 时自动创建新 session。
-    #[allow(clippy::too_many_arguments)]
+    /// 执行一个 turn：发送消息 → 事件同步交给会话的订阅者 → 返回结局。
+    /// `session_id` 为 `None` 时自动创建新 session。`watcher` 是发起方：它在
+    /// 这一轮开始时加入订阅者，本轮的结局从返回值得知，不另收 `error` 帧。
     pub async fn run_turn(
         &self,
-        session_id: Option<String>,
-        message: String,
-        attachments: Vec<runtime::agent::Attachment>,
-        turn_id: String,
-        client: Arc<dyn SessionWatcher>,
-        options: Option<SessionOptions>,
-        on_busy: OnBusy,
-        initiator: &'static str,
-    ) -> Result<serde_json::Value, PoolError> {
+        request: TurnRequest,
+        watcher: Option<Arc<dyn SessionWatcher>>,
+    ) -> Result<TurnOutcome, PoolError> {
+        let TurnRequest {
+            session_id,
+            message,
+            attachments,
+            turn_id,
+            options,
+            on_busy,
+            initiator,
+        } = request;
+        let initiator_id = watcher.as_ref().map(|w| w.id());
         let sid = match session_id {
             Some(ref sid) => {
                 // An unknown id still creates a session: its scene reads as
                 // inferred. The daemon's own rounds go to sessions it already
                 // serves.
-                if initiator == "client" {
+                if initiator == Initiator::Client {
                     self.refuse_scene_mismatch(sid).await?;
                 }
                 // ① Not in memory: resume or create. ② In memory on a binding
@@ -159,15 +163,14 @@ impl SessionPool {
                     if let Ok(Ok(runtime::steering::SteerAck::Accepted)) =
                         tokio::time::timeout(Duration::from_secs(5), acked).await
                     {
-                        if let Some(hub) = self.hub_of(&sid).await {
-                            hub.subscribe(client.clone());
+                        if let (Some(hub), Some(watcher)) = (self.hub_of(&sid).await, &watcher) {
+                            hub.subscribe(watcher.clone());
                         }
-                        return Ok(serde_json::json!({
-                            "session_id": sid,
-                            "turn_id": turn_id,
-                            "delivery": "steer",
-                            "into_turn_id": busy_with,
-                        }));
+                        return Ok(TurnOutcome::Steered {
+                            session_id: sid,
+                            turn_id,
+                            into_turn_id: busy_with,
+                        });
                     }
                     // The running turn is already past its last step: this
                     // message waits for the next turn instead.
@@ -194,7 +197,7 @@ impl SessionPool {
             {
                 None => None,
                 Some(live) => {
-                    let wanted = initiator != "goal"
+                    let wanted = initiator != Initiator::Goal
                         || live
                             .state
                             .as_ref()
@@ -202,17 +205,19 @@ impl SessionPool {
                     if wanted {
                         live.current_turn = Some(turn_id.clone());
                         live.turn_initiator = Some(initiator);
-                        live.turn_watcher = Some(client.id());
+                        live.turn_watcher = initiator_id;
                         live.turn_terminated = false;
                         self.emit_session_event(
                             "turn_started",
                             &sid,
-                            serde_json::json!({"turn_id": turn_id, "initiator": initiator}),
+                            serde_json::json!({"turn_id": turn_id, "initiator": initiator.as_str()}),
                         );
                         // Whoever starts a turn watches it. Not a special role
                         // — it lands in the same subscriber set as any tab that
                         // called `session.subscribe`, and leaves the same way.
-                        live.hub.subscribe(client.clone());
+                        if let Some(watcher) = &watcher {
+                            live.hub.subscribe(watcher.clone());
+                        }
                     }
                     Some((wanted, live.state.clone(), live.hub.clone()))
                 }
@@ -223,16 +228,17 @@ impl SessionPool {
             Some((false, _, _)) => {
                 self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                     .await;
-                return Ok(
-                    serde_json::json!({"session_id": sid, "turn_id": turn_id, "skipped": true}),
-                );
+                return Ok(TurnOutcome::Skipped {
+                    session_id: sid,
+                    turn_id,
+                });
             }
             None => {
                 *event_rx_mutex.lock().await = Some(event_rx);
                 return Err(PoolError::session_not_found(&sid));
             }
         };
-        if let (Some(state), "goal") = (&turn_state, initiator) {
+        if let (Some(state), Initiator::Goal) = (&turn_state, initiator) {
             self.record_goal_changes(&sid, state).await;
         }
 
@@ -261,7 +267,7 @@ impl SessionPool {
                     &sid,
                     &event_rx_mutex,
                     &frame_of(SessionEvent::EngineStopped),
-                    Some(client.id()),
+                    initiator_id,
                 )
                 .await;
                 let dead = {
@@ -326,7 +332,7 @@ impl SessionPool {
                     // The caller learns this from its own result; every other
                     // watcher would otherwise see a turn that never ends.
                     let last = frame_of(SessionEvent::Agent(event));
-                    self.publish_terminal(&sid, &event_rx_mutex, &last, Some(client.id()))
+                    self.publish_terminal(&sid, &event_rx_mutex, &last, initiator_id)
                         .await;
                     self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                         .await;
@@ -392,13 +398,12 @@ impl SessionPool {
             }
         }
 
-        Ok(serde_json::json!({
-            "session_id": sid,
-            "turn_id": turn_id,
-            "delivery": "turn",
-            "name": session_name,
-            "api_calls": api_calls,
-        }))
+        Ok(TurnOutcome::Completed {
+            session_id: sid,
+            turn_id,
+            name: session_name,
+            api_calls,
+        })
     }
 
     /// A name somebody typed while the naming call was out wins over the

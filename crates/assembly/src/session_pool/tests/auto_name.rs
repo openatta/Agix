@@ -160,23 +160,23 @@ async fn harnix_session(
 
 /// The first turn's `session.send` result.
 async fn first_turn(pool: &SessionPool, sid: &str) -> serde_json::Value {
-    let client = Arc::new(crate::rpc::Client::new(
-        crate::rpc::ConnectionId(u64::MAX - 11),
-        Arc::new(Discard),
-    ));
-    let response = pool
-        .run_turn(
-            Some(sid.to_string()),
-            "把发布流程整理成一份清单".into(),
-            vec![],
-            "t-1".into(),
-            client,
-            None,
-            OnBusy::Reject,
-            "client",
-        )
-        .await;
-    response.unwrap_or_else(|e| panic!("the turn failed: {e}"))
+    let request = TurnRequest {
+        session_id: Some(sid.to_string()),
+        message: "把发布流程整理成一份清单".into(),
+        attachments: vec![],
+        turn_id: "t-1".into(),
+        options: None,
+        on_busy: OnBusy::Reject,
+        initiator: Initiator::Client,
+    };
+    match pool.run_turn(request, None).await {
+        Ok(TurnOutcome::Completed {
+            session_id, name, ..
+        }) => {
+            serde_json::json!({"session_id": session_id, "name": name})
+        }
+        other => panic!("the turn did not complete: {other:?}"),
+    }
 }
 
 fn naming_calls_in(root: &Path) -> Vec<String> {

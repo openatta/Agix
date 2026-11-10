@@ -535,20 +535,17 @@ impl DaemonServer {
         let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
         };
-        let ran = self
-            .pool
-            .run_turn(
-                Some(session_id.to_string()),
-                command.to_string(),
-                vec![],
-                Id::new().to_string(),
-                client,
-                None,
-                crate::session_pool::OnBusy::Reject,
-                "client",
-            )
-            .await;
-        respond(id, ran)
+        let request = crate::session_pool::api::TurnRequest {
+            session_id: Some(session_id.to_string()),
+            message: command.to_string(),
+            attachments: vec![],
+            turn_id: Id::new().to_string(),
+            options: None,
+            on_busy: crate::session_pool::OnBusy::Reject,
+            initiator: crate::session_pool::api::Initiator::Client,
+        };
+        let ran = self.pool.run_turn(request, Some(client)).await;
+        respond(id, ran.map(super::methods_turn::turn_result))
     }
 
     /// `session.fork` params:
