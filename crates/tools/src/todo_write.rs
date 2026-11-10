@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use base::context::TodoStatus;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -89,6 +90,10 @@ impl Tool for TodoWriteTool {
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         // 改 session 内部状态；不需用户确认
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(

@@ -626,6 +626,21 @@ async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> V
     out
 }
 
+/// A durable cron job outlives the session and acts on its own, which is the
+/// one thing a tool's facts make asked about that its old answer let through.
+fn leaves_something_behind(name: &str, input: &Value) -> bool {
+    name == "CronCreate" && input["durable"] == json!(true)
+}
+
+/// The gate denies a coordination tool under `dontAsk` when an `ask` rule
+/// matches, where `conclusion` spares it and asks. The facts are not what
+/// differs: `TaskMessage` is declared the same either way.
+fn gate_differs_from_the_model(name: &str, c: &Compared) -> bool {
+    name == "TaskMessage"
+        && c.cell.mode == PermissionMode::DontAsk
+        && matches!(c.cell.rule, RuleCase::Ask | RuleCase::ManagedAsk)
+}
+
 /// Tools that state their own facts: what those lead to must be what the facts
 /// bridged from their old answers lead to, in every cell. Where the gate does
 /// not refuse a sample before reading the tool, both must also be what the
@@ -638,10 +653,13 @@ async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
     let (mut compared, mut against_the_gate) = (0usize, 0usize);
     for name in names {
         for sample in samples(name, &cwd, "/home/matrix") {
+            if leaves_something_behind(name, &sample.input) {
+                continue;
+            }
             for c in compare_stated_with_bridged(name, &sample.input, &cwd).await {
                 assert_eq!(c.stated, c.old, "{}", c.at);
                 compared += 1;
-                if let Some(gate) = c.gate {
+                if let Some(gate) = c.gate.filter(|_| !gate_differs_from_the_model(name, &c)) {
                     assert_eq!(c.old, gate, "{}", c.at);
                     against_the_gate += 1;
                 }
@@ -671,4 +689,79 @@ async fn file_tools_facts_conclude_as_their_bridged_ones() {
     .await;
     assert_eq!(compared, (3 + 4 + 2 + 2 + 2 + 2) * 5 * 2 * 5 * 2);
     assert!(against_the_gate > 0);
+}
+
+#[tokio::test]
+async fn the_remaining_tools_facts_conclude_as_their_bridged_ones() {
+    let (compared, against_the_gate) = assert_facts_conclude_as_bridged(&[
+        "WebFetch",
+        "Ping",
+        "WebSearch",
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "EnterWorktree",
+        "ExitWorktree",
+        "EnterPlanMode",
+        "ExitPlanMode",
+        "AskUserQuestion",
+        "GoalCreate",
+        "GoalGet",
+        "GoalUpdate",
+        "PushNotification",
+        "Sleep",
+        "StructuredOutput",
+        "TaskMessage",
+        "TaskOutput",
+        "TaskStop",
+        "TaskWait",
+        "TodoWrite",
+        "ToolSearch",
+    ])
+    .await;
+    // 25 samples, less the durable cron one.
+    assert_eq!(compared, 24 * 5 * 2 * 5 * 2);
+    assert!(against_the_gate > 0);
+}
+
+/// F-8: a durable cron job is `Persists`, so it is asked about where its old
+/// answer let it run. Every other cell is concluded as before.
+#[tokio::test]
+async fn a_durable_cron_job_is_asked_about_where_it_used_to_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let durable = json!({ "cron": "0 9 * * *", "prompt": "report", "durable": true });
+    let cells = compare_stated_with_bridged("CronCreate", &durable, &cwd).await;
+    let mut changed = 0usize;
+    for c in &cells {
+        assert_eq!(Some(c.old), c.gate, "{}", c.at);
+        if c.stated == c.old {
+            continue;
+        }
+        changed += 1;
+        assert_eq!(c.old, "Permit", "{}", c.at);
+        assert_eq!(
+            c.stated,
+            if c.cell.unattended { "Deny" } else { "Prompt" },
+            "{}",
+            c.at
+        );
+        assert!(!c.cell.hook_approved, "{}", c.at);
+        assert_ne!(c.cell.mode, PermissionMode::BypassPermissions, "{}", c.at);
+        assert!(c.cell.rule != RuleCase::Allow, "{}", c.at);
+    }
+    assert!(changed > 0);
+    let attended_default = cells
+        .iter()
+        .find(|c| {
+            c.cell.mode == PermissionMode::Default
+                && c.cell.rule == RuleCase::None
+                && !c.cell.unattended
+                && !c.cell.hook_approved
+        })
+        .unwrap();
+    assert_eq!(
+        (attended_default.old, attended_default.stated),
+        ("Permit", "Prompt")
+    );
 }

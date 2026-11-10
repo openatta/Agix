@@ -14,6 +14,7 @@ use crate::worktree::WorktreeHandle;
 use async_trait::async_trait;
 use base::engine_exec::GitAccess;
 use base::error::ToolError;
+use base::interface::permission::PermissionFacts;
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -114,6 +115,10 @@ impl Tool for EnterWorktreeTool {
             message: "EnterWorktree will create a new git worktree under .agix/worktrees/".into(),
             decision_reason: None,
         }
+    }
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::unknown()
+            .with_question("EnterWorktree will create a new git worktree under .agix/worktrees/")
     }
     async fn call(
         &self,
@@ -221,6 +226,10 @@ impl Tool for ExitWorktreeTool {
             message: "ExitWorktree will delete the worktree directory and its branch".into(),
             decision_reason: None,
         }
+    }
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::unknown()
+            .with_question("ExitWorktree will delete the worktree directory and its branch")
     }
     async fn call(
         &self,

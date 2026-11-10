@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
@@ -87,6 +88,10 @@ impl Tool for TaskMessageTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(

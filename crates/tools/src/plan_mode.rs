@@ -15,6 +15,7 @@
 use anyhow;
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::permission::PermissionMode;
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
@@ -74,6 +75,10 @@ impl Tool for EnterPlanModeTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(
@@ -176,6 +181,10 @@ impl Tool for ExitPlanModeTool {
     /// Requires user confirmation to exit plan mode (non-teammates).
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::ask("Exit plan mode?")
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::unknown().with_question("Exit plan mode?")
     }
 
     async fn call(

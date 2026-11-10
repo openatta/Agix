@@ -9,6 +9,7 @@ use std::sync::Arc;
 use super::parser::cron_expression_valid;
 use super::store::CronStore;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -96,6 +97,17 @@ impl Tool for CronCreateTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, input: &Value, _: &ToolContext) -> PermissionFacts {
+        let durable =
+            serde_json::from_value::<CronCreateInput>(input.clone()).is_ok_and(|i| i.durable);
+        let reach = if durable {
+            Reach::Persists("scheduled prompt")
+        } else {
+            Reach::SessionOnly
+        };
+        PermissionFacts::new(Subject::None, reach)
     }
 
     async fn call(

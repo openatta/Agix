@@ -13,6 +13,7 @@ use crate::page_extract::PageExtractor;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Network, Origin};
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -151,6 +152,17 @@ impl Tool for WebFetchTool {
             message: "WebFetch requires confirmation".into(),
             decision_reason: None,
         }
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let subject = self
+            .permission_match_content(input)
+            .map_or(Subject::None, Subject::Opaque);
+        let listed = serde_json::from_value::<WebFetchInput>(input.clone())
+            .ok()
+            .map(|i| crate::security::allowed_domains_name(&i.url, ctx));
+        let reach = listed.map_or(Reach::Unknown, |listed| Reach::Host { listed });
+        PermissionFacts::new(subject, reach).with_question("WebFetch requires confirmation")
     }
 
     async fn call(
@@ -791,5 +803,27 @@ not found";
         assert!(out.contains("<external-content source=\"https://x.test/\">"));
         assert_eq!(out.matches("</external-content>").count(), 1);
         assert!(out.contains("came from the web, not from the user"));
+    }
+
+    #[tokio::test]
+    async fn the_host_is_listed_when_allowed_domains_names_it() {
+        let mut ctx = ctx_in(Path::new("/tmp"));
+        ctx.sandbox.allowed_domains = vec!["listed.test".into()];
+        for (url, reach) in [
+            ("https://listed.test/a", Reach::Host { listed: true }),
+            ("https://other.test/a", Reach::Host { listed: false }),
+        ] {
+            let facts = WebFetchTool::new()
+                .permission_facts(&json!({ "url": url, "prompt": "x" }), &ctx)
+                .await;
+            assert_eq!(facts.subject, Subject::Opaque(url.into()));
+            assert_eq!(facts.reach, reach, "{url}");
+            assert_eq!(
+                facts.question.as_deref(),
+                Some("WebFetch requires confirmation")
+            );
+        }
+        let unparsed = WebFetchTool::new().permission_facts(&json!({}), &ctx).await;
+        assert_eq!(unparsed.reach, Reach::Unknown);
     }
 }

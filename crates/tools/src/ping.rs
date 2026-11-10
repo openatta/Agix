@@ -8,6 +8,7 @@ use crate::cancel::run_with_cancel;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Origin};
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -82,6 +83,17 @@ impl Tool for PingTool {
             message: "Ping requires confirmation".into(),
             decision_reason: None,
         }
+    }
+
+    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
+        let subject = self
+            .permission_match_content(input)
+            .map_or(Subject::None, Subject::Opaque);
+        let listed = serde_json::from_value::<PingInput>(input.clone())
+            .ok()
+            .map(|i| crate::security::allowed_domains_name(&i.url, ctx));
+        let reach = listed.map_or(Reach::Unknown, |listed| Reach::Host { listed });
+        PermissionFacts::new(subject, reach).with_question("Ping requires confirmation")
     }
 
     async fn call(
@@ -267,5 +279,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn the_host_is_listed_when_allowed_domains_names_it() {
+        let mut ctx = ctx_in(Path::new("/tmp"));
+        ctx.sandbox.allowed_domains = vec!["listed.test".into()];
+        for (url, reach) in [
+            ("https://listed.test/a", Reach::Host { listed: true }),
+            ("https://other.test/a", Reach::Host { listed: false }),
+        ] {
+            let facts = PingTool
+                .permission_facts(&json!({ "url": url }), &ctx)
+                .await;
+            assert_eq!(facts.subject, Subject::Opaque(url.into()));
+            assert_eq!(facts.reach, reach, "{url}");
+            assert_eq!(
+                facts.question.as_deref(),
+                Some("Ping requires confirmation")
+            );
+        }
+        let unparsed = PingTool.permission_facts(&json!({}), &ctx).await;
+        assert_eq!(unparsed.reach, Reach::Unknown);
     }
 }

@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 // Only the macOS path runs a program, and importing these unconditionally
 // makes them unused elsewhere.
 #[cfg(target_os = "macos")]
@@ -71,6 +72,10 @@ impl Tool for PushNotificationTool {
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::allow()
+    }
+
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
 
     async fn call(
