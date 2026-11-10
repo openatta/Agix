@@ -23,8 +23,8 @@
 //! - git 必须进沙箱却进不去 → `GitRefused`，不在沙箱外跑
 //! - cleanup 失败仅 warn，不传播 —— sub-agent 主要工作已完成
 
-use crate::exec_capture::capture;
 use base::frozen::git::EngineGit;
+use base::interface::exec::capture;
 use base::interface::exec::{ExecError, ExecProviders};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -441,11 +441,14 @@ async fn run_git_capture(
         ("GIT_ASKPASS".to_string(), String::new()),
     ]);
 
-    let out = timeout(GIT_TIMEOUT, capture(exec, spec, CancellationToken::new()))
-        .await
-        .map_err(|_| {
-            WorktreeError::GitFailed(format!("git {} timed out after 15s", args.join(" ")))
-        })??;
+    let out = timeout(
+        GIT_TIMEOUT,
+        capture(&*exec.process, spec, CancellationToken::new()),
+    )
+    .await
+    .map_err(|_| {
+        WorktreeError::GitFailed(format!("git {} timed out after 15s", args.join(" ")))
+    })??;
 
     if !out.status.success {
         return Err(WorktreeError::GitFailed(format!(

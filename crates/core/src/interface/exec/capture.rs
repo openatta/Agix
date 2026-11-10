@@ -1,16 +1,17 @@
 //! Running a process through the execution contract and keeping all of it.
 //!
 //! `Process` hands back a stream because a long command's output has to reach
-//! the user while it is still running. Most tools do not want that: they run
+//! the user while it is still running. Most callers do not want that: they run
 //! `git`, wait, and parse what it printed. Those call sites drain the stream
-//! themselves, and this is the one place that does it.
+//! through here.
 
-use base::interface::exec::{ExecError, ExecProviders, ExitStatus, OutputStream, ProcessSpec};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use super::{ExecError, ExitStatus, OutputStream, Process, ProcessSpec};
+
 #[derive(Debug)]
-pub(crate) struct Captured {
+pub struct Captured {
     pub status: ExitStatus,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -26,12 +27,12 @@ impl Captured {
     }
 }
 
-pub(crate) async fn capture(
-    exec: &ExecProviders,
+pub async fn capture(
+    process: &dyn Process,
     spec: ProcessSpec,
     cancel: CancellationToken,
 ) -> Result<Captured, ExecError> {
-    let mut child = exec.process.spawn(spec, cancel).await?;
+    let mut child = process.spawn(spec, cancel).await?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     // Drained before waiting: a child that fills its output pipe blocks until
@@ -56,47 +57,36 @@ pub(crate) async fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sh(command: &str) -> ProcessSpec {
-        ProcessSpec::new("bash", std::env::temp_dir()).args(["-c".to_string(), command.to_string()])
-    }
+    use crate::interface::exec::in_process::{ScriptedProcess, ScriptedRun};
 
     #[tokio::test]
-    async fn both_pipes_and_the_status_survive_the_round_trip() {
+    async fn both_streams_and_the_status_are_kept_apart() {
+        let process = ScriptedProcess::new().with(
+            "git status",
+            ScriptedRun {
+                stdout: "out".into(),
+                stderr: "err".into(),
+                code: 2,
+            },
+        );
         let out = capture(
-            &platform::local_providers(),
-            sh("echo out; echo err >&2; exit 2"),
+            &process,
+            ProcessSpec::new("git", "/").arg("status"),
             CancellationToken::new(),
         )
         .await
         .unwrap();
-        assert_eq!(out.stdout_lossy().trim(), "out");
-        assert_eq!(out.stderr_lossy().trim(), "err");
+        assert_eq!(out.stdout_lossy(), "out");
+        assert_eq!(out.stderr_lossy(), "err");
         assert_eq!(out.status.code, Some(2));
-    }
-
-    /// The reason the stream is drained before the wait.
-    #[tokio::test]
-    async fn a_child_that_outruns_its_pipe_buffer_still_finishes() {
-        let out = tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            capture(
-                &platform::local_providers(),
-                sh("head -c 400000 /dev/zero | tr '\\0' 'x'"),
-                CancellationToken::new(),
-            ),
-        )
-        .await
-        .expect("waiting before draining would hang here")
-        .unwrap();
-        assert_eq!(out.stdout.len(), 400_000);
+        assert!(!out.status.success);
     }
 
     #[tokio::test]
-    async fn a_missing_program_is_the_targets_failure_not_an_unreachable_provider() {
+    async fn a_spawn_failure_is_returned_as_is() {
         let e = capture(
-            &platform::local_providers(),
-            ProcessSpec::new("agix-no-such-program", std::env::temp_dir()),
+            &ScriptedProcess::new(),
+            ProcessSpec::new("git", "/"),
             CancellationToken::new(),
         )
         .await

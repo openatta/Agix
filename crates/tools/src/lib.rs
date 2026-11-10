@@ -4,7 +4,6 @@ pub mod ask_user;
 pub mod bash;
 pub mod cancel;
 pub mod cron;
-mod exec_capture;
 mod external_content;
 pub mod file_edit;
 pub mod file_read;

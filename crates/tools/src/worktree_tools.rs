@@ -10,10 +10,10 @@
 //! ExitWorktree `keep` 只让出它，`remove` 删目录和分支，拒绝删除时它仍是
 //! active 的。会话结束时还 active 的 worktree 留在磁盘上。
 
-use crate::exec_capture::capture;
 use crate::worktree::WorktreeHandle;
 use async_trait::async_trait;
 use base::error::ToolError;
+use base::interface::exec::capture;
 use base::tool::{
     PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
     ToolSpec, ValidationResult,
@@ -328,7 +328,7 @@ async fn unsaved_work(ctx: &ToolContext, path: &std::path::Path, branch: &str) -
         async move {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let spec = git.command(path, &args, &[]).ok()?;
-            capture(&ctx.exec, spec, ctx.cancel.clone())
+            capture(&*ctx.exec.process, spec, ctx.cancel.clone())
                 .await
                 .ok()
                 .filter(|o| o.status.success)

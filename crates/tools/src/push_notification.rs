@@ -9,7 +9,7 @@ use base::error::ToolError;
 // Only the macOS path runs a program, and importing these unconditionally
 // makes them unused elsewhere.
 #[cfg(target_os = "macos")]
-use crate::exec_capture::capture;
+use base::interface::exec::capture;
 #[cfg(target_os = "macos")]
 use base::interface::exec::ProcessSpec;
 use base::tool::{
@@ -102,7 +102,7 @@ async fn desktop_notification(ctx: &ToolContext, msg: &str) {
         "-e".to_string(),
         format!(r#"display notification "{escaped}" with title "Agix""#),
     ]);
-    match capture(&ctx.exec, spec, ctx.cancel.clone()).await {
+    match capture(&*ctx.exec.process, spec, ctx.cancel.clone()).await {
         Ok(output) if output.status.success => {}
         Ok(output) => {
             tracing::debug!(stderr = %output.stderr_lossy(), "osascript could not show the notification")

@@ -24,6 +24,7 @@
 //! [`health`]: crate::interface::health
 //! [`environment`]: crate::interface::environment
 
+pub mod capture;
 pub mod env;
 pub mod filesystem;
 pub mod in_process;
@@ -31,6 +32,7 @@ pub mod network;
 pub mod process;
 pub mod sandbox;
 
+pub use capture::{capture, Captured};
 pub use env::{SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::{DirEntry, FileSystem, Metadata};
 pub use network::{
