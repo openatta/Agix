@@ -103,6 +103,8 @@ pub struct Builder {
     process_groups: Option<Arc<platform::GroupLedger>>,
     /// Where this session reaches the machine — see [`Builder::exec`].
     exec: Option<base::interface::exec::ExecProviders>,
+    /// See [`Builder::token_counter`].
+    token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
     modules: Vec<Arc<dyn crate::module::Module>>,
     session_prompt: Option<SessionPrompt>,
 }
@@ -159,6 +161,7 @@ impl Builder {
             goal_rounds_from_owner: false,
             process_groups: None,
             exec: None,
+            token_counter: None,
             modules: Vec::new(),
             session_prompt: None,
         }
@@ -209,6 +212,17 @@ impl Builder {
     /// passed here (`platform::local_providers_with_ledger`).
     pub fn exec(mut self, providers: base::interface::exec::ExecProviders) -> Self {
         self.exec = Some(providers);
+        self
+    }
+
+    /// Judge this session's size — the number compaction triggers on — with
+    /// `counter` instead of the engine's local estimate. Delegates judge
+    /// theirs with it too.
+    pub fn token_counter(
+        mut self,
+        counter: Arc<dyn base::interface::token_counter::TokenCounter>,
+    ) -> Self {
+        self.token_counter = Some(counter);
         self
     }
 

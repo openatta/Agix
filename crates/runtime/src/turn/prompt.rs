@@ -532,7 +532,7 @@ impl Agent {
         // so the next turn's compaction check can include it — see
         // `request_overhead_tokens` and `context_tokens`.
         self.compaction.request_overhead_tokens =
-            estimate_request_overhead(&prompt_blocks, &tool_defs);
+            estimate_request_overhead(&**self.session.token_counter(), &prompt_blocks, &tool_defs);
         let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
         (prompt_blocks, tool_defs, messages)
     }
@@ -586,8 +586,9 @@ impl Agent {
     /// A real next turn differs by what it adds: the user's message, any
     /// memories recalled for it, anything a hook injects on submit.
     pub(super) async fn inspect_context(&mut self) -> serde_json::Value {
+        let counter = self.session.token_counter().clone();
         let tokens_of = |text: &str| {
-            compaction::grouping::estimate_tokens(&[ModelMessage {
+            counter.count_messages(&[ModelMessage {
                 role: base::interface::model::MessageRole::User,
                 content: vec![ModelContentBlock::Text {
                     text: text.to_string(),
@@ -623,7 +624,7 @@ impl Agent {
                 })
             })
             .collect();
-        let message_tokens = compaction::grouping::estimate_tokens(&messages);
+        let message_tokens = counter.count_messages(&messages);
         let sum = |items: &[serde_json::Value]| {
             items
                 .iter()

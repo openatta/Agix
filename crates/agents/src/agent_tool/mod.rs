@@ -181,6 +181,7 @@ impl AgentTool {
                 plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
                 exec: None,
+                token_counter: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
@@ -251,6 +252,7 @@ impl AgentTool {
                 plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
                 exec: None,
+                token_counter: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
@@ -344,6 +346,17 @@ impl AgentTool {
             }
         }
         inner.description = describe_agent_types(&visible).into();
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    /// Judge delegates' size with the parent session's counter.
+    pub fn with_token_counter(
+        mut self,
+        counter: Arc<dyn base::interface::token_counter::TokenCounter>,
+    ) -> Self {
+        let mut inner = (*self.inner).clone();
+        inner.token_counter = Some(counter);
         self.inner = Arc::new(inner);
         self
     }

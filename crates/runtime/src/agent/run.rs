@@ -563,7 +563,7 @@ impl Agent {
         &mut self,
         cancel: &CancellationToken,
     ) -> Option<crate::turn::CompactSummary> {
-        let target = (compaction::grouping::estimate_tokens(self.session.messages()) / 2).max(1);
+        let target = (self.session.token_count() / 2).max(1);
         // Asked for, so it must compact something: a keep floor of every
         // round there is would leave the summary nothing to cover, and the
         // cascade would then drop those rounds unsummarized.

@@ -219,6 +219,9 @@ pub(super) struct Inner {
     /// The parent session's providers: a delegate runs on them, process
     /// ledger included.
     pub(super) exec: Option<base::interface::exec::ExecProviders>,
+    /// What judges the parent session's size; a delegate judges its own
+    /// with it.
+    pub(super) token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
     /// What every delegate is assembled with: the parent session's modules.
     pub(super) modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve
@@ -461,6 +464,9 @@ impl Inner {
         }
         if let Some(exec) = &self.exec {
             builder = builder.exec(exec.clone());
+        }
+        if let Some(counter) = &self.token_counter {
+            builder = builder.token_counter(counter.clone());
         }
         // One runner for the whole tree: `once` holds across it, and the
         // root's file watcher is the only one.

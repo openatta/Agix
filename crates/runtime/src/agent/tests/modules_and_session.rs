@@ -420,3 +420,30 @@ async fn update_model_command_changes_the_model_the_next_turn_uses() {
 
     assert_eq!(agent.settings.model.model_name, "claude-opus-5");
 }
+
+/// The counter a host builds the session with is what its size — the number
+/// compaction triggers on — is judged by, request overhead included.
+#[tokio::test]
+async fn a_session_is_judged_by_the_counter_it_was_built_with() {
+    let counter: Arc<dyn base::interface::token_counter::TokenCounter> = Arc::new(
+        base::interface::token_counter::FixedTokenCounter::new(0, 1_000),
+    );
+    let (mut agent, _event_rx, _input_tx) = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .model(Arc::new(super::events_and_steering::PlainReplyModel))
+        .settings(Arc::new(test_settings()))
+        .token_counter(counter.clone())
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    assert!(Arc::ptr_eq(agent.session.token_counter(), &counter));
+
+    agent
+        .run_turn("go".into(), "t1".into(), CancellationToken::new())
+        .await
+        .expect("the turn runs");
+    let size = agent.session.token_count();
+    assert!(size > 0 && size % 1_000 == 0, "{size}");
+    let overhead = agent.compaction.request_overhead_tokens;
+    assert!(overhead > 0 && overhead % 1_000 == 0, "{overhead}");
+}

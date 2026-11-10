@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(super) fn estimate_request_overhead(
+    counter: &dyn base::interface::token_counter::TokenCounter,
     prompt_blocks: &[PromptBlock],
     tool_defs: &[ToolDef],
 ) -> usize {
@@ -28,11 +29,9 @@ pub(super) fn estimate_request_overhead(
             ),
         });
     }
-    // Via `compaction::grouping`, which is itself a thin delegate to
-    // `model::tokens` — the workspace's one real tokenizer. Going through it
-    // keeps this number identical in kind to `SessionManager::token_count()`,
-    // which is the whole point: the two get added together.
-    compaction::grouping::estimate_tokens(&[ModelMessage {
+    // The session's own counter, so this number is identical in kind to
+    // `SessionManager::token_count()`: the two get added together.
+    counter.count_messages(&[ModelMessage {
         role: MessageRole::User,
         content: blocks,
     }])

@@ -331,22 +331,42 @@ async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_
     );
 }
 
-/// A delegate runs on its parent's providers: the git its first turn asks
-/// for to collect the repository context reaches the parent's `Process`.
+/// Counts the conversations it was asked to judge.
+#[derive(Default)]
+struct CountingCounter(std::sync::atomic::AtomicUsize);
+
+impl base::interface::token_counter::TokenCounter for CountingCounter {
+    fn count_text(&self, text: &str) -> usize {
+        text.len()
+    }
+    fn count_block(&self, _: &base::interface::model::ModelContentBlock) -> usize {
+        1
+    }
+    fn count_messages(&self, messages: &[ModelMessage]) -> usize {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        messages.len()
+    }
+}
+
+/// A delegate is built with the host's answers its parent was: the git its
+/// first turn asks for to collect the repository context reaches the
+/// parent's `Process`, and its size is judged by the parent's counter.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_delegate_runs_on_its_parents_providers() {
+async fn a_delegate_runs_on_its_parents_host_contracts() {
     use base::interface::exec::in_process::ScriptedProcess;
     let process = ScriptedProcess::new();
     let providers = base::interface::exec::ExecProviders {
         process: Arc::new(process.clone()),
         ..base::interface::exec::ExecProviders::in_process()
     };
+    let counter = Arc::new(CountingCounter::default());
     let (settings, dir) = parent_settings_for_test("code");
     let agent_tool = agent_tool_with_model(Arc::new(LineageModel {
         seen: Default::default(),
     }))
     .with_settings(Arc::new(settings))
-    .with_exec(providers);
+    .with_exec(providers)
+    .with_token_counter(counter.clone());
 
     let ran = agent_tool
         .run_sub(
@@ -366,5 +386,9 @@ async fn a_delegate_runs_on_its_parents_providers() {
         process.seen().iter().any(|argv| argv.starts_with("git ")),
         "the delegate's git did not reach the parent's providers: {:?}",
         process.seen()
+    );
+    assert!(
+        counter.0.load(std::sync::atomic::Ordering::SeqCst) > 0,
+        "the delegate's size was not judged by the parent's counter"
     );
 }

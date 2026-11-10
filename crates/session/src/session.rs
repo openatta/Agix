@@ -36,9 +36,8 @@ pub struct SessionManager {
     /// re-append the same messages.
     persisted_up_to: usize,
     /// How this session judges its own size — see
-    /// [`SessionManager::set_token_counter`]. `None` means the engine's
-    /// default estimator.
-    token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
+    /// [`SessionManager::with_token_counter`].
+    token_counter: Arc<dyn base::interface::token_counter::TokenCounter>,
     /// The turn new lines belong to; recorded on each line `persist()` writes.
     turn_id: Option<String>,
     /// What the pusher knew about a not-yet-persisted message, by its index
@@ -85,7 +84,7 @@ impl SessionManager {
             session_memory: None,
             parent_session_id,
             persisted_up_to: 0,
-            token_counter: None,
+            token_counter: model::tokens::default_counter(),
             turn_id: None,
             notes: std::collections::HashMap::new(),
             pending_marker: None,
@@ -205,10 +204,7 @@ impl SessionManager {
     /// the compaction strategies use to decide what to drop. It therefore
     /// delegates to the workspace's single estimator rather than keeping its own.
     pub fn token_count(&self) -> usize {
-        match &self.token_counter {
-            Some(counter) => counter.count_messages(&self.messages),
-            None => model::tokens::estimate_message_tokens(&self.messages),
-        }
+        self.token_counter.count_messages(&self.messages)
     }
 
     /// Judge this session's size with `counter` instead of the engine's local
@@ -219,11 +215,17 @@ impl SessionManager {
     /// willing to spend a call on `count_tokens`, can be exact — and the
     /// number this returns is the one compaction triggers on, so being exact
     /// here is worth something.
-    pub fn set_token_counter(
-        &mut self,
+    pub fn with_token_counter(
+        mut self,
         counter: Arc<dyn base::interface::token_counter::TokenCounter>,
-    ) {
-        self.token_counter = Some(counter);
+    ) -> Self {
+        self.token_counter = counter;
+        self
+    }
+
+    /// What judges this session's size, for whatever else is added to it.
+    pub fn token_counter(&self) -> &Arc<dyn base::interface::token_counter::TokenCounter> {
+        &self.token_counter
     }
 
     pub fn increment_turn(&mut self) {
@@ -1660,7 +1662,7 @@ mod token_counter_tests {
         let default_estimate = session.token_count();
         assert!(default_estimate > 0);
 
-        session.set_token_counter(Arc::new(FixedTokenCounter::new(0, 1_000)));
+        let session = session.with_token_counter(Arc::new(FixedTokenCounter::new(0, 1_000)));
         assert_eq!(
             session.token_count(),
             1_000,

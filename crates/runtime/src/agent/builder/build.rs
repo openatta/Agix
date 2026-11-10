@@ -129,6 +129,9 @@ impl Builder {
             self.session_id,
             self.parent_session_id.clone(),
         );
+        if let Some(counter) = self.token_counter.clone() {
+            session = session.with_token_counter(counter);
+        }
         // Session-memory sidecar (`session_memory.md`) — only for sessions
         // that actually persist (matches `resume`'s only being meaningful
         // with a `HistoryStore`; an in-memory-only session's id doesn't
@@ -393,6 +396,7 @@ impl Builder {
         }
         {
             let session_id = session.session_id_str().to_string();
+            let token_counter = session.token_counter().clone();
             let mut cx = crate::module::SessionContext {
                 tools: &tools,
                 template_tools: &template,
@@ -414,6 +418,7 @@ impl Builder {
                 depth: agent_depth,
                 task_router: self.task_router.as_ref(),
                 exec: &exec,
+                token_counter: &token_counter,
                 delegate_plugins: &self.plugins,
                 plugin_tools: &plugin_tools,
                 plugin_agent_types: &plugin_agent_types,

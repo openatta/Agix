@@ -89,6 +89,8 @@ pub struct SessionContext<'a> {
     /// Where the session reaches the machine; a delegate reaches it there
     /// too.
     pub exec: &'a base::interface::exec::ExecProviders,
+    /// What judges the session's size; a delegate judges its own with it.
+    pub token_counter: &'a Arc<dyn base::interface::token_counter::TokenCounter>,
     /// The Rust plugins this session was built with; a delegate is built
     /// with them too.
     pub delegate_plugins: &'a [Arc<dyn crate::plugin::Plugin>],
