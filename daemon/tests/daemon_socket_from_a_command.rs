@@ -138,7 +138,10 @@ fn sandbox_runs() -> bool {
 }
 
 /// The socket is outside the state root, where `--socket` may put it: only
-/// the daemon having named it keeps a command off it.
+/// the daemon having named it keeps a command off it. It is in the project,
+/// which a command sees under every backend — bwrap gives a command a `/tmp`
+/// of its own, where a socket beside the project could be out of sight
+/// without anything having fenced it.
 struct Daemon {
     sock: PathBuf,
     home: PathBuf,
@@ -171,7 +174,7 @@ impl Daemon {
         std::fs::create_dir_all(home.join("scratchpad")).unwrap();
         std::fs::write(home.join("scratchpad").join("notes.md"), READABLE).unwrap();
 
-        let sock = dir.path().join("agix.sock");
+        let sock = work.join("agix.sock");
         let paths =
             StaticDaemonPaths::with_project(home.clone(), work.clone()).with_global(home.clone());
         let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
@@ -286,6 +289,13 @@ async fn a_sandboxed_command_cannot_reach_the_daemon() {
         printed.starts_with("connect failed:"),
         "the sandbox let it connect: {printed}"
     );
+    #[cfg(target_os = "linux")]
+    if sandbox_runs() {
+        assert!(
+            printed.starts_with("connect failed:"),
+            "bwrap let it connect: {printed}"
+        );
+    }
     daemon.assert_still_untrusted().await;
 }
 

@@ -66,6 +66,37 @@ jobs:
           AGIX_TEST_DAEMON_BIN_MINIMAL: ${{ github.workspace }}/target/minimal/debug/agixd
         run: cargo test --workspace --all-targets -- --ignored
 
+  sandbox-linux:
+    # The bubblewrap backend against a real bubblewrap. The other jobs run on
+    # runners without it, where every Linux sandbox case skips; here
+    # AGIX_REQUIRE_SANDBOX turns such a skip into a failure, so a runner whose
+    # bwrap cannot make namespaces does not pass empty.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AGIX_REQUIRE_SANDBOX: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Ubuntu 24.04 confines unprivileged user namespaces through AppArmor,
+      # and bwrap without setuid needs one. The last line is the check every
+      # case below makes before it runs.
+      - name: install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --version
+          bwrap --ro-bind / / true
+
+      - name: platform sandbox
+        run: cargo test -p platform --features sandbox
+
+      - name: daemon sandbox cases
+        run: cargo test -p daemon --test integration 'daemon_socket_from_a_command::'
+
   carriers:
     # Builds with and without the script carrier and the package layer. Each
     # configuration is a build nobody makes by accident, so each is one nobody

@@ -1076,9 +1076,6 @@ fn linux_wrap(
     // bwrap applies mounts in argument order, so each one below lands on top
     // of the ones before it.
     let mut args: Vec<String> = vec!["--ro-bind".into(), "/".into(), "/".into()];
-    if !roots.only_additional {
-        bind(&mut args, "--bind", &roots.cwd);
-    }
     args.extend(
         [
             "--tmpfs",
@@ -1092,6 +1089,10 @@ fn linux_wrap(
         ]
         .map(String::from),
     );
+    // After the `/tmp` tmpfs, or a project under `/tmp` is hidden by it.
+    if !roots.only_additional {
+        bind(&mut args, "--bind", &roots.cwd);
+    }
     for p in &roots.writable {
         bind(&mut args, "--bind-try", p);
     }
@@ -2787,9 +2788,12 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().join("home");
         let state = dir.path().join("state");
         let project = dir.path().join("project");
+        // In the project, which the command sees on every backend: bwrap
+        // gives a command a `/tmp` of its own, and the temporary directory
+        // may well be there.
+        let home = project.join("home");
         std::fs::create_dir_all(project.join(".agix")).unwrap();
         std::fs::create_dir_all(&state).unwrap();
         let secret = "agix-test-secret";

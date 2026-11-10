@@ -36,6 +36,11 @@
 除 LIVE 层外都不联网、不需要凭据，`cargo test --workspace` 一条命令跑完，CI 每次
 push 都跑。LIVE 层要凭据、要花 token，不进 CI，改动涉及模型怎么用这些能力时手工跑。
 
+在真实 OS 沙箱里跑命令的用例（macOS `sandbox-exec`，Linux bubblewrap）在没有能用的后端时
+打印原因后跳过；设了 `AGIX_REQUIRE_SANDBOX` 时改为失败。CI 的 `sandbox-linux` 装上
+bubblewrap、设上这个变量，跑 `platform` 的 `--features sandbox` 与 daemon 的
+`daemon_socket_from_a_command::`，Linux 那一半靠它；别的 job 上它们跳过。
+
 脚本载体（QuickJS）的那一张网横跨其中几层，单独有一份设计说明：
 `tests/testing_scripts.md`。要点是它为什么需要一本账——脚本每次调用拿到全新运行时、
 没有文件系统，所以「这个点被触发了吗」只能从外面回答，而「失败的脚本什么都改不了」
