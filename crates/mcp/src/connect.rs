@@ -378,7 +378,8 @@ impl StdioMcpClient {
         let Err(e) = result else {
             return result;
         };
-        if let (Some(auth), Some(url)) = (&self.auth, crate::oauth::server_url(&self.config)) {
+        let auth = self.auth.as_ref().filter(|_| self.config.oauth_capable());
+        if let (Some(auth), Some(url)) = (auth, crate::oauth::server_url(&self.config)) {
             match &e {
                 McpError::AuthRequired { challenge, .. } => {
                     auth.note_unauthorized(
@@ -1699,6 +1700,49 @@ done
             authorized: false.into(),
         };
         assert_eq!(client.transport_kind(), "streamable_http");
+    }
+
+    #[tokio::test]
+    async fn a_401_to_a_server_with_a_fixed_authorization_header_leaves_oauth_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = Arc::new(crate::oauth::McpAuth::with_file_store(
+            dir.path().to_path_buf(),
+        ));
+        let url = "https://mcp.example.com/mcp";
+        let remote = |headers: HashMap<String, String>| McpServerConfig::StreamableHttp {
+            url: url.into(),
+            headers,
+            oauth: None,
+            scope: None,
+            timeouts: Default::default(),
+        };
+        let client = StdioMcpClient {
+            server_name: "static".into(),
+            config: remote(HashMap::from([(
+                "Authorization".into(),
+                "Bearer fixed".into(),
+            )])),
+            instructions: None,
+            inner: tokio::sync::Mutex::new(None),
+            last_reconnect_at: tokio::sync::Mutex::new(None),
+            consecutive_failures: AtomicU32::new(0),
+            sink: None,
+            env_policy: Default::default(),
+            auth: Some(auth.clone()),
+            authorized: false.into(),
+        };
+        let refused = client
+            .noted::<()>(Err(McpError::AuthRequired {
+                name: "static".into(),
+                challenge: None,
+            }))
+            .await;
+        assert!(refused.is_err());
+        let same_url_with_oauth = remote(HashMap::new());
+        assert_eq!(
+            auth.status(&same_url_with_oauth).unwrap().state,
+            crate::oauth::AuthState::None
+        );
     }
 
     #[tokio::test]

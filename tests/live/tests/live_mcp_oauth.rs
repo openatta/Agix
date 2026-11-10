@@ -488,7 +488,8 @@ async fn a_client_credentials_server_is_used_with_nobody_signing_in() -> anyhow:
     world.auth.preregister("batch", Some("batch-secret"));
     let servers = json!({ "mcp_servers": { SERVER: world.config_with(json!({
         "grant": "client_credentials", "client_id": "batch",
-        "client_secret_env": "AGIX_LIVE_MCP_SECRET", "scopes": ["mcp:read"]
+        "client_secret_env": "AGIX_LIVE_MCP_SECRET", "issuer": world.auth.url,
+        "scopes": ["mcp:read"]
     })) } });
     // A user's server, not the project's: a project's own servers may not
     // read the daemon's environment.

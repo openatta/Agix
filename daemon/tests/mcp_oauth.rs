@@ -423,7 +423,8 @@ async fn an_external_redirect_with_a_preregistered_client_completes_over_rpc() {
     std::env::set_var(&var, "s3cret");
     let d = Daemon::start(serde_json::json!({"docs": {
         "type": "streamable_http", "url": mcp.url,
-        "oauth": {"client_id": "pre-1", "client_secret_env": var, "scopes": ["mcp:read", "mcp:write"]},
+        "oauth": {"client_id": "pre-1", "client_secret_env": var, "issuer": auth.url,
+                  "scopes": ["mcp:read", "mcp:write"]},
     }}))
     .await;
     let mut conn = d.connect().await;
@@ -933,7 +934,7 @@ async fn client_credentials_connect_unattended_and_are_fetched_again_when_refuse
     let d = Daemon::start(serde_json::json!({"docs": {
         "type": "streamable_http", "url": mcp.url,
         "oauth": {"grant": "client_credentials", "client_id": "svc", "client_secret_env": var,
-                  "scopes": ["mcp:read"]},
+                  "issuer": auth.url, "scopes": ["mcp:read"]},
     }}))
     .await;
     let mut conn = d.connect().await;

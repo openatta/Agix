@@ -105,6 +105,10 @@ pub struct McpOAuthConfig {
     pub client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret_env: Option<String>,
+    /// The authorization server `client_id` is registered at, by issuer:
+    /// the client secret is sent to no other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,8 +255,10 @@ fn secret_from_env(key: &str, var: Option<&str>) -> Result<Option<String>, Strin
 impl McpOAuthConfig {
     pub fn validate(&self) -> Result<(), String> {
         let blank = |v: &Option<String>| v.as_deref().is_some_and(|s| s.trim().is_empty());
-        if blank(&self.client_id) || blank(&self.client_secret_env) {
-            return Err("oauth: `client_id` and `client_secret_env` must not be empty".into());
+        if blank(&self.client_id) || blank(&self.client_secret_env) || blank(&self.issuer) {
+            return Err(
+                "oauth: `client_id`, `client_secret_env` and `issuer` must not be empty".into(),
+            );
         }
         if self.client_secret_env.is_some() && self.client_id.is_none() {
             return Err("oauth: `client_secret_env` needs the `client_id` it belongs to".into());

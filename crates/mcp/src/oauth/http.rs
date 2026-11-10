@@ -125,6 +125,16 @@ impl AddressPolicy {
         }
     }
 
+    /// For the connection to an MCP server off loopback, whose URL is
+    /// configured: public and private networks, where an organisation's own
+    /// servers live, but never this machine or a reserved address.
+    pub fn for_remote_transport() -> Self {
+        Self {
+            allowed: Some(AddressClass::Private),
+            configured: false,
+        }
+    }
+
     /// For an endpoint the deployment named itself (an enterprise IdP), which
     /// nothing a server says can redirect.
     pub fn configured() -> Self {
@@ -324,14 +334,33 @@ impl OAuthHttpClient for OAuthHttp {
     }
 }
 
-/// The client an MCP server's streamable HTTP transport talks through:
-/// loopback servers bypass `HTTP(S)_PROXY`. No total timeout, since a
+/// The client an MCP server's streamable HTTP transport talks through. It
+/// follows a redirect only within the server's origin, so neither the
+/// session nor the configured headers go anywhere else. Loopback servers
+/// bypass `HTTP(S)_PROXY`; any other server's host names resolve under
+/// [`AddressPolicy::for_remote_transport`]. No total timeout, since a
 /// response may be a stream.
 pub(crate) fn transport_client(server: &str) -> reqwest::Client {
     base::interface::exec::local::install_tls_provider();
-    let mut b = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT);
+    let same_origin = reqwest::redirect::Policy::custom(|attempt| {
+        let from = attempt.previous().last().map(Url::origin);
+        if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error(format!("more than {MAX_REDIRECTS} redirects"))
+        } else if from.as_ref() == Some(&attempt.url().origin()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    });
+    let mut b = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(same_origin);
     if Url::parse(server).is_ok_and(|u| is_loopback(&u)) {
         b = b.no_proxy();
+    } else {
+        b = b.dns_resolver(Arc::new(FilteringResolver {
+            policy: AddressPolicy::for_remote_transport(),
+        }));
     }
     b.build().unwrap_or_default()
 }
@@ -454,5 +483,92 @@ mod tests {
         assert!(err.contains("may not reach"), "{err}");
         let accepted = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
         assert!(accepted.is_err(), "the refused address was connected to");
+    }
+
+    /// A server on loopback answering every request with `reply(path)`,
+    /// counting the requests it was sent.
+    async fn answering(
+        reply: impl Fn(&str) -> String + Send + Sync + 'static,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (counter, reply) = (seen.clone(), Arc::new(reply));
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let reply = reply.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = head.split(' ').nth(1).unwrap_or("/").to_string();
+                    let _ = stream.write_all(reply(&path).as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    fn redirect_to(location: &str) -> String {
+        format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nlocation: {location}\r\ncontent-length: 0\r\n\
+             connection: close\r\n\r\n"
+        )
+    }
+
+    const OK: &str = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
+
+    #[tokio::test]
+    async fn the_transport_follows_a_redirect_only_within_the_servers_origin() {
+        let (elsewhere, reached) = answering(|_| OK.to_string()).await;
+        let away = format!("{elsewhere}/stolen");
+        let (server, _) = answering(move |path| match path {
+            "/mcp" => redirect_to("/moved"),
+            "/moved" => OK.to_string(),
+            _ => redirect_to(&away),
+        })
+        .await;
+        let client = transport_client(&format!("{server}/mcp"));
+
+        let response = client.get(format!("{server}/mcp")).send().await.unwrap();
+        assert_eq!(response.status(), 200, "a same-origin redirect is followed");
+
+        let response = client
+            .get(format!("{server}/away"))
+            .header("x-api-key", "secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 307, "a cross-origin one is handed back");
+        assert_eq!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the other origin was never contacted"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_remote_servers_transport_never_resolves_to_this_machine() {
+        let policy = AddressPolicy::for_remote_transport();
+        let resolver = FilteringResolver { policy };
+        let name: reqwest::dns::Name = "localhost".parse().unwrap();
+        assert!(reqwest::dns::Resolve::resolve(&resolver, name)
+            .await
+            .is_err());
+        for refused in [
+            "127.0.0.1",
+            "::1",
+            "169.254.169.254",
+            "::ffff:0:7f00:1",
+            "0.0.0.0",
+        ] {
+            assert!(!policy.allows_ip(refused.parse().unwrap()), "{refused}");
+        }
+        for allowed in ["10.0.0.5", "192.168.1.9", "fd00::1", "93.184.216.34"] {
+            assert!(policy.allows_ip(allowed.parse().unwrap()), "{allowed}");
+        }
     }
 }

@@ -1968,6 +1968,8 @@ dependencies = [
  "hex",
  "hooks",
  "http",
+ "libc",
+ "mcp-oauth-mock",
  "oauth2",
  "process-wrap",
  "reqwest",

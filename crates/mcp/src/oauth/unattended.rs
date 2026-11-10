@@ -141,6 +141,7 @@ impl McpAuth {
         oauth: &McpOAuthConfig,
     ) -> Result<(), Unattended> {
         let failed = Unattended::Failed;
+        let (_, metadata) = self.unattended_metadata(url, key).await?;
         let client_id = oauth.client_id.clone().unwrap_or_default();
         let config = match &oauth.private_key_jwt {
             Some(jwt) => ClientCredentialsConfig::PrivateKeyJwt {
@@ -153,15 +154,14 @@ impl McpAuth {
             },
             None => ClientCredentialsConfig::ClientSecret {
                 client_id,
-                client_secret: oauth
-                    .client_secret()
-                    .map_err(failed)?
+                client_secret: self
+                    .configured_secret(oauth, metadata.issuer.as_deref())
+                    .map_err(|e| failed(e.to_string()))?
                     .ok_or_else(|| failed("oauth.client_secret_env is not set".into()))?,
                 scopes: oauth.scopes.clone(),
                 resource: Some(key.to_string()),
             },
         };
-        let (_, metadata) = self.unattended_metadata(url, key).await?;
         let (shared, url_owned, key_owned, discovered) = (
             self.shared.clone(),
             url.to_string(),
@@ -232,7 +232,10 @@ impl McpAuth {
                 }
             }
         };
-        let server_auth = match oauth.client_secret().map_err(failed)? {
+        let server_auth = match self
+            .configured_secret(oauth, Some(&issuer))
+            .map_err(|e| failed(e.to_string()))?
+        {
             None => EmaClientAuthentication::None,
             Some(secret) if supports_only_post(&metadata) => {
                 EmaClientAuthentication::ClientSecretPost(ClientSecret::new(secret))

@@ -5,9 +5,13 @@
 //!
 //! [`ServerStore`] is the bridge rmcp's `AuthorizationManager` reads and
 //! writes tokens through, so a refresh it performs lands in the same record.
+//! A refresh, and a sign-out, hold the record ([`McpCredentialStore::lock`]):
+//! the file store `flock`s a lock file beside it, so daemons sharing one
+//! directory take turns with a rotating refresh token instead of each
+//! spending the same one.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rmcp::transport::auth::{
@@ -113,6 +117,15 @@ pub trait McpCredentialStore: Send + Sync {
     async fn load(&self, server_url: &str) -> std::io::Result<Option<McpCredentials>>;
     async fn save(&self, server_url: &str, credentials: &McpCredentials) -> std::io::Result<()>;
     async fn delete(&self, server_url: &str) -> std::io::Result<()>;
+
+    /// Wait until no other process holds `server_url`'s record, and hold it
+    /// for as long as the returned value lives. Taken around a token
+    /// refresh and a sign-out, never around `load` / `save` themselves.
+    /// The default holds nothing: a store only this process uses needs no
+    /// more than the daemon's own serialization.
+    async fn lock(&self, _server_url: &str) -> std::io::Result<Option<Box<dyn Send>>> {
+        Ok(None)
+    }
 }
 
 /// One JSON file per server under `dir`, named by a hash of the URL, readable
@@ -132,9 +145,21 @@ impl FileCredentialStore {
     }
 
     pub fn path_for(&self, server_url: &str) -> PathBuf {
+        self.dir
+            .join(format!("{}.json", Self::file_stem(server_url)))
+    }
+
+    /// What [`McpCredentialStore::lock`] holds: a file of its own, since the
+    /// record is replaced by a rename and a lock on it would go with the old
+    /// file.
+    pub fn lock_path_for(&self, server_url: &str) -> PathBuf {
+        self.dir
+            .join(format!("{}.lock", Self::file_stem(server_url)))
+    }
+
+    fn file_stem(server_url: &str) -> String {
         use sha2::Digest;
-        let digest = sha2::Sha256::digest(server_url.as_bytes());
-        self.dir.join(format!("{}.json", hex::encode(digest)))
+        hex::encode(sha2::Sha256::digest(server_url.as_bytes()))
     }
 }
 
@@ -166,15 +191,57 @@ impl McpCredentialStore for FileCredentialStore {
             _ => Ok(()),
         }
     }
+
+    async fn lock(&self, server_url: &str) -> std::io::Result<Option<Box<dyn Send>>> {
+        let dir = self.dir.clone();
+        let path = self.lock_path_for(server_url);
+        let held = tokio::task::spawn_blocking(move || {
+            create_private_dir(&dir)?;
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let file = options.open(&path)?;
+            lock_exclusive(&file)?;
+            Ok::<_, std::io::Error>(file)
+        })
+        .await
+        .map_err(std::io::Error::other)??;
+        Ok(Some(Box::new(held)))
+    }
 }
 
-fn write_private(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
+#[cfg(unix)]
+fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    loop {
+        // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(dir)?;
+    builder.create(dir)
+}
+
+fn write_private(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    create_private_dir(dir)?;
 
     let tmp = path.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4().simple()));
     let mut options = std::fs::OpenOptions::new();
@@ -202,11 +269,39 @@ pub(crate) fn now_secs() -> u64 {
 
 /// rmcp's view of one server's record.
 pub(crate) struct ServerStore {
-    pub(crate) key: String,
-    pub(crate) shared: Arc<super::Shared>,
+    key: String,
+    shared: Arc<super::Shared>,
     /// The daemon fetches this server's tokens again before they expire
     /// (an unattended grant), so rmcp is not told when they do.
-    pub(crate) renewed_by_us: bool,
+    renewed_by_us: bool,
+    /// Set while rmcp holds the refresh guard.
+    refreshing: Arc<Mutex<Option<RefreshFrom>>>,
+}
+
+/// The refresh token the record had when a refresh of it began; the refresh
+/// writes back only over that.
+struct RefreshFrom(Option<String>);
+
+struct RefreshGuard {
+    _held: super::RecordHold,
+    refreshing: Arc<Mutex<Option<RefreshFrom>>>,
+}
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        *self.refreshing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+impl ServerStore {
+    pub(crate) fn new(key: &str, shared: Arc<super::Shared>, renewed_by_us: bool) -> Self {
+        Self {
+            key: key.to_string(),
+            shared,
+            renewed_by_us,
+            refreshing: Arc::default(),
+        }
+    }
 }
 
 fn store_error(e: impl std::fmt::Display) -> AuthError {
@@ -286,8 +381,25 @@ impl CredentialStore for ServerStore {
 
     async fn save(&self, credentials: StoredCredentials) -> Result<(), AuthError> {
         let tokens = tokens_from_rmcp(&credentials);
+        let refreshed_from = self
+            .refreshing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         self.shared
             .update(&self.key, |record| {
+                if let Some(RefreshFrom(from)) = &refreshed_from {
+                    let now = record
+                        .tokens
+                        .as_ref()
+                        .and_then(|t| t.refresh_token.as_ref());
+                    if now != from.as_ref() {
+                        tracing::info!(
+                            "the MCP OAuth tokens changed during a refresh; keeping the new ones"
+                        );
+                        return;
+                    }
+                }
                 record.tokens = tokens;
                 if credentials.issuer.is_some() {
                     record.issuer = credentials.issuer.clone();
@@ -328,8 +440,20 @@ impl CredentialStore for ServerStore {
     }
 
     async fn acquire_refresh_guard(&self) -> Result<Option<CredentialRefreshGuard>, AuthError> {
-        let lock = self.shared.refresh_lock(&self.key);
-        Ok(Some(CredentialRefreshGuard::new(lock.lock_owned().await)))
+        let held = self.shared.hold(&self.key).await.map_err(store_error)?;
+        let from = self
+            .shared
+            .store
+            .load(&self.key)
+            .await
+            .map_err(store_error)?
+            .and_then(|r| r.tokens)
+            .and_then(|t| t.refresh_token);
+        *self.refreshing.lock().unwrap_or_else(|e| e.into_inner()) = Some(RefreshFrom(from));
+        Ok(Some(CredentialRefreshGuard::new(RefreshGuard {
+            _held: held,
+            refreshing: self.refreshing.clone(),
+        })))
     }
 }
 

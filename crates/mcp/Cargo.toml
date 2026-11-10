@@ -33,8 +33,10 @@ sha2          = { workspace = true }
 hex           = { workspace = true }
 uuid          = { workspace = true }
 time          = { workspace = true }
+libc          = { workspace = true }
 
 [dev-dependencies]
 scene = { workspace = true }
 hooks = { workspace = true }
 tempfile = { workspace = true }
+mcp-oauth-mock = { workspace = true }

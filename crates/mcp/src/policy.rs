@@ -176,6 +176,12 @@ fn normalized_issuer(raw: &str) -> Option<String> {
     Some(url.trim_end_matches('/').to_string())
 }
 
+/// Whether two issuers name the same authorization server, written either
+/// way ([`normalized_issuer`]).
+pub fn same_issuer(a: &str, b: &str) -> bool {
+    normalized_issuer(a).is_some_and(|a| Some(a) == normalized_issuer(b))
+}
+
 enum Rules {
     Absent,
     Active {
@@ -269,6 +275,18 @@ impl McpPolicyGate {
                     ))
                 }
             }
+        }
+    }
+
+    /// Whether `allowed_authorization_servers` names the authorization
+    /// servers that may be used, rather than leaving it to any.
+    pub fn restricts_authorization_servers(&self) -> bool {
+        match &self.rules {
+            Rules::Absent | Rules::Active { issuers: None, .. } => false,
+            Rules::Active {
+                issuers: Some(_), ..
+            }
+            | Rules::Unreadable(_) => true,
         }
     }
 

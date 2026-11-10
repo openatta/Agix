@@ -235,6 +235,11 @@ pub(crate) struct Shared {
     flow_ttl: Mutex<Duration>,
 }
 
+pub(crate) struct RecordHold {
+    _process: tokio::sync::OwnedMutexGuard<()>,
+    _store: Option<Box<dyn Send>>,
+}
+
 fn lock_for(
     map: &Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     key: &str,
@@ -279,8 +284,15 @@ impl Shared {
         Ok(record)
     }
 
-    pub(crate) fn refresh_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
-        lock_for(&self.refresh_locks, key)
+    /// Hold `key`'s record against every other refresh and sign-out of it:
+    /// this process's, then, through the store, other processes'.
+    pub(crate) async fn hold(&self, key: &str) -> std::io::Result<RecordHold> {
+        let process = lock_for(&self.refresh_locks, key).lock_owned().await;
+        let store = self.store.lock(key).await?;
+        Ok(RecordHold {
+            _process: process,
+            _store: store,
+        })
     }
 
     fn acquire_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -750,7 +762,7 @@ impl McpAuth {
         let identity = match (&oauth.client_id, stored) {
             (Some(id), _) => Some((
                 id.clone(),
-                oauth.client_secret().map_err(AuthFlowError::Invalid)?,
+                self.configured_secret(&oauth, issuer.as_deref())?,
             )),
             (None, Some(reg)) => Some((reg.client_id, reg.client_secret)),
             (None, None) => None,
@@ -976,10 +988,16 @@ impl McpAuth {
 
     /// Sign out of `server`: revoke its tokens where the authorization
     /// server offers revocation (RFC 7009), then forget them. The client
-    /// registration is kept for the next sign-in.
+    /// registration is kept for the next sign-in. A refresh under way
+    /// finishes first, so what is revoked is what it got.
     pub async fn logout(&self, server: &str, cfg: &McpServerConfig) -> Result<(), AuthFlowError> {
         let (url, key, oauth) = self.oauth_target(server, cfg)?;
         let failed = |e: String| AuthFlowError::Failed(e);
+        let _held = self
+            .shared
+            .hold(&key)
+            .await
+            .map_err(|e| failed(format!("cannot hold the stored sign-in: {e}")))?;
         let record = self
             .shared
             .load(&key)
@@ -1025,7 +1043,12 @@ impl McpAuth {
         else {
             return;
         };
-        let secret = client_secret_for(&tokens.client_id, Some(oauth), record);
+        let secret = self.client_secret_for(
+            &tokens.client_id,
+            Some(oauth),
+            record,
+            record.issuer.as_deref(),
+        );
         let mut pending = vec![(tokens.access_token.as_str(), "access_token")];
         if let Some(refresh) = &tokens.refresh_token {
             pending.insert(0, (refresh.as_str(), "refresh_token"));
@@ -1069,11 +1092,7 @@ impl McpAuth {
         let mut manager = self.new_manager(url, &key).await.map_err(connect_failed)?;
         if let Some(oauth) = oauth.filter(|o| o.grant.is_unattended()) {
             self.renew_unattended(server, url, oauth, false).await?;
-            manager.set_credential_store(store::ServerStore {
-                key: key.clone(),
-                shared: self.shared.clone(),
-                renewed_by_us: true,
-            });
+            manager.set_credential_store(store::ServerStore::new(&key, self.shared.clone(), true));
             // With a client configured, rmcp's attempt to refresh a token it
             // was refused ends in "authorization required" — no refresh
             // token — which is what makes the caller fetch a new one.
@@ -1118,6 +1137,7 @@ impl McpAuth {
         check_endpoints(url, &metadata).map_err(connect_failed)?;
         self.admit_issuer(metadata.issuer.as_deref())
             .map_err(connect_failed)?;
+        let issuer = metadata.issuer.clone();
         manager.set_metadata(metadata);
         if !manager
             .initialize_from_store()
@@ -1126,7 +1146,9 @@ impl McpAuth {
         {
             return Ok((manager, false));
         }
-        if let Some(secret) = client_secret_for(&tokens.client_id, oauth, &record) {
+        if let Some(secret) =
+            self.client_secret_for(&tokens.client_id, oauth, &record, issuer.as_deref())
+        {
             let redirect = record
                 .client
                 .as_ref()
@@ -1237,27 +1259,74 @@ async fn new_manager(
     manager
         .with_client(http.client())
         .map_err(|e| describe(&e))?;
-    manager.set_credential_store(store::ServerStore {
-        key: key.to_string(),
-        shared: shared.clone(),
-        renewed_by_us: false,
-    });
+    manager.set_credential_store(store::ServerStore::new(key, shared.clone(), false));
     Ok(manager)
 }
 
-fn client_secret_for(
-    client_id: &str,
-    oauth: Option<&McpOAuthConfig>,
-    record: &McpCredentials,
-) -> Option<String> {
-    if let Some(oauth) = oauth.filter(|o| o.client_id.as_deref() == Some(client_id)) {
-        return oauth.client_secret().ok().flatten();
+impl McpAuth {
+    /// The configured client secret, for the authorization server `issuer`
+    /// only when it is the one the secret belongs to: the one `oauth.issuer`
+    /// names, or, without that, one the policy's
+    /// `allowed_authorization_servers` lists. A server's metadata picks its
+    /// authorization server, so nothing less keeps it from collecting the
+    /// secret.
+    fn configured_secret(
+        &self,
+        oauth: &McpOAuthConfig,
+        issuer: Option<&str>,
+    ) -> Result<Option<String>, AuthFlowError> {
+        let Some(secret) = oauth.client_secret().map_err(AuthFlowError::Invalid)? else {
+            return Ok(None);
+        };
+        let shown = issuer.unwrap_or("an authorization server that names no issuer");
+        match (&oauth.issuer, issuer) {
+            (Some(own), Some(issuer)) if crate::policy::same_issuer(own, issuer) => {
+                Ok(Some(secret))
+            }
+            (Some(own), _) => Err(AuthFlowError::Denied(format!(
+                "oauth.client_secret_env belongs to {own} (oauth.issuer); it is not sent to {shown}"
+            ))),
+            (None, Some(issuer))
+                if self
+                    .policy
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .restricts_authorization_servers()
+                    && self.admit_issuer(Some(issuer)).is_ok() =>
+            {
+                Ok(Some(secret))
+            }
+            (None, _) => Err(AuthFlowError::Invalid(format!(
+                "oauth.client_secret_env is set, but nothing says which authorization server it \
+                 belongs to: name it with oauth.issuer (this server's is {shown}), or list it in \
+                 the MCP policy's allowed_authorization_servers"
+            ))),
+        }
     }
-    record
-        .client
-        .as_ref()
-        .filter(|c| c.client_id == client_id)
-        .and_then(|c| c.client_secret.clone())
+
+    /// The secret `client_id` authenticates with at `issuer`: the configured
+    /// one ([`Self::configured_secret`]) or the one dynamic registration at
+    /// that same issuer returned.
+    fn client_secret_for(
+        &self,
+        client_id: &str,
+        oauth: Option<&McpOAuthConfig>,
+        record: &McpCredentials,
+        issuer: Option<&str>,
+    ) -> Option<String> {
+        if let Some(oauth) = oauth.filter(|o| o.client_id.as_deref() == Some(client_id)) {
+            return self
+                .configured_secret(oauth, issuer)
+                .inspect_err(|e| tracing::warn!(error = %e, "MCP client secret withheld"))
+                .ok()
+                .flatten();
+        }
+        record
+            .client
+            .as_ref()
+            .filter(|c| c.client_id == client_id && c.issuer.as_deref() == issuer)
+            .and_then(|c| c.client_secret.clone())
+    }
 }
 
 #[cfg(test)]
@@ -1421,5 +1490,210 @@ mod tests {
         let status = auth.status(&cfg).unwrap();
         assert_eq!(status.state, AuthState::Required);
         assert_eq!(status.scopes, vec!["read".to_string()]);
+    }
+
+    fn remote(url: &str, oauth: serde_json::Value) -> McpServerConfig {
+        serde_json::from_value(serde_json::json!({
+            "type": "streamable_http", "url": url, "oauth": oauth,
+        }))
+        .unwrap()
+    }
+
+    fn external() -> Redirect {
+        Redirect::External("https://app.example/cb".into())
+    }
+
+    /// A sign-in to a mock server with its tokens stored under `dir`.
+    async fn signed_in(
+        dir: &Path,
+    ) -> (
+        mcp_oauth_mock::McpServer,
+        mcp_oauth_mock::AuthServer,
+        McpServerConfig,
+        String,
+    ) {
+        let (mcp, server_auth) = mcp_oauth_mock::McpServer::start().await;
+        let cfg = remote(&mcp.url, serde_json::json!({}));
+        let auth = McpAuth::with_file_store(dir.to_path_buf());
+        let start = auth.start("docs", &cfg, external(), None).await.unwrap();
+        let location = mcp_oauth_mock::consent(&start.authorize_url).await;
+        auth.complete(&start.flow_id, &location).await.unwrap();
+        let key = canonical_server_url(&mcp.url).unwrap();
+        (mcp, server_auth, cfg, key)
+    }
+
+    #[tokio::test]
+    async fn two_processes_refreshing_one_rotating_token_both_end_up_with_a_valid_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mcp, server_auth, _, key) = signed_in(dir.path()).await;
+        let first = McpAuth::with_file_store(dir.path().to_path_buf());
+        let second = McpAuth::with_file_store(dir.path().to_path_buf());
+        first
+            .shared
+            .update(&key, |r| {
+                if let Some(t) = &mut r.tokens {
+                    t.expires_at = Some(store::now_secs());
+                }
+            })
+            .await
+            .unwrap();
+        let (a, with_a) = first
+            .transport_manager("docs", &mcp.url, None)
+            .await
+            .unwrap();
+        let (b, with_b) = second
+            .transport_manager("docs", &mcp.url, None)
+            .await
+            .unwrap();
+        assert!(with_a && with_b);
+
+        let (got_a, got_b) = tokio::join!(a.get_access_token(), b.get_access_token());
+        assert!(got_a.is_ok() && got_b.is_ok(), "{got_a:?} / {got_b:?}");
+        let stored = first.store().load(&key).await.unwrap().unwrap();
+        let tokens = stored.tokens.expect("still signed in");
+        assert!(
+            server_auth
+                .state
+                .lock()
+                .unwrap()
+                .tokens
+                .contains_key(&tokens.access_token),
+            "the stored token is one the authorization server still honours"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_logout_while_a_refresh_is_under_way_is_not_undone_by_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_mcp, _server_auth, cfg, key) = signed_in(dir.path()).await;
+        let auth = Arc::new(McpAuth::with_file_store(dir.path().to_path_buf()));
+        let refreshing = store::ServerStore::new(&key, auth.shared.clone(), false);
+        use rmcp::transport::auth::CredentialStore;
+        let guard = refreshing.acquire_refresh_guard().await.unwrap();
+        let read = refreshing.load().await.unwrap().expect("tokens to refresh");
+
+        let signing_out = auth.clone();
+        let logout = tokio::spawn(async move { signing_out.logout("docs", &cfg).await });
+        // Room for a logout that does not wait for the refresh to finish first.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        refreshing.save(read).await.unwrap();
+        drop(guard);
+        logout.await.unwrap().unwrap();
+
+        let record = auth.store().load(&key).await.unwrap().unwrap();
+        assert!(record.tokens.is_none(), "the refresh wrote the tokens back");
+    }
+
+    #[test]
+    fn a_stored_or_configured_secret_is_chosen_by_client_and_issuer() {
+        std::env::set_var("AGIX_UNIT_CHOSEN_SECRET", "configured");
+        let auth = McpAuth::new(Arc::new(FileCredentialStore::new(
+            std::env::temp_dir().join("agix-unused"),
+        )));
+        let record = McpCredentials {
+            client: Some(McpClientRegistration {
+                client_id: "dyn".into(),
+                client_secret: Some("registered".into()),
+                redirect_uris: vec![],
+                issuer: Some("https://as.example".into()),
+            }),
+            ..Default::default()
+        };
+        let a = Some("https://as.example");
+        let b = Some("https://as.other.example");
+        assert_eq!(
+            auth.client_secret_for("dyn", None, &record, a).as_deref(),
+            Some("registered")
+        );
+        assert_eq!(auth.client_secret_for("dyn", None, &record, b), None);
+
+        let oauth: McpOAuthConfig = serde_json::from_value(serde_json::json!({
+            "client_id": "pre", "client_secret_env": "AGIX_UNIT_CHOSEN_SECRET",
+            "issuer": "https://as.example/",
+        }))
+        .unwrap();
+        assert_eq!(
+            auth.client_secret_for("pre", Some(&oauth), &record, a)
+                .as_deref(),
+            Some("configured")
+        );
+        assert_eq!(
+            auth.client_secret_for("pre", Some(&oauth), &record, b),
+            None
+        );
+        let unpinned = McpOAuthConfig {
+            issuer: None,
+            ..oauth.clone()
+        };
+        assert_eq!(
+            auth.client_secret_for("pre", Some(&unpinned), &record, a),
+            None
+        );
+        auth.set_policy(Arc::new(McpPolicyGate::from_host(
+            serde_json::from_value(serde_json::json!({
+                "allowed_authorization_servers": ["https://as.example"],
+            }))
+            .unwrap(),
+        )));
+        assert_eq!(
+            auth.client_secret_for("pre", Some(&unpinned), &record, a)
+                .as_deref(),
+            Some("configured")
+        );
+        std::env::remove_var("AGIX_UNIT_CHOSEN_SECRET");
+    }
+
+    #[tokio::test]
+    async fn a_configured_client_secret_goes_only_to_the_authorization_server_it_is_for() {
+        std::env::set_var("AGIX_UNIT_PREREGISTERED_SECRET", "pre-secret");
+        let (mcp, server_auth) = mcp_oauth_mock::McpServer::start().await;
+        server_auth.preregister("pre-1", Some("pre-secret"));
+        let oauth = |issuer: Option<&str>| {
+            let mut o = serde_json::json!({
+                "client_id": "pre-1", "client_secret_env": "AGIX_UNIT_PREREGISTERED_SECRET",
+            });
+            if let Some(issuer) = issuer {
+                o["issuer"] = issuer.into();
+            }
+            remote(&mcp.url, o)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let auth = McpAuth::with_file_store(dir.path().to_path_buf());
+
+        let unpinned = auth.start("docs", &oauth(None), external(), None).await;
+        let Err(AuthFlowError::Invalid(why)) = unpinned else {
+            panic!("a secret with no issuer to go to was used");
+        };
+        assert!(why.contains("oauth.issuer"), "{why}");
+
+        let elsewhere = auth
+            .start(
+                "docs",
+                &oauth(Some("https://as.elsewhere.example")),
+                external(),
+                None,
+            )
+            .await;
+        assert!(
+            matches!(elsewhere, Err(AuthFlowError::Denied(_))),
+            "a secret was handed to another authorization server"
+        );
+
+        auth.start("docs", &oauth(Some(&server_auth.url)), external(), None)
+            .await
+            .unwrap();
+
+        let listed = McpAuth::with_file_store(dir.path().join("listed"));
+        listed.set_policy(Arc::new(McpPolicyGate::from_host(
+            serde_json::from_value(serde_json::json!({
+                "allowed_authorization_servers": [server_auth.url],
+            }))
+            .unwrap(),
+        )));
+        listed
+            .start("docs", &oauth(None), external(), None)
+            .await
+            .unwrap();
+        std::env::remove_var("AGIX_UNIT_PREREGISTERED_SECRET");
     }
 }
