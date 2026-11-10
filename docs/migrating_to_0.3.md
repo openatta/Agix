@@ -2038,6 +2038,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **以前不带 `data` 的三处 `SESSION_BUSY` 现在带。** 重建时旧引擎未停、上下文请求撞上正在跑的
   turn、`session.setGoal` 恢复会话时旧引擎未停,现在和其余来源一样带 `data`。以前靠"没有 `data`"
   区分来源的,改读 `reason`。
+- **`session.startAgent`,以及要先恢复会话的上下文请求(`session.inspectContext` / `dropMessages` /
+  `editMessage`),在上一个引擎还没停下时返回的 `SESSION_BUSY` 也带 `data`:**
+  `{session_id, reason: "previous_engine", current_turn_id: null}`。以前这两处不带 `data`。要改的:
+  同上,按 `reason` 处理,稍后重试。
 - **`message` 文本变了。** `session.setPrompt` / 换厂商的 `session.setModel` 因旧引擎没停下而失败
   时,`reason` 为 `previous_engine`,message 由 "session is busy" 改为 "session `…` could not be
   brought back: … is still stopping on its previous engine; try again once it has";
@@ -2068,9 +2072,14 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 #### 事件帧
 
-- **`subagent_progress.event` 里嵌套的事件走与外层同一个投影。** 不再带 `turn_id`,`kind` 与外层
-  一致(`compact`、`prompt`);投影为空的嵌套事件(如子 Agent 的 `system_init`)整帧不发。协议文档
-  §5.5、§7 已补。其余帧与 0.3.11 逐项相同。
+- **`subagent_progress.event` 里嵌套的事件走与外层同一个投影。** 嵌套事件不再带 `turn_id`,`kind` 与
+  外层一致(`compact`、`prompt`)。投影为空的嵌套事件整帧不发,以前会发的有:子 Agent 的 `system_init`、
+  子 Agent 的 `system`(如换模型时的 "model set to …"),以及子 Agent 再派生的孙 Agent 的
+  `agent_spawned` 与 `agent_completed`(含 `outcome`)。协议文档 §5.5、§7 已补。其余帧与 0.3.11 逐项相同。
+  要改的:靠嵌套 `agent_completed.outcome` 得知孙 Agent 结局的,改读子 Agent 发起它的那次 `Agent`
+  调用的嵌套 `tool_result`(同一 `agent_label` 下,`id` 与那次嵌套 `tool_use` 的相同):`is_error: true`
+  即以前的 `failed`,否则 `content` 是孙 Agent 的回答;以前的 `cancelled` 在 `tool_result` 上与
+  `completed` 分不开,`content` 是它停下前已有的回答。孙 Agent 的开始看同一次调用的嵌套 `tool_use`。
 
 ### 嵌入方
 

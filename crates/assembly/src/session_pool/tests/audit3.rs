@@ -28,6 +28,15 @@ async fn new_session(pool: &SessionPool) -> String {
         .to_string()
 }
 
+/// The rebuild holding `sid`'s lock and one more caller queued on it.
+async fn waits_on_session_lock(pool: &SessionPool, sid: &str) -> bool {
+    pool.session_locks
+        .lock()
+        .await
+        .get(sid)
+        .is_some_and(|lock| Arc::strong_count(lock) >= 3)
+}
+
 /// Lets the first engine build through and holds the second one — the
 /// rebuild — until the test says go.
 struct HoldSecondBuild {
@@ -36,11 +45,9 @@ struct HoldSecondBuild {
     go: StdMutex<mpsc::Receiver<()>>,
 }
 
-/// `shutdown_session` does not take the session lock the rebuild holds, so
-/// it removes the entry while `create` is still building the replacement;
-/// `create` then inserts into the empty slot as if it were a fresh session.
+/// A `session.close` issued while a rebuild is building the replacement
+/// engine must still leave the session closed once both are done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit3_close_during_a_rebuild_is_not_undone_by_the_rebuild() {
     let (pool, _dir, _store) = pool_with_history().await;
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -77,11 +84,18 @@ async fn audit3_close_during_a_rebuild_is_not_undone_by_the_rebuild() {
         .await
         .unwrap();
 
-    pool.shutdown_session(&sid).await.unwrap();
-    assert!(!pool.sessions.lock().await.contains_key(&sid));
+    let close = {
+        let pool = pool.clone();
+        let sid = sid.clone();
+        tokio::spawn(async move { pool.shutdown_session(&sid).await })
+    };
+    while !close.is_finished() && !waits_on_session_lock(&pool, &sid).await {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
 
     go_tx.send(()).unwrap();
     let _ = rebuild.await.unwrap();
+    close.await.unwrap().unwrap();
     assert!(
         !pool.sessions.lock().await.contains_key(&sid),
         "session.close returned, yet the rebuild in flight put the session back in memory"

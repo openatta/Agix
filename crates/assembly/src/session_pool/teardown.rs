@@ -284,11 +284,17 @@ impl SessionPool {
     /// race). A delete that loses that race, or fails for any other reason,
     /// is logged and left for the startup GC to clean up later (N1) — it
     /// never fails `session.close` itself.
+    ///
+    /// Waits out a rebuild or resume of the same id in flight: either would
+    /// otherwise put the session back in memory after this returned.
     pub async fn shutdown_session(&self, session_id: &str) -> Result<usize, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         let children = self.fetch_child_sidechains(session_id).await;
         Ok(self
-            .shutdown_session_with_children(session_id, children)
+            .with_session_lock(session_id, async {
+                self.shutdown_session_with_children(session_id, children)
+                    .await
+            })
             .await)
     }
 
