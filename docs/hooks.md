@@ -68,7 +68,8 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
   (`cd` 之后、`sh -c` 里、`env` / `sudo` 等 wrapper 后面的都算)或 `shell` 本身——或者命令里
   有哪个相对路径的词此刻就是项目里的一个文件——解释器读的脚本(`python3 scripts/check.py`、
   `node hook.js`、`awk -f x.awk`、`bash x.sh`、`. env.sh`)、选项的值(`--require=./x.js`)、
-  `NAME=value` 的值、`<` 读进来的、`cat x.sh | sh` 里的——就不跑,算这个 hook 失败(按 `on_error`
+  `NAME=value` 的值、`<` 读进来的、`cat x.sh | sh` 里的,以及展开后落到项目文件上的未加引号的
+  glob / 花括号(`sh scripts/*.sh`、`for f in scripts/*.py`)——就不跑,算这个 hook 失败(按 `on_error`
   处理,缺省记 warn、放行),失败原因里写着是哪个词。文件按工作目录和命令里 `cd` 去的目录找;
   哪个程序把哪个参数当代码执行不去猜,所以把项目文件当数据读的(`grep x README.md`)同样不跑。
   `>` 写到的文件、不存在的路径、目录、选项本身不算。继承来的 `PATH` 里的相对条目(`.`、空条目)

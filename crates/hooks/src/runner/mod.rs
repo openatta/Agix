@@ -1183,6 +1183,8 @@ mod tests {
             "cd scripts && python3 check.py",
             "cat scripts/check.sh | sh",
             "sh < scripts/check.sh",
+            "sh scripts/check.s?",
+            "for f in scripts/check.*; do python3 \"$f\"; done",
         ] {
             let result = runner(command, true)
                 .run(HookEvent::PreToolUse, &input)

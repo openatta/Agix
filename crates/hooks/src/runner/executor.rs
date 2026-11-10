@@ -248,9 +248,15 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
         .flat_map(|word| word.text.split_whitespace())
         .map(str::to_string)
         .collect();
+    let mut patterns = Vec::new();
     for segment in permissions::shell::segments(command) {
         let words = permissions::shell::lex(&segment.source);
         operands.extend(read_from(&words));
+        patterns.extend(
+            without_redirections(&words)
+                .filter(|word| (word.globs || word.braces) && !word.substitutes)
+                .map(|word| word.text.clone()),
+        );
         for traced in traced_invocations(&segment.source) {
             operands.extend(
                 traced
@@ -305,10 +311,57 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
                     && bases.iter().any(|base| base.join(path).is_file())
             })
         })
+        .or_else(|| {
+            patterns.iter().find(|pattern| {
+                is_relative(pattern) && bases.iter().any(|base| matches_a_file(pattern, base))
+            })
+        })
         .map(|word| ProjectSupplied::File(word.clone()))
 }
 
 const MAX_CD_BASES: usize = 32;
+
+/// Whether the unquoted glob or brace word `pattern` expands to a file under
+/// `base`. Dot files count, though a shell's `*` skips them.
+fn matches_a_file(pattern: &str, base: &Path) -> bool {
+    const MAX_DIRS: usize = 256;
+    let parts: Vec<&str> = pattern.split('/').filter(|part| !part.is_empty()).collect();
+    let mut dirs = vec![base.to_path_buf()];
+    for (at, part) in parts.iter().enumerate() {
+        let last = at + 1 == parts.len();
+        let reached = |path: &Path| if last { path.is_file() } else { path.is_dir() };
+        let mut next = Vec::new();
+        for dir in &dirs {
+            if !part.contains(['*', '?', '[', '{']) {
+                let path = dir.join(part);
+                if reached(&path) {
+                    next.push(path);
+                }
+                continue;
+            }
+            let Ok(glob) = globset::Glob::new(part) else {
+                return false;
+            };
+            let matcher = glob.compile_matcher();
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            next.extend(
+                entries
+                    .flatten()
+                    .filter(|entry| matcher.is_match(entry.file_name()))
+                    .map(|entry| entry.path())
+                    .filter(|path| reached(path)),
+            );
+        }
+        if last {
+            return !next.is_empty();
+        }
+        next.truncate(MAX_DIRS);
+        dirs = next;
+    }
+    false
+}
 
 /// `command` with `$HOME` / `${HOME}` written `~` (an absolute path) and
 /// `$PWD` / `${PWD}` written `.` (where the hook runs, which is the project).
@@ -623,6 +676,14 @@ mod tests {
             ("sh -c 'cd scripts; node hook.js'", "hook.js"),
             ("$RUNNER scripts/x.py", "scripts/x.py"),
             ("echo $(cat x.sh)", "x.sh"),
+            ("python3 scripts/*.py", "scripts/*.py"),
+            ("sh ./x.s?", "./x.s?"),
+            ("node scripts/{hook,other}.js", "scripts/{hook,other}.js"),
+            ("ruby sub/*/y.rb", "sub/*/y.rb"),
+            (
+                "for f in scripts/*.py; do python3 \"$f\"; done",
+                "scripts/*.py",
+            ),
         ] {
             assert_eq!(
                 project_supplied("bash", command, &project),
@@ -641,6 +702,11 @@ mod tests {
             "echo done >> x.sh",
             "echo done > env.sh 2>&1",
             "check.sh x",
+            "find . -name '*.py'",
+            "python3 scripts/*.rb",
+            "ls sub/*",
+            "python3 /opt/*.py",
+            "echo done > *.log",
         ] {
             assert_eq!(
                 project_supplied("bash", command, &project),
