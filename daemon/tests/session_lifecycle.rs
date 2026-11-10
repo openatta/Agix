@@ -3868,7 +3868,7 @@ async fn per_session_bypass_option_is_clamped_to_the_configured_mode() {
     // `settings.permission_mode` is a policy, not a default. A client
     // asking for `bypassPermissions` against an `ask`-configured daemon is
     // clamped and still prompted — otherwise anyone who can reach the socket
-    // opts themselves out, and `crates/assembly/src/server.rs` is explicit that there
+    // opts themselves out, and `crates/assembly/src/server/mod.rs` is explicit that there
     // is no per-method authorization on it.
     let (srv, _seen) = start_scripted_server(
         asking_bash_rounds("session-bypassed.txt"),

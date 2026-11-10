@@ -47,7 +47,7 @@ impl Agent {
         self.token_budget.continuations = 0;
     }
 
-    /// `/cost` — show estimated session API cost.
+    /// `/cost` — report the tokens and calls this session has spent.
     pub(crate) fn handle_cost_command(&self) -> String {
         let SessionSpend {
             usage,

@@ -1,15 +1,11 @@
 //! `CredentialSource` — where the engine's API keys come from.
 //!
-//! Two places, historically, and neither was replaceable: the daemon read
-//! `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` out of the environment for its
-//! primary client, and every other provider's key was read straight out of
-//! `settings.json`, in plaintext, because that is where the field is.
-//!
-//! That is fine on a laptop and disqualifying for a host that is not allowed
-//! to have a credential on disk at all — a service pulling from a vault, an
-//! operator injecting per-request identity, anything with rotation. There was
-//! no seam to hand any of them: the key was read at the construction site,
-//! from a struct field, by name.
+//! The default sources are the environment (`ANTHROPIC_AUTH_TOKEN`/
+//! `ANTHROPIC_API_KEY` for the primary client) and `settings.json` for every
+//! other provider. That is fine on a laptop and disqualifying for a host that
+//! is not allowed to have a credential on disk at all — a service pulling
+//! from a vault, an operator injecting per-request identity, anything with
+//! rotation. This trait is the seam such a host replaces.
 //!
 //! # The value never comes back as a `String`
 //!

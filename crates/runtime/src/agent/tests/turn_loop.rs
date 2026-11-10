@@ -958,7 +958,7 @@ impl base::interface::permission::Permission for PromptingPermission {
 /// exists. This drives the real loop rather than simulating the message.
 #[tokio::test]
 async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
-    // Local rather than reusing turn.rs's ProbeTool — that lives in a
+    // Local rather than reusing `turn/tests/tool_exec.rs`'s ProbeTool — that lives in a
     // private `mod tests` and exporting it just for this would widen its
     // visibility for one caller.
     struct ProbeTool;
@@ -1053,11 +1053,8 @@ async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
 /// `EngineCommand::CancelTurn` must interrupt the turn in flight and
 /// leave the session able to take the next message.
 ///
-/// Before per-turn tokens existed there was no way to express this: every
-/// turn ran under the token passed to `run()`, so the only interrupt a
-/// host could send took the whole session down with it. The second half
-/// of this test — a normal turn served *after* the cancellation — is the
-/// part that would have failed.
+/// The second half of this test — a normal turn served *after* the
+/// cancellation — is what tells a per-turn cancel from a session shutdown.
 ///
 /// It also pins the delivery path. `CancelTurn` is handled in the input
 /// demultiplexer, not the main loop, because the main loop is inside

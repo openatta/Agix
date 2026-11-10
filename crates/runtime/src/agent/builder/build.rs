@@ -416,7 +416,7 @@ impl Builder {
             // Only the registry *this* builder owns can be extended; a
             // `commands_override` is shared across sessions, so the turn loop
             // falls back to resolving `/mcp__…` off the live `McpManager`
-            // instead — see the slash-command interception in `turn.rs`.
+            // instead — see the slash-command interception in `turn/process.rs`.
             let mcp_prompts = mcp.prompt_commands();
             if !mcp_prompts.is_empty() {
                 tracing::info!(

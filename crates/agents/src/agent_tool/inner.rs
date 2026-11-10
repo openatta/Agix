@@ -155,8 +155,7 @@ pub(super) struct Inner {
     /// Net effect: a subagent_type added on disk after this `AgentTool` was
     /// built becomes *usable* immediately (via `agent_type_def`), but won't
     /// appear in the model-facing catalog text (`description()`) until the
-    /// next full rebuild. Functional reload without cosmetic reload — an
-    /// accepted, documented scope boundary, not an oversight.
+    /// next full rebuild.
     pub(super) description: Arc<str>,
     /// The parent `Agent`'s own settings, when known (set via
     /// `.with_settings(...)`) — `sub_settings()`/`run_sub_inner()` clone this
@@ -164,7 +163,7 @@ pub(super) struct Inner {
     /// `scope: "code"` stand-in, so a sub-agent's skills/hooks/agents
     /// lookups resolve against the parent's *real* scope, not a guess.
     /// `None` when unset (e.g. in tests, or the generic `AgentSpawner`
-    /// bridge) falls back to the previous hardcoded-`"code"` behavior.
+    /// bridge) falls back to a hardcoded `"code"` scope.
     pub(super) parent_settings: Option<Arc<Settings>>,
     /// Multi-provider per-task-type model routing — see
     /// `Builder::task_router` / `Inner::model_for_subagent`. `None` (the

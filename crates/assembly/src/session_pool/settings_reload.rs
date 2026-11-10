@@ -9,7 +9,7 @@ impl SessionPool {
     /// to redacted so a caller that just wants to know *which* providers
     /// are configured doesn't accidentally end up with plaintext keys in
     /// its own logs/UI. See the trust-boundary note on `config.setProvider`
-    /// in `crates/assembly/src/server.rs` — `include_secrets: true` is still gated
+    /// in `crates/assembly/src/server/` — `include_secrets: true` is still gated
     /// by nothing more than "can reach this socket", same as every other
     /// method here.
     pub async fn get_providers(

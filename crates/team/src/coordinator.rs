@@ -1859,8 +1859,7 @@ mod tests {
     }
 
     /// Without a wired channel nothing is emitted and orchestration is
-    /// unaffected — the pre-existing behavior for embedders that never call
-    /// `set_event_sender`.
+    /// unaffected: the case for embedders that never call `set_event_sender`.
     #[tokio::test]
     async fn team_progress_is_a_no_op_without_a_wired_channel() {
         let stages = vec![TeamStage {

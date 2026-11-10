@@ -551,7 +551,6 @@ impl Agent {
                 ));
             }
 
-            // 1. Compact if token budget exceeded
             self.compact_if_needed(&cancel).await;
             if cancel.is_cancelled() {
                 continue;

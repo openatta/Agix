@@ -419,7 +419,7 @@ impl SkillManager {
     /// Sorted, not insertion/hash order: the backing store is a `HashMap`,
     /// whose iteration order is randomized per-process (different every run,
     /// same skill set or not) — every consumer of this list renders it
-    /// straight into user/model-facing text (`turn.rs::build_skills_text`
+    /// straight into user/model-facing text (`turn/prompt.rs::build_skills_text`
     /// injects it verbatim into the system prompt, `agent/commands.rs`'s `/skills`
     /// command, the `SkillTool` lookup). An unsorted list meant the system
     /// prompt's "## Available Skills" section came out in a different order
@@ -1091,7 +1091,7 @@ mod tests {
         assert_eq!(mgr.get("test-skill").unwrap().description, "disk version");
     }
 
-    /// `turn.rs::build_skills_text` renders `list()` straight into the system
+    /// `turn/prompt.rs::build_skills_text` renders `list()` straight into the system
     /// prompt, so its order must be stable across processes. Register in
     /// deliberately unsorted order and assert the output is alphabetical —
     /// HashMap order is only *unstable across* runs, so asserting the

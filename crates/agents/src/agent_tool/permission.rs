@@ -86,7 +86,7 @@ impl Permission for DenyRulesFirst {
 ///
 /// The parent does have a host. So forward the question to it: register the
 /// prompt in the parent's own pending-permission registry and emit it on the
-/// parent's event channel, which is the same pair `turn.rs` uses for the
+/// parent's event channel, which is the same pair `runtime::turn` uses for the
 /// parent's own prompts — so `session.respondToPrompt` answers a sub-agent's
 /// question with no new RPC and no new plumbing. The parent's input
 /// demultiplexer intercepts `PermissionResponse` ahead of turn dispatch, so

@@ -286,10 +286,8 @@ pub trait Scene: Send + Sync + 'static {
     /// Execution limits this scene imposes on its own turns.
     ///
     /// Consumed by `runtime::turn::Agent::run_user_turn`, which resolves the
-    /// turn's API-call ceiling as `min(settings, scene)`. Before that it was
-    /// called from nowhere in production: `grep` found only this definition
-    /// and the scene impls, so every value a scene declared here constrained
-    /// nothing at all. See [`ExecutionParams`] for what was dropped and why.
+    /// turn's API-call ceiling as `min(settings, scene)`. See
+    /// [`ExecutionParams`] for which fields are honoured.
     fn execution_params(&self) -> ExecutionParams {
         ExecutionParams::default()
     }

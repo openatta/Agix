@@ -7,7 +7,7 @@ use super::*;
 /// The caller's `options.permission_mode` is honored, but **clamped** to the
 /// daemon's configured `settings.permission_mode`: a client may tighten the
 /// mode for its own session and may not loosen it, since there is no
-/// per-method authorization on this socket (see `server.rs`).
+/// per-method authorization on this socket (see `server/mod.rs`).
 ///
 /// `settings.allow_client_permission_override` (default `false`) lets the
 /// client win outright, for deployments where every client is as trusted as

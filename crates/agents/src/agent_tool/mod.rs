@@ -268,7 +268,7 @@ impl AgentTool {
     }
 
     /// Attach the parent `Agent`'s own settings so sub-agents inherit its
-    /// real scope/paths instead of a hardcoded stand-in. See the
+    /// real scope/paths. See the
     /// `Inner::parent_settings` doc comment.
     pub fn with_settings(mut self, settings: Arc<Settings>) -> Self {
         let mut inner = (*self.inner).clone();
@@ -333,7 +333,7 @@ impl AgentTool {
             .as_ref()
             .clone();
         for (name, definition) in inner.session_agent_types.iter() {
-            if visible.get(name).map_or(true, |d| !d.source.may_shadow()) {
+            if visible.get(name).is_none_or(|d| !d.source.may_shadow()) {
                 visible.insert(name.clone(), definition.clone());
             }
         }

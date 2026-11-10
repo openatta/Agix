@@ -563,19 +563,15 @@ impl Compactor for DefaultCompactor {
             ));
         }
 
-        // Strategy progression with fallback
         let (result, strategy, dropped_rounds, dropped_messages, tokens_saved) = {
-            // 1. Try Snip (keep configured rounds)
             let (r, s, dr, dm, ts) = self.snip(messages.clone(), max_tokens, keep_rounds);
             if Self::tokens(&r) <= max_tokens {
                 (r, s, dr, dm, ts)
             } else {
-                // 2. Try MicroCompact (clear old tool results)
                 let (r, s) = self.micro_compact(messages.clone(), keep_rounds);
                 if Self::tokens(&r) <= max_tokens {
                     (r, s, 0, 0, 0)
                 } else {
-                    // 3. CollapseContext as fallback
                     let (r, s) = self.collapse_context(messages.clone(), keep_rounds);
                     (r, s, 0, 0, 0)
                 }
@@ -662,7 +658,7 @@ const MAX_CHARS_PER_FILE: usize = 5_000;
 /// Per-skill and shared-total character budgets for reattached skill
 /// content — sized from a 5,000 / 25,000 *token* budget, converted with
 /// this codebase's existing ~4-chars-per-token heuristic (see
-/// `turn.rs::build_skills_text`'s listing budget, same conversion).
+/// `turn/prompt.rs::build_skills_text`'s listing budget, same conversion).
 const MAX_CHARS_PER_SKILL: usize = 20_000;
 const MAX_CHARS_SKILLS_TOTAL: usize = 100_000;
 

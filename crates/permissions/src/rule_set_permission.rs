@@ -259,7 +259,7 @@ impl Permission for RuleSetPermission {
     fn add_persistent_allow(&self, tool_name: &str, rule_content: Option<&str>) {
         // `RuleSource::Session` (50), not `Command` (45) — `Command`-sourced
         // rules get bulk-deleted by `clear_temporary_allows` (called from
-        // `turn.rs` per-turn skill cleanup via `RuleSet::remove_by_source`)
+        // `runtime::turn`'s per-turn skill cleanup via `RuleSet::remove_by_source`)
         // whenever a skill goes inactive, and a "permit always" decision
         // from a user's interactive prompt answer must survive that
         // unrelated cleanup for the rest of the session.
@@ -737,7 +737,7 @@ mod tests {
         // A Session-sourced persistent allow must NOT be wiped by `clear_temporary_allows`
         // (which only removes `Command`-sourced rules — see
         // `RuleSetPermission::clear_temporary_allows` and the skill
-        // deactivation cleanup in `turn.rs` that calls it).
+        // deactivation cleanup in `runtime::turn` that calls it).
         let tools = registry_with(FakeTool {
             name: "Bash",
             read_only: false,

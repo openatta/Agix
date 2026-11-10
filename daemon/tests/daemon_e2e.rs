@@ -1510,8 +1510,8 @@ async fn plugin_install_rejects_bad_checksum() {
 /// Installing and being found are two different pieces of code, and only one
 /// of them reads the manifest. A package that unpacks but will not load is
 /// installed in no sense the caller cares about: it never appears in
-/// `plugin.list`, contributes nothing, and — before this — reported success
-/// on the way in, so nothing anywhere said why.
+/// `plugin.list` and contributes nothing, so install has to report the
+/// failure on the way in.
 #[cfg(feature = "plugin-packages")]
 #[tokio::test]
 async fn plugin_install_refuses_a_package_it_cannot_load_back() {

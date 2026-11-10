@@ -82,7 +82,7 @@ pub enum SceneCheck {
 
 /// `SessionPool::resume_session`'s failure type — a plain `RpcError` for
 /// most cases, plus a `SidechainTerminal` variant carrying the extra
-/// `parent_session_id`/`final_state` fields `server.rs` needs to build the
+/// `parent_session_id`/`final_state` fields `server/` needs to build the
 /// `SIDECHAIN_TERMINAL` error's structured `data` (an `RpcError` is just
 /// `(code, message)`, with no room for that). The terminal-state check runs
 /// inside `resume_session`'s `with_session_lock` critical section, so its
@@ -102,7 +102,7 @@ pub enum ResumeError {
 }
 
 /// `SessionPool::set_session_model`'s failure type. `Busy` carries the turn
-/// id `server.rs` needs for `SESSION_BUSY`'s structured `data`, which a plain
+/// id `server/` needs for `SESSION_BUSY`'s structured `data`, which a plain
 /// `RpcError` — `(code, message)` — has no room for. Same shape and same
 /// reason as [`ResumeError`].
 pub enum SetModelError {
@@ -117,7 +117,7 @@ pub enum SetModelError {
 
 /// `session.create`'s `project_root` disambiguated three ways — JSON only
 /// gives "key omitted" vs. "key present" for free; `null` vs. a string
-/// needs an explicit check the wire layer (`server.rs`) does before this
+/// needs an explicit check the wire layer (`server/`) does before this
 /// ever reaches `SessionPool`.
 /// What a per-session settings entry is keyed by: the project it belongs to
 /// (`None` = the global no-project tier) and the scene it runs under.
@@ -302,7 +302,7 @@ pub enum ProjectSelector {
 
 /// `(code, message)` for a failed pool operation, ready to hand to
 /// `RpcResponse::err`. The older pool methods return a bare `String` and let
-/// `server.rs` pick one fixed code per method; the session read/branch
+/// `server/` pick one fixed code per method; the session read/branch
 /// surface (`session.history`/`.fork`/`.resume`) genuinely needs three
 /// different codes from the *same* method — a bad id is `INVALID_PARAMS`, an
 /// unknown one is `SESSION_NOT_FOUND`, an unreadable log is

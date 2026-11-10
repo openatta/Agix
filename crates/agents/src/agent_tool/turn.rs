@@ -88,7 +88,7 @@ pub(super) async fn write_sidechain_terminal_marker(
 /// resolves, only waits a short bounded grace window for the drain to
 /// catch up on anything still buffered — never indefinitely on
 /// `TurnComplete` itself. Confirmed reproducible even against unmodified
-/// `turn.rs` (a plain model error is enough to trigger it), not specific to
+/// `runtime::turn` (a plain model error is enough to trigger it), not specific to
 /// any one caller.
 ///
 /// Returns the collected text alongside whether the turn ended because

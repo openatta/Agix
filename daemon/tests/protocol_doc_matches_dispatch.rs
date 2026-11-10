@@ -7,23 +7,16 @@
 //! METHOD_NOT_FOUND, and an implemented method nobody documented is a
 //! capability clients never learn about.
 //!
-//! Both had happened. At the time this test was written the doc described
-//! fifteen methods with no dispatch arm — `daemon.ping` among them, the one
-//! it recommends for keepalive — and eleven methods were implemented with
-//! no entry in the doc.
-//!
-//! The same drift is possible one level down, in the events: §7's table is a
+//! The same drift is possible in the events: §7's table is a
 //! whitelist of `session.event` kinds, and the whitelist in the code is the
 //! `match` in `run_turn`'s forwarding loop. Nothing compared them, so an
 //! event could be documented and never sent — a client waiting forever for a
-//! frame that does not exist — or sent and never documented. The `compact`
-//! kind was added with nothing checking either direction.
+//! frame that does not exist — or sent and never documented.
 //!
 //! Source-text scanning: match arms out of `dispatch`, `#### \`name\``
 //! headings out of §6, `AgentEvent` arms out of the forwarding loop, table
 //! rows out of §7. It cannot check that a documented *shape* is right,
-//! only that both sides agree on what exists. That is the failure that kept
-//! happening.
+//! only that both sides agree on what exists.
 
 use std::path::{Path, PathBuf};
 

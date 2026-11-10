@@ -112,14 +112,12 @@ impl Tool for GoldenFlood {
 
 /// Runs fine and calls its own result a failure.
 ///
-/// The other half of failing, and the one that had no fixture. `GoldenBoom`
-/// returns `Err` — the engine could not run the tool — which has always
-/// reached the model as `is_error: true`. Nine production tools instead
-/// return `Ok` with `ToolResult::is_error` set: a shell command that exited
-/// non-zero, an HTTP status a fetch will not follow, an MCP server answering
-/// `isError`, a plugin whose guest trapped. That flag was dropped on the way
-/// to the model for as long as it existed, and no fixture here failed that
-/// way, so nothing noticed.
+/// The other half of failing. `GoldenBoom` returns `Err` — the engine could
+/// not run the tool — which reaches the model as `is_error: true`. Many
+/// production tools instead return `Ok` with `ToolResult::is_error` set: a
+/// shell command that exited non-zero, an HTTP status a fetch will not
+/// follow, an MCP server answering `isError`, a plugin whose guest trapped.
+/// That flag has to reach the model too.
 #[derive(Debug)]
 struct GoldenReports;
 

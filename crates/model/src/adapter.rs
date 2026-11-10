@@ -794,10 +794,8 @@ mod map_stream_event_tests {
         ));
     }
 
-    /// The wire-format layer (`base::message::ContentBlock`) always had Image
-    /// and Thinking variants; the protocol-agnostic layer did not, so the
-    /// adapter had nothing to map. Now that both exist, check the mapping is
-    /// the identity the API expects — in particular that the signature is
+    /// Image and Thinking blocks must map onto `base::message::ContentBlock`
+    /// as the identity the API expects — in particular that the signature is
     /// carried, since that is the field whose loss breaks the next request,
     /// and that a block without one is not sent at all.
     #[test]
