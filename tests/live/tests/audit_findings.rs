@@ -708,3 +708,59 @@ async fn audit_a_programs_sub_call_progress_names_a_tool_use_the_host_saw() -> a
     run.finish().await;
     Ok(())
 }
+
+/// A session the pool evicts at its cap comes back from its log on the next
+/// turn. One the model put in plan mode is still in plan mode then: leaving
+/// it is `ExitPlanMode`'s question to the user, not the pool's to answer by
+/// dropping the engine.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_session_evicted_at_the_cap_comes_back_still_in_plan_mode() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("evicted-plan", &stub)
+        .settings(json!({ "permission_mode": "acceptEdits" }))
+        .options(|o| o.session_cap(1))
+        .start()
+        .await?;
+    let planner = run.session().await?;
+    stub.script([
+        Reply::calls("pm-1", "EnterPlanMode", json!({})),
+        Reply::text("planned"),
+    ]);
+    run.turn(&planner, "plan it").await?;
+    let before = runtime_of(&mut run, &planner, "before").await?;
+    anyhow::ensure!(
+        before["permission_mode"] == "plan",
+        "the session never got into plan mode: {before}"
+    );
+
+    let other = run.session().await?;
+    stub.script([Reply::text("other answer")]);
+    run.turn(&other, "something else").await?;
+
+    let target = run.project.join("written-after-eviction.txt");
+    stub.script([
+        Reply::calls(
+            "w-1",
+            "Write",
+            json!({ "file_path": target.to_string_lossy(), "content": "x" }),
+        ),
+        Reply::text("wrote it"),
+    ]);
+    run.turn(&planner, "BACK-MARK write the file now").await?;
+    let after = runtime_of(&mut run, &planner, "after").await?;
+
+    let mut problems = Vec::new();
+    if after["permission_mode"] != "plan" {
+        problems.push(format!(
+            "permission_mode plan -> {} after the eviction",
+            after["permission_mode"]
+        ));
+    }
+    if target.exists() {
+        problems.push("Write ran in a session that was in plan mode".to_string());
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+    run.finish().await;
+    Ok(())
+}
