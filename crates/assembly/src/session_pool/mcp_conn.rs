@@ -338,7 +338,7 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
         config: serde_json::Value,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         self.put_mcp_server(project_root, scene_id, name, config, false)
             .await
     }
@@ -354,7 +354,7 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
         config: serde_json::Value,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         self.put_mcp_server(project_root, scene_id, name, config, true)
             .await
     }
@@ -369,8 +369,8 @@ impl SessionPool {
         name: &str,
         config: serde_json::Value,
         must_exist: bool,
-    ) -> Result<serde_json::Value, RpcError> {
-        let invalid = |message: String| (crate::rpc::codes::INVALID_PARAMS, message);
+    ) -> Result<serde_json::Value, PoolError> {
+        let invalid = |message: String| PoolError::InvalidRequest(message);
         if name.trim().is_empty() {
             return Err(invalid("name must not be empty".into()));
         }
@@ -391,7 +391,7 @@ impl SessionPool {
             cfg = cfg.confined_to_own_env().map_err(invalid)?;
         }
         self.admit_mcp(name, &cfg)
-            .map_err(|reason| (crate::rpc::codes::MCP_SERVER_DENIED, reason))?;
+            .map_err(|reason| PoolError::McpServerDenied(reason))?;
         self.write_mcp_server(project_root, scene_id, name, &cfg, config, must_exist)
             .await
             .map_err(invalid)
@@ -677,10 +677,9 @@ impl SessionPool {
     pub async fn mcp_auth_set_identity(
         &self,
         identity: mcp::oauth::EnterpriseIdentity,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         if self.mcp_auth.enterprise_idp().is_none() {
-            return Err((
-                codes::INVALID_PARAMS,
+            return Err(PoolError::InvalidRequest(
                 "no enterprise IdP is configured: the host's Assembly::mcp_enterprise_idp or \
                  the MCP policy's enterprise_idp names one"
                     .into(),
@@ -713,19 +712,18 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         name: &str,
-    ) -> Result<mcp::config::McpServerConfig, RpcError> {
+    ) -> Result<mcp::config::McpServerConfig, PoolError> {
         let root = project_root.unwrap_or(self.cwd.as_path());
         let manager = self.mcp_for_project(Some(root), scene_id).await;
         if let Some(cfg) = manager.config_of(name) {
             return Ok(cfg.clone());
         }
         if let Some(denied) = manager.denied().iter().find(|d| d.name == name) {
-            return Err((codes::MCP_SERVER_DENIED, denied.reason.clone()));
+            return Err(PoolError::McpServerDenied(denied.reason.clone()));
         }
-        Err((
-            codes::INVALID_PARAMS,
-            format!("no MCP server `{name}` is configured for this project"),
-        ))
+        Err(PoolError::InvalidRequest(format!(
+            "no MCP server `{name}` is configured for this project"
+        )))
     }
 
     /// `mcp.auth.start` — begin a sign-in to an MCP server. A loopback flow
@@ -739,7 +737,7 @@ impl SessionPool {
         name: &str,
         redirect: mcp::oauth::Redirect,
         scopes: Option<Vec<String>>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let cfg = self
             .mcp_server_to_authorize(project_root, scene_id, name)
             .await?;
@@ -747,7 +745,7 @@ impl SessionPool {
             .mcp_auth
             .start(name, &cfg, redirect, scopes)
             .await
-            .map_err(auth_flow_error)?;
+            .map_err(PoolError::from)?;
         if let Some(mut callbacks) = start.callbacks.take() {
             let pool = Arc::downgrade(self);
             let flow_id = start.flow_id.clone();
@@ -793,21 +791,21 @@ impl SessionPool {
         &self,
         flow_id: &str,
         callback_url: &str,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let done = self
             .finish_mcp_auth(flow_id, callback_url)
             .await
-            .map_err(auth_flow_error)?;
+            .map_err(PoolError::from)?;
         Ok(serde_json::json!({"server": done.server, "scopes": done.scopes}))
     }
 
     #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_cancel(&self, flow_id: &str) -> Result<serde_json::Value, RpcError> {
+    pub async fn mcp_auth_cancel(&self, flow_id: &str) -> Result<serde_json::Value, PoolError> {
         let server = self
             .mcp_auth
             .cancel(flow_id)
             .await
-            .map_err(auth_flow_error)?;
+            .map_err(PoolError::from)?;
         Ok(serde_json::json!({"server": server}))
     }
 
@@ -819,14 +817,14 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         name: &str,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let cfg = self
             .mcp_server_to_authorize(project_root, scene_id, name)
             .await?;
         self.mcp_auth
             .logout(name, &cfg)
             .await
-            .map_err(auth_flow_error)?;
+            .map_err(PoolError::from)?;
         if let Some(url) =
             mcp::oauth::server_url(&cfg).and_then(|u| mcp::oauth::canonical_server_url(&u).ok())
         {

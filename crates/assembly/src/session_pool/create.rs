@@ -16,15 +16,11 @@ impl SessionPool {
         scene_id: Option<&str>,
         project_root: ProjectSelector,
         options: Option<&SessionOptions>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let Some(scene) = self.resolve_scene(scene_id).await else {
-            return Err((
-                codes::SCENE_NOT_FOUND,
-                format!(
-                    "scene is not active on this daemon: {}",
-                    scene_id.unwrap_or("")
-                ),
-            ));
+            return Err(PoolError::SceneNotActive {
+                scene: scene_id.unwrap_or("").to_string(),
+            });
         };
 
         // Settings are resolved against *this session's* scene, not the
@@ -37,13 +33,9 @@ impl SessionPool {
         // project root there is nothing for its tools to read or write, and
         // the failure is far more legible at creation than at the first turn.
         if scene.requires_project() && matches!(project_root, ProjectSelector::NoProject) {
-            return Err((
-                codes::PROJECT_REQUIRED,
-                format!(
-                    "scene `{}` requires a project; pass project_root",
-                    scene.id()
-                ),
-            ));
+            return Err(PoolError::ProjectRequired {
+                scene: scene.id().to_string(),
+            });
         }
 
         let session_scene_id = scene.id().to_string();
@@ -56,13 +48,7 @@ impl SessionPool {
             ProjectSelector::NoProject => (self.binding_for(None, &session_scene_id).await, None),
             ProjectSelector::Path(p) => {
                 if !p.is_dir() {
-                    return Err((
-                        codes::PROJECT_NOT_FOUND,
-                        format!(
-                            "project_root does not exist or is not a directory: {}",
-                            p.display()
-                        ),
-                    ));
+                    return Err(PoolError::ProjectNotFound { path: p });
                 }
                 (self.binding_for(Some(&p), &session_scene_id).await, Some(p))
             }
@@ -73,7 +59,7 @@ impl SessionPool {
                 options.and_then(|o| o.provider.as_deref()),
                 options.and_then(|o| o.model.as_deref()),
             )
-            .map_err(|e| (codes::INVALID_PARAMS, e))?;
+            .map_err(|e| PoolError::InvalidRequest(e))?;
 
         let scene_id_for_result = scene.id().to_string();
         let project_trust = binding.settings.project_layer.trust;
@@ -87,8 +73,7 @@ impl SessionPool {
                 options,
                 false,
             )
-            .await
-            .map_err(CreateError::into_rpc)?;
+            .await?;
 
         let created_at = {
             let sessions = self.sessions.lock().await;

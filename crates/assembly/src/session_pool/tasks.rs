@@ -132,22 +132,28 @@ impl SessionPool {
     }
 
     /// `session.taskOutput`: part of what one of `session.tasks`' entries has
-    /// produced — what the model's `TaskOutput` reads. `None` if the
-    /// session's engine does not know the task; `Some(Err(next_byte))` if
-    /// `read` starts past the end of the output.
+    /// produced — what the model's `TaskOutput` reads.
     pub async fn task_output(
         &self,
         session_id: &str,
         task_id: &str,
         read: TaskOutputRead,
-    ) -> Option<Result<serde_json::Value, u64>> {
+    ) -> Result<serde_json::Value, PoolError> {
+        if !self.session_exists(session_id).await {
+            return Err(PoolError::no_session(session_id));
+        }
+        let unknown = || PoolError::TaskNotFound {
+            session_id: session_id.to_string(),
+            task_id: task_id.to_string(),
+        };
         let state = self
             .sessions
             .lock()
             .await
             .get(session_id)
-            .and_then(|live| live.state.clone())?;
-        let task = state.find_running_task(task_id)?;
+            .and_then(|live| live.state.clone())
+            .ok_or_else(unknown)?;
+        let task = state.find_running_task(task_id).ok_or_else(unknown)?;
         let (slice, truncated) = match read {
             TaskOutputRead::Tail(tail_bytes) => {
                 let slice = task.output_tail(tail_bytes);
@@ -159,10 +165,15 @@ impl SessionPool {
                     let truncated = slice.dropped > 0;
                     (slice, truncated)
                 }
-                Err(next_byte) => return Some(Err(next_byte)),
+                Err(next_byte) => {
+                    return Err(PoolError::OutputOutOfRange {
+                        task_id: task_id.to_string(),
+                        next_byte,
+                    })
+                }
             },
         };
-        Some(Ok(serde_json::json!({
+        Ok(serde_json::json!({
             "output": slice.text,
             "truncated": truncated,
             "status": task.info()["status"],
@@ -170,7 +181,7 @@ impl SessionPool {
             "next_byte": slice.next_byte,
             "dropped": slice.dropped,
             "final": slice.closed,
-        })))
+        }))
     }
 
     /// `session.stopTask`: stop one of `session.tasks`' entries. A scheduled
@@ -215,20 +226,13 @@ impl SessionPool {
         &self,
         session_id: &str,
         request: base::interface::agent_spawner::AgentRequest,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         use base::interface::agent_spawner::StartAgentError;
-        let not_found = || {
-            (
-                codes::SESSION_NOT_FOUND,
-                format!("no session `{session_id}`"),
-            )
-        };
+        let not_found = || PoolError::no_session(session_id);
         if !self.session_exists(session_id).await {
             return Err(not_found());
         }
-        self.ensure_live(session_id, None)
-            .await
-            .map_err(CreateError::into_rpc)?;
+        self.ensure_live(session_id, None).await?;
         let (state, spawner, cancel) = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id).ok_or_else(not_found)?;
@@ -245,8 +249,8 @@ impl SessionPool {
             .start_agent(request, state, cancel)
             .await
             .map_err(|e| match e {
-                StartAgentError::Limit(m) => (codes::TASK_LIMIT, m),
-                StartAgentError::Unsupported(m) => (codes::INVALID_REQUEST, m),
+                StartAgentError::Limit(m) => PoolError::TaskLimit(m),
+                StartAgentError::Unsupported(m) => PoolError::SpawnUnsupported(m),
             })?;
         Ok(serde_json::json!({
             "task_id": started.task_id,
@@ -264,29 +268,20 @@ impl SessionPool {
         &self,
         session_id: &str,
         request: runtime::agent::ContextRequest,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         if !self.session_exists(session_id).await {
-            return Err((
-                codes::SESSION_NOT_FOUND,
-                format!("no session `{session_id}`"),
-            ));
+            return Err(PoolError::no_session(session_id));
         }
-        self.ensure_live(session_id, None)
-            .await
-            .map_err(CreateError::into_rpc)?;
+        self.ensure_live(session_id, None).await?;
         let input_tx = {
             let sessions = self.sessions.lock().await;
-            let live = sessions.get(session_id).ok_or_else(|| {
-                (
-                    codes::SESSION_NOT_FOUND,
-                    format!("no session `{session_id}`"),
-                )
-            })?;
+            let live = sessions
+                .get(session_id)
+                .ok_or_else(|| PoolError::no_session(session_id))?;
             if let Some(turn) = &live.current_turn {
-                return Err((
-                    codes::SESSION_BUSY,
-                    format!("session `{session_id}` is running turn `{turn}`"),
-                ));
+                return Err(PoolError::SessionBusy(Busy::context_moving(
+                    session_id, turn,
+                )));
             }
             live.input_tx.clone()
         };
@@ -297,16 +292,13 @@ impl SessionPool {
                 reply,
             })
             .map_err(|_| {
-                (
-                    codes::ENGINE_ERROR,
-                    "the session's engine has stopped".to_string(),
-                )
+                PoolError::EngineUnreachable("the session's engine has stopped".to_string())
             })?;
         let result = tokio::time::timeout(Duration::from_secs(30), answer)
             .await
-            .map_err(|_| (codes::ENGINE_ERROR, "the engine did not answer".to_string()))?
-            .map_err(|_| (codes::ENGINE_ERROR, "the engine went away".to_string()))?
-            .map_err(|e| (codes::INVALID_PARAMS, e))?;
+            .map_err(|_| PoolError::EngineUnreachable("the engine did not answer".to_string()))?
+            .map_err(|_| PoolError::EngineUnreachable("the engine went away".to_string()))?
+            .map_err(PoolError::InvalidRequest)?;
 
         let edits: Vec<(&str, serde_json::Value)> = match &request {
             runtime::agent::ContextRequest::Inspect => Vec::new(),
@@ -320,7 +312,7 @@ impl SessionPool {
         };
         if let (false, Some(store)) = (edits.is_empty(), self.history_store.as_ref()) {
             let sid = base::session::SessionId::parse(session_id)
-                .map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
+                .map_err(|e| PoolError::InvalidRequest(e.to_string()))?;
             for (event, mut payload) in edits {
                 payload["at_ms"] = serde_json::json!(std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -332,10 +324,7 @@ impl SessionPool {
                     payload,
                 };
                 store.append(sid, entry).await.map_err(|e| {
-                    (
-                        codes::INTERNAL_ERROR,
-                        format!("the change was made but not logged: {e}"),
-                    )
+                    PoolError::Internal(format!("the change was made but not logged: {e}"))
                 })?;
             }
         }

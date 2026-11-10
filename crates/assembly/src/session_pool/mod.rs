@@ -7,7 +7,7 @@
 //! - 空闲超时回收
 //! - session.list 合并活跃 + 历史
 
-use crate::rpc::{codes, RpcResponse, SessionOptions, StreamFrame};
+use crate::rpc::{SessionOptions, StreamFrame};
 use base::id::Id;
 use base::interface::event::AgentEvent;
 use base::interface::permission::Permission;
@@ -30,6 +30,7 @@ use tokio::sync::RwLock as AsyncRwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+pub mod api;
 mod background;
 mod bindings;
 mod create;
@@ -54,6 +55,7 @@ mod teardown;
 mod tests;
 mod turn;
 
+use api::{Busy, EngineFailure, PoolError};
 use helpers::*;
 use history_rpc::*;
 use permission_scripts::*;
@@ -68,7 +70,7 @@ use settings_reload::*;
 /// actually recorded under"), so `Mismatch`'s reported `requested_scene`
 /// is always this pool's *default* scene — that only reflects what a
 /// mismatch response echoes back, not what counts as a match.
-pub enum SceneCheck {
+enum SceneCheck {
     /// No `Meta` line, or one with no `scene` field (pre-v2 file, or a
     /// session with no history at all) — nothing to compare against.
     /// Callers proceed and report `scene_inferred: true`.
@@ -78,41 +80,6 @@ pub enum SceneCheck {
     /// Recorded scene differs — callers should reject with
     /// `SCENE_MISMATCH` before touching anything.
     Mismatch(String),
-}
-
-/// `SessionPool::resume_session`'s failure type — a plain `RpcError` for
-/// most cases, plus a `SidechainTerminal` variant carrying the extra
-/// `parent_session_id`/`final_state` fields `server/` needs to build the
-/// `SIDECHAIN_TERMINAL` error's structured `data` (an `RpcError` is just
-/// `(code, message)`, with no room for that). The terminal-state check runs
-/// inside `resume_session`'s `with_session_lock` critical section, so its
-/// outcome travels back through the return type.
-pub enum ResumeError {
-    SidechainTerminal {
-        session_id: String,
-        parent_session_id: Option<String>,
-        final_state: history::entry::SessionEndState,
-    },
-    /// The engine the session last ran on has not stopped yet.
-    Busy {
-        session_id: String,
-        message: String,
-    },
-    Rpc(RpcError),
-}
-
-/// `SessionPool::set_session_model`'s failure type. `Busy` carries the turn
-/// id `server/` needs for `SESSION_BUSY`'s structured `data`, which a plain
-/// `RpcError` — `(code, message)` — has no room for. Same shape and same
-/// reason as [`ResumeError`].
-pub enum SetModelError {
-    /// Running the turn named, if one has started yet, or — idle but for
-    /// them — the background tasks named, which a rebuild would cut off.
-    Busy {
-        current_turn_id: Option<String>,
-        running_task_ids: Vec<String>,
-    },
-    Rpc(RpcError),
 }
 
 /// `session.create`'s `project_root` disambiguated three ways — JSON only
@@ -299,16 +266,6 @@ pub enum ProjectSelector {
     /// moved/missing project — see `settings_for_project`'s doc comment).
     Path(PathBuf),
 }
-
-/// `(code, message)` for a failed pool operation, ready to hand to
-/// `RpcResponse::err`. The older pool methods return a bare `String` and let
-/// `server/` pick one fixed code per method; the session read/branch
-/// surface (`session.history`/`.fork`/`.resume`) genuinely needs three
-/// different codes from the *same* method — a bad id is `INVALID_PARAMS`, an
-/// unknown one is `SESSION_NOT_FOUND`, an unreadable log is
-/// `INTERNAL_ERROR` — so those carry the code with the message instead of
-/// inventing a new response envelope for it.
-pub type RpcError = (i32, String);
 
 /// The first `LogEntry::Meta` line in `entries`, if any — every session
 /// history has at most one (see `create()`), always first when present, but
@@ -1026,12 +983,14 @@ fn untrusted_mcp_entries(settings: &Settings) -> Vec<serde_json::Value> {
 }
 
 #[cfg(feature = "mcp")]
-fn auth_flow_error(e: mcp::oauth::AuthFlowError) -> RpcError {
-    use mcp::oauth::AuthFlowError;
-    match e {
-        AuthFlowError::Invalid(message) => (codes::INVALID_PARAMS, message),
-        AuthFlowError::Denied(message) => (codes::MCP_SERVER_DENIED, message),
-        AuthFlowError::Failed(message) => (codes::MCP_AUTH_FAILED, message),
+impl From<mcp::oauth::AuthFlowError> for PoolError {
+    fn from(e: mcp::oauth::AuthFlowError) -> Self {
+        use mcp::oauth::AuthFlowError;
+        match e {
+            AuthFlowError::Invalid(message) => Self::InvalidRequest(message),
+            AuthFlowError::Denied(message) => Self::McpServerDenied(message),
+            AuthFlowError::Failed(message) => Self::McpAuthFailed(message),
+        }
     }
 }
 
@@ -1490,65 +1449,37 @@ impl CreateError {
             Self::Failed(e) => Self::Failed(outer(e)),
         }
     }
-
-    /// For an RPC whose `SESSION_BUSY` carries no `data`.
-    pub(super) fn into_rpc(self) -> RpcError {
-        match self {
-            Self::PreviousEngineRunning { message, .. } => (codes::SESSION_BUSY, message),
-            Self::Failed(e) => (codes::INTERNAL_ERROR, e),
-        }
-    }
-
-    pub(super) fn into_response(self, id: serde_json::Value) -> RpcResponse {
-        match self {
-            Self::PreviousEngineRunning {
-                session_id,
-                message,
-            } => RpcResponse::err_with_data(
-                id,
-                codes::SESSION_BUSY,
-                message,
-                serde_json::json!({ "session_id": session_id, "current_turn_id": null }),
-            ),
-            Self::Failed(e) => RpcResponse::err(id, codes::INTERNAL_ERROR, e),
-        }
-    }
 }
 
-impl From<CreateError> for ResumeError {
+impl From<CreateError> for PoolError {
     fn from(e: CreateError) -> Self {
         match e {
             CreateError::PreviousEngineRunning {
                 session_id,
                 message,
-            } => ResumeError::Busy {
-                session_id,
-                message,
-            },
-            CreateError::Failed(e) => ResumeError::Rpc((codes::INTERNAL_ERROR, e)),
+            } => Self::SessionBusy(Busy::previous_engine(&session_id, message)),
+            CreateError::Failed(e) => Self::Internal(e),
         }
     }
 }
 
-impl From<Rebuild> for SetModelError {
-    fn from(e: Rebuild) -> Self {
-        match e {
+impl Rebuild {
+    fn into_error(self, session_id: &str) -> PoolError {
+        match self {
             Rebuild::Busy {
                 current_turn,
                 running_tasks,
-            } => SetModelError::Busy {
-                current_turn_id: current_turn,
-                running_task_ids: running_tasks,
-            },
-            Rebuild::NotLive => SetModelError::Rpc((
-                codes::SESSION_NOT_FOUND,
-                "session is no longer running".to_string(),
-            )),
-            Rebuild::Failed(CreateError::PreviousEngineRunning { .. }) => SetModelError::Busy {
-                current_turn_id: None,
-                running_task_ids: Vec::new(),
-            },
-            Rebuild::Failed(e) => SetModelError::Rpc(e.into_rpc()),
+            } if running_tasks.is_empty() => {
+                PoolError::SessionBusy(Busy::turn_running(session_id, current_turn))
+            }
+            Rebuild::Busy { running_tasks, .. } => {
+                PoolError::SessionBusy(Busy::background_tasks(session_id, running_tasks))
+            }
+            Rebuild::NotLive => PoolError::session_gone(session_id, "session is no longer running"),
+            Rebuild::Failed(CreateError::PreviousEngineRunning { .. }) => {
+                PoolError::SessionBusy(Busy::turn_running(session_id, None))
+            }
+            Rebuild::Failed(e) => e.into(),
         }
     }
 }

@@ -12,11 +12,27 @@ impl SessionPool {
     /// "harnix"}` is exactly as resumable/closeable/forkable as one under the
     /// default scene; only a scene this daemon isn't currently serving at
     /// all counts as a mismatch.
-    pub async fn check_scene(&self, session_id: &str) -> SceneCheck {
+    pub(super) async fn check_scene(&self, session_id: &str) -> SceneCheck {
         match self.facts_of(session_id).await.scene {
             None => SceneCheck::Inferred,
             Some(s) if self.active_scenes.read().await.contains_key(&s) => SceneCheck::Matches,
             Some(s) => SceneCheck::Mismatch(s),
+        }
+    }
+
+    /// Refuse to act on `session_id` across a scene boundary: a session
+    /// recorded under a scene this daemon does not serve is not reattached,
+    /// closed, forked or written to here. `Ok(true)` when its scene could
+    /// only be inferred.
+    pub(super) async fn refuse_scene_mismatch(&self, session_id: &str) -> Result<bool, PoolError> {
+        match self.check_scene(session_id).await {
+            SceneCheck::Inferred => Ok(true),
+            SceneCheck::Matches => Ok(false),
+            SceneCheck::Mismatch(recorded) => Err(PoolError::SceneMismatch {
+                session_id: session_id.to_string(),
+                recorded,
+                requested: self.scene_id().to_string(),
+            }),
         }
     }
 
@@ -77,12 +93,32 @@ impl SessionPool {
     /// `with_session_lock` or reading `sidechain_terminal_state`'s full
     /// transcript off disk — both only matter for an id this pool isn't
     /// already actively serving.
+    ///
+    /// The result says whether the session's scene was only inferred
+    /// (`scene_inferred`): a log too old to record one is resumed under this
+    /// daemon's.
     pub async fn resume_session(
         &self,
         session_id: &str,
         create_if_missing: bool,
         options: Option<&SessionOptions>,
-    ) -> Result<serde_json::Value, ResumeError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        let scene_inferred = self.refuse_scene_mismatch(session_id).await?;
+        let mut report = self
+            .resume_unchecked(session_id, create_if_missing, options)
+            .await?;
+        if let Some(report) = report.as_object_mut() {
+            report.insert("scene_inferred".into(), serde_json::json!(scene_inferred));
+        }
+        Ok(report)
+    }
+
+    pub(super) async fn resume_unchecked(
+        &self,
+        session_id: &str,
+        create_if_missing: bool,
+        options: Option<&SessionOptions>,
+    ) -> Result<serde_json::Value, PoolError> {
         let resume_start = Instant::now();
         let settings = self.settings.read().await.clone();
         let mode = effective_permission_mode(&settings, options);
@@ -147,7 +183,7 @@ impl SessionPool {
                 self.sidechain_terminal_state(session_id).await
             {
                 self.record_refused_resume(session_id, "sidechain_terminal", resume_start);
-                return Err(ResumeError::SidechainTerminal {
+                return Err(PoolError::SidechainTerminal {
                     session_id: session_id.to_string(),
                     parent_session_id,
                     final_state: state,
@@ -158,19 +194,19 @@ impl SessionPool {
                 Ok(has_history) => has_history,
                 Err(e) => {
                     self.record_refused_resume(session_id, "unreadable", resume_start);
-                    return Err(ResumeError::Rpc((codes::INTERNAL_ERROR, e)));
+                    return Err(PoolError::Internal(e));
                 }
             };
             let (message_count, entry_count) = self.history_counts(session_id).await;
             if !has_history && !create_if_missing {
                 self.record_refused_resume(session_id, "not_found", resume_start);
-                return Err(ResumeError::Rpc((
-                    codes::SESSION_NOT_FOUND,
+                return Err(PoolError::session_gone(
+                    session_id,
                     format!(
                         "session not found: {session_id} \
                          (pass create_if_missing: true to start a new session under this id)"
                     ),
-                )));
+                ));
             }
 
             let raced = self.sessions.lock().await.get(session_id).map(|live| {
@@ -197,7 +233,7 @@ impl SessionPool {
             let sid = self
                 .resume_or_create(session_id.to_string(), options)
                 .await
-                .map_err(ResumeError::from)?;
+                .map_err(PoolError::from)?;
 
             let (created_at, last_active) = {
                 let sessions = self.sessions.lock().await;

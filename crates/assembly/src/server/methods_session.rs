@@ -3,101 +3,7 @@
 
 use super::*;
 
-/// A resume that could not happen, as the wire sees it.
-///
-/// Shared by `session.resume` and by `session.subscribe {resume: true}`:
-/// opening a session that is only on disk fails for the same reasons however
-/// the caller asked, and a second copy of this mapping would be a second set
-/// of error codes to keep in step.
-pub(super) fn resume_failure(
-    id: serde_json::Value,
-    e: crate::session_pool::ResumeError,
-) -> RpcResponse {
-    match e {
-        crate::session_pool::ResumeError::SidechainTerminal {
-            session_id,
-            parent_session_id,
-            final_state,
-        } => {
-            let final_state = match final_state {
-                history::entry::SessionEndState::Completed => "completed",
-                history::entry::SessionEndState::Failed => "failed",
-            };
-            RpcResponse::err_with_data(
-                id,
-                codes::SIDECHAIN_TERMINAL,
-                "sidechain session already ran to completion",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "parent_session_id": parent_session_id,
-                    "final_state": final_state,
-                }),
-            )
-        }
-        crate::session_pool::ResumeError::Busy {
-            session_id,
-            message,
-        } => RpcResponse::err_with_data(
-            id,
-            codes::SESSION_BUSY,
-            message,
-            serde_json::json!({ "session_id": session_id, "current_turn_id": null }),
-        ),
-        crate::session_pool::ResumeError::Rpc((code, message)) => {
-            RpcResponse::err(id, code, message)
-        }
-    }
-}
-
-/// `SESSION_BUSY` for a change that needs the session rebuilt: a turn holds
-/// it, or background tasks run that a rebuild would stop, named in
-/// `running_task_ids`.
-pub(super) fn rebuild_refused(
-    id: serde_json::Value,
-    session_id: &str,
-    current_turn_id: Option<String>,
-    running_task_ids: Vec<String>,
-) -> RpcResponse {
-    let mut data = serde_json::json!({
-        "session_id": session_id,
-        "current_turn_id": current_turn_id,
-    });
-    if !running_task_ids.is_empty() {
-        data["running_task_ids"] = serde_json::json!(running_task_ids);
-    }
-    RpcResponse::err_with_data(id, codes::SESSION_BUSY, "session is busy", data)
-}
-
 impl DaemonServer {
-    /// Shared `SCENE_MISMATCH` guard for the session-scoped RPCs that only
-    /// need a pass/fail answer (unlike `session.resume`, which also reports
-    /// `scene_inferred` on success and so keeps its own inline check) —
-    /// `session.close`/`.delete`/`.fork` all reject outright rather than
-    /// operating across a scene boundary they weren't asked to cross.
-    /// Returns the ready-made error response when the caller should stop,
-    /// `None` when it's clear to proceed.
-    pub(super) async fn scene_mismatch_response(
-        &self,
-        id: &serde_json::Value,
-        session_id: &str,
-    ) -> Option<RpcResponse> {
-        if let crate::session_pool::SceneCheck::Mismatch(recorded_scene) =
-            self.pool.check_scene(session_id).await
-        {
-            return Some(RpcResponse::err_with_data(
-                id.clone(),
-                codes::SCENE_MISMATCH,
-                "scene mismatch",
-                serde_json::json!({
-                    "session_id": session_id,
-                    "recorded_scene": recorded_scene,
-                    "requested_scene": self.pool.scene_id(),
-                }),
-            ));
-        }
-        None
-    }
-
     /// Default page size for `session.history` when the caller doesn't say.
     /// Big enough to render a typical conversation in one round trip, small
     /// enough that a forgotten `limit` can't turn one RPC into a
@@ -139,7 +45,7 @@ impl DaemonServer {
 
         match self.pool.session_history(&session_id, offset, limit).await {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -185,7 +91,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         };
         reporting_ignored(resp, ignored_options)
     }
@@ -205,7 +111,7 @@ impl DaemonServer {
         };
         match self.pool.session_detail(session_id).await {
             Ok(detail) => RpcResponse::ok(id, detail),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -236,39 +142,29 @@ impl DaemonServer {
             .get("resume")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
-
         let mut report = match self
             .pool
             .subscribe_session(session_id, client.clone())
             .await
         {
             Ok(v) => Some(v),
-            Err((code, _)) if resume && code == codes::SESSION_NOT_FOUND => {
-                // `docs/daemon_rpc_protocol.md` §3.4 still applies: the mismatch check above ran first, and
-                // this records the pre-v2 case the same way `session.resume`
-                // reports it.
-                let inferred = matches!(
-                    self.pool.check_scene(session_id).await,
-                    crate::session_pool::SceneCheck::Inferred
-                );
-                match self.pool.resume_session(session_id, false, None).await {
-                    Ok(_) => match self.pool.subscribe_session(session_id, client).await {
-                        Ok(mut v) => {
-                            if let Some(obj) = v.as_object_mut() {
-                                obj.insert("resumed".into(), serde_json::json!(true));
-                                obj.insert("scene_inferred".into(), serde_json::json!(inferred));
-                            }
-                            return RpcResponse::ok(id, v);
+            Err(crate::session_pool::api::PoolError::SessionNotFound { .. }) if resume => {
+                let inferred = match self.pool.resume_session(session_id, false, None).await {
+                    Ok(resumed) => resumed["scene_inferred"].clone(),
+                    Err(e) => return failure(id, e),
+                };
+                return match self.pool.subscribe_session(session_id, client).await {
+                    Ok(mut v) => {
+                        if let Some(obj) = v.as_object_mut() {
+                            obj.insert("resumed".into(), serde_json::json!(true));
+                            obj.insert("scene_inferred".into(), inferred);
                         }
-                        Err((code, message)) => return RpcResponse::err(id, code, message),
-                    },
-                    Err(e) => return resume_failure(id, e),
-                }
+                        RpcResponse::ok(id, v)
+                    }
+                    Err(e) => failure(id, e),
+                };
             }
-            Err((code, message)) => return RpcResponse::err(id, code, message),
+            Err(e) => return failure(id, e),
         };
 
         if let Some(obj) = report.as_mut().and_then(|v| v.as_object_mut()) {
@@ -291,12 +187,9 @@ impl DaemonServer {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
         };
         let name = params.get("name").and_then(|v| v.as_str());
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
         match self.pool.rename_session(session_id, name).await {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -310,7 +203,7 @@ impl DaemonServer {
         };
         match self.pool.session_goal(session_id).await {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -367,12 +260,9 @@ impl DaemonServer {
                 }
             }
         };
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
         match self.pool.change_session_goal(session_id, change).await {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -391,16 +281,13 @@ impl DaemonServer {
                 "session.appendEntry needs session_id, ns and event",
             );
         };
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
         let payload = params
             .get("payload")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         match self.pool.append_entry(session_id, ns, event, payload).await {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -431,7 +318,7 @@ impl DaemonServer {
             .await
         {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -482,7 +369,7 @@ impl DaemonServer {
         };
         match self.pool.export_session(request).await {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -510,23 +397,12 @@ impl DaemonServer {
         if model.is_none() && provider.is_none() {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing model");
         }
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
-        match self
-            .pool
-            .set_session_model(session_id, model, provider)
-            .await
-        {
-            Ok(v) => RpcResponse::ok(id, v),
-            Err(crate::session_pool::SetModelError::Busy {
-                current_turn_id,
-                running_task_ids,
-            }) => rebuild_refused(id, session_id, current_turn_id, running_task_ids),
-            Err(crate::session_pool::SetModelError::Rpc((code, message))) => {
-                RpcResponse::err(id, code, message)
-            }
-        }
+        respond(
+            id,
+            self.pool
+                .set_session_model(session_id, model, provider)
+                .await,
+        )
     }
 
     /// `scene.register` params: `{"scene": {…scene.json…}, "prompt": "…"}` —
@@ -553,7 +429,7 @@ impl DaemonServer {
                 id,
                 serde_json::json!({ "scene": scene, "registered": true }),
             ),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -586,9 +462,6 @@ impl DaemonServer {
         if changes.is_empty() {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "give `append` and/or `override`");
         }
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
         let change = move |prompt: &mut runtime::agent::SessionPrompt| {
             for (key, value) in changes {
                 match key {
@@ -597,16 +470,7 @@ impl DaemonServer {
                 }
             }
         };
-        match self.pool.set_session_prompt(session_id, change).await {
-            Ok(v) => RpcResponse::ok(id, v),
-            Err(crate::session_pool::SetModelError::Busy {
-                current_turn_id,
-                running_task_ids,
-            }) => rebuild_refused(id, session_id, current_turn_id, running_task_ids),
-            Err(crate::session_pool::SetModelError::Rpc((code, message))) => {
-                RpcResponse::err(id, code, message)
-            }
-        }
+        respond(id, self.pool.set_session_prompt(session_id, change).await)
     }
 
     /// `session.unsubscribe` params: `{"session_id": "..."}`.
@@ -643,15 +507,12 @@ impl DaemonServer {
         let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
         };
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
         match self.pool.interrupt_session(session_id).await {
             Ok(interrupted) => RpcResponse::ok(
                 id,
                 serde_json::json!({"session_id": session_id, "interrupted": interrupted}),
             ),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -668,22 +529,20 @@ impl DaemonServer {
         let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) else {
             return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id");
         };
-        if let Some(err) = self.scene_mismatch_response(&id, session_id).await {
-            return err;
-        }
-        self.pool
+        let ran = self
+            .pool
             .run_turn(
                 Some(session_id.to_string()),
                 command.to_string(),
                 vec![],
                 Id::new().to_string(),
                 client,
-                id,
                 None,
                 crate::session_pool::OnBusy::Reject,
                 "client",
             )
-            .await
+            .await;
+        respond(id, ran)
     }
 
     /// `session.fork` params:
@@ -719,13 +578,10 @@ impl DaemonServer {
         // Same `docs/daemon_rpc_protocol.md` §3.4 rejection `session.resume` applies — forking a session
         // recorded under a different scene would hand back a "primary"
         // session that starts life already scene-mismatched.
-        if let Some(err) = self.scene_mismatch_response(&id, &session_id).await {
-            return err;
-        }
 
         match self.pool.fork_session(&session_id, at_message).await {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -752,48 +608,11 @@ impl DaemonServer {
             Err(refusal) => return refusal,
         };
 
-        // `docs/daemon_rpc_protocol.md` §3.4: a session recorded under a different scene than this
-        // daemon's must not be silently resumed into it — that's exactly
-        // the "conversation ends up hanging off the wrong scene" failure
-        // mode the design calls out as the one worth actively catching.
-        let scene_inferred = match self.pool.check_scene(&session_id).await {
-            crate::session_pool::SceneCheck::Mismatch(recorded_scene) => {
-                return RpcResponse::err_with_data(
-                    id,
-                    codes::SCENE_MISMATCH,
-                    "scene mismatch",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "recorded_scene": recorded_scene,
-                        "requested_scene": self.pool.scene_id(),
-                    }),
-                );
-            }
-            crate::session_pool::SceneCheck::Inferred => true,
-            crate::session_pool::SceneCheck::Matches => false,
-        };
-
-        // A sidechain that already reached a terminal state has no
-        // continuation semantics. That check happens inside `resume_session`,
-        // under its per-`session_id` lock: checked out here it would race a
-        // concurrent cascade delete of the same id and skip the
-        // already-active fast path.
-        match self
+        let resumed = self
             .pool
             .resume_session(&session_id, create_if_missing, options.as_ref())
-            .await
-        {
-            Ok(mut result) => {
-                if let Some(obj) = result.as_object_mut() {
-                    obj.insert(
-                        "scene_inferred".to_string(),
-                        serde_json::json!(scene_inferred),
-                    );
-                }
-                reporting_ignored(RpcResponse::ok(id, result), ignored_options)
-            }
-            Err(e) => resume_failure(id, e),
-        }
+            .await;
+        reporting_ignored(respond(id, resumed), ignored_options)
     }
 
     /// `session.respondToPrompt` — answers a pending `kind:"prompt"`
@@ -840,7 +659,7 @@ impl DaemonServer {
             .await
         {
             Ok(()) => RpcResponse::ok(id, serde_json::json!({"prompt_id": prompt_id})),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 }

@@ -167,7 +167,7 @@ impl SessionPool {
         scene_id: &str,
         what: &str,
         instead: &str,
-    ) -> Result<bool, RpcError> {
+    ) -> Result<bool, PoolError> {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let written_to = self.settings_path_of(project_root);
         if !base::project_trust::is_own_project_dir(
@@ -182,13 +182,10 @@ impl SessionPool {
             base::project_trust::ProjectTrustSettings::read_global(&self.paths.global_root())
                 .decide(target);
         if trust.is_untrusted() {
-            return Err((
-                codes::PROJECT_UNTRUSTED,
-                format!(
-                    "{} is not trusted, so {what}; trust it first (project.trust) or {instead}",
-                    target.display()
-                ),
-            ));
+            return Err(PoolError::ProjectUntrusted(format!(
+                "{} is not trusted, so {what}; trust it first (project.trust) or {instead}",
+                target.display()
+            )));
         }
         Ok(true)
     }
@@ -235,9 +232,9 @@ impl SessionPool {
         config_patch: Option<serde_json::Value>,
         default_provider: Option<String>,
         task_models_patch: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         use base::interface::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
-        let invalid = |message: String| (codes::INVALID_PARAMS, message);
+        let invalid = |message: String| PoolError::InvalidRequest(message);
         if provider_id.trim().is_empty() {
             return Err(invalid("provider_id must not be empty".into()));
         }
@@ -376,24 +373,24 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         trusted: bool,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         use crate::watch_hub::Tier;
         use base::interface::settings::SETTINGS_LOCAL_FILE;
         let root = project_root.unwrap_or(self.cwd.as_path()).to_path_buf();
         if !root.is_absolute() {
-            return Err((
-                codes::INVALID_PARAMS,
-                format!("project_root must be an absolute path: {}", root.display()),
-            ));
+            return Err(PoolError::InvalidRequest(format!(
+                "project_root must be an absolute path: {}",
+                root.display()
+            )));
         }
         let resolved = match root.canonicalize() {
             Ok(resolved) => resolved,
             Err(_) if !trusted => root.clone(),
             Err(e) => {
-                return Err((
-                    codes::INVALID_PARAMS,
-                    format!("project_root {}: {e}", root.display()),
-                ))
+                return Err(PoolError::InvalidRequest(format!(
+                    "project_root {}: {e}",
+                    root.display()
+                )))
             }
         };
         let entry = base::project_trust::exact_pattern(&resolved);
@@ -433,7 +430,7 @@ impl SessionPool {
                 .map_err(|e| e.to_string())
         })
         .await
-        .map_err(|e| (codes::INTERNAL_ERROR, e))?;
+        .map_err(|e| PoolError::Internal(e))?;
 
         let tier = Tier::Project(root.clone());
         #[cfg(feature = "mcp")]

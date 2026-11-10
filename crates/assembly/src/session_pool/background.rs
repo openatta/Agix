@@ -154,16 +154,14 @@ impl SessionPool {
                 Vec::new(),
                 format!("schedule-{}-{}", job.id, Id::new()),
                 client,
-                serde_json::Value::Null,
                 None,
                 OnBusy::Queue,
                 "schedule",
             )
             .await;
         self.drop_connection(connection).await;
-        if let Some(error) = response.error {
-            warn!(job_id = %job.id, %session_id, code = error.code, message = %error.message,
-                  "scheduled job's turn failed");
+        if let Err(e) = response {
+            warn!(job_id = %job.id, %session_id, error = %e, "scheduled job's turn failed");
         }
     }
 

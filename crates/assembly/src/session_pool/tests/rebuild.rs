@@ -52,10 +52,8 @@ async fn a_prompt_change_is_refused_once_a_turn_holds_the_slot_even_before_it_is
     let held = slot.lock().await.take().expect("an idle session");
 
     match pool.set_session_prompt(&sid, append).await {
-        Err(SetModelError::Busy {
-            current_turn_id, ..
-        }) => assert_eq!(current_turn_id, None),
-        Err(SetModelError::Rpc((code, message))) => panic!("{code}: {message}"),
+        Err(PoolError::SessionBusy(busy)) => assert_eq!(busy.current_turn_id, None),
+        Err(e) => panic!("{e}"),
         Ok(v) => panic!("a rebuild cut off a starting turn: {v}"),
     }
     let (still, _) = slot_and_state(&pool, &sid).await;
@@ -178,7 +176,7 @@ async fn two_callers_reviving_one_cold_session_build_one_engine() {
         builder
     }));
     let sid = new_session(&pool).await;
-    pool.shutdown_session(&sid).await;
+    pool.shutdown_session(&sid).await.unwrap();
     assert!(!pool.sessions.lock().await.contains_key(&sid));
 
     let (a, b) = tokio::join!(pool.ensure_live(&sid, None), pool.ensure_live(&sid, None));
@@ -258,13 +256,12 @@ fn break_log(path: &std::path::Path) -> Vec<u8> {
 async fn session_resume_refuses_a_log_that_does_not_load_even_with_create_if_missing() {
     let (pool, _dir, store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    pool.shutdown_session(&sid).await;
+    pool.shutdown_session(&sid).await.unwrap();
     let broken = break_log(&transcript_of(store.path(), &sid));
 
     for create_if_missing in [false, true] {
         match pool.resume_session(&sid, create_if_missing, None).await {
-            Err(ResumeError::Rpc((code, message))) => {
-                assert_eq!(code, codes::INTERNAL_ERROR, "{message}");
+            Err(PoolError::Internal(message)) => {
                 assert!(message.contains("could not be loaded"), "{message}");
             }
             Err(_) => panic!("refused for some other reason"),

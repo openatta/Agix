@@ -125,7 +125,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -198,7 +198,7 @@ impl DaemonServer {
             .await
         {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -223,7 +223,7 @@ impl DaemonServer {
             .await
         {
             Ok(v) => RpcResponse::ok(id, v),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -252,13 +252,11 @@ impl DaemonServer {
     }
 
     pub(super) fn plugins_disabled(&self, id: serde_json::Value) -> RpcResponse {
-        RpcResponse::err(
+        failure(
             id,
-            codes::PLUGINS_DISABLED,
-            format!(
-                "plugin subsystem unavailable ({})",
-                self.pool.plugin_status().as_str()
-            ),
+            crate::session_pool::api::PoolError::PluginsDisabled {
+                status: self.pool.plugin_status().as_str(),
+            },
         )
     }
 
@@ -383,7 +381,7 @@ impl DaemonServer {
         };
         match put {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -450,7 +448,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -469,7 +467,7 @@ impl DaemonServer {
         };
         match self.pool.mcp_auth_complete(flow_id, callback_url).await {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -485,7 +483,7 @@ impl DaemonServer {
         };
         match self.pool.mcp_auth_cancel(flow_id).await {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -510,7 +508,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -543,7 +541,7 @@ impl DaemonServer {
         };
         match self.pool.mcp_auth_set_identity(identity).await {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -636,7 +634,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 }

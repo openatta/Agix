@@ -139,10 +139,10 @@ async fn session_get_finds_a_cold_session_of_a_project_not_served_yet() {
     assert_eq!(detail["status"], "inactive");
 
     let missing = base::session::SessionId::new().to_string();
-    assert_eq!(
-        pool.session_detail(&missing).await.unwrap_err().0,
-        codes::SESSION_NOT_FOUND
-    );
+    assert!(matches!(
+        pool.session_detail(&missing).await.unwrap_err(),
+        PoolError::SessionNotFound { .. }
+    ));
 }
 
 /// The projects `session.list` covers are the ones sessions were built

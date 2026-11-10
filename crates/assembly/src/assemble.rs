@@ -293,7 +293,7 @@ pub async fn pool(
         }
         pool.activate_scene(extra)
             .await
-            .map_err(|(_, message)| anyhow::anyhow!("scene `{extra}`: {message}"))?;
+            .map_err(|e| anyhow::anyhow!("scene `{extra}`: {e}"))?;
     }
 
     // Before anything can create a session: a session built while this is

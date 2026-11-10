@@ -110,17 +110,16 @@ impl DaemonServer {
                         return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id")
                     }
                 };
-                if let Some(err) = self.scene_mismatch_response(&id, &session_id).await {
-                    return err;
+                match self.pool.shutdown_session(&session_id).await {
+                    Ok(sidechains_deleted) => RpcResponse::ok(
+                        id,
+                        serde_json::json!({
+                            "closed": session_id,
+                            "sidechains_deleted": sidechains_deleted,
+                        }),
+                    ),
+                    Err(e) => failure(id, e),
                 }
-                let sidechains_deleted = self.pool.shutdown_session(&session_id).await;
-                RpcResponse::ok(
-                    id,
-                    serde_json::json!({
-                        "closed": session_id,
-                        "sidechains_deleted": sidechains_deleted,
-                    }),
-                )
             }
             "session.inspectContext" | "session.dropMessages" | "session.editMessage" => {
                 self.method_context(id, &req.method, &req.params).await
@@ -181,29 +180,7 @@ impl DaemonServer {
                         }
                     },
                 };
-                if !self.pool.session_exists(session_id).await {
-                    return RpcResponse::err(
-                        id,
-                        codes::SESSION_NOT_FOUND,
-                        format!("no session `{session_id}`"),
-                    );
-                }
-                match self.pool.task_output(session_id, task_id, read).await {
-                    Some(Ok(result)) => RpcResponse::ok(id, result),
-                    Some(Err(next_byte)) => RpcResponse::err(
-                        id,
-                        codes::INVALID_PARAMS,
-                        format!(
-                            "from_byte is past the end of task `{task_id}`'s output; \
-                             next_byte is {next_byte}"
-                        ),
-                    ),
-                    None => RpcResponse::err(
-                        id,
-                        codes::TASK_NOT_FOUND,
-                        format!("session `{session_id}` has no task `{task_id}`"),
-                    ),
-                }
+                respond(id, self.pool.task_output(session_id, task_id, read).await)
             }
             "session.stopTask" => {
                 let param = |key: &str| req.params.get(key).and_then(|v| v.as_str());
@@ -274,18 +251,12 @@ impl DaemonServer {
                         return RpcResponse::err(id, codes::INVALID_PARAMS, "missing session_id")
                     }
                 };
-                if let Some(err) = self.scene_mismatch_response(&id, &session_id).await {
-                    return err;
-                }
                 let dry_run = req
                     .params
                     .get("dry_run")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                match self.pool.delete_session(&session_id, dry_run).await {
-                    Ok(result) => RpcResponse::ok(id, result),
-                    Err((code, message)) => RpcResponse::err(id, code, message),
-                }
+                respond(id, self.pool.delete_session(&session_id, dry_run).await)
             }
             "session.create" => self.method_session_create(id, req.params).await,
             "session.run_turn" => self.method_session_run_turn(id, req.params, client).await,
@@ -329,7 +300,7 @@ impl DaemonServer {
                         id,
                         serde_json::json!({ "scene": scene, "registered": false }),
                     ),
-                    Err((code, message)) => RpcResponse::err(id, code, message),
+                    Err(e) => failure(id, e),
                 },
                 None => RpcResponse::err(id, codes::INVALID_PARAMS, "missing scene"),
             },
@@ -347,7 +318,7 @@ impl DaemonServer {
                     Ok(()) => {
                         RpcResponse::ok(id, serde_json::json!({"scene": scene_id, "active": true}))
                     }
-                    Err((code, message)) => RpcResponse::err(id, code, message),
+                    Err(e) => failure(id, e),
                 }
             }
             "scene.deactivate" => {
@@ -357,7 +328,7 @@ impl DaemonServer {
                 };
                 match self.pool.deactivate_scene(&scene_id).await {
                     Ok(()) => RpcResponse::ok(id, serde_json::json!({"scene": scene_id})),
-                    Err((code, message)) => RpcResponse::err(id, code, message),
+                    Err(e) => failure(id, e),
                 }
             }
             _ => RpcResponse::err(
@@ -388,13 +359,14 @@ pub(super) fn parse_param<T: serde::de::DeserializeOwned>(
 pub(super) fn module_not_compiled(
     id: serde_json::Value,
     method: &str,
-    module: &str,
+    module: &'static str,
 ) -> RpcResponse {
-    RpcResponse::err_with_data(
+    failure(
         id,
-        codes::METHOD_NOT_FOUND,
-        format!("`{method}` belongs to the `{module}` module, which this build does not include"),
-        serde_json::json!({ "module": module }),
+        crate::session_pool::api::PoolError::ModuleNotCompiled {
+            method: method.to_string(),
+            module,
+        },
     )
 }
 

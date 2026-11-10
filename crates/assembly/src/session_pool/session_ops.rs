@@ -18,29 +18,28 @@ impl SessionPool {
         &self,
         session_id: &str,
         name: Option<&str>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         let name = match name {
             None => None,
             Some(raw) => {
                 let trimmed = raw.trim();
                 if trimmed.is_empty() {
-                    return Err((
-                        codes::INVALID_PARAMS,
+                    return Err(PoolError::InvalidRequest(
                         "name must not be empty; pass null to clear it".into(),
                     ));
                 }
                 if trimmed.chars().count() > Self::MAX_SESSION_NAME {
-                    return Err((
-                        codes::INVALID_PARAMS,
-                        format!("name must be at most {} characters", Self::MAX_SESSION_NAME),
-                    ));
+                    return Err(PoolError::InvalidRequest(format!(
+                        "name must be at most {} characters",
+                        Self::MAX_SESSION_NAME
+                    )));
                 }
                 // A host renders this in a list. A newline or a control
                 // character in it is not a name, it is a rendering bug
                 // somebody else has to find.
                 if trimmed.chars().any(char::is_control) {
-                    return Err((
-                        codes::INVALID_PARAMS,
+                    return Err(PoolError::InvalidRequest(
                         "name must not contain control characters".into(),
                     ));
                 }
@@ -49,12 +48,8 @@ impl SessionPool {
         };
 
         let store = self.require_history_store()?;
-        let sid = base::session::SessionId::parse(session_id).map_err(|_| {
-            (
-                codes::INVALID_PARAMS,
-                format!("invalid session_id: {session_id}"),
-            )
-        })?;
+        let sid = base::session::SessionId::parse(session_id)
+            .map_err(|_| PoolError::InvalidRequest(format!("invalid session_id: {session_id}")))?;
         // Naming something that does not exist would create a sidecar for a
         // session nothing else knows about — a row in every future listing
         // that nobody can open.
@@ -65,16 +60,13 @@ impl SessionPool {
                 Err(history::error::HistoryError::SessionNotFound(_))
             )
         {
-            return Err((
-                codes::SESSION_NOT_FOUND,
-                format!("session not found: {session_id}"),
-            ));
+            return Err(PoolError::session_not_found(session_id));
         }
 
         store
             .set_session_title(sid, name.clone())
             .await
-            .map_err(|e| (codes::INTERNAL_ERROR, format!("could not rename: {e}")))?;
+            .map_err(|e| PoolError::Internal(format!("could not rename: {e}")))?;
 
         {
             let mut sessions = self.sessions.lock().await;
@@ -95,35 +87,27 @@ impl SessionPool {
         ns: &str,
         event: &str,
         payload: serde_json::Value,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         if ns.is_empty() || ns.len() > Self::MAX_ENTRY_NS || ns.chars().any(char::is_control) {
-            return Err((
-                codes::INVALID_PARAMS,
-                format!(
-                    "ns must be 1–{} characters with no control characters",
-                    Self::MAX_ENTRY_NS
-                ),
-            ));
+            return Err(PoolError::InvalidRequest(format!(
+                "ns must be 1–{} characters with no control characters",
+                Self::MAX_ENTRY_NS
+            )));
         }
         if ns.starts_with(ENGINE_NS_PREFIX) {
-            return Err((
-                codes::INVALID_PARAMS,
-                format!("the `{ENGINE_NS_PREFIX}*` namespaces are the engine's own"),
-            ));
+            return Err(PoolError::InvalidRequest(format!(
+                "the `{ENGINE_NS_PREFIX}*` namespaces are the engine's own"
+            )));
         }
         if event.is_empty() || event.chars().any(char::is_control) {
-            return Err((
-                codes::INVALID_PARAMS,
+            return Err(PoolError::InvalidRequest(
                 "event must be a non-empty name".into(),
             ));
         }
         let store = self.require_history_store()?;
-        let sid = base::session::SessionId::parse(session_id).map_err(|_| {
-            (
-                codes::INVALID_PARAMS,
-                format!("invalid session_id: {session_id}"),
-            )
-        })?;
+        let sid = base::session::SessionId::parse(session_id)
+            .map_err(|_| PoolError::InvalidRequest(format!("invalid session_id: {session_id}")))?;
         // Appending to a session that does not exist would create a log for it.
         self.load_entries(session_id).await?;
         let entry = history::entry::LogEntry::Extension {
@@ -134,7 +118,7 @@ impl SessionPool {
         store
             .append(sid, entry)
             .await
-            .map_err(|e| (codes::INTERNAL_ERROR, format!("could not append: {e}")))?;
+            .map_err(|e| PoolError::Internal(format!("could not append: {e}")))?;
         if let Err(e) = store.sync(sid).await {
             warn!(%session_id, error = %e, "an appended entry was not synced");
         }
@@ -155,10 +139,7 @@ impl SessionPool {
             })
             .flatten()
             .ok_or_else(|| {
-                (
-                    codes::INTERNAL_ERROR,
-                    "the entry was not found after writing it".to_string(),
-                )
+                PoolError::Internal("the entry was not found after writing it".to_string())
             })?;
 
         let frame = StreamFrame::extension_entry(session_id, written.clone());
@@ -170,7 +151,7 @@ impl SessionPool {
         &self,
         session_id: &str,
         namespaces: Option<&[String]>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let store = self.require_history_store()?;
         let entries = self.load_entries(session_id).await?;
         let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
@@ -214,20 +195,18 @@ impl SessionPool {
         session_id: &str,
         model: Option<&str>,
         provider: Option<&str>,
-    ) -> Result<serde_json::Value, SetModelError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         let (input_tx, project, scene) = {
             let mut sessions = self.sessions.lock().await;
             let Some(live) = sessions.get_mut(session_id) else {
-                return Err(SetModelError::Rpc((
-                    codes::SESSION_NOT_FOUND,
-                    format!("session not found: {session_id}"),
-                )));
+                return Err(PoolError::session_not_found(session_id));
             };
             if let Some(current_turn_id) = live.current_turn.clone() {
-                return Err(SetModelError::Busy {
-                    current_turn_id: Some(current_turn_id),
-                    running_task_ids: Vec::new(),
-                });
+                return Err(PoolError::SessionBusy(Busy::turn_running(
+                    session_id,
+                    Some(current_turn_id),
+                )));
             }
             live.last_active = Instant::now();
             (
@@ -244,7 +223,7 @@ impl SessionPool {
         let binding = self.binding_for(project.as_deref(), &scene).await;
         binding
             .check_model_choice(provider.or(current_provider.as_deref()), model)
-            .map_err(|e| SetModelError::Rpc((codes::INVALID_PARAMS, e)))?;
+            .map_err(PoolError::InvalidRequest)?;
 
         let switching_provider = provider.is_some_and(|p| current_provider.as_deref() != Some(p));
         let change = |spec: &mut SessionSpec| {
@@ -272,7 +251,7 @@ impl SessionPool {
                 self.rebuild_on_changed_spec(session_id, held, change).await
             })
             .await
-            .map_err(SetModelError::from)?;
+            .map_err(|e| e.into_error(session_id))?;
         } else {
             let spec = self.change_spec(session_id, change).1;
             self.persist_spec(session_id, &spec).await;
@@ -285,10 +264,10 @@ impl SessionPool {
                 })
                 .is_err()
             {
-                return Err(SetModelError::Rpc((
-                    codes::SESSION_NOT_FOUND,
+                return Err(PoolError::session_gone(
+                    session_id,
                     format!("session is no longer running: {session_id}"),
-                )));
+                ));
             }
         }
 
@@ -313,24 +292,22 @@ impl SessionPool {
         &self,
         session_id: &str,
         change: impl FnOnce(&mut runtime::agent::SessionPrompt),
-    ) -> Result<serde_json::Value, SetModelError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         {
             let sessions = self.sessions.lock().await;
             if let Some(current_turn_id) = sessions
                 .get(session_id)
                 .and_then(|l| l.current_turn.clone())
             {
-                return Err(SetModelError::Busy {
-                    current_turn_id: Some(current_turn_id),
-                    running_task_ids: Vec::new(),
-                });
+                return Err(PoolError::SessionBusy(Busy::turn_running(
+                    session_id,
+                    Some(current_turn_id),
+                )));
             }
         }
         if !self.session_exists(session_id).await {
-            return Err(SetModelError::Rpc((
-                codes::SESSION_NOT_FOUND,
-                format!("session not found: {session_id}"),
-            )));
+            return Err(PoolError::session_not_found(session_id));
         }
         if !self.lock_specs().contains_key(session_id) {
             let recorded = self.recorded_spec(session_id).await;
@@ -359,7 +336,7 @@ impl SessionPool {
                 Ok(spec.prompt().unwrap_or_default())
             })
             .await
-            .map_err(SetModelError::from)?;
+            .map_err(|e| e.into_error(session_id))?;
         Ok(serde_json::json!({
             "session_id": session_id,
             "append": prompt.append,

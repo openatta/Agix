@@ -144,19 +144,18 @@ impl SessionPool {
         &self,
         scene_json: &str,
         prompt_md: &str,
-    ) -> Result<String, RpcError> {
+    ) -> Result<String, PoolError> {
         let scene = scene::DeclarativeScene::from_sources(
             std::path::Path::new("scene.register"),
             scene_json,
             prompt_md,
         )
-        .map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
+        .map_err(|e| PoolError::InvalidRequest(e.to_string()))?;
         let id = scene.id().to_string();
         if self.scene_registry().resolve(&id).is_some() {
-            return Err((
-                codes::INVALID_PARAMS,
-                format!("scene `{id}` is already registered"),
-            ));
+            return Err(PoolError::InvalidRequest(format!(
+                "scene `{id}` is already registered"
+            )));
         }
         self.registered_scenes
             .write()
@@ -168,7 +167,7 @@ impl SessionPool {
 
     /// `scene.unregister`: withdraw a scene `scene.register` added. Refused
     /// while sessions in memory run in it, as `scene.deactivate` is.
-    pub async fn unregister_scene(&self, scene_id: &str) -> Result<(), RpcError> {
+    pub async fn unregister_scene(&self, scene_id: &str) -> Result<(), PoolError> {
         let known = self
             .registered_scenes
             .read()
@@ -176,10 +175,9 @@ impl SessionPool {
             .iter()
             .any(|s| s.id() == scene_id);
         if !known {
-            return Err((
-                codes::SCENE_NOT_FOUND,
-                format!("scene `{scene_id}` was not added by scene.register"),
-            ));
+            return Err(PoolError::SceneNotRegistered {
+                scene: scene_id.to_string(),
+            });
         }
         self.deactivate_scene(scene_id).await?;
         self.registered_scenes
@@ -190,12 +188,14 @@ impl SessionPool {
         Ok(())
     }
 
-    pub async fn activate_scene(&self, scene_id: &str) -> Result<(), RpcError> {
+    pub async fn activate_scene(&self, scene_id: &str) -> Result<(), PoolError> {
         if self.active_scenes.read().await.contains_key(scene_id) {
             return Ok(());
         }
         let Some(resolved) = self.scene_registry().resolve(scene_id) else {
-            return Err((codes::SCENE_NOT_FOUND, format!("unknown scene: {scene_id}")));
+            return Err(PoolError::SceneNotFound {
+                scene: scene_id.to_string(),
+            });
         };
         self.active_scenes
             .write()
@@ -210,7 +210,7 @@ impl SessionPool {
     /// Deactivating only removes it from `active_scenes` — no session
     /// history is touched, and a deactivated scene's sessions can still be
     /// listed (`session.list`) and resumed once it's reactivated.
-    pub async fn deactivate_scene(&self, scene_id: &str) -> Result<(), RpcError> {
+    pub async fn deactivate_scene(&self, scene_id: &str) -> Result<(), PoolError> {
         let blocking: Vec<String> = {
             let sessions = self.sessions.lock().await;
             let mut out = Vec::new();
@@ -224,13 +224,10 @@ impl SessionPool {
             out
         };
         if !blocking.is_empty() {
-            return Err((
-                codes::SCENE_HAS_ACTIVE_SESSIONS,
-                format!(
-                    "scene {scene_id} has active sessions: {}",
-                    blocking.join(", ")
-                ),
-            ));
+            return Err(PoolError::SceneHasActiveSessions {
+                scene: scene_id.to_string(),
+                sessions: blocking,
+            });
         }
         self.active_scenes.write().await.remove(scene_id);
         Ok(())

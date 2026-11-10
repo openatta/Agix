@@ -171,15 +171,12 @@ async fn first_turn(pool: &SessionPool, sid: &str) -> serde_json::Value {
             vec![],
             "t-1".into(),
             client,
-            serde_json::json!(1),
             None,
             OnBusy::Reject,
             "client",
         )
         .await;
-    response
-        .result
-        .unwrap_or_else(|| panic!("the turn failed: {:?}", response.error))
+    response.unwrap_or_else(|e| panic!("the turn failed: {e}"))
 }
 
 fn naming_calls_in(root: &Path) -> Vec<String> {

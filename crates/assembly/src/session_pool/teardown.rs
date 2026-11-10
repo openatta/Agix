@@ -282,10 +282,12 @@ impl SessionPool {
     /// race). A delete that loses that race, or fails for any other reason,
     /// is logged and left for the startup GC to clean up later (N1) — it
     /// never fails `session.close` itself.
-    pub async fn shutdown_session(&self, session_id: &str) -> usize {
+    pub async fn shutdown_session(&self, session_id: &str) -> Result<usize, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         let children = self.fetch_child_sidechains(session_id).await;
-        self.shutdown_session_with_children(session_id, children)
-            .await
+        Ok(self
+            .shutdown_session_with_children(session_id, children)
+            .await)
     }
 
     /// `session.delete` — irreversibly deletes the parent's own transcript
@@ -297,14 +299,11 @@ impl SessionPool {
         &self,
         session_id: &str,
         dry_run: bool,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         let store = self.require_history_store()?;
-        let sid = base::session::SessionId::parse(session_id).map_err(|_| {
-            (
-                codes::INVALID_PARAMS,
-                format!("invalid session_id: {session_id}"),
-            )
-        })?;
+        let sid = base::session::SessionId::parse(session_id)
+            .map_err(|_| PoolError::InvalidRequest(format!("invalid session_id: {session_id}")))?;
 
         // One scan shared by both the (possibly dry-run) report below and
         // the actual cascade delete — `shutdown_session_with_children`
@@ -334,7 +333,7 @@ impl SessionPool {
                 (deleted, result)
             })
             .await;
-        delete_result.map_err(|e| (codes::INTERNAL_ERROR, e.to_string()))?;
+        delete_result.map_err(|e| PoolError::Internal(e.to_string()))?;
         let scratch = base::paths::session_scratch_dir(&self.paths.global_root(), session_id);
         let _ = std::fs::remove_dir_all(scratch);
         self.schedule.remove_session(session_id);

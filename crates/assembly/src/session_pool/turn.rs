@@ -54,13 +54,18 @@ impl SessionPool {
         attachments: Vec<runtime::agent::Attachment>,
         turn_id: String,
         client: Arc<crate::rpc::Client>,
-        id: serde_json::Value,
         options: Option<SessionOptions>,
         on_busy: OnBusy,
         initiator: &'static str,
-    ) -> RpcResponse {
+    ) -> Result<serde_json::Value, PoolError> {
         let sid = match session_id {
             Some(ref sid) => {
+                // An unknown id still creates a session: its scene reads as
+                // inferred. The daemon's own rounds go to sessions it already
+                // serves.
+                if initiator == "client" {
+                    self.refuse_scene_mismatch(sid).await?;
+                }
                 // ① Not in memory: resume or create. ② In memory on a binding
                 // that is still current: use it. ③ In memory on a binding a
                 // settings change invalidated: rebuild before this message, so
@@ -89,27 +94,19 @@ impl SessionPool {
                         Err(Rebuild::Failed(e)) => Err(e),
                     },
                 };
-                match resolved {
-                    Ok(sid) => sid,
-                    Err(e) => return e.into_response(id),
-                }
+                resolved?
             }
             None => {
                 let sid = Id::new().to_string();
-                match self
-                    .create(
-                        sid.clone(),
-                        self.scene.clone(),
-                        self.default_binding().await,
-                        Some(self.cwd.clone()),
-                        options.as_ref(),
-                        false,
-                    )
-                    .await
-                {
-                    Ok(sid) => sid,
-                    Err(e) => return e.into_response(id),
-                }
+                self.create(
+                    sid.clone(),
+                    self.scene.clone(),
+                    self.default_binding().await,
+                    Some(self.cwd.clone()),
+                    options.as_ref(),
+                    false,
+                )
+                .await?
             }
         };
 
@@ -121,11 +118,7 @@ impl SessionPool {
             let (input_tx, event_rx_mutex, busy_with, idle) = {
                 let mut sessions = self.sessions.lock().await;
                 let Some(live) = sessions.get_mut(&sid) else {
-                    return RpcResponse::err(
-                        id,
-                        codes::SESSION_NOT_FOUND,
-                        format!("session not found: {sid}"),
-                    );
+                    return Err(PoolError::session_not_found(&sid));
                 };
                 live.last_active = Instant::now();
                 (
@@ -154,15 +147,7 @@ impl SessionPool {
             }
             match on_busy {
                 OnBusy::Reject => {
-                    return RpcResponse::err_with_data(
-                        id,
-                        codes::SESSION_BUSY,
-                        "session is busy",
-                        serde_json::json!({
-                            "session_id": sid,
-                            "current_turn_id": busy_with,
-                        }),
-                    );
+                    return Err(PoolError::SessionBusy(Busy::turn_running(&sid, busy_with)));
                 }
                 OnBusy::Steer if !steer_tried && attachments.is_empty() => {
                     steer_tried = true;
@@ -178,15 +163,12 @@ impl SessionPool {
                         if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
                             live.subscribers.insert(client.id(), client.clone());
                         }
-                        return RpcResponse::ok(
-                            id,
-                            serde_json::json!({
-                                "session_id": sid,
-                                "turn_id": turn_id,
-                                "delivery": "steer",
-                                "into_turn_id": busy_with,
-                            }),
-                        );
+                        return Ok(serde_json::json!({
+                            "session_id": sid,
+                            "turn_id": turn_id,
+                            "delivery": "steer",
+                            "into_turn_id": busy_with,
+                        }));
                     }
                     // The running turn is already past its last step: this
                     // message waits for the next turn instead.
@@ -242,18 +224,13 @@ impl SessionPool {
             Some((false, _)) => {
                 self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                     .await;
-                return RpcResponse::ok(
-                    id,
+                return Ok(
                     serde_json::json!({"session_id": sid, "turn_id": turn_id, "skipped": true}),
                 );
             }
             None => {
                 *event_rx_mutex.lock().await = Some(event_rx);
-                return RpcResponse::err(
-                    id,
-                    codes::SESSION_NOT_FOUND,
-                    format!("session not found: {sid}"),
-                );
+                return Err(PoolError::session_not_found(&sid));
             }
         };
         if let (Some(state), "goal") = (&turn_state, initiator) {
@@ -508,11 +485,10 @@ impl SessionPool {
                         .broadcast_terminal(&sid, &event_rx_mutex, &f, None)
                         .await
                     {
-                        return RpcResponse::err(
-                            id,
-                            codes::ENGINE_ERROR,
-                            format!("{SESSION_CLOSED}: {SESSION_CLOSED_MESSAGE}"),
-                        );
+                        return Err(PoolError::Engine(EngineFailure {
+                            code: SESSION_CLOSED.to_string(),
+                            message: SESSION_CLOSED_MESSAGE.to_string(),
+                        }));
                     }
                     break;
                 }
@@ -528,7 +504,7 @@ impl SessionPool {
                         .await;
                     self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                         .await;
-                    return RpcResponse::err(id, codes::ENGINE_ERROR, format!("{code}: {message}"));
+                    return Err(PoolError::Engine(EngineFailure { code, message }));
                 }
                 // The engine is gone. Dropping the entry is what lets the
                 // next call on this id resume it from its transcript instead
@@ -565,11 +541,7 @@ impl SessionPool {
                         );
                     }
                     warn!(%sid, "engine stopped before the turn completed");
-                    return RpcResponse::err(
-                        id,
-                        codes::ENGINE_ERROR,
-                        "engine stopped before the turn completed",
-                    );
+                    return Err(PoolError::EngineStopped);
                 }
                 _ => continue,
             }
@@ -631,16 +603,13 @@ impl SessionPool {
             }
         }
 
-        RpcResponse::ok(
-            id,
-            serde_json::json!({
-                "session_id": sid,
-                "turn_id": turn_id,
-                "delivery": "turn",
-                "name": session_name,
-                "api_calls": api_calls,
-            }),
-        )
+        Ok(serde_json::json!({
+            "session_id": sid,
+            "turn_id": turn_id,
+            "delivery": "turn",
+            "name": session_name,
+            "api_calls": api_calls,
+        }))
     }
 
     /// A name somebody typed while the naming call was out wins over the

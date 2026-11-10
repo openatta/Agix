@@ -30,18 +30,14 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
         .set_session_model(&session_id, Some("claude-opus-4-6"), None)
         .await
     {
-        Err(SetModelError::Busy {
-            current_turn_id, ..
-        }) => {
+        Err(PoolError::SessionBusy(busy)) => {
             assert_eq!(
-                current_turn_id.as_deref(),
+                busy.current_turn_id.as_deref(),
                 Some("t1"),
                 "the refusal names the turn holding it"
             )
         }
-        Err(SetModelError::Rpc((code, message))) => {
-            panic!("expected a busy refusal, got {code}: {message}")
-        }
+        Err(e) => panic!("expected a busy refusal, got {e}"),
         Ok(v) => panic!("a busy session accepted a model change: {v}"),
     }
 

@@ -10,10 +10,9 @@ impl SessionPool {
     /// `session_persistence.history_store_wired` reports the same fact).
     pub(super) fn require_history_store(
         &self,
-    ) -> Result<&Arc<dyn history::store::HistoryStore>, RpcError> {
+    ) -> Result<&Arc<dyn history::store::HistoryStore>, PoolError> {
         self.history_store.as_ref().ok_or_else(|| {
-            (
-                codes::INTERNAL_ERROR,
+            PoolError::Internal(
                 "session history persistence is not enabled on this daemon \
                  (see daemon.doctor's session_persistence.history_store_wired)"
                     .to_string(),
@@ -26,23 +25,16 @@ impl SessionPool {
     pub(super) async fn load_entries(
         &self,
         session_id: &str,
-    ) -> Result<Vec<history::entry::EnvelopedEntry>, RpcError> {
+    ) -> Result<Vec<history::entry::EnvelopedEntry>, PoolError> {
         let store = self.require_history_store()?;
         let sid = base::session::SessionId::parse(session_id).map_err(|e| {
-            (
-                codes::INVALID_PARAMS,
-                format!("invalid session_id `{session_id}`: {e}"),
-            )
+            PoolError::InvalidRequest(format!("invalid session_id `{session_id}`: {e}"))
         })?;
         store.load(sid).await.map_err(|e| match e {
-            history::error::HistoryError::SessionNotFound(_) => (
-                codes::SESSION_NOT_FOUND,
-                format!("session not found: {session_id}"),
-            ),
-            other => (
-                codes::INTERNAL_ERROR,
-                format!("failed to read session history: {other}"),
-            ),
+            history::error::HistoryError::SessionNotFound(_) => {
+                PoolError::session_not_found(session_id)
+            }
+            other => PoolError::Internal(format!("failed to read session history: {other}")),
         })
     }
 
@@ -70,7 +62,7 @@ impl SessionPool {
         session_id: &str,
         offset: usize,
         limit: usize,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let entries = self.load_entries(session_id).await?;
         let messages = history::transcript::project_messages_sourced(
             &entries,
@@ -84,12 +76,7 @@ impl SessionPool {
             .enumerate()
             .map(|(i, m)| history_item(start + i, m))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                (
-                    codes::INTERNAL_ERROR,
-                    format!("failed to serialize transcript: {e}"),
-                )
-            })?;
+            .map_err(|e| PoolError::Internal(format!("failed to serialize transcript: {e}")))?;
         let active = self.sessions.lock().await.contains_key(session_id);
 
         Ok(serde_json::json!({
@@ -116,13 +103,10 @@ impl SessionPool {
     pub async fn export_session(
         &self,
         request: crate::export::ExportRequest,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let store = self.require_history_store()?.clone();
         let root = base::session::SessionId::parse(&request.session_id).map_err(|e| {
-            (
-                codes::INVALID_PARAMS,
-                format!("invalid session_id `{}`: {e}", request.session_id),
-            )
+            PoolError::InvalidRequest(format!("invalid session_id `{}`: {e}", request.session_id))
         })?;
         let settings = self.settings.read().await.clone();
         let roots = history::path::HistoryRoots::under(&settings.paths.global_data_dir);
@@ -132,14 +116,12 @@ impl SessionPool {
         let (lineage, cut_at, live, recordings) = self
             .with_session_lock(&request.session_id, async {
                 let mut lineage = store.snapshot_lineage(root).await.map_err(|e| match e {
-                    history::error::HistoryError::SessionNotFound(_) => (
-                        codes::SESSION_NOT_FOUND,
-                        format!("session not found: {}", request.session_id),
-                    ),
-                    other => (
-                        codes::INTERNAL_ERROR,
-                        format!("failed to read session history: {other}"),
-                    ),
+                    history::error::HistoryError::SessionNotFound(_) => {
+                        PoolError::session_not_found(&request.session_id)
+                    }
+                    other => {
+                        PoolError::Internal(format!("failed to read session history: {other}"))
+                    }
                 })?;
                 let cut_at = store.environment().now();
                 if !include.sidechains {
@@ -166,7 +148,7 @@ impl SessionPool {
                 } else {
                     Vec::new()
                 };
-                Ok::<_, RpcError>((lineage, cut_at, live, recordings))
+                Ok::<_, PoolError>((lineage, cut_at, live, recordings))
             })
             .await?;
 
@@ -177,13 +159,8 @@ impl SessionPool {
         let mut sessions = Vec::with_capacity(lineage.sessions.len());
         for (sid, entries) in lineage.sessions {
             let id = sid.to_string();
-            let (history, extension_entries) =
-                export_views(&entries, store.projection()).map_err(|e| {
-                    (
-                        codes::INTERNAL_ERROR,
-                        format!("failed to serialize transcript: {e}"),
-                    )
-                })?;
+            let (history, extension_entries) = export_views(&entries, store.projection())
+                .map_err(|e| PoolError::Internal(format!("failed to serialize transcript: {e}")))?;
             let stats = store.session_stats(sid).await.unwrap_or_default();
             let metadata: Option<history::project::SessionMetadata> = tokio::fs::read_to_string(
                 history::path::session_metadata_file(&roots.sessions, &sid),
@@ -235,8 +212,8 @@ impl SessionPool {
         };
         tokio::task::spawn_blocking(move || crate::export::write(&request, snapshot))
             .await
-            .map_err(|e| (codes::INTERNAL_ERROR, format!("export did not finish: {e}")))?
-            .map_err(RpcError::from)
+            .map_err(|e| PoolError::Internal(format!("export did not finish: {e}")))?
+            .map_err(PoolError::from)
     }
 
     /// The recordings these sessions write to, with how long each one's
@@ -334,7 +311,8 @@ impl SessionPool {
         &self,
         session_id: &str,
         at_message: Option<usize>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         let entries = self.load_entries(session_id).await?;
         let store = self.require_history_store()?;
 
@@ -418,10 +396,9 @@ impl SessionPool {
         let mut copied = 0usize;
         if let Err(e) = store.append(new_sid, meta).await {
             let _ = store.delete(new_sid).await;
-            return Err((
-                codes::INTERNAL_ERROR,
-                format!("failed to write forked session metadata: {e}"),
-            ));
+            return Err(PoolError::Internal(format!(
+                "failed to write forked session metadata: {e}"
+            )));
         }
         for env in entries.iter().take(cut) {
             if env.is_sidechain || matches!(env.entry, history::entry::LogEntry::Meta { .. }) {
@@ -433,10 +410,9 @@ impl SessionPool {
             };
             if let Err(e) = store.append_tagged(new_sid, env.entry.clone(), tags).await {
                 let _ = store.delete(new_sid).await;
-                return Err((
-                    codes::INTERNAL_ERROR,
-                    format!("failed to copy session history into the fork: {e}"),
-                ));
+                return Err(PoolError::Internal(format!(
+                    "failed to copy session history into the fork: {e}"
+                )));
             }
             copied += 1;
         }

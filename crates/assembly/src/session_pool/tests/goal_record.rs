@@ -88,7 +88,7 @@ async fn a_closed_session_s_log_has_the_goal_change_still_being_written() {
         store.writing.notified().await;
         tokio::join!(
             async {
-                pool.shutdown_session(&sid).await;
+                pool.shutdown_session(&sid).await.unwrap();
                 pool.session_goal(&sid).await.unwrap()
             },
             async {
@@ -106,7 +106,7 @@ async fn a_closed_session_s_log_has_the_goal_change_nobody_wrote_yet() {
     let (sid, state) = session_with_a_goal(&pool).await;
     blocks_on_its_round_limit(&state);
 
-    pool.shutdown_session(&sid).await;
+    pool.shutdown_session(&sid).await.unwrap();
     let cold = pool.session_goal(&sid).await.unwrap();
     assert_eq!(cold["goal"]["phase"], "blocked", "{cold}");
 }

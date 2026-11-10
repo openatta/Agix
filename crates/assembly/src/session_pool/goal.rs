@@ -51,7 +51,6 @@ impl SessionPool {
                 Vec::new(),
                 round.turn_id.clone(),
                 client,
-                serde_json::Value::Null,
                 None,
                 OnBusy::Queue,
                 "goal",
@@ -61,8 +60,8 @@ impl SessionPool {
         if let Some(state) = self.live_state(&sid).await {
             state.goal_abandon_round(&round.turn_id);
         }
-        if let Some(error) = response.error {
-            warn!(%sid, code = error.code, message = %error.message, "goal round failed");
+        if let Err(e) = response {
+            warn!(%sid, error = %e, "goal round failed");
         }
     }
 
@@ -97,7 +96,7 @@ impl SessionPool {
 
     /// `session.goal`: the session's goal, read from its log when the session
     /// is not in memory (and then reported disarmed).
-    pub async fn session_goal(&self, sid: &str) -> Result<serde_json::Value, RpcError> {
+    pub async fn session_goal(&self, sid: &str) -> Result<serde_json::Value, PoolError> {
         if let Some(state) = self.live_state(sid).await {
             return Ok(serde_json::json!({ "goal": state.goal_view() }));
         }
@@ -127,25 +126,15 @@ impl SessionPool {
         &self,
         sid: &str,
         change: GoalChange,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(sid).await?;
         if self.live_state(sid).await.is_none() {
-            self.resume_session(sid, false, None)
-                .await
-                .map_err(|e| match e {
-                    ResumeError::Rpc(e) => e,
-                    ResumeError::Busy { message, .. } => (codes::SESSION_BUSY, message),
-                    ResumeError::SidechainTerminal { session_id, .. } => (
-                        codes::SIDECHAIN_TERMINAL,
-                        format!("session {session_id} is a finished sub-agent session"),
-                    ),
-                })?;
+            self.resume_unchecked(sid, false, None).await?;
         }
-        let state = self.live_state(sid).await.ok_or_else(|| {
-            (
-                codes::SESSION_NOT_FOUND,
-                format!("session not found: {sid}"),
-            )
-        })?;
+        let state = self
+            .live_state(sid)
+            .await
+            .ok_or_else(|| PoolError::session_not_found(sid))?;
         let human = base::context::goal::TurnOrigin::Human;
         let current = || {
             let view = state.goal_view();
@@ -154,7 +143,7 @@ impl SessionPool {
                 view["revision"].as_u64().unwrap_or_default(),
             )
         };
-        let invalid = |e: base::context::goal::GoalError| (codes::INVALID_PARAMS, e.to_string());
+        let invalid = |e: base::context::goal::GoalError| PoolError::InvalidRequest(e.to_string());
         let pausing = matches!(change, GoalChange::Pause);
         match change {
             GoalChange::Set {
@@ -206,7 +195,7 @@ impl SessionPool {
             .map(|live| (live.current_turn.is_some(), live.turn_initiator));
         match initiator {
             Some((true, Some("goal"))) if pausing => {
-                self.interrupt_session(sid).await?;
+                self.interrupt_turn(sid).await?;
             }
             Some((false, _)) => self.continue_goal(sid).await,
             _ => {}

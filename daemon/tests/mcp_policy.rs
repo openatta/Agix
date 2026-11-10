@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use daemon::config::{load_daemon_config, DaemonConfig, StaticDaemonPaths};
+use daemon::session_pool::api::PoolError;
 use daemon::session_pool::ProjectSelector;
 use daemon::SessionPool;
 use mcp::policy::McpPolicy;
@@ -323,11 +324,13 @@ async fn add_server_refuses_a_denied_server_before_writing_settings() {
     let settings = d.root().join(".agix").join("settings.json");
 
     for name in ["blocked", "stray"] {
-        let (code, message) = pool
+        let refused = pool
             .add_mcp_server(None, "code", name, d.server(name))
             .await
             .unwrap_err();
-        assert_eq!(code, daemon::rpc::codes::MCP_SERVER_DENIED, "{message}");
+        let PoolError::McpServerDenied(message) = refused else {
+            panic!("{refused}");
+        };
         assert!(message.contains("the host's MCP policy"), "{message}");
     }
     assert!(
@@ -344,11 +347,14 @@ async fn add_server_refuses_a_denied_server_before_writing_settings() {
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     assert!(written["mcp_servers"]["kept"].is_object(), "{written}");
 
-    let (code, _) = pool
+    let refused = pool
         .update_mcp_server(None, "code", "blocked", d.server("blocked"))
         .await
         .unwrap_err();
-    assert_eq!(code, daemon::rpc::codes::MCP_SERVER_DENIED);
+    assert!(
+        matches!(refused, PoolError::McpServerDenied(_)),
+        "{refused}"
+    );
 }
 
 #[tokio::test]
@@ -369,11 +375,14 @@ async fn an_unparseable_policy_file_denies_every_server_and_doctor_says_so() {
         "{denied:?}"
     );
 
-    let (code, _) = pool
+    let refused = pool
         .add_mcp_server(None, "code", "kept", d.server("kept"))
         .await
         .unwrap_err();
-    assert_eq!(code, daemon::rpc::codes::MCP_SERVER_DENIED);
+    assert!(
+        matches!(refused, PoolError::McpServerDenied(_)),
+        "{refused}"
+    );
 
     let other = d.root().join("other");
     d.configure(&other, &["kept"]);
@@ -571,7 +580,7 @@ async fn a_server_added_over_rpc_is_the_projects_own() {
     .unwrap();
     assert_eq!(wait_for_line(&d, "added:").await, "added:[]");
 
-    let (code, message) = pool
+    let refused = pool
         .add_mcp_server(
             None,
             "code",
@@ -584,7 +593,9 @@ async fn a_server_added_over_rpc_is_the_projects_own() {
         )
         .await
         .unwrap_err();
-    assert_eq!(code, daemon::rpc::codes::INVALID_PARAMS, "{message}");
+    let PoolError::InvalidRequest(message) = refused else {
+        panic!("{refused}");
+    };
     assert!(message.contains("client_secret_env"), "{message}");
 }
 
@@ -603,11 +614,13 @@ async fn a_projects_own_server_may_not_sign_with_a_local_key_or_spend_the_enterp
         ("signer", key_file.clone(), "key_file"),
         ("ema", enterprise.clone(), "enterprise"),
     ] {
-        let (code, message) = pool
+        let refused = pool
             .add_mcp_server(None, "code", name, cfg)
             .await
             .unwrap_err();
-        assert_eq!(code, daemon::rpc::codes::INVALID_PARAMS, "{message}");
+        let PoolError::InvalidRequest(message) = refused else {
+            panic!("{refused}");
+        };
         assert!(message.contains(names), "{message}");
     }
 

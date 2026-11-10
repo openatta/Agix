@@ -76,9 +76,11 @@ impl SessionPool {
         scene_id: &str,
         project_root: Option<&Path>,
         include_secrets: bool,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         let Some(scene) = self.scene_registry().resolve(scene_id) else {
-            return Err((codes::SCENE_NOT_FOUND, format!("unknown scene: {scene_id}")));
+            return Err(PoolError::SceneNotFound {
+                scene: scene_id.to_string(),
+            });
         };
         let settings = self.settings_for_project(project_root, scene_id).await;
         let mut settings_json =
@@ -127,9 +129,11 @@ impl SessionPool {
         project_root: Option<&Path>,
         tier: &str,
         include_secrets: bool,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
         if self.scene_registry().resolve(scene_id).is_none() {
-            return Err((codes::SCENE_NOT_FOUND, format!("unknown scene: {scene_id}")));
+            return Err(PoolError::SceneNotFound {
+                scene: scene_id.to_string(),
+            });
         }
 
         let paths = self.paths.as_ref();
@@ -145,10 +149,9 @@ impl SessionPool {
             "project" => project_root.map(|p| p.join(".agix").join("settings.json")),
             "effective" => None,
             other => {
-                return Err((
-                    codes::INVALID_PARAMS,
-                    format!("tier must be global|scene|project|effective, got `{other}`"),
-                ))
+                return Err(PoolError::InvalidRequest(format!(
+                    "tier must be global|scene|project|effective, got `{other}`"
+                )))
             }
         };
 
@@ -187,7 +190,7 @@ impl SessionPool {
     /// Built from `list_all` rather than a second, parallel assembly: a
     /// `session.get` that disagreed with the `session.list` entry for the
     /// same session would be worse than not having it.
-    pub async fn session_detail(&self, session_id: &str) -> Result<serde_json::Value, RpcError> {
+    pub async fn session_detail(&self, session_id: &str) -> Result<serde_json::Value, PoolError> {
         let listed = self
             .list_all(true, None)
             .await
@@ -486,13 +489,8 @@ impl SessionPool {
     pub(super) async fn cold_session_info(
         &self,
         session_id: &str,
-    ) -> Result<SessionInfo, RpcError> {
-        let not_found = || {
-            (
-                codes::SESSION_NOT_FOUND,
-                format!("session not found: {session_id}"),
-            )
-        };
+    ) -> Result<SessionInfo, PoolError> {
+        let not_found = || PoolError::session_not_found(session_id);
         let store = self.history_store.as_ref().ok_or_else(not_found)?;
         let sid = base::session::SessionId::parse(session_id).map_err(|_| not_found())?;
         match store.load(sid).await {

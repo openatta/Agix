@@ -15,16 +15,6 @@ impl DaemonServer {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // Like every method that reattaches to a recorded session, this one
-        // refuses to cross a scene boundary. An unknown id still creates a
-        // session, because `check_scene` reads a transcript that isn't there
-        // as `Inferred`.
-        if let Some(ref sid) = session_id {
-            if let Some(err) = self.scene_mismatch_response(&id, sid).await {
-                return err;
-            }
-        }
-
         let user_msg = match params.get("message").and_then(|v| v.as_str()) {
             Some(s) => s.to_string(),
             None => return RpcResponse::err(id, codes::INVALID_PARAMS, "missing message"),
@@ -96,7 +86,7 @@ impl DaemonServer {
             },
         };
 
-        let resp = self
+        let ran = self
             .pool
             .run_turn(
                 session_id,
@@ -104,13 +94,12 @@ impl DaemonServer {
                 attachments,
                 turn_id,
                 client,
-                id,
                 options,
                 on_busy,
                 "client",
             )
             .await;
-        reporting_ignored(resp, ignored_options)
+        reporting_ignored(respond(id, ran), ignored_options)
     }
 
     /// `session.inspectContext {session_id}`, `session.dropMessages
@@ -170,7 +159,7 @@ impl DaemonServer {
         };
         match self.pool.context_request(session_id, request).await {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 
@@ -212,7 +201,7 @@ impl DaemonServer {
             .await
         {
             Ok(result) => RpcResponse::ok(id, result),
-            Err((code, message)) => RpcResponse::err(id, code, message),
+            Err(e) => failure(id, e),
         }
     }
 

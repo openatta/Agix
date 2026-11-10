@@ -54,14 +54,12 @@ impl SessionPool {
         &self,
         session_id: &str,
         client: Arc<crate::rpc::Client>,
-    ) -> Result<serde_json::Value, RpcError> {
+    ) -> Result<serde_json::Value, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
         let pending: Vec<serde_json::Value> = {
             let mut sessions = self.sessions.lock().await;
             let Some(live) = sessions.get_mut(session_id) else {
-                return Err((
-                    codes::SESSION_NOT_FOUND,
-                    format!("session not found: {session_id}"),
-                ));
+                return Err(PoolError::session_not_found(session_id));
             };
             live.subscribers.insert(client.id(), client);
             live.pending_prompts
@@ -245,14 +243,16 @@ impl SessionPool {
     /// from following a turn that has ended but not yet given its slot back.
     /// Returns whether there was a turn to interrupt; there being none is an
     /// answer, not an error.
-    pub async fn interrupt_session(&self, session_id: &str) -> Result<bool, RpcError> {
+    pub async fn interrupt_session(&self, session_id: &str) -> Result<bool, PoolError> {
+        self.refuse_scene_mismatch(session_id).await?;
+        self.interrupt_turn(session_id).await
+    }
+
+    pub(super) async fn interrupt_turn(&self, session_id: &str) -> Result<bool, PoolError> {
         let (input_tx, running, state) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
-                return Err((
-                    codes::SESSION_NOT_FOUND,
-                    format!("session not found: {session_id}"),
-                ));
+                return Err(PoolError::session_not_found(session_id));
             };
             (
                 live.input_tx.clone(),
@@ -287,14 +287,11 @@ impl SessionPool {
         session_id: &str,
         prompt_id: String,
         answer: PromptAnswer,
-    ) -> Result<(), RpcError> {
+    ) -> Result<(), PoolError> {
         let input_tx = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {
-                return Err((
-                    codes::SESSION_NOT_FOUND,
-                    format!("session not found: {session_id}"),
-                ));
+                return Err(PoolError::session_not_found(session_id));
             };
             let asked = live.pending_prompts.get(&prompt_id).and_then(|prompt| {
                 prompt
@@ -304,13 +301,10 @@ impl SessionPool {
                     .map(str::to_string)
             });
             if let Some(asked) = asked.filter(|asked| asked != answer.prompt_type()) {
-                return Err((
-                    codes::INVALID_PARAMS,
-                    format!(
-                        "prompt `{prompt_id}` is a {asked} prompt, not a {}",
-                        answer.prompt_type()
-                    ),
-                ));
+                return Err(PoolError::InvalidRequest(format!(
+                    "prompt `{prompt_id}` is a {asked} prompt, not a {}",
+                    answer.prompt_type()
+                )));
             }
             live.input_tx.clone()
         };

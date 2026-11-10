@@ -60,6 +60,7 @@ const DEFAULT_TASK_OUTPUT_TAIL: usize = 8 * 1024;
 mod auth;
 mod connection;
 mod dispatch;
+mod errors;
 mod listen;
 mod methods_config;
 mod methods_session;
@@ -69,6 +70,7 @@ mod transport;
 #[cfg(feature = "ws")]
 pub(crate) use connection::refusal_frame;
 use dispatch::{parse_param, read_options, reporting_ignored};
+use errors::{failure, respond};
 pub use listen::UnixBinding;
 #[cfg(feature = "ws")]
 pub(crate) use transport::MAX_FRAME_BYTES;

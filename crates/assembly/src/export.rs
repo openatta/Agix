@@ -12,8 +12,7 @@
 //!
 //! Everything here is blocking file I/O and runs on a blocking thread.
 
-use crate::rpc::codes;
-use crate::session_pool::RpcError;
+use crate::session_pool::api::PoolError;
 use base::session::SessionId;
 use base64::Engine as _;
 use history::entry::{EnvelopedEntry, LogEntry};
@@ -115,11 +114,11 @@ pub enum ExportError {
     Failed(String),
 }
 
-impl From<ExportError> for RpcError {
+impl From<ExportError> for PoolError {
     fn from(e: ExportError) -> Self {
         match e {
-            ExportError::Invalid(m) => (codes::INVALID_PARAMS, m),
-            ExportError::Failed(m) => (codes::INTERNAL_ERROR, m),
+            ExportError::Invalid(m) => PoolError::InvalidRequest(m),
+            ExportError::Failed(m) => PoolError::Internal(m),
         }
     }
 }
