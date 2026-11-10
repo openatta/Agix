@@ -1,0 +1,490 @@
+[
+  {
+    "name": "Bash",
+    "description": "Run a shell command (sandboxed by default).\n\nDetailed guide: ToolSearch{\"query\":\"select:Bash\"}",
+    "input_schema": {
+      "properties": {
+        "command": {
+          "description": "The shell command to execute (run via `bash -c`).",
+          "type": "string"
+        },
+        "description": {
+          "description": "Brief one-sentence description of what the command does (for UI).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "description": "Optional execution timeout in milliseconds (default 120000, max 600000).",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "CronCreate",
+    "description": "Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "CronDelete",
+    "description": "Cancel a scheduled cron job by ID",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "CronList",
+    "description": "List scheduled cron jobs",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "Edit",
+    "description": "Find-and-replace edits on a single file (one or many).\n\nDetailed guide: ToolSearch{\"query\":\"select:Edit\"}",
+    "input_schema": {
+      "$defs": {
+        "SingleEdit": {
+          "properties": {
+            "new_string": {
+              "description": "Replacement text. Must differ from `old_string`.",
+              "type": "string"
+            },
+            "old_string": {
+              "description": "Literal text to find. Must match exactly.",
+              "type": "string"
+            },
+            "replace_all": {
+              "description": "false (default) requires `old_string` to occur exactly once; true\nreplaces every occurrence.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "old_string",
+            "new_string"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "edits": {
+          "description": "Edits applied atomically, in order, each to the result of the one\nbefore. When given, the top-level `old_string` / `new_string` /\n`replace_all` are ignored. If any edit fails, nothing is written.",
+          "items": {
+            "$ref": "#/$defs/SingleEdit"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "file_path": {
+          "description": "The absolute path to the file to edit. Relative paths are resolved\nagainst the current working directory.",
+          "type": "string"
+        },
+        "new_string": {
+          "description": "Single edit: the replacement; must differ from `old_string`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "old_string": {
+          "description": "Single edit (when `edits` is absent): the literal text to find,\nmatched exactly, whitespace included.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replace_all": {
+          "description": "Single edit: false (default) requires `old_string` to occur exactly\nonce; true replaces every occurrence.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "EnterPlanMode",
+    "description": "Enter plan mode to design before implementing",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "ExitPlanMode",
+    "description": "Exit plan mode with plan summary and permission requests",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "Glob",
+    "description": "Find files by glob pattern (e.g. src/**/*.rs).\n\nDetailed guide: ToolSearch{\"query\":\"select:Glob\"}",
+    "input_schema": {
+      "properties": {
+        "max_results": {
+          "default": 1000,
+          "description": "Maximum number of results to return. Default 1000.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Root directory to search; defaults to the current working directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "description": "Shell-style glob pattern (e.g. \"*.rs\", \"**/*.toml\", \"src/**/test_*.rs\").",
+          "type": "string"
+        },
+        "respect_gitignore": {
+          "default": true,
+          "description": "When false, include files ignored by .gitignore. Default true.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "GoalCreate",
+    "description": "Set a goal that keeps this session working across automatic rounds until it is complete. Use it when the user's request is a long-running objective that one turn won't finish, even if they don't say \"goal\"; not for single-turn work.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "GoalGet",
+    "description": "Read this session's goal, including the id and revision GoalUpdate needs.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "GoalUpdate",
+    "description": "Change this session's goal: edit, pause, resume, complete or blocked. Mark complete only when the whole objective is achieved; difficulty or remaining work is not blocked.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "Grep",
+    "description": "Search file contents with regex (ripgrep-style).\n\nDetailed guide: ToolSearch{\"query\":\"select:Grep\"}",
+    "input_schema": {
+      "properties": {
+        "case_insensitive": {
+          "description": "Case-insensitive match.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "glob": {
+          "description": "Glob filter restricting which files to search (e.g. \"*.rs\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head_limit": {
+          "description": "Cap output lines; default 250 in content mode.",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "line_numbers": {
+          "description": "Prefix each line with its line number (content mode only).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "multiline": {
+          "description": "Enable multiline mode where . matches newlines and ^/$ match line boundaries.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "output_mode": {
+          "description": "\"files_with_matches\" (default), \"content\", or \"count\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Root directory; defaults to cwd.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "description": "Regex pattern to search for (Rust regex syntax).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "Monitor",
+    "description": "Start a background script that streams stdout lines as events.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "Read",
+    "description": "Read a file (text/image/PDF) with optional line range.\n\nDetailed guide: ToolSearch{\"query\":\"select:Read\"}",
+    "input_schema": {
+      "description": "`Read` 工具的输入 schema。",
+      "properties": {
+        "file_path": {
+          "description": "The absolute path to the file to read. Relative paths are resolved\nagainst the current working directory.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Maximum number of lines to read. Default 2000.",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "Line number to start reading from (1-indexed). Default 1.",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pages": {
+          "description": "PDF page range (e.g., \"1-5\", \"3\"). Max 20 pages per request.\nOnly applicable to PDF files.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "RunCode",
+    "description": "Run a JavaScript program that calls this session's tools — in parallel, in loops or in stages — and get back only its return value. For batch work (many files, pages or items) and for workflows or multi-agent orchestration: agent(prompt, {type, schema}) starts a sub-agent. For a single task or a few calls, call the tools directly.\n\nA script (QuickJS, ES2023, top-level await; no require/import or Node/browser APIs). tools.<Name>(input) and callTool(name, input) return Promises that reject on failure; log(text) reports progress. End with `return <JSON value>`.\n\nCallable here (MCP tools too, with callTool; the guide has the rest):\n  tools.Bash({command, description?, timeout_ms?}) → {stdout, stderr, exit_code}; a non-zero exit rejects with the output\n  tools.Edit({edits?, file_path, new_string?, old_string?, replace_all?})\n  tools.Glob({max_results?, path?, pattern, respect_gitignore?}) → {paths: string[], more: number} — newest first; more counts what max_results cut\n  tools.Grep({case_insensitive?, glob?, head_limit?, line_numbers?, multiline?, output_mode?, path?, pattern}) → files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line\n  tools.Read({file_path, limit?, offset?, pages?}) → text, each line prefixed with its number and a tab\n  tools.WebFetch({prompt?, url})\n  tools.WebSearch({allowed_domains?, blocked_domains?, max_results?, query})\n  tools.Write({content, file_path})\n\nDetailed guide: ToolSearch{\"query\":\"select:RunCode\"}",
+    "input_schema": {
+      "properties": {
+        "args": {
+          "description": "JSON the program reads as `args`."
+        },
+        "background": {
+          "default": false,
+          "description": "Run in the background: return a task id now; the result arrives as a\nnotification and through TaskOutput.",
+          "type": "boolean"
+        },
+        "code": {
+          "description": "The JavaScript program. End it with `return <JSON value>`; that value\nis the result.",
+          "type": "string"
+        },
+        "description": {
+          "description": "One line saying what the program does, shown in the task list.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "TaskMessage",
+    "description": "Send a message to a running background sub-agent",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "TaskOutput",
+    "description": "Retrieve output from a running or completed background task",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "TaskStop",
+    "description": "Stop a running background task by ID",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "TaskWait",
+    "description": "Wait for any or all of several background tasks to end",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "TodoWrite",
+    "description": "Maintain a structured task list for the current turn.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "ToolSearch",
+    "description": "A tool listed with an empty input schema is deferred: fetch its schema here before calling it. Returns the schema in a <functions> block, and a tool's detailed usage guide when it has one. Query \"select:A,B\" for known names, or keywords to search (\"+term\" must appear in the name).\n\nDetailed guide: ToolSearch{\"query\":\"select:ToolSearch\"}",
+    "input_schema": {
+      "properties": {
+        "max_results": {
+          "description": "Cap on returned matches (default 5).",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "`select:<name>[,<name>...]` to fetch known tools by name; otherwise\nkeywords to search tool names and descriptions, where `+term` must\nappear in the name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "WebFetch",
+    "description": "Fetch a URL and return the page as plain text.",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "WebSearch",
+    "description": "Search the web and return results with linked sources",
+    "input_schema": {
+      "properties": {},
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "Write",
+    "description": "Create or overwrite a file with given content.\n\nDetailed guide: ToolSearch{\"query\":\"select:Write\"}",
+    "input_schema": {
+      "properties": {
+        "content": {
+          "description": "The content to write. Replaces the file's existing content entirely.",
+          "type": "string"
+        },
+        "file_path": {
+          "description": "The absolute path to the file to write. Relative paths are resolved\nagainst the current working directory.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_path",
+        "content"
+      ],
+      "type": "object"
+    },
+    "source": "builtin"
+  },
+  {
+    "name": "mcp__github__create_issue",
+    "description": "a tool an MCP server lists",
+    "input_schema": {
+      "type": "object"
+    },
+    "source": "mcp:github"
+  },
+  {
+    "name": "mcp__github__search_issues",
+    "description": "a tool an MCP server lists",
+    "input_schema": {
+      "type": "object"
+    },
+    "source": "mcp:github"
+  }
+]

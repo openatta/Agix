@@ -8,5 +8,7 @@ mod outside_the_project;
 mod path_style;
 mod permission_rules;
 mod search_at_scale;
+#[cfg(all(feature = "web", feature = "structured-output"))]
+mod spec_snapshot;
 mod structured_output;
 mod write_path_policy;

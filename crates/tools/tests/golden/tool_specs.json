@@ -1,0 +1,3468 @@
+[
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Ask the user a question with multiple-choice options.",
+    "guide": {
+      "bytes": 1025,
+      "fnv1a": "63388dce92a9233d"
+    },
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "AskUserOption": {
+            "properties": {
+              "key": {
+                "description": "Short key (1-5 chars; what the user types)",
+                "type": "string"
+              },
+              "label": {
+                "description": "Human-readable label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "label"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "header": {
+            "default": null,
+            "description": "Short label for the question (UI header, max 12 chars)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "description": "Multiple-choice options. If empty, free-form text answer.",
+            "items": {
+              "$ref": "#/$defs/AskUserOption"
+            },
+            "type": "array"
+          },
+          "question": {
+            "description": "The question to put to the user",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskUserQuestionInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "AskUserOption": {
+            "properties": {
+              "key": {
+                "description": "Short key (1-5 chars; what the user types)",
+                "type": "string"
+              },
+              "label": {
+                "description": "Human-readable label",
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "label"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "header": {
+            "default": null,
+            "description": "Short label for the question (UI header, max 12 chars)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "options": {
+            "description": "Multiple-choice options. If empty, free-form text answer.",
+            "items": {
+              "$ref": "#/$defs/AskUserOption"
+            },
+            "type": "array"
+          },
+          "question": {
+            "description": "The question to put to the user",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskUserQuestionInput",
+        "type": "object"
+      }
+    },
+    "name": "AskUserQuestion",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "ls -la"
+        },
+        "permission_match_content": "ls -la",
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "cat README.md"
+        },
+        "permission_match_content": "cat README.md",
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "git status"
+        },
+        "permission_match_content": "git status",
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "git log --oneline -5 | head -3"
+        },
+        "permission_match_content": "git log --oneline -5 | head -3",
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {
+          "command": "rm -rf build"
+        },
+        "permission_match_content": "rm -rf build",
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {
+          "command": "cargo build"
+        },
+        "permission_match_content": "cargo build",
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {
+          "command": "echo hi > out.txt"
+        },
+        "permission_match_content": "echo hi > out.txt",
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {
+          "command": "curl https://example.com"
+        },
+        "permission_match_content": "curl https://example.com",
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "cat /etc/passwd"
+        },
+        "permission_match_content": "cat /etc/passwd",
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": ""
+        },
+        "permission_match_content": "",
+        "read_only": true
+      }
+    ],
+    "code_result": "{stdout, stderr, exit_code}; a non-zero exit rejects with the output",
+    "description": "Run a shell command (sandboxed by default).",
+    "guide": {
+      "bytes": 5631,
+      "fnv1a": "53cc88904371da21"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "command": {
+            "description": "The shell command to execute (run via `bash -c`).",
+            "type": "string"
+          },
+          "description": {
+            "default": null,
+            "description": "Brief one-sentence description of what the command does (for UI).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout_ms": {
+            "default": null,
+            "description": "Optional execution timeout in milliseconds (default 120000, max 600000).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "BashInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "command": {
+            "description": "The shell command to execute (run via `bash -c`).",
+            "type": "string"
+          },
+          "description": {
+            "default": null,
+            "description": "Brief one-sentence description of what the command does (for UI).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout_ms": {
+            "default": null,
+            "description": "Optional execution timeout in milliseconds (default 120000, max 600000).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "BashInput",
+        "type": "object"
+      }
+    },
+    "name": "Bash",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "ShellCommand",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": true,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Schedule a prompt to be enqueued at a future time. Use for both recurring schedules and one-shot reminders.",
+    "guide": {
+      "bytes": 2766,
+      "fnv1a": "aaf25d0e3283f320"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cron": {
+            "description": "Standard 5-field cron expression, evaluated in UTC:\n\"M H DoM Mon DoW\" (e.g. \"*/5 * * * *\" = every 5 minutes,\n\"30 14 28 2 *\" = Feb 28 at 14:30 UTC once).",
+            "type": "string"
+          },
+          "durable": {
+            "default": false,
+            "description": "true = persist to ~/.agix/scenes/<scope>/scheduled_tasks.json and survive\nrestarts. false (default) = in-memory only, dies when this\nsession ends. Use true only when the user explicitly asks\nthe task to survive across sessions.",
+            "type": "boolean"
+          },
+          "prompt": {
+            "description": "The prompt to enqueue at each fire time.",
+            "type": "string"
+          },
+          "recurring": {
+            "default": true,
+            "description": "true (default) = fire on every cron match until deleted or\nauto-expired after 7 days. false = fire once at the next\nmatch, then auto-delete.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cron",
+          "prompt"
+        ],
+        "title": "CronCreateInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cron": {
+            "description": "Standard 5-field cron expression, evaluated in UTC:\n\"M H DoM Mon DoW\" (e.g. \"*/5 * * * *\" = every 5 minutes,\n\"30 14 28 2 *\" = Feb 28 at 14:30 UTC once).",
+            "type": "string"
+          },
+          "durable": {
+            "default": false,
+            "description": "true = persist to ~/.agix/scenes/<scope>/scheduled_tasks.json and survive\nrestarts. false (default) = in-memory only, dies when this\nsession ends. Use true only when the user explicitly asks\nthe task to survive across sessions.",
+            "type": "boolean"
+          },
+          "prompt": {
+            "description": "The prompt to enqueue at each fire time.",
+            "type": "string"
+          },
+          "recurring": {
+            "default": true,
+            "description": "true (default) = fire on every cron match until deleted or\nauto-expired after 7 days. false = fire once at the next\nmatch, then auto-delete.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cron",
+          "prompt"
+        ],
+        "title": "CronCreateInput",
+        "type": "object"
+      }
+    },
+    "name": "CronCreate",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Cancel a scheduled cron job by ID",
+    "guide": {
+      "bytes": 101,
+      "fnv1a": "c56ec317bb8a7093"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "id": {
+            "description": "Job ID returned by CronCreate.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CronDeleteInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "id": {
+            "description": "Job ID returned by CronCreate.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CronDeleteInput",
+        "type": "object"
+      }
+    },
+    "name": "CronDelete",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "List scheduled cron jobs",
+    "guide": {
+      "bytes": 61,
+      "fnv1a": "50d647adeb2ac4c6"
+    },
+    "input_schema": {
+      "absolute": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      },
+      "workspace_relative": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    "name": "CronList",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {
+          "file_path": "/work/project/a.txt",
+          "new_string": "b",
+          "old_string": "a"
+        },
+        "permission_match_content": "/work/project/a.txt",
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Find-and-replace edits on a single file (one or many).",
+    "guide": {
+      "bytes": 1200,
+      "fnv1a": "77b2c86f1c672683"
+    },
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "SingleEdit": {
+            "properties": {
+              "new_string": {
+                "description": "Replacement text. Must differ from `old_string`.",
+                "type": "string"
+              },
+              "old_string": {
+                "description": "Literal text to find. Must match exactly.",
+                "type": "string"
+              },
+              "replace_all": {
+                "default": null,
+                "description": "false (default) requires `old_string` to occur exactly once; true\nreplaces every occurrence.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "edits": {
+            "description": "Edits applied atomically, in order, each to the result of the one\nbefore. When given, the top-level `old_string` / `new_string` /\n`replace_all` are ignored. If any edit fails, nothing is written.",
+            "items": {
+              "$ref": "#/$defs/SingleEdit"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "file_path": {
+            "description": "The absolute path to the file to edit. Relative paths are resolved\nagainst the current working directory.",
+            "type": "string"
+          },
+          "new_string": {
+            "default": null,
+            "description": "Single edit: the replacement; must differ from `old_string`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "old_string": {
+            "default": null,
+            "description": "Single edit (when `edits` is absent): the literal text to find,\nmatched exactly, whitespace included.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace_all": {
+            "default": null,
+            "description": "Single edit: false (default) requires `old_string` to occur exactly\nonce; true replaces every occurrence.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "FileEditInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "SingleEdit": {
+            "properties": {
+              "new_string": {
+                "description": "Replacement text. Must differ from `old_string`.",
+                "type": "string"
+              },
+              "old_string": {
+                "description": "Literal text to find. Must match exactly.",
+                "type": "string"
+              },
+              "replace_all": {
+                "default": null,
+                "description": "false (default) requires `old_string` to occur exactly once; true\nreplaces every occurrence.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "old_string",
+              "new_string"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "edits": {
+            "description": "Edits applied atomically, in order, each to the result of the one\nbefore. When given, the top-level `old_string` / `new_string` /\n`replace_all` are ignored. If any edit fails, nothing is written.",
+            "items": {
+              "$ref": "#/$defs/SingleEdit"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "file_path": {
+            "description": "The path of the file to edit, relative to the current working directory. An absolute path is also accepted.",
+            "type": "string"
+          },
+          "new_string": {
+            "default": null,
+            "description": "Single edit: the replacement; must differ from `old_string`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "old_string": {
+            "default": null,
+            "description": "Single edit (when `edits` is absent): the literal text to find,\nmatched exactly, whitespace included.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace_all": {
+            "default": null,
+            "description": "Single edit: false (default) requires `old_string` to occur exactly\nonce; true replaces every occurrence.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "FileEditInput",
+        "type": "object"
+      }
+    },
+    "name": "Edit",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "WritePath",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": true,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Enter plan mode to design before implementing",
+    "guide": {
+      "bytes": 4022,
+      "fnv1a": "cc1462c50febcc17"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The plan is what the model presents in its reply, not tool input.",
+        "title": "EnterPlanModeInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The plan is what the model presents in its reply, not tool input.",
+        "title": "EnterPlanModeInput",
+        "type": "object"
+      }
+    },
+    "name": "EnterPlanMode",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Create an isolated git worktree and switch the session into it",
+    "guide": {
+      "bytes": 1424,
+      "fnv1a": "b71315ad9f422593"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "slug": {
+            "description": "Slug for the worktree directory (e.g. `experiment-foo`). Path-traversal\nsafe; segments must match `[a-zA-Z0-9._-]`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "EnterWorktreeInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "slug": {
+            "description": "Slug for the worktree directory (e.g. `experiment-foo`). Path-traversal\nsafe; segments must match `[a-zA-Z0-9._-]`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "title": "EnterWorktreeInput",
+        "type": "object"
+      }
+    },
+    "name": "EnterWorktree",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Exit plan mode with plan summary and permission requests",
+    "guide": {
+      "bytes": 1705,
+      "fnv1a": "3879b71df83b88dc"
+    },
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "AllowedPrompt": {
+            "description": "A prompt-based permission request.",
+            "properties": {
+              "prompt": {
+                "description": "Semantic description of the action, e.g. \"run tests\", \"install dependencies\".",
+                "type": "string"
+              },
+              "tool": {
+                "description": "The tool this prompt applies to (currently only Bash).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool",
+              "prompt"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "allowed_prompts": {
+            "description": "Prompt-based permissions needed to implement the plan.\nThese describe categories of actions rather than specific commands.",
+            "items": {
+              "$ref": "#/$defs/AllowedPrompt"
+            },
+            "type": "array"
+          },
+          "note": {
+            "default": null,
+            "description": "Optional one-line note explaining why exiting (e.g., \"user approved the plan\").\nStored for transcript only; not enforced.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ExitPlanModeInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "AllowedPrompt": {
+            "description": "A prompt-based permission request.",
+            "properties": {
+              "prompt": {
+                "description": "Semantic description of the action, e.g. \"run tests\", \"install dependencies\".",
+                "type": "string"
+              },
+              "tool": {
+                "description": "The tool this prompt applies to (currently only Bash).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool",
+              "prompt"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "allowed_prompts": {
+            "description": "Prompt-based permissions needed to implement the plan.\nThese describe categories of actions rather than specific commands.",
+            "items": {
+              "$ref": "#/$defs/AllowedPrompt"
+            },
+            "type": "array"
+          },
+          "note": {
+            "default": null,
+            "description": "Optional one-line note explaining why exiting (e.g., \"user approved the plan\").\nStored for transcript only; not enforced.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ExitPlanModeInput",
+        "type": "object"
+      }
+    },
+    "name": "ExitPlanMode",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": true,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Exit a worktree session (keep or remove)",
+    "guide": {
+      "bytes": 1636,
+      "fnv1a": "57fe511da66d21cb"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "default": null,
+            "description": "\"keep\" = exit and leave the worktree on disk; \"remove\" = exit and delete it (default)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discard_changes": {
+            "default": null,
+            "description": "With action \"remove\": force removal even with uncommitted changes or unpushed commits.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "title": "ExitWorktreeInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "default": null,
+            "description": "\"keep\" = exit and leave the worktree on disk; \"remove\" = exit and delete it (default)",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discard_changes": {
+            "default": null,
+            "description": "With action \"remove\": force removal even with uncommitted changes or unpushed commits.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "title": "ExitWorktreeInput",
+        "type": "object"
+      }
+    },
+    "name": "ExitWorktree",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": true,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "path": "/work/project",
+          "pattern": "**/*.rs"
+        },
+        "permission_match_content": "/work/project",
+        "read_only": true
+      }
+    ],
+    "code_result": "{paths: string[], more: number} — newest first; more counts what max_results cut",
+    "description": "Find files by glob pattern (e.g. src/**/*.rs).",
+    "guide": {
+      "bytes": 372,
+      "fnv1a": "1b66abc924e210cc"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_results": {
+            "default": 1000,
+            "description": "Maximum number of results to return. Default 1000.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "default": null,
+            "description": "Root directory to search; defaults to the current working directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pattern": {
+            "description": "Shell-style glob pattern (e.g. \"*.rs\", \"**/*.toml\", \"src/**/test_*.rs\").",
+            "type": "string"
+          },
+          "respect_gitignore": {
+            "default": true,
+            "description": "When false, include files ignored by .gitignore. Default true.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "GlobInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_results": {
+            "default": 1000,
+            "description": "Maximum number of results to return. Default 1000.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "path": {
+            "default": null,
+            "description": "Root directory to search; defaults to the current working directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pattern": {
+            "description": "Shell-style glob pattern (e.g. \"*.rs\", \"**/*.toml\", \"src/**/test_*.rs\").",
+            "type": "string"
+          },
+          "respect_gitignore": {
+            "default": true,
+            "description": "When false, include files ignored by .gitignore. Default true.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "GlobInput",
+        "type": "object"
+      }
+    },
+    "name": "Glob",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "ReadPath",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Set a goal that keeps this session working across automatic rounds until it is complete. Use it when the user's request is a long-running objective that one turn won't finish, even if they don't say \"goal\"; not for single-turn work.",
+    "guide": null,
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_rounds": {
+            "default": null,
+            "description": "How many automatic rounds the goal may use (default 256).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objective": {
+            "description": "What the session should achieve, stated so that its completion can be\nchecked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "title": "GoalCreateInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_rounds": {
+            "default": null,
+            "description": "How many automatic rounds the goal may use (default 256).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objective": {
+            "description": "What the session should achieve, stated so that its completion can be\nchecked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "title": "GoalCreateInput",
+        "type": "object"
+      }
+    },
+    "name": "GoalCreate",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Read this session's goal, including the id and revision GoalUpdate needs.",
+    "guide": null,
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "GoalGetInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "GoalGetInput",
+        "type": "object"
+      }
+    },
+    "name": "GoalGet",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Change this session's goal: edit, pause, resume, complete or blocked. Mark complete only when the whole objective is achieved; difficulty or remaining work is not blocked.",
+    "guide": null,
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "GoalUpdateAction": {
+            "enum": [
+              "edit",
+              "pause",
+              "resume",
+              "complete",
+              "blocked"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/GoalUpdateAction",
+            "description": "edit, pause and resume need a direct request from the user; complete\nand blocked may also come from a round of this goal."
+          },
+          "blocked_reason": {
+            "default": null,
+            "description": "With `blocked`: what is in the way.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "max_rounds": {
+            "default": null,
+            "description": "With `edit`: the new round limit.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objective": {
+            "default": null,
+            "description": "With `edit`: the new objective.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "description": "The revision GoalGet returned; a stale one is refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goal_id",
+          "revision",
+          "action"
+        ],
+        "title": "GoalUpdateInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "GoalUpdateAction": {
+            "enum": [
+              "edit",
+              "pause",
+              "resume",
+              "complete",
+              "blocked"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/GoalUpdateAction",
+            "description": "edit, pause and resume need a direct request from the user; complete\nand blocked may also come from a round of this goal."
+          },
+          "blocked_reason": {
+            "default": null,
+            "description": "With `blocked`: what is in the way.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "goal_id": {
+            "type": "string"
+          },
+          "max_rounds": {
+            "default": null,
+            "description": "With `edit`: the new round limit.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objective": {
+            "default": null,
+            "description": "With `edit`: the new objective.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "description": "The revision GoalGet returned; a stale one is refused.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "goal_id",
+          "revision",
+          "action"
+        ],
+        "title": "GoalUpdateInput",
+        "type": "object"
+      }
+    },
+    "name": "GoalUpdate",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "path": "/work/project",
+          "pattern": "fn main"
+        },
+        "permission_match_content": "/work/project",
+        "read_only": true
+      }
+    ],
+    "code_result": "files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line",
+    "description": "Search file contents with regex (ripgrep-style).",
+    "guide": {
+      "bytes": 1046,
+      "fnv1a": "39c7702fbc4e9a0d"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "case_insensitive": {
+            "default": null,
+            "description": "Case-insensitive match.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "glob": {
+            "default": null,
+            "description": "Glob filter restricting which files to search (e.g. \"*.rs\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head_limit": {
+            "default": null,
+            "description": "Cap output lines; default 250 in content mode.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "line_numbers": {
+            "default": null,
+            "description": "Prefix each line with its line number (content mode only).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "multiline": {
+            "default": null,
+            "description": "Enable multiline mode where . matches newlines and ^/$ match line boundaries.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "output_mode": {
+            "default": null,
+            "description": "\"files_with_matches\" (default), \"content\", or \"count\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": null,
+            "description": "Root directory; defaults to cwd.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pattern": {
+            "description": "Regex pattern to search for (Rust regex syntax).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "GrepInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "case_insensitive": {
+            "default": null,
+            "description": "Case-insensitive match.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "glob": {
+            "default": null,
+            "description": "Glob filter restricting which files to search (e.g. \"*.rs\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "head_limit": {
+            "default": null,
+            "description": "Cap output lines; default 250 in content mode.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "line_numbers": {
+            "default": null,
+            "description": "Prefix each line with its line number (content mode only).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "multiline": {
+            "default": null,
+            "description": "Enable multiline mode where . matches newlines and ^/$ match line boundaries.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "output_mode": {
+            "default": null,
+            "description": "\"files_with_matches\" (default), \"content\", or \"count\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": null,
+            "description": "Root directory; defaults to cwd.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pattern": {
+            "description": "Regex pattern to search for (Rust regex syntax).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "GrepInput",
+        "type": "object"
+      }
+    },
+    "name": "Grep",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "ReadPath",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "tail -f log.txt"
+        },
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "cargo watch"
+        },
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "command": "ls"
+        },
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Start a background script that streams stdout lines as events.",
+    "guide": {
+      "bytes": 5361,
+      "fnv1a": "665166c48f8634ee"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "command": {
+            "description": "The shell command to run (via `bash -c`). Each stdout line becomes a notification event.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Human-readable description of what is being monitored. Appears in every notification.",
+            "type": "string"
+          },
+          "persistent": {
+            "default": false,
+            "description": "If true, the command runs until TaskStop or session end (no timeout kill).",
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "default": null,
+            "description": "Timeout in milliseconds (default 300000, max 3600000). Ignored when persistent is true.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "description"
+        ],
+        "title": "MonitorInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "command": {
+            "description": "The shell command to run (via `bash -c`). Each stdout line becomes a notification event.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Human-readable description of what is being monitored. Appears in every notification.",
+            "type": "string"
+          },
+          "persistent": {
+            "default": false,
+            "description": "If true, the command runs until TaskStop or session end (no timeout kill).",
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "default": null,
+            "description": "Timeout in milliseconds (default 300000, max 3600000). Ignored when persistent is true.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "command",
+          "description"
+        ],
+        "title": "MonitorInput",
+        "type": "object"
+      }
+    },
+    "name": "Monitor",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "ShellCommand",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {
+          "new_source": "x",
+          "notebook_path": "/work/project/n.ipynb"
+        },
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Edit Jupyter notebook cells (replace, insert, delete)",
+    "guide": {
+      "bytes": 624,
+      "fnv1a": "f769c07f4dc8a3f0"
+    },
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "NotebookCellType": {
+            "enum": [
+              "code",
+              "markdown",
+              "raw"
+            ],
+            "type": "string"
+          },
+          "NotebookEditMode": {
+            "enum": [
+              "insert",
+              "edit",
+              "delete"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cell_index": {
+            "description": "0-based cell index. For `insert`, the position to insert at; for\nedit / delete, the cell to operate on.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cell_type": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/NotebookCellType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cell type for new cells (required for insert; defaults to code)"
+          },
+          "file_path": {
+            "description": "Absolute path to the .ipynb file",
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/$defs/NotebookEditMode",
+            "description": "Operation: insert / edit / delete"
+          },
+          "new_source": {
+            "default": null,
+            "description": "New cell source (required for insert + edit; ignored for delete)",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path",
+          "mode",
+          "cell_index"
+        ],
+        "title": "NotebookEditInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "NotebookCellType": {
+            "enum": [
+              "code",
+              "markdown",
+              "raw"
+            ],
+            "type": "string"
+          },
+          "NotebookEditMode": {
+            "enum": [
+              "insert",
+              "edit",
+              "delete"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cell_index": {
+            "description": "0-based cell index. For `insert`, the position to insert at; for\nedit / delete, the cell to operate on.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cell_type": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/NotebookCellType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cell type for new cells (required for insert; defaults to code)"
+          },
+          "file_path": {
+            "description": "Absolute path to the .ipynb file",
+            "type": "string"
+          },
+          "mode": {
+            "$ref": "#/$defs/NotebookEditMode",
+            "description": "Operation: insert / edit / delete"
+          },
+          "new_source": {
+            "default": null,
+            "description": "New cell source (required for insert + edit; ignored for delete)",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path",
+          "mode",
+          "cell_index"
+        ],
+        "title": "NotebookEditInput",
+        "type": "object"
+      }
+    },
+    "name": "NotebookEdit",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "WritePath",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Check if a URL is reachable via HTTP HEAD request",
+    "guide": {
+      "bytes": 273,
+      "fnv1a": "e7c2e3a9e2977c05"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "label": {
+            "default": null,
+            "description": "Optional label for the model's reference (not sent to server).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "Target URL (http:// or https://).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "PingInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "label": {
+            "default": null,
+            "description": "Optional label for the model's reference (not sent to server).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "Target URL (http:// or https://).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "PingInput",
+        "type": "object"
+      }
+    },
+    "name": "Ping",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Notify the user: the host that runs this session shows it (and any Notification hook gets it).",
+    "guide": {
+      "bytes": 1116,
+      "fnv1a": "ffa6d1073d6790a6"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "message": {
+            "description": "通知正文。应当简洁、一行、无 markdown。",
+            "type": "string"
+          },
+          "status": {
+            "default": null,
+            "description": "通知类型（可选）。唯一有效值是 \"proactive\"，表主动推送。",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "PushNotificationInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "message": {
+            "description": "通知正文。应当简洁、一行、无 markdown。",
+            "type": "string"
+          },
+          "status": {
+            "default": null,
+            "description": "通知类型（可选）。唯一有效值是 \"proactive\"，表主动推送。",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "PushNotificationInput",
+        "type": "object"
+      }
+    },
+    "name": "PushNotification",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "file_path": "/work/project/src/lib.rs"
+        },
+        "permission_match_content": "/work/project/src/lib.rs",
+        "read_only": true
+      }
+    ],
+    "code_result": "text, each line prefixed with its number and a tab",
+    "description": "Read a file (text/image/PDF) with optional line range.",
+    "guide": {
+      "bytes": 1839,
+      "fnv1a": "ccba0f834ca0578b"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`Read` 工具的输入 schema。",
+        "properties": {
+          "file_path": {
+            "description": "The absolute path to the file to read. Relative paths are resolved\nagainst the current working directory.",
+            "type": "string"
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum number of lines to read. Default 2000.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": null,
+            "description": "Line number to start reading from (1-indexed). Default 1.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pages": {
+            "default": null,
+            "description": "PDF page range (e.g., \"1-5\", \"3\"). Max 20 pages per request.\nOnly applicable to PDF files.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "FileReadInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "`Read` 工具的输入 schema。",
+        "properties": {
+          "file_path": {
+            "description": "The path of the file to read, relative to the current working directory. An absolute path is also accepted.",
+            "type": "string"
+          },
+          "limit": {
+            "default": null,
+            "description": "Maximum number of lines to read. Default 2000.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": null,
+            "description": "Line number to start reading from (1-indexed). Default 1.",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pages": {
+            "default": null,
+            "description": "PDF page range (e.g., \"1-5\", \"3\"). Max 20 pages per request.\nOnly applicable to PDF files.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "FileReadInput",
+        "type": "object"
+      }
+    },
+    "name": "Read",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "ReadPath",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Wait for a specified duration",
+    "guide": {
+      "bytes": 581,
+      "fnv1a": "9ef1df53902d935f"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "duration_ms"
+        ],
+        "title": "SleepInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "duration_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "duration_ms"
+        ],
+        "title": "SleepInput",
+        "type": "object"
+      }
+    },
+    "name": "Sleep",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Hand in the result in the requested format. The arguments are the result itself: put each field's actual value in it (the text, the number), not code that would compute it and not the whole result as one string.",
+    "guide": {
+      "bytes": 179,
+      "fnv1a": "6f5495d0a711309d"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "title": "StructuredOutputInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "title": "StructuredOutputInput",
+        "type": "object"
+      }
+    },
+    "name": "StructuredOutput",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Send a message to a running background sub-agent",
+    "guide": {
+      "bytes": 310,
+      "fnv1a": "3c5fca13c9abc229"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "message": {
+            "description": "What to tell it: a correction, an extra constraint, a request to wrap up.",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "The background task running the sub-agent.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "message"
+        ],
+        "title": "TaskMessageInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "message": {
+            "description": "What to tell it: a correction, an extra constraint, a request to wrap up.",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "The background task running the sub-agent.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "message"
+        ],
+        "title": "TaskMessageInput",
+        "type": "object"
+      }
+    },
+    "name": "TaskMessage",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": true
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Retrieve output from a running or completed background task",
+    "guide": null,
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "block": {
+            "default": true,
+            "description": "Whether to block until the task completes (default: true)",
+            "type": "boolean"
+          },
+          "task_id": {
+            "description": "The ID of the background task to retrieve output for",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 30000,
+            "description": "Maximum time to wait in milliseconds (default: 30000, max: 600000)",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskOutputInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "block": {
+            "default": true,
+            "description": "Whether to block until the task completes (default: true)",
+            "type": "boolean"
+          },
+          "task_id": {
+            "description": "The ID of the background task to retrieve output for",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 30000,
+            "description": "Maximum time to wait in milliseconds (default: 30000, max: 600000)",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskOutputInput",
+        "type": "object"
+      }
+    },
+    "name": "TaskOutput",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Stop a running background task by ID",
+    "guide": null,
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "shell_id": {
+            "default": null,
+            "description": "Deprecated: use task_id instead",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "default": null,
+            "description": "The ID of the background task to stop",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "TaskStopInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "shell_id": {
+            "default": null,
+            "description": "Deprecated: use task_id instead",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "default": null,
+            "description": "The ID of the background task to stop",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "TaskStopInput",
+        "type": "object"
+      }
+    },
+    "name": "TaskStop",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": false
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Wait for any or all of several background tasks to end",
+    "guide": {
+      "bytes": 435,
+      "fnv1a": "f5a81a2d550977ce"
+    },
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "WaitMode": {
+            "oneOf": [
+              {
+                "const": "any",
+                "description": "Return as soon as one of the tasks ends.",
+                "type": "string"
+              },
+              {
+                "const": "all",
+                "description": "Return once every task has ended.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "mode": {
+            "$ref": "#/$defs/WaitMode",
+            "description": "`any` (default) or `all`."
+          },
+          "task_ids": {
+            "description": "The background tasks to wait for (at most 16).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timeout_ms": {
+            "default": 60000,
+            "description": "How long to wait at most, in milliseconds (default 60000, max 600000).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_ids"
+        ],
+        "title": "TaskWaitInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "WaitMode": {
+            "oneOf": [
+              {
+                "const": "any",
+                "description": "Return as soon as one of the tasks ends.",
+                "type": "string"
+              },
+              {
+                "const": "all",
+                "description": "Return once every task has ended.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "mode": {
+            "$ref": "#/$defs/WaitMode",
+            "description": "`any` (default) or `all`."
+          },
+          "task_ids": {
+            "description": "The background tasks to wait for (at most 16).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "timeout_ms": {
+            "default": 60000,
+            "description": "How long to wait at most, in milliseconds (default 60000, max 600000).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "task_ids"
+        ],
+        "title": "TaskWaitInput",
+        "type": "object"
+      }
+    },
+    "name": "TaskWait",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": false,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Maintain a structured task list for the current turn.",
+    "guide": {
+      "bytes": 2781,
+      "fnv1a": "5694f9810679b07e"
+    },
+    "input_schema": {
+      "absolute": {
+        "$defs": {
+          "TodoItem": {
+            "properties": {
+              "active_form": {
+                "default": "",
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/TodoStatus"
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ],
+            "type": "object"
+          },
+          "TodoStatus": {
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "todos": {
+            "description": "Full replacement set of todos; pass the complete list every call.",
+            "items": {
+              "$ref": "#/$defs/TodoItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "todos"
+        ],
+        "title": "TodoWriteInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$defs": {
+          "TodoItem": {
+            "properties": {
+              "active_form": {
+                "default": "",
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/TodoStatus"
+              }
+            },
+            "required": [
+              "content",
+              "status"
+            ],
+            "type": "object"
+          },
+          "TodoStatus": {
+            "enum": [
+              "pending",
+              "in_progress",
+              "completed"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "todos": {
+            "description": "Full replacement set of todos; pass the complete list every call.",
+            "items": {
+              "$ref": "#/$defs/TodoItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "todos"
+        ],
+        "title": "TodoWriteInput",
+        "type": "object"
+      }
+    },
+    "name": "TodoWrite",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": false,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "A tool listed with an empty input schema is deferred: fetch its schema here before calling it. Returns the schema in a <functions> block, and a tool's detailed usage guide when it has one. Query \"select:A,B\" for known names, or keywords to search (\"+term\" must appear in the name).",
+    "guide": {
+      "bytes": 1068,
+      "fnv1a": "5e72aadaf10bccde"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_results": {
+            "default": null,
+            "description": "Cap on returned matches (default 5).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "`select:<name>[,<name>...]` to fetch known tools by name; otherwise\nkeywords to search tool names and descriptions, where `+term` must\nappear in the name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ToolSearchInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_results": {
+            "default": null,
+            "description": "Cap on returned matches (default 5).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "`select:<name>[,<name>...]` to fetch known tools by name; otherwise\nkeywords to search tool names and descriptions, where `+term` must\nappear in the name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ToolSearchInput",
+        "type": "object"
+      }
+    },
+    "name": "ToolSearch",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "prompt": "x",
+          "url": "https://example.com"
+        },
+        "permission_match_content": "https://example.com",
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Fetch a URL and return the page as plain text.",
+    "guide": {
+      "bytes": 1278,
+      "fnv1a": "b4984e0b11228992"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "prompt": {
+            "default": null,
+            "description": "What you want from the page. When page extraction is enabled a model\nanswers this from the page; otherwise it is not acted on and the page\ntext is returned, the whole result at most 50,000 characters.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "HTTP/HTTPS URL to fetch.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "WebFetchInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "prompt": {
+            "default": null,
+            "description": "What you want from the page. When page extraction is enabled a model\nanswers this from the page; otherwise it is not acted on and the page\ntext is returned, the whole result at most 50,000 characters.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "description": "HTTP/HTTPS URL to fetch.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "WebFetchInput",
+        "type": "object"
+      }
+    },
+    "name": "WebFetch",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": true
+      },
+      {
+        "accept_edits_allows": true,
+        "concurrency_safe": true,
+        "destructive": false,
+        "input": {
+          "query": "rust"
+        },
+        "permission_match_content": "rust",
+        "read_only": true
+      }
+    ],
+    "code_result": null,
+    "description": "Search the web and return results with linked sources",
+    "guide": {
+      "bytes": 1348,
+      "fnv1a": "ade7de1e41cbd63e"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "allowed_domains": {
+            "default": null,
+            "description": "Only include search results from these domains.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "blocked_domains": {
+            "default": null,
+            "description": "Never include search results from these domains.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "max_results": {
+            "default": null,
+            "description": "Max results to return (default 10, max 25).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "Search query.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "WebSearchInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "allowed_domains": {
+            "default": null,
+            "description": "Only include search results from these domains.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "blocked_domains": {
+            "default": null,
+            "description": "Never include search results from these domains.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "max_results": {
+            "default": null,
+            "description": "Max results to return (default 10, max 25).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "Search query.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "WebSearchInput",
+        "type": "object"
+      }
+    },
+    "name": "WebSearch",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "Opaque",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": true,
+      "destructive": false,
+      "read_only": true
+    }
+  },
+  {
+    "callable_from_code": true,
+    "calls": [
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": null,
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {},
+        "permission_match_content": null,
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {
+          "content": "x",
+          "file_path": "/work/project/a.txt"
+        },
+        "permission_match_content": "/work/project/a.txt",
+        "read_only": false
+      },
+      {
+        "accept_edits_allows": false,
+        "concurrency_safe": false,
+        "destructive": true,
+        "input": {
+          "content": "x",
+          "file_path": "/elsewhere/a.txt"
+        },
+        "permission_match_content": "/elsewhere/a.txt",
+        "read_only": false
+      }
+    ],
+    "code_result": null,
+    "description": "Create or overwrite a file with given content.",
+    "guide": {
+      "bytes": 620,
+      "fnv1a": "098ea10aaf1b3fcd"
+    },
+    "input_schema": {
+      "absolute": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "content": {
+            "description": "The content to write. Replaces the file's existing content entirely.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "The absolute path to the file to write. Relative paths are resolved\nagainst the current working directory.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "title": "FileWriteInput",
+        "type": "object"
+      },
+      "workspace_relative": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "content": {
+            "description": "The content to write. Replaces the file's existing content entirely.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "The path of the file to write, relative to the current working directory. An absolute path is also accepted.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "title": "FileWriteInput",
+        "type": "object"
+      }
+    },
+    "name": "Write",
+    "needs_dispatch": false,
+    "origin": "builtin",
+    "permission": {
+      "content_kind": "WritePath",
+      "leaves_plan_mode": false,
+      "self_allow_overrides_mode": false
+    },
+    "short_description": null,
+    "traits": {
+      "concurrency_safe": false,
+      "destructive": true,
+      "read_only": false
+    }
+  }
+]

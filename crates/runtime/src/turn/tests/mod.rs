@@ -9,6 +9,7 @@ mod prompt_assembly;
 mod sandbox_settings;
 mod skills_text;
 mod support;
+mod tool_defs_golden;
 mod tool_exec;
 mod tool_result_content;
 mod turn_loop;
