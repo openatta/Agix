@@ -123,13 +123,9 @@ fn later_requests(model: &MockAnthropicClient) -> String {
         .join("\n")
 }
 
-/// 场景的工具白名单把 `Bash` 拿掉了，skill 正文里的 `` !`cmd` `` 也就不该跑：
-/// 文档说它"按一次 `Bash` 调用判"，而这个会话里根本没有 `Bash` 可调。0.3.11 的
-/// 判定从会话注册表里找 `Bash`，找不到就询问（预处理问不了，于是不跑）；拆分后
-/// 判定拿的是新造的 `BashTool`，会话有没有 `Bash` 不再起作用，项目内的只读命令
-/// 静默放行，`bypassPermissions` 下什么都跑。
+/// 场景的工具白名单把 `Bash` 拿掉了，skill 正文里的 `` !`cmd` `` 也就不跑：
+/// 文档说它"按一次 `Bash` 调用判"，而这个会话里没有 `Bash` 可调。
 #[tokio::test]
-#[ignore = "audit: confirmed defect, fix pending"]
 async fn audit3_a_skills_inline_command_does_not_run_in_a_scene_without_bash() {
     let dir = tempfile::tempdir().unwrap();
     let global = dir.path().join("agix");

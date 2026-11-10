@@ -590,8 +590,9 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// model-generated Bash command is — a project skill is whatever the
 /// repository says — so each command is held to what a model's `Bash` call
 /// with that command would be: the session's permission policy decides first,
-/// then it runs through the real `BashTool::call()` with this invocation's
-/// `ToolContext` (same sandbox, cwd, cancellation). A deny rule refuses it;
+/// then it runs through the session's own `Bash` with this invocation's
+/// `ToolContext` (same sandbox, cwd, cancellation). A session whose tools
+/// leave `Bash` out runs none. A deny rule refuses it;
 /// so does a call that would need the user's approval, because
 /// preprocessing has no one to ask — only what the rules allow, or what
 /// `Bash` itself lets through silently (a read-only command inside the
@@ -671,7 +672,10 @@ async fn run_skill_shell_command(
         return refusal.to_string();
     }
     let input = serde_json::json!({"command": command});
-    let bash: Arc<dyn Tool> = Arc::new(tools::bash::BashTool);
+    let Some(bash) = ctx.session.tool("Bash") else {
+        tracing::warn!(command = %command, "skill inline command not run: the session has no Bash");
+        return format!("[`{command}` not run: this session has no Bash tool]");
+    };
     let refused = match permission {
         None => Some("no permission check is wired for this skill".to_string()),
         Some(permission) => match permission
@@ -748,6 +752,17 @@ mod dynamic_context_tests {
         }
     }
 
+    /// A tool context whose session dispatches `Bash` to the real tool; the
+    /// session holds its registry weakly, so the registry is returned to keep.
+    fn bash_ctx(cwd: std::path::PathBuf) -> (ToolContext, Arc<dyn base::tool::ToolRegistry>) {
+        let ctx = platform::tool_context_for_test(cwd);
+        let tools = base::tool::InMemoryToolRegistry::new();
+        tools.register(Arc::new(tools::bash::BashTool));
+        let tools: Arc<dyn base::tool::ToolRegistry> = Arc::new(tools);
+        ctx.session.bind_tools(&tools);
+        (ctx, tools)
+    }
+
     async fn expand(body: &str, ctx: &ToolContext) -> String {
         expand_dynamic_context(body, ctx, Some(&Permits), crate::manager::SkillSource::User).await
     }
@@ -777,7 +792,7 @@ mod dynamic_context_tests {
     async fn an_inline_command_is_held_to_the_rules_a_bash_call_would_be() {
         use base::permission::RuleBehavior;
         let dir = tempfile::tempdir().unwrap();
-        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+        let (ctx, _tools) = bash_ctx(dir.path().to_path_buf());
         let body = "!`echo stamped > stamp.txt`";
 
         let denied = gate(vec![bash_rule(RuleBehavior::Deny, None)]);
@@ -813,9 +828,18 @@ mod dynamic_context_tests {
     }
 
     #[tokio::test]
-    async fn a_read_only_inline_command_runs_as_a_bash_call_would() {
+    async fn an_inline_command_is_not_run_in_a_session_without_bash() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+        let out = expand("!`echo ran > ran.txt`", &ctx).await;
+        assert!(out.contains("not run") && out.contains("no Bash"), "{out}");
+        assert!(!dir.path().join("ran.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_read_only_inline_command_runs_as_a_bash_call_would() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, _tools) = bash_ctx(dir.path().to_path_buf());
         let asks = gate(vec![]);
         let out = expand_dynamic_context(
             "!`echo hello`",
@@ -830,7 +854,8 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn inline_placeholder_at_line_start_is_substituted() {
         let body = "## Info\n!`echo hello-world`\n\nDone.";
-        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
+        let (ctx, _tools) = bash_ctx(std::env::temp_dir());
+        let out = expand(body, &ctx).await;
         assert!(out.contains("hello-world"));
         assert!(!out.contains("!`echo"));
     }
@@ -838,7 +863,8 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn inline_placeholder_after_whitespace_is_substituted() {
         let body = "Value: !`echo 42`.";
-        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
+        let (ctx, _tools) = bash_ctx(std::env::temp_dir());
+        let out = expand(body, &ctx).await;
         assert!(out.contains("Value: 42."));
     }
 
@@ -847,14 +873,16 @@ mod dynamic_context_tests {
         // `!` must be at line start or after whitespace — `KEY=!\`cmd\`` has
         // no separator, so it's untouched.
         let body = "KEY=!`echo should-not-run`";
-        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
+        let (ctx, _tools) = bash_ctx(std::env::temp_dir());
+        let out = expand(body, &ctx).await;
         assert_eq!(out, body);
     }
 
     #[tokio::test]
     async fn fenced_block_is_substituted() {
         let body = "## Environment\n```!\necho line-one\necho line-two\n```\n";
-        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
+        let (ctx, _tools) = bash_ctx(std::env::temp_dir());
+        let out = expand(body, &ctx).await;
         assert!(out.contains("line-one"));
         assert!(out.contains("line-two"));
         assert!(!out.contains("```!"));
@@ -862,7 +890,7 @@ mod dynamic_context_tests {
 
     #[tokio::test]
     async fn disable_skill_shell_execution_replaces_with_fixed_placeholder_not_running_anything() {
-        let mut ctx = platform::tool_context_for_test(std::env::temp_dir());
+        let (mut ctx, _tools) = bash_ctx(std::env::temp_dir());
         ctx.config = Arc::new({
             let mut c = base::context::EngineConfig::defaults_for("test-model");
             c.disable_skill_shell_execution = true;
@@ -877,7 +905,7 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn project_skill_commands_wait_for_trust() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+        let (mut ctx, _tools) = bash_ctx(dir.path().to_path_buf());
         ctx.config = Arc::new({
             let mut c = base::context::EngineConfig::defaults_for("test-model");
             c.project_untrusted = true;
@@ -902,7 +930,8 @@ mod dynamic_context_tests {
     #[tokio::test]
     async fn body_with_no_placeholders_is_returned_unchanged() {
         let body = "Just plain instructions, no shell syntax here.";
-        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
+        let (ctx, _tools) = bash_ctx(std::env::temp_dir());
+        let out = expand(body, &ctx).await;
         assert_eq!(out, body);
     }
 
@@ -916,7 +945,8 @@ mod dynamic_context_tests {
         // command that needs to *produce* a backtick has to build it this
         // way rather than embed one directly.
         let body = "!`printf '!\\140echo nested\\140'`";
-        let out = expand(body, &platform::tool_context_for_test(std::env::temp_dir())).await;
+        let (ctx, _tools) = bash_ctx(std::env::temp_dir());
+        let out = expand(body, &ctx).await;
         assert_eq!(out, "!`echo nested`", "output was: {out}");
     }
 
@@ -962,7 +992,7 @@ mod dynamic_context_tests {
         let mgr = Arc::new(crate::manager::SkillManager::new());
         mgr.load_dir_subdirs(dir.path(), crate::manager::SkillSource::User)
             .unwrap();
-        let ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+        let (ctx, _tools) = bash_ctx(dir.path().to_path_buf());
         let forks = Arc::new(Forks::default());
         let tool = SkillTool::new(mgr.clone())
             .with_permission(base::interface::permission::PermissionSet::without_grants(
