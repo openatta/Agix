@@ -1049,3 +1049,76 @@ async fn audit2_a_background_agent_stopped_by_an_interrupt_ends_stopped() -> any
     run.finish().await;
     Ok(())
 }
+
+/// `session.setPrompt` rebuilds an idle session. When the old engine is slow
+/// to stop the rebuild fails, but the session left behind still serves the
+/// next turn rather than swallowing it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_next_turn(
+) -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let scratch = tempfile::tempdir()?;
+    let go = scratch.path().join("go");
+    let hook = executable(
+        scratch.path(),
+        "end.sh",
+        &format!(
+            "#!/bin/sh\ncat >/dev/null\nwhile [ ! -e '{}' ]; do sleep 0.05; done\necho '{{}}'\n",
+            go.display()
+        ),
+    )?;
+    let mut run = stubbed("slow-stop", &stub)
+        .settings(json!({
+            "hooks_config": { "SessionEnd": [{
+                "type": "command", "command": hook, "timeout": 120_000
+            }] }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script([Reply::text("one")]);
+    run.turn(&session, "ONE-MARK hello").await?;
+    let set = run
+        .client
+        .call(
+            "session.setPrompt",
+            json!({ "session_id": session, "append": "Answer briefly." }),
+        )
+        .await?;
+    stub.script([Reply::text("two answered")]);
+    let second = run
+        .spawn_turn(&session, "TWO-MARK again", json!({}))
+        .await?;
+    std::fs::write(&go, "")?;
+    let set_answer = set
+        .result
+        .clone()
+        .or(set.error.clone().map(|e| json!(e.message)));
+    let Ok(events) = tokio::time::timeout(Duration::from_secs(30), second).await else {
+        panic!(
+            "the turn after the rebuild never ended once the old engine could stop; \
+             setPrompt answered {set_answer:?}"
+        );
+    };
+    let events = events??;
+    let history = run
+        .client
+        .call(
+            "session.history",
+            json!({ "session_id": session, "limit": 100 }),
+        )
+        .await?
+        .result
+        .unwrap_or_default()
+        .to_string();
+    let error = events.response.as_ref().and_then(|r| r.error.clone());
+    assert!(
+        error.is_none() && history.contains("TWO-MARK"),
+        "setPrompt answered {:?}; the next turn answered {error:?} and the history has it: {}",
+        set.result.or(set.error.map(|e| json!(e.message))),
+        history.contains("TWO-MARK")
+    );
+    run.finish().await;
+    Ok(())
+}
