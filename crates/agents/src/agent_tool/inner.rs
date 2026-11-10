@@ -216,7 +216,9 @@ pub(super) struct Inner {
     /// Agent types this session's plugins declare, over the shared catalog:
     /// above built-in and package types, below the ones on disk.
     pub(super) session_agent_types: Arc<std::collections::HashMap<String, AgentTypeDefinition>>,
-    pub(super) process_groups: Option<Arc<platform::GroupLedger>>,
+    /// The parent session's providers: a delegate runs on them, process
+    /// ledger included.
+    pub(super) exec: Option<base::interface::exec::ExecProviders>,
     /// What every delegate is assembled with: the parent session's modules.
     pub(super) modules: Vec<Arc<dyn runtime::module::Module>>,
     /// The parent session's `SkillManager`, when known — used to resolve
@@ -457,8 +459,8 @@ impl Inner {
         if let Some(handle) = self.telemetry_handle() {
             builder = builder.telemetry_handle(handle);
         }
-        if let Some(ledger) = &self.process_groups {
-            builder = builder.process_groups(ledger.clone());
+        if let Some(exec) = &self.exec {
+            builder = builder.exec(exec.clone());
         }
         // One runner for the whole tree: `once` holds across it, and the
         // root's file watcher is the only one.
@@ -604,6 +606,7 @@ impl Inner {
                 own_tools: Default::default(),
                 task,
                 session: Default::default(),
+                parent_exec: self.exec.clone(),
             });
         }
         Arc::new(AlwaysPermit)

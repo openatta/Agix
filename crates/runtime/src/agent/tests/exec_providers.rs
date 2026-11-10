@@ -102,3 +102,63 @@ async fn the_permission_judges_a_call_on_the_providers_it_runs_on() {
         assert!(Arc::ptr_eq(sandbox, &agent.exec.sandbox));
     }
 }
+
+#[tokio::test]
+async fn a_session_built_with_providers_runs_on_them() {
+    let seen = Arc::new(std::sync::Mutex::new(Seen::default()));
+    let tools = Arc::new(InMemoryToolRegistry::new());
+    tools.register(Arc::new(ExecProbe(seen.clone())));
+    let providers = base::interface::exec::ExecProviders::in_process();
+    let (mut agent, _event_rx, _input_tx) = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()))
+        .model(Arc::new(ToolThenStopModel {
+            calls: Default::default(),
+            tool: "ExecProbe",
+        }))
+        .settings(Arc::new(test_settings()))
+        .tools(tools)
+        .exec(providers.clone())
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    assert!(Arc::ptr_eq(&agent.exec.process, &providers.process));
+    let bound = agent.session_state.exec().expect("the session's providers");
+    assert!(Arc::ptr_eq(&bound.filesystem, &providers.filesystem));
+
+    agent
+        .process_turn(
+            InputMessage::User {
+                content: "go".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the turn runs");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.ran.len(), 1, "the call ran");
+    assert!(Arc::ptr_eq(&seen.ran[0].0, &providers.filesystem));
+    assert!(Arc::ptr_eq(&seen.ran[0].1, &providers.sandbox));
+}
+
+/// Keeping either one silently would drop the host's providers or the
+/// session's process cleanup.
+#[test]
+fn providers_and_a_process_ledger_are_not_given_together() {
+    let built = Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()))
+        .model(Arc::new(ToolThenStopModel {
+            calls: Default::default(),
+            tool: "ExecProbe",
+        }))
+        .settings(Arc::new(test_settings()))
+        .exec(base::interface::exec::ExecProviders::in_process())
+        .process_groups(platform::GroupLedger::new())
+        .skip_warmup(true)
+        .build();
+    let Err(e) = built else {
+        panic!("both were accepted");
+    };
+    assert!(e.to_string().contains("Builder::process_groups"), "{e}");
+}

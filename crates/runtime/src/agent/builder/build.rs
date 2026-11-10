@@ -282,7 +282,17 @@ impl Builder {
         });
         // One set for the session: its tool calls run on it, and a permission
         // judging them reads it back from the session state.
-        let exec = crate::turn::exec_providers_from(&config, self.process_groups.as_ref());
+        let exec = match (&self.exec, &self.process_groups) {
+            (Some(_), Some(_)) => {
+                return Err(EngineError::Internal(
+                    "Builder::exec and Builder::process_groups are both set; record groups in \
+                     the providers you pass (platform::local_providers_with_ledger)"
+                        .into(),
+                ))
+            }
+            (Some(exec), None) => exec.clone(),
+            (None, groups) => crate::turn::exec_providers_from(&config, groups.as_ref()),
+        };
         session_state.bind_exec(exec.clone());
         let hook_ambient = hook_ambient(
             session.session_id_str().to_string(),
@@ -403,7 +413,7 @@ impl Builder {
                 instruction_file: instruction_file.as_ref(),
                 depth: agent_depth,
                 task_router: self.task_router.as_ref(),
-                process_groups: self.process_groups.as_ref(),
+                exec: &exec,
                 delegate_plugins: &self.plugins,
                 plugin_tools: &plugin_tools,
                 plugin_agent_types: &plugin_agent_types,

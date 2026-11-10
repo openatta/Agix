@@ -101,6 +101,8 @@ pub struct Builder {
     /// Where this session's commands record their process groups — see
     /// [`Builder::process_groups`].
     process_groups: Option<Arc<platform::GroupLedger>>,
+    /// Where this session reaches the machine — see [`Builder::exec`].
+    exec: Option<base::interface::exec::ExecProviders>,
     modules: Vec<Arc<dyn crate::module::Module>>,
     session_prompt: Option<SessionPrompt>,
 }
@@ -156,6 +158,7 @@ impl Builder {
             cron_store: None,
             goal_rounds_from_owner: false,
             process_groups: None,
+            exec: None,
             modules: Vec::new(),
             session_prompt: None,
         }
@@ -193,6 +196,19 @@ impl Builder {
     /// [`GroupLedger::reap`]: platform::GroupLedger::reap
     pub fn process_groups(mut self, ledger: Arc<platform::GroupLedger>) -> Self {
         self.process_groups = Some(ledger);
+        self
+    }
+
+    /// Run this session's commands, file access, requests and sandboxing on
+    /// `providers` instead of this machine. Delegates use the same set.
+    ///
+    /// The egress policy and the subprocess environment are then
+    /// `providers`' to enforce; `sandbox.network_mode` and
+    /// `sandbox.subprocess_env` configure only the default set. Not together
+    /// with [`Builder::process_groups`]: record the groups in the providers
+    /// passed here (`platform::local_providers_with_ledger`).
+    pub fn exec(mut self, providers: base::interface::exec::ExecProviders) -> Self {
+        self.exec = Some(providers);
         self
     }
 

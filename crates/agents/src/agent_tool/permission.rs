@@ -109,6 +109,9 @@ pub(super) struct ParentPermission {
     /// The sub-agent's own session. When nobody attends it, a question is
     /// handed back for the turn to refuse, not sent up to wait for an answer.
     pub(super) session: std::sync::RwLock<Option<Arc<base::context::SessionState>>>,
+    /// The parent session's providers, for a check made before the
+    /// sub-agent's own are bound.
+    pub(super) parent_exec: Option<base::interface::exec::ExecProviders>,
 }
 
 /// The parent's permission as a sub-agent a program started sees it: nobody
@@ -307,7 +310,8 @@ impl ParentPermission {
             let exec = judged
                 .as_ref()
                 .and_then(|judged| judged.exec())
-                .unwrap_or_else(platform::local_providers);
+                .or_else(|| self.parent_exec.clone())
+                .unwrap_or_else(base::interface::exec::ExecProviders::in_process);
             let mut ctx = ToolContext::from_engine_ctx_with(
                 cwd.to_path_buf(),
                 tokio_util::sync::CancellationToken::new(),

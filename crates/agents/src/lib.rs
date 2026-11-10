@@ -111,9 +111,7 @@ impl Module for AgentsModule {
         if !cx.delegate_plugins.is_empty() {
             tool = tool.with_delegate_plugins(cx.delegate_plugins.to_vec(), cx.plugin_tools);
         }
-        if let Some(ledger) = cx.process_groups {
-            tool = tool.with_process_groups(ledger.clone());
-        }
+        tool = tool.with_exec(cx.exec.clone());
         let tool = Arc::new(tool);
 
         // For `AgentTypeDefinition.mcp_servers` and `.skills`: a delegate is

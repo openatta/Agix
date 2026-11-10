@@ -113,11 +113,6 @@ const MAY_USE_PLATFORM: &[(&str, &str, &str)] = &[
         "fetches packages over this machine's network",
     ),
     (
-        "agents",
-        "crates/agents",
-        "a sub-agent's commands record their process groups in the parent's ledger",
-    ),
-    (
         "assembly",
         "crates/assembly",
         "fences the sockets it serves from the sandbox; the discovery lock's process identity",

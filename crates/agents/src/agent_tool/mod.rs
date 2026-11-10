@@ -180,7 +180,7 @@ impl AgentTool {
                 delegate_plugins: Vec::new(),
                 plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
-                process_groups: None,
+                exec: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
@@ -250,7 +250,7 @@ impl AgentTool {
                 delegate_plugins: Vec::new(),
                 plugin_tools: Default::default(),
                 session_agent_types: Default::default(),
-                process_groups: None,
+                exec: None,
                 modules: Vec::new(),
                 skill_manager: Default::default(),
                 delegate_mcp: Default::default(),
@@ -348,9 +348,10 @@ impl AgentTool {
         self
     }
 
-    pub fn with_process_groups(mut self, ledger: Arc<platform::GroupLedger>) -> Self {
+    /// Run delegates on the parent session's providers.
+    pub fn with_exec(mut self, exec: base::interface::exec::ExecProviders) -> Self {
         let mut inner = (*self.inner).clone();
-        inner.process_groups = Some(ledger);
+        inner.exec = Some(exec);
         self.inner = Arc::new(inner);
         self
     }

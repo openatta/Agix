@@ -330,3 +330,41 @@ async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_
         "{nested:?}"
     );
 }
+
+/// A delegate runs on its parent's providers: the git its first turn asks
+/// for to collect the repository context reaches the parent's `Process`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delegate_runs_on_its_parents_providers() {
+    use base::interface::exec::in_process::ScriptedProcess;
+    let process = ScriptedProcess::new();
+    let providers = base::interface::exec::ExecProviders {
+        process: Arc::new(process.clone()),
+        ..base::interface::exec::ExecProviders::in_process()
+    };
+    let (settings, dir) = parent_settings_for_test("code");
+    let agent_tool = agent_tool_with_model(Arc::new(LineageModel {
+        seen: Default::default(),
+    }))
+    .with_settings(Arc::new(settings))
+    .with_exec(providers);
+
+    let ran = agent_tool
+        .run_sub(
+            "look".into(),
+            Arc::new(InMemoryToolRegistry::new()),
+            dir.clone(),
+            tokio_util::sync::CancellationToken::new(),
+            Arc::new(AlwaysPermit),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await;
+    let _ = std::fs::remove_dir_all(&dir);
+    ran.expect("the delegate runs");
+    assert!(
+        process.seen().iter().any(|argv| argv.starts_with("git ")),
+        "the delegate's git did not reach the parent's providers: {:?}",
+        process.seen()
+    );
+}
