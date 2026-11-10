@@ -191,32 +191,21 @@ impl Tool for ExitPlanModeTool {
         let input: ExitPlanModeInput = serde_json::from_value(input)?;
         if plan_mode_active(&ctx) {
             let restored = ctx.session.exit_plan_mode();
-            // `allowed_prompts` are the permission grants the model is asking
-            // for as part of leaving plan mode ("I will need to run the test
-            // suite").
-            //
-            // They are *requests*, not grants: this tool itself requires
-            // confirmation (`check_permissions` → Ask), so a host that
-            // approved this call approved the plan and the operations named in
-            // it. Surface them as an explicit, named list in the result so the
-            // decision is visible in the transcript, and record each as a
-            // session-scoped allow rule with the tool + prompt text as its
-            // content pattern. Nothing broader than what was named is granted.
-            let mut granted: Vec<String> = Vec::new();
-            for p in &input.allowed_prompts {
-                granted.push(format!("{}({})", p.tool, p.prompt));
-            }
+            let requested: Vec<String> = input
+                .allowed_prompts
+                .iter()
+                .map(|p| format!("{}({})", p.tool, p.prompt))
+                .collect();
             let note = input.note.unwrap_or_default();
             let mut msg = format!(
                 "Exited plan mode (now: {restored:?}).{}{}",
                 if note.is_empty() { "" } else { " note: " },
                 note
             );
-            if !granted.is_empty() {
+            if !requested.is_empty() {
                 msg.push_str(&format!(
-                    "\nApproved alongside the plan: {}. \
-                     Calls outside this list still require confirmation.",
-                    granted.join(", ")
+                    "\nPermissions requested; each call still asks: {}.",
+                    requested.join(", ")
                 ));
             }
             Ok(ToolResult::text(msg))
@@ -391,10 +380,10 @@ mod tests {
         ));
     }
 
-    /// `allowed_prompts` must at least reach the transcript, so the approval
-    /// is visible and auditable.
+    /// `allowed_prompts` reach the transcript as what was asked for, not as
+    /// something granted: approving the exit adds no rule.
     #[tokio::test]
-    async fn exit_plan_mode_reports_the_prompts_it_was_approved_with() {
+    async fn exit_plan_mode_reports_the_prompts_as_requested_not_granted() {
         let c = session_ctx();
         c.session.set_permission_mode(PermissionMode::Plan);
         let r = ExitPlanModeTool
@@ -411,7 +400,8 @@ mod tests {
         match r.content {
             base::tool::ToolResultContent::Text(s) => {
                 assert!(s.contains("Bash(run tests)"), "{s}");
-                assert!(s.contains("still require confirmation"), "{s}");
+                assert!(s.contains("requested; each call still asks"), "{s}");
+                assert!(!s.contains("Approved"), "{s}");
             }
             _ => panic!("expected text"),
         }
