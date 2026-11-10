@@ -66,13 +66,18 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
   `scripts/x.sh` 这类相对路径落到的是仓库放在那里的文件。项目未被信任时(ARCHITECTURE §6.6),
   在场的 hook 都来自全局层、场景层。它们若以相对路径起程序——`command` 里任何一段启动的程序
   (`cd` 之后、`sh -c` 里、`env` / `sudo` 等 wrapper 后面的都算)或 `shell` 本身——或者命令里
-  有哪个相对路径的词此刻就是项目里的一个文件——解释器读的脚本(`python3 scripts/check.py`、
-  `node hook.js`、`awk -f x.awk`、`bash x.sh`、`. env.sh`)、选项的值(`--require=./x.js`)、
+  有哪个相对路径的词此刻就是项目里的一个文件或目录——解释器读的脚本(`python3 scripts/check.py`、
+  `node hook.js`、`awk -f x.awk`、`bash x.sh`、`. env.sh`)、解释器跑其入口文件的目录(`python3 pkg/`、
+  `node .`、`deno run .`;`.`、`./` 也算)、选项的值(`--require=./x.js`,短选项紧跟的值
+  `-r./x.js`)、
   `NAME=value` 的值、`<` 读进来的、`cat x.sh | sh` 里的,以及展开后落到项目文件上的未加引号的
   glob / 花括号(`sh scripts/*.sh`、`for f in scripts/*.py`)——就不跑,算这个 hook 失败(按 `on_error`
   处理,缺省记 warn、放行),失败原因里写着是哪个词。文件按工作目录和命令里 `cd` 去的目录找;
-  哪个程序把哪个参数当代码执行不去猜,所以把项目文件当数据读的(`grep x README.md`)同样不跑。
-  `>` 写到的文件、不存在的路径、目录、选项本身不算。继承来的 `PATH` 里的相对条目(`.`、空条目)
+  哪个程序把哪个参数当代码执行不去猜,所以把项目文件、目录当数据读的(`grep x README.md`、
+  `ls src`、`prettier --check .`)同样不跑。`cd` / `pushd` 去的那个目录、`>` 写到的文件、不存在的
+  路径、选项本身不算;短选项后面的字母数字串(`-lscripts`)分不清是值还是几个开关,整词看,不拆。
+  命令里 `cd` 到项目外的绝对路径之后,工作目录仍在查找之列:`cd /opt && python3 x.py` 在项目根下
+  也有 `x.py` 时会被误拒。继承来的 `PATH` 里的相对条目(`.`、空条目)
   同时去掉,裸程序名只在 hooks 目录与绝对路径的目录里找。自己的脚本写绝对路径(`~/`、`$HOME/`
   也算)或放进 `~/.agix/hooks/` 写裸名。`$PWD` / `${PWD}` 就是 hook 的工作目录,`$PWD/x.sh`
   按 `./x.sh` 算;其余变量拼出来的路径(`$TOOLS/x.sh`)不在检查之列。项目信任之后照旧。

@@ -1130,11 +1130,13 @@ mod tests {
             format!("BEGIN {{ system(\"{touch}\") }}\n"),
         )
         .unwrap();
-        std::fs::write(
-            scripts.join("check.py"),
-            format!("open('{}', 'w')\n", marker.display()),
-        )
-        .unwrap();
+        for entry in ["check.py", "__main__.py"] {
+            std::fs::write(
+                scripts.join(entry),
+                format!("open('{}', 'w')\n", marker.display()),
+            )
+            .unwrap();
+        }
         std::fs::write(
             scripts.join("check.js"),
             format!("require('fs').writeFileSync('{}', '')\n", marker.display()),
@@ -1185,23 +1187,22 @@ mod tests {
             "sh < scripts/check.sh",
             "sh scripts/check.s?",
             "for f in scripts/check.*; do python3 \"$f\"; done",
+            "python3 scripts",
+            "node -r./scripts/check.js -e 0",
         ] {
             let result = runner(command, true)
                 .run(HookEvent::PreToolUse, &input)
                 .await;
             assert!(!marker.exists(), "`{command}` ran the project's script");
             match &result.outcomes[0] {
-                HookOutcome::Error(e) => assert!(
-                    e.contains("not trusted") && e.contains("check."),
-                    "`{command}`: {e}"
-                ),
+                HookOutcome::Error(e) => assert!(e.contains("not trusted"), "`{command}`: {e}"),
                 other => panic!("`{command}`: expected a hook failure, got {other:?}"),
             }
         }
 
         for command in [
             "own.sh",
-            "true --flag ./scripts/missing.py scripts /etc/hosts",
+            "true --flag ./scripts/missing.py /etc/hosts",
             "awk -f /dev/null",
             "echo log >> scripts/check.sh.log",
         ] {

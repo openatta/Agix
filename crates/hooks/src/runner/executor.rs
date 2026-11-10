@@ -206,10 +206,11 @@ enum ProjectSupplied {
     /// itself, or a command's program (`./x`, `bin/x`, after `cd`, inside
     /// `sh -c`, behind `env` and the other wrappers).
     Program(String),
-    /// A word naming a file that is there under the hook's working directory
-    /// or a directory a `cd` in the command goes to: the script an interpreter
-    /// runs (`python3 x.py`, `awk -f x.awk`, `. env.sh`), an option's value
-    /// (`--require=./x.js`), what `<` feeds in.
+    /// A word naming a file or directory that is there under the hook's
+    /// working directory or a directory a `cd` in the command goes to: the
+    /// script an interpreter runs (`python3 x.py`, `awk -f x.awk`, `. env.sh`),
+    /// a package it runs the entry point of (`python3 pkg/`, `node .`), an
+    /// option's value (`--require=./x.js`, `-r./x.js`), what `<` feeds in.
     File(String),
 }
 
@@ -222,20 +223,20 @@ impl ProjectSupplied {
                  or trust the project"
             ),
             Self::File(word) => format!(
-                "hook command names the project's file `{word}` and the project is not \
-                 trusted: the hook would run or read the project's copy; write an absolute \
-                 path, or trust the project"
+                "hook command names `{word}`, a file or directory in the project, and the \
+                 project is not trusted: the hook would run or read the project's copy; \
+                 write an absolute path, or trust the project"
             ),
         }
     }
 }
 
 /// Reads `command` as the hook `if` reads it. Which interpreter takes which
-/// argument as code is not guessed: any argument that is a file in the
-/// project counts. `$HOME` and `$PWD` are read as what they stand for; a
+/// argument as code is not guessed: any argument that is a file or directory
+/// in the project counts, except the one `cd` goes to. `$HOME` and `$PWD` are read as what they stand for; a
 /// program spelled through any other variable is not judged here.
 fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSupplied> {
-    use permissions::invocation::{program_name, traced_invocations, Invocation};
+    use permissions::invocation::{traced_invocations, Invocation};
     if shell.contains('/') && is_relative(shell) {
         return Some(ProjectSupplied::Program(shell.to_string()));
     }
@@ -252,11 +253,16 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
     for segment in permissions::shell::segments(command) {
         let words = permissions::shell::lex(&segment.source);
         operands.extend(read_from(&words));
-        patterns.extend(
-            without_redirections(&words)
-                .filter(|word| (word.globs || word.braces) && !word.substitutes)
-                .map(|word| word.text.clone()),
-        );
+        if !words
+            .first()
+            .is_some_and(|word| changes_directory(&word.text))
+        {
+            patterns.extend(
+                without_redirections(&words)
+                    .filter(|word| (word.globs || word.braces) && !word.substitutes)
+                    .map(|word| word.text.clone()),
+            );
+        }
         for traced in traced_invocations(&segment.source) {
             operands.extend(
                 traced
@@ -285,7 +291,7 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
 
     let mut bases = vec![cwd.to_path_buf()];
     for argv in &argvs {
-        if !matches!(program_name(&argv[0]), "cd" | "pushd") {
+        if !changes_directory(&argv[0]) {
             continue;
         }
         let Some(dir) = argv[1..].iter().find(|arg| !arg.starts_with('-')) else {
@@ -302,18 +308,19 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
 
     argvs
         .iter()
+        .filter(|argv| !changes_directory(&argv[0]))
         .flat_map(|argv| argv.iter().skip(1))
         .chain(&operands)
         .find(|word| {
             paths_in(word).any(|path| {
                 !path.is_empty()
                     && is_relative(path)
-                    && bases.iter().any(|base| base.join(path).is_file())
+                    && bases.iter().any(|base| base.join(path).exists())
             })
         })
         .or_else(|| {
             patterns.iter().find(|pattern| {
-                is_relative(pattern) && bases.iter().any(|base| matches_a_file(pattern, base))
+                is_relative(pattern) && bases.iter().any(|base| matches_a_path(pattern, base))
             })
         })
         .map(|word| ProjectSupplied::File(word.clone()))
@@ -321,15 +328,22 @@ fn project_supplied(shell: &str, command: &str, cwd: &Path) -> Option<ProjectSup
 
 const MAX_CD_BASES: usize = 32;
 
-/// Whether the unquoted glob or brace word `pattern` expands to a file under
-/// `base`. Dot files count, though a shell's `*` skips them.
-fn matches_a_file(pattern: &str, base: &Path) -> bool {
+fn changes_directory(program: &str) -> bool {
+    matches!(
+        permissions::invocation::program_name(program),
+        "cd" | "pushd"
+    )
+}
+
+/// Whether the unquoted glob or brace word `pattern` expands to something
+/// under `base`. Dot files count, though a shell's `*` skips them.
+fn matches_a_path(pattern: &str, base: &Path) -> bool {
     const MAX_DIRS: usize = 256;
     let parts: Vec<&str> = pattern.split('/').filter(|part| !part.is_empty()).collect();
     let mut dirs = vec![base.to_path_buf()];
     for (at, part) in parts.iter().enumerate() {
         let last = at + 1 == parts.len();
-        let reached = |path: &Path| if last { path.is_file() } else { path.is_dir() };
+        let reached = |path: &Path| if last { path.exists() } else { path.is_dir() };
         let mut next = Vec::new();
         for dir in &dirs {
             if !part.contains(['*', '?', '[', '{']) {
@@ -405,13 +419,20 @@ fn with_known_variables_spelled_out(command: &str) -> String {
     out
 }
 
-/// The paths a word may name: itself, and what follows each `=` of an
-/// `--opt=value` or `NAME=--opt=value`. A short option's attached value
-/// (`-r./x`) is not split off.
+/// The paths a word may name: itself, what follows each `=` of an
+/// `--opt=value` or `NAME=--opt=value`, and a short option's attached value.
 fn paths_in(word: &str) -> impl Iterator<Item = &str> {
     let whole = (!word.starts_with('-')).then_some(word);
     let values = word.match_indices('=').map(|(at, _)| &word[at + 1..]);
-    whole.into_iter().chain(values)
+    whole.into_iter().chain(attached_value(word)).chain(values)
+}
+
+/// `./x.js` in `-r./x.js`. Only when the rest holds something no option
+/// letter is: `-lscripts` may be the flags `-l -s -c ...`, so it is left whole.
+fn attached_value(word: &str) -> Option<&str> {
+    let rest = word.strip_prefix('-')?;
+    let value = rest.strip_prefix(|c: char| c.is_ascii_alphabetic())?;
+    (!value.is_empty() && !value.chars().all(|c| c.is_ascii_alphanumeric())).then_some(value)
 }
 
 fn without_redirections(
@@ -678,6 +699,17 @@ mod tests {
             ("echo $(cat x.sh)", "x.sh"),
             ("python3 scripts/*.py", "scripts/*.py"),
             ("sh ./x.s?", "./x.s?"),
+            ("node .", "."),
+            ("deno run ./", "./"),
+            ("python3 scripts", "scripts"),
+            ("python3 sub/deeper/", "sub/deeper/"),
+            ("prettier --check .", "."),
+            ("cd sub && node deeper", "deeper"),
+            ("ls sub/*", "sub/*"),
+            ("PYTHONPATH=scripts python3 -c 0", "PYTHONPATH=scripts"),
+            ("node -r./scripts/hook.js -e 0", "-r./scripts/hook.js"),
+            ("ruby -rx.sh -e 0", "-rx.sh"),
+            ("perl -Isub/deeper -e 1", "-Isub/deeper"),
             ("node scripts/{hook,other}.js", "scripts/{hook,other}.js"),
             ("ruby sub/*/y.rb", "sub/*/y.rb"),
             (
@@ -696,15 +728,20 @@ mod tests {
             "python3 --version",
             "python3 -m pytest -q",
             "node -e 0",
-            "true --flag -- . .. scripts sub/deeper",
+            "true --flag --",
+            "cd sub",
+            "cd sub && /bin/true",
+            "pushd sub/deeper",
+            "ls -lscripts",
+            "python3 -Wignore -c 0",
+            "python3 -r./missing.py",
             "python3 /opt/x.py",
             "python3 ~/x.py",
             "echo done >> x.sh",
             "echo done > env.sh 2>&1",
             "check.sh x",
-            "find . -name '*.py'",
+            "find /opt -name '*.py'",
             "python3 scripts/*.rb",
-            "ls sub/*",
             "python3 /opt/*.py",
             "echo done > *.log",
         ] {
