@@ -1323,6 +1323,22 @@ WebAssembly 载体整个移除。
   每个写了它的文件记一条 warn;settings schema 里标了 `deprecated`。删掉这一行即可,行为不变。
   计划在之后的版本里删除这个字段。
 
+- 启动时还不存在的 agent 类型目录(项目第一次建出 `.agix/agents/`,全局、场景层同理)里后来写进的
+  类型能用上了:下一次有请求用到这一对配置(建会话、`commands.list` 等)时按新出现的目录重载,
+  运行中的会话在下一轮之前重建,这个目录此后也被监视。以前只有显式 `config.reload` 或重启才看得到。
+- 自动压缩一次没能缩小对话(无可丢弃、`PreCompact` hook 拒绝、压缩器出错)之后,接下来的几步不再
+  自动压缩:连续第 n 次落空后跳过 2ⁿ 次(最多 32 次)该压缩的检查,对话比落空时又长出阈值的十分之一
+  就提前再试;压缩成功清零。以前每一步都重试一遍,开了 LLM 摘要时每一步都多一次摘要调用。出错不再
+  被吞掉,记一条 warn。
+- **stdio MCP server 的相对路径按声明它的那一层解析,不再看 daemon 从哪里启动。** 全局层的
+  server 在全局配置目录启动、场景层的在场景配置目录、插件的在插件包根目录、项目层的(含
+  `mcp.addServer` / `mcp.updateServer` 写进去的)在项目根;相对的 `command`(`./bin/x`)与参数里的
+  相对路径(`node server.js`)都在那里解析,子进程的工作目录也是它。信任与否行为相同。以前已信任
+  的项目里它们继承 daemon 的工作目录,而那不一定是这个会话的项目;0.3.10 起未信任的项目里一律用
+  全局配置目录。**迁移**:写了相对路径、靠 daemon 在某个目录启动才找得到的 server,把文件放到
+  声明它的那一层的目录下,或改成绝对路径。哪一层给了 server 的 `command` 就按哪一层算,项目层只
+  覆盖 `env` 的全局 server 仍在全局目录启动。
+
 ### RPC 客户端
 
 - `daemon.doctor` 的 `health.checks` 多一项 `settings.managed`(查找的路径、是否存在、来源与
@@ -1343,6 +1359,11 @@ WebAssembly 载体整个移除。
   `session.resume` 的 `options` 里写 `"strict": true`,读不出来的字段或值报 `INVALID_PARAMS`,
   `error.data.invalid_options` 与 `ignored_options` 同形;缺省不变。计划中的"缺省严格"就是把它
   变成缺省,现在打开它就能提前发现拼错的字段。
+
+- `session.resume`、`session.run_turn` 调回一个刚被关闭或驱逐的会话时,它上一个引擎若在 5 秒宽限期
+  内还没停下(卡在一个不理会取消的 hook 里之类),返回 `SESSION_BUSY`(`data` 为
+  `{session_id, current_turn_id: null}`),稍后重试即可。以前只记一条 warn 就照常起新引擎,两个引擎
+  会写同一份转录。
 
 ### 嵌入方
 
@@ -1410,4 +1431,9 @@ WebAssembly 载体整个移除。
 - `base::settings::Settings::session_dir` 标了 `#[deprecated]`:结构体字面量里写 `session_dir: None`
   会出 deprecation warning(`-D warnings` 下是错误)。改用 `..Settings::defaults_for(..)` 补齐,或者在
   那个函数上 `#[allow(deprecated)]`,等字段删除时再去掉。新增 `base::settings::deprecated_settings_keys`。
+
+- `base::settings::Settings` 多了 `mcp_server_dirs: HashMap<String, PathBuf>`(不从配置读,`serde`
+  跳过;`Settings::load` 填写每个 `mcp_servers` 条目的 `command` 来自哪一层的目录):用结构体字面量
+  构造 `Settings` 的要补 `mcp_server_dirs: Default::default()`。表里没有的 server 由会话池放在全局
+  配置目录启动。
 
