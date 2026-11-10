@@ -373,6 +373,151 @@ pub enum PermissionContentKind {
     ShellCommand,
 }
 
+/// What a tool says about itself that holds for every call.
+///
+/// Each field answers the [`Tool`] method of the same name. A tool that
+/// implements [`Tool::spec`] has those methods answered from it, and a
+/// wrapper that forwards `spec()` forwards all of them at once.
+///
+/// `read_only`, `concurrency_safe`, `destructive` and `interrupt_behavior`
+/// answer methods that are handed the call's input. A tool whose answer
+/// depends on it overrides the method too, and puts its conservative answer
+/// here.
+///
+/// The input schema is not here: it is built on every call and the
+/// capability methods ask for the spec far more often than for the schema.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub short_description: Option<String>,
+    pub enabled: bool,
+    pub read_only: bool,
+    pub concurrency_safe: bool,
+    pub destructive: bool,
+    pub interrupt_behavior: InterruptBehavior,
+    pub strict: bool,
+    pub deferred: bool,
+    pub dynamic: bool,
+    pub direct: bool,
+    pub callable_from_code: bool,
+    pub code_result: Option<&'static str>,
+    pub needs_dispatch: bool,
+    pub permission_content_kind: PermissionContentKind,
+    pub self_allow_overrides_mode: bool,
+    pub leaves_plan_mode: bool,
+}
+
+impl ToolSpec {
+    /// `tool`'s name and description with every capability at its default,
+    /// to start a spec from: `ToolSpec { read_only: true, ..ToolSpec::defaults_for(self) }`.
+    pub fn defaults_for<T: Tool + ?Sized>(tool: &T) -> Self {
+        Self {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            source: "builtin".to_string(),
+            short_description: None,
+            enabled: true,
+            read_only: false,
+            concurrency_safe: false,
+            destructive: false,
+            interrupt_behavior: InterruptBehavior::Cancel,
+            strict: false,
+            deferred: false,
+            dynamic: false,
+            direct: false,
+            callable_from_code: false,
+            code_result: None,
+            needs_dispatch: false,
+            permission_content_kind: PermissionContentKind::Opaque,
+            self_allow_overrides_mode: false,
+            leaves_plan_mode: false,
+        }
+    }
+
+    fn from_methods<T: Tool + ?Sized>(tool: &T) -> Self {
+        if spec_derivation::in_progress::<T>() {
+            return Self::defaults_for(tool);
+        }
+        let _deriving = spec_derivation::enter::<T>();
+        let any_input = Value::Null;
+        Self {
+            name: tool.name().to_string(),
+            description: tool.description().to_string(),
+            source: tool.source().into_owned(),
+            short_description: tool.short_description(),
+            enabled: tool.is_enabled(),
+            read_only: tool.is_read_only(&any_input),
+            concurrency_safe: tool.is_concurrency_safe(&any_input),
+            destructive: tool.is_destructive(&any_input),
+            interrupt_behavior: tool.interrupt_behavior(&any_input),
+            strict: tool.strict(),
+            deferred: tool.is_deferred(),
+            dynamic: tool.is_dynamic(),
+            direct: tool.is_direct(),
+            callable_from_code: tool.callable_from_code(),
+            code_result: tool.code_result(),
+            needs_dispatch: tool.needs_dispatch(),
+            permission_content_kind: tool.permission_content_kind(),
+            self_allow_overrides_mode: tool.self_allow_overrides_mode(),
+            leaves_plan_mode: tool.leaves_plan_mode(),
+        }
+    }
+}
+
+/// `spec()` defaults to reading the capability methods and they default to
+/// reading `spec()`, so a tool that overrides neither would recurse forever.
+/// While a type's default `spec()` is reading its methods, the ones it did not
+/// override give their plain default instead of asking `spec()` again.
+///
+/// Keyed by type, not by instance: whether `spec()` is overridden is a fact
+/// about the type, and a wrapper holding its inner tool inline shares its
+/// address.
+mod spec_derivation {
+    use std::any::TypeId;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static DERIVING: RefCell<Vec<TypeId>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn in_progress<T: ?Sized + 'static>() -> bool {
+        DERIVING.with(|d| d.borrow().contains(&TypeId::of::<T>()))
+    }
+
+    pub(super) fn enter<T: ?Sized + 'static>() -> Guard {
+        let id = TypeId::of::<T>();
+        DERIVING.with(|d| d.borrow_mut().push(id));
+        Guard(id)
+    }
+
+    pub(super) struct Guard(TypeId);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            DERIVING.with(|d| {
+                let mut d = d.borrow_mut();
+                if let Some(i) = d.iter().rposition(|t| *t == self.0) {
+                    d.remove(i);
+                }
+            });
+        }
+    }
+}
+
+fn from_spec<T: Tool + ?Sized, R>(
+    tool: &T,
+    field: impl FnOnce(ToolSpec) -> R,
+    plain: impl FnOnce() -> R,
+) -> R {
+    if spec_derivation::in_progress::<T>() {
+        plain()
+    } else {
+        field(tool.spec())
+    }
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &str;
@@ -401,7 +546,7 @@ pub trait Tool: Send + Sync + 'static {
     /// nobody registers a builtin whose name happens to start that way. An
     /// adapter that knows which server or plugin it is fronting says so here.
     fn source(&self) -> std::borrow::Cow<'_, str> {
-        std::borrow::Cow::Borrowed("builtin")
+        std::borrow::Cow::Owned(from_spec(self, |s| s.source, || "builtin".to_string()))
     }
     async fn prompt(&self, _: &PromptContext) -> String {
         self.prompt_fragment()
@@ -430,7 +575,7 @@ pub trait Tool: Send + Sync + 'static {
     /// affected by this: an explicit `deny` always wins, whatever the tool
     /// says about itself.
     fn self_allow_overrides_mode(&self) -> bool {
-        false
+        from_spec(self, |s| s.self_allow_overrides_mode, || false)
     }
 
     /// Is this the call that takes the session out of plan mode?
@@ -440,7 +585,7 @@ pub trait Tool: Send + Sync + 'static {
     /// A tool that returns `true` is spared that one refusal and is decided
     /// as in any mode that asks: a matching rule, else the host's answer.
     fn leaves_plan_mode(&self) -> bool {
-        false
+        from_spec(self, |s| s.leaves_plan_mode, || false)
     }
 
     /// Whether `acceptEdits` lets this call through when neither the tool
@@ -473,61 +618,72 @@ pub trait Tool: Send + Sync + 'static {
         }
         Some(body)
     }
+    /// Everything about this tool that holds for every call — see
+    /// [`ToolSpec`]. The default reads the capability methods, so a tool
+    /// written against them needs nothing new; a tool that implements this
+    /// has those methods answered from it, and must not call them here.
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::from_methods(self)
+    }
     fn is_enabled(&self) -> bool {
-        true
+        from_spec(self, |s| s.enabled, || true)
     }
     fn is_read_only(&self, _: &Value) -> bool {
-        false
+        from_spec(self, |s| s.read_only, || false)
     }
     fn is_concurrency_safe(&self, _: &Value) -> bool {
-        false
+        from_spec(self, |s| s.concurrency_safe, || false)
     }
     /// Whether a program the model writes (`RunCode`) may call this tool.
     /// Tools that do work and return data say yes; tools that talk to the
     /// conversation or a person do not.
     fn callable_from_code(&self) -> bool {
-        false
+        from_spec(self, |s| s.callable_from_code, || false)
     }
     /// What a program gets back from this tool, when that is more than the
     /// text the model sees — the shape of its structured content.
     fn code_result(&self) -> Option<&'static str> {
-        None
+        from_spec(self, |s| s.code_result, || None)
     }
     /// Whether this tool calls other tools, and so needs
     /// [`ToolContext::dispatch`].
     fn needs_dispatch(&self) -> bool {
-        false
+        from_spec(self, |s| s.needs_dispatch, || false)
     }
     fn is_destructive(&self, _: &Value) -> bool {
-        false
+        from_spec(self, |s| s.destructive, || false)
     }
     fn strict(&self) -> bool {
-        false
+        from_spec(self, |s| s.strict, || false)
     }
     fn is_deferred(&self) -> bool {
-        false
+        from_spec(self, |s| s.deferred, || false)
     }
     fn is_dynamic(&self) -> bool {
-        false
+        from_spec(self, |s| s.dynamic, || false)
     }
     fn is_direct(&self) -> bool {
-        false
+        from_spec(self, |s| s.direct, || false)
     }
     fn short_description(&self) -> Option<String> {
-        None
+        from_spec(self, |s| s.short_description, || None)
     }
     fn permission_match_content(&self, _: &Value) -> Option<String> {
         None
     }
     /// How the permission engine reads [`permission_match_content`](Self::permission_match_content).
     fn permission_content_kind(&self) -> PermissionContentKind {
-        PermissionContentKind::Opaque
+        from_spec(
+            self,
+            |s| s.permission_content_kind,
+            || PermissionContentKind::Opaque,
+        )
     }
     fn affected_paths(&self, _: &Value) -> Vec<PathBuf> {
         vec![]
     }
     fn interrupt_behavior(&self, _: &Value) -> InterruptBehavior {
-        InterruptBehavior::Cancel
+        from_spec(self, |s| s.interrupt_behavior, || InterruptBehavior::Cancel)
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
@@ -988,6 +1144,156 @@ mod tests {
     #[test]
     fn a_tool_that_says_nothing_is_a_builtin() {
         assert_eq!(F.source(), "builtin");
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+
+    async fn unreachable_call() -> Result<ToolResult, ToolError> {
+        Ok(ToolResult::text("ok"))
+    }
+
+    struct Silent;
+    #[async_trait]
+    impl Tool for Silent {
+        fn name(&self) -> &str {
+            "Silent"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
+            &self,
+            _: Value,
+            _: ToolContext,
+            _: ProgressSender,
+        ) -> Result<ToolResult, ToolError> {
+            unreachable_call().await
+        }
+    }
+
+    struct Legacy;
+    #[async_trait]
+    impl Tool for Legacy {
+        fn name(&self) -> &str {
+            "Legacy"
+        }
+        fn description(&self) -> &str {
+            "written against the methods"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn source(&self) -> std::borrow::Cow<'_, str> {
+            "plugin:old".into()
+        }
+        fn is_read_only(&self, _: &Value) -> bool {
+            true
+        }
+        fn is_deferred(&self) -> bool {
+            true
+        }
+        fn code_result(&self) -> Option<&'static str> {
+            Some("{n: number}")
+        }
+        fn permission_content_kind(&self) -> PermissionContentKind {
+            PermissionContentKind::ReadPath
+        }
+        async fn call(
+            &self,
+            _: Value,
+            _: ToolContext,
+            _: ProgressSender,
+        ) -> Result<ToolResult, ToolError> {
+            unreachable_call().await
+        }
+    }
+
+    struct Declared;
+    #[async_trait]
+    impl Tool for Declared {
+        fn name(&self) -> &str {
+            "Declared"
+        }
+        fn input_schema(&self) -> Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                source: "mcp:x".into(),
+                enabled: false,
+                concurrency_safe: true,
+                destructive: true,
+                interrupt_behavior: InterruptBehavior::Block,
+                strict: true,
+                direct: true,
+                needs_dispatch: true,
+                leaves_plan_mode: true,
+                short_description: Some("short".into()),
+                ..ToolSpec::defaults_for(self)
+            }
+        }
+        fn is_read_only(&self, input: &Value) -> bool {
+            input.get("peek").is_some()
+        }
+        async fn call(
+            &self,
+            _: Value,
+            _: ToolContext,
+            _: ProgressSender,
+        ) -> Result<ToolResult, ToolError> {
+            unreachable_call().await
+        }
+    }
+
+    #[test]
+    fn a_tool_that_overrides_nothing_gets_the_defaults_without_recursing() {
+        assert_eq!(Silent.spec(), ToolSpec::defaults_for(&Silent));
+        assert!(Silent.is_enabled());
+        assert!(!Silent.is_deferred());
+        assert_eq!(Silent.source(), "builtin");
+        assert_eq!(
+            Silent.interrupt_behavior(&Value::Null),
+            InterruptBehavior::Cancel
+        );
+    }
+
+    #[test]
+    fn the_default_spec_reads_the_methods_a_tool_overrides() {
+        let spec = Legacy.spec();
+        assert_eq!(spec.description, "written against the methods");
+        assert_eq!(spec.source, "plugin:old");
+        assert!(spec.read_only && spec.deferred);
+        assert_eq!(spec.code_result, Some("{n: number}"));
+        assert_eq!(
+            spec.permission_content_kind,
+            PermissionContentKind::ReadPath
+        );
+        assert!(!spec.concurrency_safe && !spec.strict);
+        assert!(Legacy.is_deferred());
+        assert!(!Legacy.strict());
+    }
+
+    #[test]
+    fn the_methods_answer_from_a_declared_spec() {
+        let t = Declared;
+        assert_eq!(t.source(), "mcp:x");
+        assert!(!t.is_enabled());
+        assert!(t.is_concurrency_safe(&Value::Null));
+        assert!(t.is_destructive(&Value::Null));
+        assert_eq!(t.interrupt_behavior(&Value::Null), InterruptBehavior::Block);
+        assert!(t.strict() && t.is_direct() && t.needs_dispatch() && t.leaves_plan_mode());
+        assert!(!t.is_deferred() && !t.callable_from_code());
+        assert_eq!(t.short_description().as_deref(), Some("short"));
+    }
+
+    #[test]
+    fn a_method_that_reads_the_input_still_wins_over_the_spec() {
+        assert!(!Declared.spec().read_only);
+        assert!(Declared.is_read_only(&serde_json::json!({"peek": 1})));
+        assert!(!Declared.is_read_only(&serde_json::json!({})));
     }
 }
 
