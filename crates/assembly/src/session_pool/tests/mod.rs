@@ -30,6 +30,7 @@ pub(super) fn raise_ask(
     );
 }
 
+mod audit3;
 mod auto_name;
 mod eviction;
 mod goal_record;
