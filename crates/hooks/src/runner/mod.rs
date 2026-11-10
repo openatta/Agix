@@ -195,7 +195,7 @@ impl HookRunner {
     }
 
     /// Builder: the environment a `Command` hook starts from.
-    pub fn with_subprocess_env(mut self, env: platform::SubprocessEnv) -> Self {
+    pub fn with_subprocess_env(mut self, env: base::interface::exec::SubprocessEnv) -> Self {
         self.process = platform::LocalProcess::new(env);
         self
     }
@@ -1377,8 +1377,8 @@ mod tests {
             .await;
         assert_eq!(stdout_of(inherited), env!("CARGO_MANIFEST_DIR"));
 
-        let allowlist = platform::SubprocessEnv {
-            mode: platform::SubprocessEnvMode::Allowlist,
+        let allowlist = base::interface::exec::SubprocessEnv {
+            mode: base::interface::exec::SubprocessEnvMode::Allowlist,
             allow: vec![],
         };
         let narrowed = one_command_hook(probe, 10_000)

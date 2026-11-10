@@ -15,9 +15,9 @@ use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::env::SubprocessEnv;
 use base::interface::exec::{
     ExecError, ExitStatus, OutputChunk, OutputStream, Process, ProcessHandle, ProcessSpec,
+    SubprocessEnv,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -150,7 +150,7 @@ impl Process for LocalProcess {
             } else {
                 Stdio::null()
             });
-        self.env.apply(&mut cmd);
+        crate::env::apply_subprocess_env(&self.env, &mut cmd);
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -412,8 +412,8 @@ mod tests {
         let (inherited, _, _) = run(probe()).await;
         assert!(inherited.contains(env!("CARGO_MANIFEST_DIR")));
 
-        let allowlist = crate::env::SubprocessEnv {
-            mode: crate::env::SubprocessEnvMode::Allowlist,
+        let allowlist = SubprocessEnv {
+            mode: base::interface::exec::SubprocessEnvMode::Allowlist,
             allow: vec![],
         };
         let (out, _, _) = run_with(LocalProcess::new(allowlist), probe()).await;

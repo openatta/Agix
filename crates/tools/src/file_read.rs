@@ -395,7 +395,10 @@ async fn read_pdf_text(
         .arg(path)
         .arg("-") // stdout
         .kill_on_drop(true);
-    base::interface::exec::SubprocessEnv::default().apply(&mut pdftotext);
+    platform::apply_subprocess_env(
+        &base::interface::exec::SubprocessEnv::default(),
+        &mut pdftotext,
+    );
     // A session of its own, so it has no controlling terminal: the file is
     // the model's choice, and a program that could open `/dev/tty` could push
     // input (`TIOCSTI`) into the daemon's terminal for the shell there to run.

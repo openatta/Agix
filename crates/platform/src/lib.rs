@@ -6,6 +6,7 @@
 //! tools on a real machine depends on both.
 
 pub mod crash;
+pub mod env;
 pub mod filesystem;
 pub mod lineage;
 #[cfg(feature = "http")]
@@ -18,9 +19,7 @@ pub mod sandbox;
 #[cfg(all(unix, feature = "testing"))]
 pub mod testing;
 
-pub use base::interface::exec::env;
-
-pub use env::{SubprocessEnv, SubprocessEnvMode};
+pub use env::apply_subprocess_env;
 pub use filesystem::LocalFileSystem;
 #[cfg(feature = "http")]
 pub use network::{install_tls_provider, LocalNetwork};

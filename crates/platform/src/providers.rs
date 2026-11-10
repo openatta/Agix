@@ -4,11 +4,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use base::interface::exec::ExecProviders;
+use base::interface::exec::{ExecProviders, SubprocessEnv};
 use base::tool::ToolContext;
 use tokio_util::sync::CancellationToken;
 
-use crate::{GroupLedger, LocalFileSystem, LocalProcess, PlatformSandbox, SubprocessEnv};
+use crate::{GroupLedger, LocalFileSystem, LocalProcess, PlatformSandbox};
 
 pub fn local_providers() -> ExecProviders {
     local_providers_with(SubprocessEnv::default())

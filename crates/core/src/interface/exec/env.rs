@@ -264,32 +264,23 @@ fn never_inherited(name: &OsStr) -> bool {
     name == "CDPATH"
 }
 
+/// What [`SubprocessEnv::resolve`] decides to do to the environment a child
+/// would otherwise inherit.
 #[derive(Debug, PartialEq, Eq)]
-enum Plan {
+pub enum EnvPlan {
+    /// Inherit it, minus these.
     Remove(Vec<OsString>),
+    /// Start from nothing but these.
     Replace(Vec<(OsString, OsString)>),
 }
 
 impl SubprocessEnv {
-    /// Set `cmd`'s environment from this process's, as the policy says.
-    pub fn apply(&self, cmd: &mut tokio::process::Command) {
-        match self.plan(std::env::vars_os()) {
-            Plan::Remove(names) => {
-                for name in names {
-                    cmd.env_remove(name);
-                }
-            }
-            Plan::Replace(vars) => {
-                cmd.env_clear();
-                cmd.envs(vars);
-            }
-        }
-    }
-
-    fn plan(&self, host: impl IntoIterator<Item = (OsString, OsString)>) -> Plan {
+    /// What a child starting from `host` gets, as the policy says. Applying
+    /// it to a command on this machine is `platform`'s.
+    pub fn resolve(&self, host: impl IntoIterator<Item = (OsString, OsString)>) -> EnvPlan {
         let allowed = |name: &OsStr| self.allow.iter().any(|a| OsStr::new(a) == name);
         match self.mode {
-            SubprocessEnvMode::Inherit => Plan::Remove(
+            SubprocessEnvMode::Inherit => EnvPlan::Remove(
                 host.into_iter()
                     .map(|(name, _)| name)
                     .filter(|name| {
@@ -297,7 +288,7 @@ impl SubprocessEnv {
                     })
                     .collect(),
             ),
-            SubprocessEnvMode::Allowlist => Plan::Replace(
+            SubprocessEnvMode::Allowlist => EnvPlan::Replace(
                 host.into_iter()
                     .filter(|(name, _)| {
                         !never_inherited(name)
@@ -329,10 +320,10 @@ mod tests {
         .collect()
     }
 
-    fn names(plan: Plan) -> Vec<String> {
+    fn names(plan: EnvPlan) -> Vec<String> {
         let mut names: Vec<String> = match plan {
-            Plan::Remove(n) => n.into_iter().map(|n| n.into_string().unwrap()).collect(),
-            Plan::Replace(v) => v
+            EnvPlan::Remove(n) => n.into_iter().map(|n| n.into_string().unwrap()).collect(),
+            EnvPlan::Replace(v) => v
                 .into_iter()
                 .map(|(n, _)| n.into_string().unwrap())
                 .collect(),
@@ -343,7 +334,7 @@ mod tests {
 
     #[test]
     fn inherit_drops_the_engines_credentials_and_cdpath() {
-        let plan = SubprocessEnv::default().plan(host());
+        let plan = SubprocessEnv::default().resolve(host());
         assert_eq!(
             names(plan),
             [
@@ -360,13 +351,13 @@ mod tests {
         hold_back_credential("AGIX_ENV_TEST_PROVIDER_KEY");
         let mut host = host();
         host.push(("AGIX_ENV_TEST_PROVIDER_KEY".into(), "sk-canary".into()));
-        assert!(names(SubprocessEnv::default().plan(host.clone()))
+        assert!(names(SubprocessEnv::default().resolve(host.clone()))
             .contains(&"AGIX_ENV_TEST_PROVIDER_KEY".to_string()));
         let passed_on_purpose = SubprocessEnv {
             allow: vec!["AGIX_ENV_TEST_PROVIDER_KEY".into()],
             ..Default::default()
         };
-        assert!(!names(passed_on_purpose.plan(host))
+        assert!(!names(passed_on_purpose.resolve(host))
             .contains(&"AGIX_ENV_TEST_PROVIDER_KEY".to_string()));
     }
 
@@ -419,7 +410,7 @@ mod tests {
             mode: SubprocessEnvMode::Allowlist,
             allow: vec!["CDPATH".into()],
         };
-        assert_eq!(names(policy.plan(host())), ["HOME", "PATH"]);
+        assert_eq!(names(policy.resolve(host())), ["HOME", "PATH"]);
     }
 
     #[test]
@@ -429,7 +420,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            names(policy.plan(host())),
+            names(policy.resolve(host())),
             ["AGIX_DAEMON_TOKEN", "ANTHROPIC_BASE_URL", "CDPATH"]
         );
     }
@@ -441,7 +432,7 @@ mod tests {
             allow: vec!["SSH_AUTH_SOCK".into()],
         };
         assert_eq!(
-            names(policy.plan(host())),
+            names(policy.resolve(host())),
             ["HOME", "PATH", "SSH_AUTH_SOCK"]
         );
     }

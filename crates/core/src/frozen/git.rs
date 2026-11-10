@@ -150,7 +150,13 @@ fn warn_unconfined_once(unmet: &str) {
 async fn output(git: &EngineGit, cwd: &Path, args: &[&str]) -> Option<std::process::Output> {
     let spec = git.command(cwd, args, &[]).ok()?;
     let mut cmd = Command::new(&spec.program);
-    crate::interface::exec::SubprocessEnv::default().apply(&mut cmd);
+    if let crate::interface::exec::EnvPlan::Remove(names) =
+        crate::interface::exec::SubprocessEnv::default().resolve(std::env::vars_os())
+    {
+        for name in names {
+            cmd.env_remove(name);
+        }
+    }
     cmd.args(&spec.args)
         .current_dir(&spec.cwd)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))

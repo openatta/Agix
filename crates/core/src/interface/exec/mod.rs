@@ -33,7 +33,7 @@ pub mod process;
 pub mod sandbox;
 
 pub use capture::{capture, Captured};
-pub use env::{SubprocessEnv, SubprocessEnvMode};
+pub use env::{EnvPlan, SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::{DirEntry, FileSystem, Metadata};
 pub use network::{
     domains_name_host, is_internal_address, names_loopback, HttpRequest, HttpResponse, HttpStream,
