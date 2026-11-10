@@ -328,3 +328,68 @@ async fn extraction_fills_the_store_up_to_its_cap_and_no_further() {
         "a memory already held is still updated"
     );
 }
+
+/// Sets its flag when dropped: the task holding it was either finished or
+/// aborted, and is not running any more.
+struct Gone(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Gone {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn never_finishing(tasks: &mut tokio::task::JoinSet<()>) -> Arc<std::sync::atomic::AtomicBool> {
+    let gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let guard = Gone(gone.clone());
+    tasks.spawn(async move {
+        let _guard = guard;
+        std::future::pending::<()>().await;
+    });
+    gone
+}
+
+#[tokio::test]
+async fn an_extraction_that_finishes_in_time_is_waited_for() {
+    let mut tasks = tokio::task::JoinSet::new();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let marks = done.clone();
+    tasks.spawn(async move {
+        let _ = rx.await;
+        marks.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    tx.send(()).unwrap();
+    assert!(crate::turn::finish_within(&mut tasks, crate::turn::MEMORY_EXTRACTION_GRACE).await);
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn an_extraction_still_running_past_the_grace_is_aborted() {
+    let mut tasks = tokio::task::JoinSet::new();
+    let gone = never_finishing(&mut tasks);
+    assert!(!crate::turn::finish_within(&mut tasks, std::time::Duration::ZERO).await);
+    assert!(gone.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(tasks.is_empty());
+}
+
+/// A stopping engine does not leave an extraction it started running behind
+/// it.
+#[tokio::test]
+async fn a_stopped_engine_leaves_no_extraction_running() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut agent, _rx, _tx) = crate::agent::Builder::new()
+        .scene(Arc::new(scene::code::CodeScene::default()))
+        .model(Arc::new(super::support::FixedUsageModel {
+            usage: Default::default(),
+        }))
+        .settings(Arc::new(super::support::recall_test_settings(tmp.path())))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    let gone = never_finishing(&mut agent.memory.extractions);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    agent.run(cancel).await;
+    assert!(gone.load(std::sync::atomic::Ordering::SeqCst));
+}

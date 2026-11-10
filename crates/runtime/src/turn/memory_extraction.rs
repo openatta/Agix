@@ -4,6 +4,32 @@ use base::interface::memory::{DurableMemory, MemoryStore, MemoryType};
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use std::sync::Arc;
 
+/// How long a stopping session waits for its memory extractions. Under the
+/// daemon's grace for a stopping engine, so a session brought back right away
+/// is not refused for one.
+pub(crate) const MEMORY_EXTRACTION_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Wait up to `grace` for `tasks` to finish, then abort what is left.
+/// Returns whether they all finished.
+pub(crate) async fn finish_within(
+    tasks: &mut tokio::task::JoinSet<()>,
+    grace: std::time::Duration,
+) -> bool {
+    let finished =
+        tokio::time::timeout(grace, async { while tasks.join_next().await.is_some() {} })
+            .await
+            .is_ok();
+    if !finished {
+        tracing::warn!(
+            still_running = tasks.len(),
+            "memory extraction had not finished when the session stopped; abandoned"
+        );
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+    finished
+}
+
 /// Extract durable memories from recent conversation messages using a lightweight
 /// model call, then persist them to the MemoryStore. Runs asynchronously after
 /// each complete turn — failures are silently logged, never block the user.

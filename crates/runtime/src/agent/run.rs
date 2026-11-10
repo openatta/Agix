@@ -294,6 +294,11 @@ impl Agent {
             tracing::warn!(error = %e, "failed to persist session");
         }
         self.record_goal_changes().await;
+        crate::turn::finish_within(
+            &mut self.memory.extractions,
+            crate::turn::MEMORY_EXTRACTION_GRACE,
+        )
+        .await;
         // SessionEnd — one exit point for all three ways the loop ends
         // (shutdown command, input channel closed, cancellation), so a hook
         // that cleans up gets to run regardless of which one happened.

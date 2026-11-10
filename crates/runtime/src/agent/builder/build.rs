@@ -853,6 +853,7 @@ impl Builder {
                         Arc::new(base::interface::memory_contracts::LlmRetriever)
                     }),
                     retrieval_hooks: Arc::new(retrieval_hooks),
+                    extractions: tokio::task::JoinSet::new(),
                 },
                 compaction: Compaction {
                     compactor,

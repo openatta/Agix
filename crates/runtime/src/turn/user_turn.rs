@@ -1200,7 +1200,8 @@ impl Agent {
                 let prompt_intro = self.scene.memory_extraction_prompt();
                 let environment = self.policies.environment.clone();
                 let session_id = self.session.session_id.clone();
-                tokio::spawn(async move {
+                while self.memory.extractions.try_join_next().is_some() {}
+                self.memory.extractions.spawn(async move {
                     extract_memories_after_turn(
                         store,
                         &session_messages,
