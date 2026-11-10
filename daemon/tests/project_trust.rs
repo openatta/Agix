@@ -766,3 +766,73 @@ async fn the_users_mcp_servers_find_nothing_inside_an_untrusted_project() {
     }
     assert!(!spawned().contains("project"), "log: {:?}", spawned());
 }
+
+/// A stdio server's relative command and paths are found in the directory of
+/// the tier that declared it, trusted project or not: the user's in the
+/// global directory, a project's own in that project's root — never in the
+/// daemon's working directory or its own project.
+#[cfg(all(unix, feature = "mcp"))]
+#[tokio::test]
+async fn each_mcp_server_starts_in_the_directory_that_declared_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("spawns.log");
+    let (home, work, other) = (
+        dir.path().join("home"),
+        dir.path().join("work"),
+        dir.path().join("other"),
+    );
+    for root in [&home, &work, &other] {
+        std::fs::create_dir_all(root.join(".agix")).unwrap();
+    }
+    for (root, mark) in [(&home, "global"), (&work, "work"), (&other, "other")] {
+        let script = root.join("mcp.sh");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho \"{mark} $(pwd -P)\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::fs::write(
+        home.join("settings.json"),
+        json!({ "mcp_servers": {
+            "users_by_arg": {"type": "stdio", "command": "/bin/sh", "args": ["mcp.sh"]},
+            "users_by_command": {"type": "stdio", "command": "./mcp.sh"},
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(work.join(".agix/settings.json"), "{}").unwrap();
+    std::fs::write(
+        other.join(".agix/settings.json"),
+        json!({ "mcp_servers": {
+            "projects_by_arg": {"type": "stdio", "command": "/bin/sh", "args": ["mcp.sh"]},
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let daemon = Daemon::serve(dir, home.clone(), work).await;
+    let created = daemon
+        .ok("session.create", json!({ "project_root": other }))
+        .await;
+    assert_eq!(created["project_trust"], "trusted", "{created}");
+
+    let spawned = || std::fs::read_to_string(&log).unwrap_or_default();
+    let in_home = format!("global {}", home.canonicalize().unwrap().display());
+    let in_other = format!("other {}", other.canonicalize().unwrap().display());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !(spawned().matches(&in_home).count() >= 2 && spawned().contains(&in_other)) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the user's two servers start in the global directory and the project's in its \
+             root; log: {:?}",
+            spawned()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!spawned().contains("work"), "log: {:?}", spawned());
+}

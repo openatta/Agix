@@ -2154,7 +2154,8 @@ scope(403 `insufficient_scope`),现有令牌对别的请求仍然有效。
 的写法)。每种都可以带 `startup_timeout_ms`(起进程加握手,以及工具调用以外的每个请求;默认取
 环境变量 `MCP_TIMEOUT`,再缺省 30000)与 `tool_timeout_ms`(一次工具调用;默认取
 `MCP_TOOL_TIMEOUT`,再缺省 600000),超时的请求在 server 端被取消。写进项目层 settings.json 并**立刻尝试连接**,
-所以它是项目层的 server:配置里的 `$VAR` 只从它自己的 `env` 块展开,不读 daemon 的环境,
+所以它是项目层的 server:以项目根为工作目录启动,相对的 `command` 与参数里的相对路径按项目根
+解析;配置里的 `$VAR` 只从它自己的 `env` 块展开,不读 daemon 的环境,
 `oauth` 里的 `client_secret_env` / `private_key_jwt.key_env` 会让连接被拒(ARCHITECTURE.md
 §6.4)——密钥要么写成字面值,要么把 server 声明在全局层。成功与否都会发一条
 `mcp_connected` / `mcp_connect_failed` 的 `daemon.event`;要求登录的 server 发

@@ -32,7 +32,7 @@ calls_per_turn = 1000                   # 可选;默认 1000,来自包的不能�
 [[mcp]]
 name = "github"
 kind = "native"                # 必须给 `config`
-config = "mcp/github.json"
+config = "mcp/github.json"     # stdio server 以插件根目录为工作目录启动,相对的 command 与路径在那里解析
 
 # ── 插件自己拥有的场景 ──
 # 一个声明式场景目录(scene.json + prompt.md),格式见 extension_points.md「声明式场景」;

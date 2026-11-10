@@ -181,6 +181,13 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mcp_servers: HashMap<String, serde_json::Value>,
 
+    /// For each of `mcp_servers`, the directory of the tier its `command`
+    /// was declared in: the global or scene configuration directory, or the
+    /// project root. A stdio server starts there. Never read from a settings
+    /// file.
+    #[serde(skip)]
+    pub mcp_server_dirs: HashMap<String, PathBuf>,
+
     /// Multi-provider LLM registry, keyed by provider id.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub providers: HashMap<String, ProviderConfig>,
@@ -1065,6 +1072,7 @@ impl Settings {
         };
         let mut ignored_values = Vec::new();
         let mut managed: Option<crate::managed_settings::ManagedSettings> = None;
+        let mut mcp_server_dirs: HashMap<String, PathBuf> = HashMap::new();
 
         for layer in layers {
             if layer.tier == Tier::Managed {
@@ -1139,6 +1147,23 @@ impl Settings {
                     }
                 }
             }
+            let declared_in = if is_global(layer.tier) {
+                &global_dir
+            } else if is_own_project(layer.tier) {
+                local_dir.parent().unwrap_or(&local_dir)
+            } else {
+                &scene_dir
+            };
+            for (name, server) in layer_json
+                .get("mcp_servers")
+                .and_then(|v| v.as_object())
+                .into_iter()
+                .flatten()
+            {
+                if server.get("command").is_some() || !mcp_server_dirs.contains_key(name) {
+                    mcp_server_dirs.insert(name.clone(), declared_in.to_path_buf());
+                }
+            }
             for (key, error) in merge_fitting(&mut merged_json, layer_json) {
                 tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "settings value does not fit its setting, ignoring it");
                 ignored_values.push(IgnoredValue {
@@ -1162,6 +1187,7 @@ impl Settings {
         settings.local_permission_rules = local_permission_rules;
         settings.project_trust = project_trust;
         settings.project_layer = project_layer;
+        settings.mcp_server_dirs = mcp_server_dirs;
 
         // Before any session these settings start runs a child process: a
         // provider key is not read until a client is built, and an MCP
@@ -1272,6 +1298,7 @@ impl Settings {
             ignored_values: Vec::new(),
             managed: None,
             mcp_servers: HashMap::new(),
+            mcp_server_dirs: HashMap::new(),
             providers: HashMap::new(),
             default_provider: None,
             task_models: HashMap::new(),
@@ -2068,6 +2095,46 @@ mod tests {
             "sandbox": {"read_anywhere": true},
             "language": "fr"
         }"#;
+
+        #[test]
+        fn each_mcp_server_is_placed_in_the_tier_that_gave_its_command() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"mcp_servers": {
+                    "users": {"type": "stdio", "command": "./u"},
+                    "retuned": {"type": "stdio", "command": "./r"}
+                }}"#,
+            );
+            write_settings(
+                &tiers.scene,
+                r#"{"mcp_servers": {"scenes": {"type": "stdio", "command": "./s"}}}"#,
+            );
+            tiers.project_writes(
+                r#"{"mcp_servers": {
+                    "own": {"type": "stdio", "command": "./o"},
+                    "retuned": {"env": {"LEVEL": "2"}}
+                }}"#,
+            );
+
+            let dirs = tiers.load().mcp_server_dirs;
+
+            assert_eq!(dirs["users"], tiers.global);
+            assert_eq!(dirs["scenes"], tiers.scene);
+            assert_eq!(dirs["own"], tiers.project);
+            assert_eq!(dirs["retuned"], tiers.global);
+        }
+
+        #[test]
+        fn an_untrusted_projects_withheld_server_is_placed_nowhere() {
+            let tiers = Tiers::new();
+            write_settings(
+                &tiers.global,
+                r#"{"project_trust": {"default": "untrusted"}}"#,
+            );
+            tiers.project_writes(LOOSENING);
+            assert!(!tiers.load().mcp_server_dirs.contains_key("fs"));
+        }
 
         #[test]
         fn an_untrusted_project_cannot_loosen_permissions() {

@@ -99,6 +99,7 @@ fn settings(dir: &Path) -> Settings {
         ignored_values: Vec::new(),
         managed: None,
         mcp_servers: Default::default(),
+        mcp_server_dirs: Default::default(),
         providers: Default::default(),
         default_provider: None,
         task_models: Default::default(),

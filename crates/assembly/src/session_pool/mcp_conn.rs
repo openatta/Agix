@@ -27,22 +27,25 @@ impl SessionPool {
         })
     }
 
-    /// Where a stdio server starts for the project `settings` were loaded
-    /// for. In an untrusted project every server running there is the user's,
-    /// a scene's or a plugin's, and starts in the global configuration
-    /// directory: a relative command or script path would otherwise be found
-    /// in the daemon's working directory, which may be that project.
+    /// A stdio server starts, and its relative command and paths are found,
+    /// in the directory of whoever declared it: a plugin's package root, the
+    /// project root for the project's own, the scene's or the global
+    /// configuration directory otherwise. Never the daemon's working
+    /// directory, which may be some other project.
     #[cfg(feature = "mcp")]
     pub(super) fn placed_mcp_server(
         &self,
         settings: &Settings,
+        name: &str,
         cfg: mcp::config::McpServerConfig,
     ) -> mcp::config::McpServerConfig {
-        if settings.project_layer.trust.is_untrusted() {
-            cfg.run_in(&self.paths.global_root())
-        } else {
-            cfg
-        }
+        let home = self
+            .plugins
+            .mcp_server_dirs()
+            .remove(name)
+            .or_else(|| settings.mcp_server_dirs.get(name).cloned())
+            .unwrap_or_else(|| self.paths.global_root());
+        cfg.run_in(&home)
     }
 
     /// Parse the servers `settings` configure and pass each through
@@ -76,7 +79,7 @@ impl SessionPool {
                     Ok(()) => {
                         admitted
                             .servers
-                            .insert(name.clone(), self.placed_mcp_server(settings, cfg));
+                            .insert(name.clone(), self.placed_mcp_server(settings, name, cfg));
                         continue;
                     }
                     Err(reason) => {
@@ -459,7 +462,9 @@ impl SessionPool {
             .settings_for_project(target.0.as_deref(), scene_id)
             .await;
         let env = target_settings.sandbox.subprocess_env.clone();
-        let cfg = &self.placed_mcp_server(&target_settings, cfg.clone());
+        let cfg = &cfg
+            .clone()
+            .run_in(target.0.as_deref().unwrap_or(self.cwd.as_path()));
         let slot = self.mcp_by_project.slot(&target);
         let (statuses, entries, failure) = {
             let update = slot.update().await;

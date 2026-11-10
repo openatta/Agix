@@ -45,6 +45,7 @@ pub(super) fn recall_test_settings(root: &std::path::Path) -> base::interface::s
         ignored_values: Vec::new(),
         managed: None,
         mcp_servers: Default::default(),
+        mcp_server_dirs: Default::default(),
         providers: Default::default(),
         default_provider: None,
         task_models: Default::default(),

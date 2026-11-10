@@ -145,6 +145,18 @@ mod packages {
                 .collect()
         }
 
+        /// The package root each of [`Self::mcp_servers`] comes from.
+        pub fn mcp_server_dirs(&self) -> HashMap<String, PathBuf> {
+            self.active()
+                .iter()
+                .flat_map(|p| {
+                    plugin::mcp::servers_for(p)
+                        .into_iter()
+                        .map(|(name, _)| (name, p.root.clone()))
+                })
+                .collect()
+        }
+
         /// Every active package's `[[script]]` declarations, as bindings the
         /// carrier can take.
         pub fn script_bindings(&self) -> Vec<PackageScripts> {
@@ -531,6 +543,10 @@ mod imp {
             self.packages.mcp_servers()
         }
 
+        pub fn mcp_server_dirs(&self) -> HashMap<String, std::path::PathBuf> {
+            self.packages.mcp_server_dirs()
+        }
+
         pub fn script_bindings(&self) -> Vec<PackageScripts> {
             self.packages.script_bindings()
         }
@@ -696,6 +712,9 @@ mod imp {
             Vec::new()
         }
         pub fn mcp_servers(&self) -> HashMap<String, serde_json::Value> {
+            HashMap::new()
+        }
+        pub fn mcp_server_dirs(&self) -> HashMap<String, std::path::PathBuf> {
             HashMap::new()
         }
         pub fn script_bindings(&self) -> Vec<PackageScripts> {
