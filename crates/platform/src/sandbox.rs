@@ -2568,6 +2568,40 @@ mod tests {
         );
     }
 
+    /// A repository embedded in the project (`sub/.git`, a directory, not a
+    /// `.git/modules/` entry) is a submodule once the index holds it as a
+    /// gitlink, and the user's `git status` in the project then runs git in
+    /// it, under its own configuration. A sandboxed command may not leave
+    /// one whose configuration names a program for that git to run.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "audit: confirmed defect, fix pending"]
+    fn audit2_a_sandboxed_command_cannot_plant_an_embedded_repositorys_configuration() {
+        let s = UnderSandboxExec::new().expect("sandbox-exec runs here");
+        assert!(
+            !s.runs("git config core.fsmonitor 'touch x'"),
+            "precondition: the project's own configuration is protected"
+        );
+        let pwned = s.elsewhere.join("pwned");
+        let planted = s.runs(&format!(
+            "mkdir sub && cd sub && git init -q && touch f && git add f && \
+             git -c user.email=t@example.com -c user.name=T commit -q -m s && \
+             git config core.fsmonitor \"touch '{}'; false\" && cd .. && git add sub",
+            pwned.display()
+        ));
+        let status = std::process::Command::new("git")
+            .arg("status")
+            .current_dir(&s.project)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{status:?}");
+        assert!(
+            !pwned.exists(),
+            "the user's `git status` ran a program the sandboxed command named \
+             (planting it succeeded: {planted})"
+        );
+    }
+
     /// The same profile leaves ordinary work alone: git commits, files in the
     /// project and under `.agix/`, the state root's scratchpad and memory,
     /// and the session's TMPDIR.
