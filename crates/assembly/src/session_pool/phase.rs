@@ -146,10 +146,8 @@ impl TurnSlot {
     pub(super) fn busy(&self, session_id: &str) -> Option<Busy> {
         match &self.phase {
             SessionPhase::Idle => None,
-            SessionPhase::Running(turn) => {
-                Some(Busy::turn_running(session_id, Some(turn.turn_id.clone())))
-            }
-            SessionPhase::Rebuilding => Some(Busy::turn_running(session_id, None)),
+            SessionPhase::Running(turn) => Some(Busy::turn_running(session_id, &turn.turn_id)),
+            SessionPhase::Rebuilding => Some(Busy::rebuilding(session_id)),
         }
     }
 }
@@ -225,14 +223,18 @@ mod tests {
     }
 
     #[test]
-    fn busy_names_the_running_turn() {
+    fn busy_says_what_the_session_is_doing() {
+        use super::super::api::BusyReason;
         let mut slot = slot();
         assert!(slot.busy("S1").is_none());
         let g = slot.claim(turn("t1")).unwrap();
         let busy = slot.busy("S1").expect("busy");
+        assert_eq!(busy.reason, BusyReason::TurnRunning);
         assert_eq!(busy.current_turn_id.as_deref(), Some("t1"));
         slot.release(g, "t1");
         slot.begin_rebuild().unwrap();
-        assert_eq!(slot.busy("S1").expect("busy").current_turn_id, None);
+        let busy = slot.busy("S1").expect("busy");
+        assert_eq!(busy.reason, BusyReason::Rebuilding);
+        assert_eq!(busy.current_turn_id, None);
     }
 }

@@ -1096,6 +1096,14 @@ async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_
         );
     };
     let events = events??;
+    assert_eq!(
+        set.error
+            .as_ref()
+            .and_then(|e| e.data.as_ref())
+            .map(|data| data["reason"].clone()),
+        Some(json!("previous_engine")),
+        "setPrompt answered {set_answer:?}"
+    );
     let history = run
         .client
         .call(

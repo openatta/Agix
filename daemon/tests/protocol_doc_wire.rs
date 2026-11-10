@@ -879,6 +879,7 @@ async fn documented_error_data_is_what_the_errors_carry() {
     .await;
     assert_eq!(busy["error"]["code"], codes::SESSION_BUSY, "{busy}");
     assert_data_shape("SESSION_BUSY", &documented["SESSION_BUSY"], &busy);
+    assert_eq!(busy["error"]["data"]["reason"], "turn_running", "{busy}");
     assert_eq!(busy["error"]["data"]["current_turn_id"], "t1");
     let rebuild = call(
         &h.sock,
@@ -888,6 +889,14 @@ async fn documented_error_data_is_what_the_errors_carry() {
     .await;
     assert_eq!(rebuild["error"]["code"], codes::SESSION_BUSY, "{rebuild}");
     assert_data_shape("SESSION_BUSY", &documented["SESSION_BUSY"], &rebuild);
+    assert_eq!(
+        rebuild["error"]["data"]["reason"], "turn_running",
+        "{rebuild}"
+    );
+    assert_eq!(
+        rebuild["error"]["data"]["current_turn_id"], "t1",
+        "{rebuild}"
+    );
     answer_prompt(&h.sock, &held.session, &held.prompt).await;
     let finished = drive(&mut held.conn, held.run_id, &h.sock).await;
     assert!(finished.get("result").is_some(), "{finished}");
@@ -923,6 +932,10 @@ async fn documented_error_data_is_what_the_errors_carry() {
     .await;
     assert_eq!(blocked["error"]["code"], codes::SESSION_BUSY, "{blocked}");
     assert_data_shape("SESSION_BUSY", &documented["SESSION_BUSY"], &blocked);
+    assert_eq!(
+        blocked["error"]["data"]["reason"], "background_tasks",
+        "{blocked}"
+    );
     assert_eq!(
         blocked["error"]["data"]["running_task_ids"],
         json!([started["task_id"]]),

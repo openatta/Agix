@@ -90,10 +90,24 @@ impl PoolError {
     }
 }
 
+/// What the session is doing that keeps it from taking the request — the
+/// session's state, not which method was refused.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum BusyReason {
+    TurnRunning,
+    Rebuilding,
+    BackgroundTasks,
+    PreviousEngine,
+}
+
 /// Why a session cannot take what was asked of it right now.
 #[derive(Debug, Clone)]
 pub struct Busy {
     pub session_id: String,
+    pub reason: BusyReason,
+    /// Set exactly when `reason` is `TurnRunning`.
     pub current_turn_id: Option<String>,
     pub running_task_ids: Vec<String>,
     pub message: String,
@@ -102,39 +116,39 @@ pub struct Busy {
 impl Busy {
     const MESSAGE: &'static str = "session is busy";
 
-    pub(crate) fn turn_running(session_id: &str, current_turn_id: Option<String>) -> Self {
+    fn new(session_id: &str, reason: BusyReason, message: String) -> Self {
         Self {
             session_id: session_id.to_string(),
-            current_turn_id,
+            reason,
+            current_turn_id: None,
             running_task_ids: Vec::new(),
-            message: Self::MESSAGE.to_string(),
+            message,
         }
     }
 
-    pub(crate) fn previous_engine(session_id: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn turn_running(session_id: &str, turn_id: &str) -> Self {
         Self {
-            session_id: session_id.to_string(),
-            current_turn_id: None,
-            running_task_ids: Vec::new(),
-            message: message.into(),
+            current_turn_id: Some(turn_id.to_string()),
+            ..Self::new(session_id, BusyReason::TurnRunning, Self::MESSAGE.into())
         }
+    }
+
+    pub(crate) fn rebuilding(session_id: &str) -> Self {
+        Self::new(session_id, BusyReason::Rebuilding, Self::MESSAGE.into())
+    }
+
+    pub(crate) fn previous_engine(session_id: &str, message: impl Into<String>) -> Self {
+        Self::new(session_id, BusyReason::PreviousEngine, message.into())
     }
 
     pub(crate) fn background_tasks(session_id: &str, running_task_ids: Vec<String>) -> Self {
         Self {
-            session_id: session_id.to_string(),
-            current_turn_id: None,
             running_task_ids,
-            message: Self::MESSAGE.to_string(),
-        }
-    }
-
-    pub(crate) fn context_moving(session_id: &str, turn_id: &str) -> Self {
-        Self {
-            session_id: session_id.to_string(),
-            current_turn_id: Some(turn_id.to_string()),
-            running_task_ids: Vec::new(),
-            message: format!("session `{session_id}` is running turn `{turn_id}`"),
+            ..Self::new(
+                session_id,
+                BusyReason::BackgroundTasks,
+                Self::MESSAGE.into(),
+            )
         }
     }
 }

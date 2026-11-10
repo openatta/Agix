@@ -70,6 +70,7 @@ impl From<PoolError> for RpcError {
 fn busy_data(busy: &Busy) -> Value {
     let mut data = json!({
         "session_id": busy.session_id,
+        "reason": busy.reason,
         "current_turn_id": busy.current_turn_id,
     });
     if !busy.running_task_ids.is_empty() {

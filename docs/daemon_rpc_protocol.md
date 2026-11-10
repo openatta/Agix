@@ -603,8 +603,12 @@ Unix socket 靠文件系统权限(只有 daemon 的用户能连),缺省不握手
 
 ```jsonc
 { "error": { "code": -32015, "message": "session is busy",
-             "data": { "session_id": "S1", "current_turn_id": "t1" } } }
+             "data": { "session_id": "S1", "reason": "turn_running", "current_turn_id": "t1" } } }
 ```
+
+会话正在原地重建(`session.setPrompt`、换厂商的 `session.setModel`、配置变更后下一轮开始前)时也是这个
+错误,`reason` 为 `"rebuilding"`、`current_turn_id` 为 `null`;`queue` 等重建结束,`steer`
+没有可以交给的那一轮,同样等重建结束再作为新的一轮执行。`reason` 的取值见 §9.1。
 
 错误发生**在用户消息被投递之前** —— 消息不会被前一个 turn 吃掉。
 
@@ -1526,14 +1530,15 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 白名单里 → `INVALID_PARAMS`,而不是把一个对端不认识的模型名静默发过去。子 Agent、
 压缩等其他路由任务仍按设置走。
 
-**有 turn 在跑时返回 `SESSION_BUSY`**,不排队。引擎跑 turn 的时候不读输入通道,
-排进去的命令会在某个没人宣布的时刻生效 —— 调用方被告知模型换了,却看着旧模型答完
-这一轮。要换就先 `session.interrupt`,或者等这一轮结束。换厂商要重建会话,会话还有后台
-任务在跑(子 Agent、团队成员、后台程序、Monitor)时同样 `SESSION_BUSY`,`data` 多一个
+**有 turn 在跑时返回 `SESSION_BUSY`**(`reason: "turn_running"`),不排队。引擎跑 turn 的时候
+不读输入通道,排进去的命令会在某个没人宣布的时刻生效 —— 调用方被告知模型换了,却看着旧模型
+答完这一轮。要换就先 `session.interrupt`,或者等这一轮结束。会话正在原地重建时同样
+`SESSION_BUSY`,`reason` 为 `"rebuilding"`。换厂商要重建会话,会话还有后台任务在跑(子 Agent、
+团队成员、后台程序、Monitor)时同样 `SESSION_BUSY`,`reason` 为 `"background_tasks"`,`data` 多一个
 `running_task_ids` 列出它们 —— 重建会停掉它们;等它们结束,或先 `session.stopTask`。
 
 重建时旧引擎 5 秒内没停下(卡在不理会取消的 `SessionEnd` hook 里之类),也返回 `SESSION_BUSY`
-(`current_turn_id` 为 `null`、没有 `running_task_ids`):这次的选择**没有生效,也不记进日志**;
+(`reason` 为 `"previous_engine"`、`current_turn_id` 为 `null`、没有 `running_task_ids`):这次的选择**没有生效,也不记进日志**;
 旧引擎已经取消,会话被移出内存(`daemon.event` `session_evicted`,`reason: "rebuild"`),下一次
 `run_turn` / `session.resume` 等旧引擎停下后按原来的选择从转录恢复。要换,稍后再调一次。
 
@@ -1656,7 +1661,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
   "being written by another process";不会换 id 新建。`session.run_turn` 指名这样的会话
   同样如此。
 - 会话刚被关闭或驱逐,它上一个引擎在宽限期(5 秒)内还没停下 → `SESSION_BUSY`,`data` 是
-  `{session_id, current_turn_id: null}`;过一会儿再试。两个引擎不会同时写一份转录。
+  `{session_id, reason: "previous_engine", current_turn_id: null}`;过一会儿再试。两个引擎不会同时写一份转录。
   `session.run_turn` 指名这样的会话同样如此。
 - 会话因别的原因建不回来(例如它记录的 `provider` 已经不在配置里)→ `INTERNAL_ERROR`,
   消息写明原因。同样不会换一个新 id 建会话顶替,`session.run_turn` 也一样。
@@ -2866,7 +2871,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | -32010 | PROJECT_NOT_FOUND | `project_root` 不存在或不是目录 |
 | -32012 | PROJECT_REQUIRED | 场景 `requires_project` 为真,但传了 `project_root: null` |
 | -32014 | SIDECHAIN_TERMINAL | 侧链会话已终态收尾,不可 resume |
-| -32015 | SESSION_BUSY | 该会话已有 turn 在跑,且 `on_busy` 是 `reject`(§5.3);或要把它调回内存时,它上一个引擎还没停下(`session.resume`) |
+| -32015 | SESSION_BUSY | 会话正忙,`data.reason` 说它在忙什么(§9.1):已有 turn 在跑且 `on_busy` 是 `reject`(§5.3),正在原地重建,有后台任务挡着需要重建的调用,或要把它调回内存时它上一个引擎还没停下(`session.resume`) |
 | -32016 | PLUGINS_DISABLED | 插件子系统不可用 —— 被编译裁掉或被策略关闭 |
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
@@ -2883,9 +2888,9 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 
 ```jsonc
 // SESSION_BUSY
-{ "session_id": "S1", "current_turn_id": "t1" }
+{ "session_id": "S1", "reason": "turn_running", "current_turn_id": "t1" }
 // 需要重建的调用(setPrompt、换厂商的 setModel)被后台任务挡住时,多一项
-{ "session_id": "S1", "current_turn_id": null, "running_task_ids": [ "a1" ] }
+{ "session_id": "S1", "reason": "background_tasks", "current_turn_id": null, "running_task_ids": [ "a1" ] }
 
 // SCENE_MISMATCH
 { "session_id": "S1", "recorded_scene": "harnix", "requested_scene": "code" }
@@ -2899,6 +2904,18 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 // METHOD_NOT_FOUND
 { "module": "mcp" }   // 只在方法所属的模块没有编入这个构建时;未知方法没有 data
 ```
+
+`SESSION_BUSY` 的 `reason` 说的是会话此刻在忙什么,不是哪个方法被拒:
+
+| `reason` | 会话在做什么 | `current_turn_id` |
+|---|---|---|
+| `turn_running` | 有一轮在跑(`run_turn` 的 `reject`、`setModel`、`setPrompt`、`inspectContext` 等都报这一项) | 那一轮的 id,必定有值 |
+| `rebuilding` | 正在原地重建(`setPrompt`、换厂商的 `setModel`、配置变更后下一轮开始前) | `null` |
+| `background_tasks` | 空闲,但有后台任务在跑,挡住了需要重建的调用;另带 `running_task_ids` | `null` |
+| `previous_engine` | 刚被关闭、驱逐或重建,上一个引擎在宽限期内还没停下 | `null` |
+
+`rebuilding` 和 `previous_engine` 的 `data` 形状与第一行相同。以后可能增加取值,不认识的
+`reason` 按"稍后再试"处理。
 
 其余错误码**没有 `data`**,信息全在 `message` 里 —— 包括
 `SCENE_HAS_ACTIVE_SESSIONS`(挡路的会话 id 是拼在 message 文本里的)、
@@ -3067,7 +3084,7 @@ TCP / WebSocket 上,第一件事是 `call("daemon.auth", {token})`。
 ```jsonc
 // A. 会话忙 —— 用户在生成过程中又点了发送
 ← {"jsonrpc":"2.0","id":10,"error":{"code":-32015,"message":"session is busy",
-   "data":{"session_id":"S1","current_turn_id":"t1"}}}
+   "data":{"session_id":"S1","reason":"turn_running","current_turn_id":"t1"}}}
 // 处理:先 session.interrupt 再重发。UI 应该在 turn_state != "idle" 时置灰发送键,
 //       让这个错误根本不会发生。
 

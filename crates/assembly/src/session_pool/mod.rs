@@ -1429,9 +1429,6 @@ impl Rebuild {
         match self {
             Rebuild::Busy(busy) => PoolError::SessionBusy(busy),
             Rebuild::NotLive => PoolError::session_gone(session_id, "session is no longer running"),
-            Rebuild::Failed(CreateError::PreviousEngineRunning { .. }) => {
-                PoolError::SessionBusy(Busy::turn_running(session_id, None))
-            }
             Rebuild::Failed(e) => e.into(),
         }
     }

@@ -522,7 +522,7 @@ impl SessionPool {
         live.turn
             .begin_rebuild()
             .map(|generation| HeldSlot { generation })
-            .map_err(|_| Rebuild::Busy(Busy::turn_running(sid, None)))
+            .map_err(|_| Rebuild::Busy(Busy::rebuilding(sid)))
     }
 
     /// Rebuild `sid` on its spec as `change` leaves it, recording the change

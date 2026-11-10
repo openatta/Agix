@@ -2,6 +2,7 @@
 
 use super::mcp_for_project::test_pool_with_store;
 use super::*;
+use crate::session_pool::api::BusyReason;
 use base::context::goal::TurnOrigin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -66,6 +67,7 @@ async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_ses
     })
     .await;
     let busy = refused_prompt_change(&pool, &sid).await;
+    assert_eq!(busy.reason, BusyReason::TurnRunning);
     assert_eq!(busy.current_turn_id.as_deref(), Some("t1"));
 
     with_turn(|turn| {
@@ -75,6 +77,7 @@ async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_ses
     })
     .await;
     let busy = refused_prompt_change(&pool, &sid).await;
+    assert_eq!(busy.reason, BusyReason::Rebuilding);
     assert_eq!(busy.current_turn_id, None);
     assert_eq!(
         slot_and_state(&pool, &sid).await.0,
