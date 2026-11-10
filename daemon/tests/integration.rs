@@ -4,6 +4,7 @@
 
 mod accept_edits_reads;
 mod assemble_defaults;
+mod audit_security_findings;
 mod bash_read_only_lane;
 mod carrier_invariants;
 mod daemon_e2e;

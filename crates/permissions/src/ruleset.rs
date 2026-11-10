@@ -677,4 +677,35 @@ mod tests {
         let rs = RuleSet::empty();
         assert!(matches!(rs.evaluate("Bash", Some("ls")), RuleHit::None));
     }
+
+    /// A URL rule's `*` is a glob over the whole URL, so the host it
+    /// seems to pin can be spelled in another host's path.
+    #[test]
+    #[ignore = "audit: confirmed defect, fix pending"]
+    fn audit_f14_a_subdomain_url_rule_matches_another_hosts_path() {
+        let rule = crate::rule::parse_rule_string(
+            "WebFetch(https://*.example.com/**)",
+            RuleSource::UserSettings,
+            RuleBehavior::Allow,
+        )
+        .unwrap();
+        let rs = RuleSet::new(vec![rule]);
+        assert!(
+            matches!(
+                rs.evaluate("WebFetch", Some("https://api.example.com/v1")),
+                RuleHit::Allow(_)
+            ),
+            "precondition: the subdomain it names is allowed"
+        );
+        for url in [
+            "https://evil.net/.example.com/",
+            "https://evil.net/x.example.com/steal",
+            "https://evil.net/?q=.example.com/",
+        ] {
+            assert!(
+                matches!(rs.evaluate("WebFetch", Some(url)), RuleHit::None),
+                "`{url}` matched WebFetch(https://*.example.com/**)"
+            );
+        }
+    }
 }

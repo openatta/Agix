@@ -2407,6 +2407,25 @@ mod tests {
         assert!(!s.state_root.join("mcp.json").exists());
     }
 
+    /// `.agents/skills/` is where the engine loads the project's skills
+    /// from, yet a sandboxed command may plant one there.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "audit: confirmed defect, fix pending"]
+    fn audit_f1_a_sandboxed_command_cannot_plant_a_project_skill() {
+        let s = UnderSandboxExec::new().expect("sandbox-exec runs here");
+        assert!(
+            !s.runs("echo x > .agix/settings.json"),
+            "precondition: engine configuration is protected"
+        );
+        let planted =
+            s.runs("mkdir -p .agents/skills/x && echo 'name: x' > .agents/skills/x/SKILL.md");
+        assert!(
+            !planted && !s.project.join(".agents/skills/x/SKILL.md").exists(),
+            "a sandboxed command wrote .agents/skills/x/SKILL.md"
+        );
+    }
+
     /// The same profile leaves ordinary work alone: git commits, files in the
     /// project and under `.agix/`, the state root's scratchpad and memory,
     /// and the session's TMPDIR.
