@@ -26,8 +26,9 @@
 use crate::manifest::PluginError;
 use std::path::PathBuf;
 
-/// Written into a version directory as the last step of an install. A
-/// directory without it is not a finished install, whatever else it holds.
+/// Written into a version directory as the last step of an install, holding
+/// the archive's SHA-256 in hex. A directory without it is not a finished
+/// install, whatever else it holds.
 pub const INSTALLED_MARKER: &str = ".agix-installed";
 
 /// Held for the length of one change to a cache; dropping it releases it.
@@ -93,6 +94,27 @@ impl PluginCache {
         dir.join("plugin.toml").is_file() && dir.join(INSTALLED_MARKER).is_file()
     }
 
+    /// The archive SHA-256 an install recorded, or `None` for a marker that
+    /// predates recording it.
+    pub fn installed_sha256(&self, name: &str, version: &str) -> Option<String> {
+        let raw =
+            std::fs::read_to_string(self.version_dir(name, version).join(INSTALLED_MARKER)).ok()?;
+        let raw = raw.trim();
+        (!raw.is_empty()).then(|| raw.to_string())
+    }
+
+    /// Wait out any install or uninstall in progress, then hold off new ones
+    /// while a scan reads the cache. `None` when the cache does not exist
+    /// yet, so a scan does not create it.
+    pub fn lock_shared(&self) -> Option<CacheLock> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(self.root.join(".lock"))
+            .ok()?;
+        lock_flock(&file, true).ok()?;
+        Some(CacheLock { _file: file })
+    }
+
     /// Take this cache's lock, waiting for whoever holds it — another install
     /// or uninstall in this process or in another daemon sharing the
     /// directory.
@@ -103,7 +125,7 @@ impl PluginCache {
             .truncate(false)
             .write(true)
             .open(self.root.join(".lock"))?;
-        lock_exclusive(&file)?;
+        lock_flock(&file, false)?;
         Ok(CacheLock { _file: file })
     }
 
@@ -198,11 +220,17 @@ impl PluginCache {
 }
 
 #[cfg(unix)]
-fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+fn lock_flock(file: &std::fs::File, shared: bool) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     loop {
         // SAFETY: `flock` only reads the descriptor, which `file` keeps open.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+        if unsafe {
+            libc::flock(
+                file.as_raw_fd(),
+                if shared { libc::LOCK_SH } else { libc::LOCK_EX },
+            )
+        } == 0
+        {
             return Ok(());
         }
         let e = std::io::Error::last_os_error();
@@ -213,7 +241,7 @@ fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn lock_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+fn lock_flock(_file: &std::fs::File, _shared: bool) -> std::io::Result<()> {
     Ok(())
 }
 

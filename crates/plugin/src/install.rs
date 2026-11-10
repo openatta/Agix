@@ -10,7 +10,13 @@
 //! An archive is bounded on the way in ([`MAX_ARCHIVE_BYTES`]) and while it
 //! unpacks ([`UnpackLimits`]). It unpacks into a staging directory beside its
 //! final one and is renamed into place only once complete, under the cache's
-//! lock, so a version directory is either a finished install or absent. Zip
+//! lock, so a version directory is either a finished install or absent. The
+//! staging directory is also where the package is read back the way discovery
+//! will read it and its disclosure is checked, so a package nothing would load
+//! never reaches the cache. The archive's SHA-256 goes into
+//! [`INSTALLED_MARKER`]; a later install that names a different checksum for
+//! the same version treats what is cached as not the package asked for and
+//! replaces it. Zip
 //! entries with `..` or an absolute path are skipped, not extracted, and a
 //! `name` or `version` that is not one plain cache directory name is refused
 //! before anything is read or removed (see
@@ -68,7 +74,9 @@ pub async fn install(
 ) -> Result<Installed, PluginError> {
     crate::cache::check_component("name", name)?;
     crate::cache::check_component("version", &source.version)?;
-    if cache.is_cached(name, &source.version) {
+    if cache.is_cached(name, &source.version)
+        && marker_agrees(cache, name, &source.version, source.checksum.as_deref())
+    {
         return Ok(Installed::AlreadyPresent);
     }
     let is_local = source.download_url.starts_with("file://");
@@ -80,19 +88,23 @@ pub async fn install(
     }
 
     let bytes = fetch_bytes(&source.download_url).await?;
+    let sha256 = sha256_hex(&bytes);
     if let Some(expected) = &source.checksum {
-        verify_checksum(&bytes, expected)?;
+        verify_checksum(&sha256, expected)?;
     }
 
     let root = cache.root_path().to_path_buf();
     let name = name.to_string();
     let version = source.version.clone();
+    let expected = source.checksum.clone();
     tokio::task::spawn_blocking(move || {
         unpack_into(
             &PluginCache::new(root),
             &name,
             &version,
             &bytes,
+            &sha256,
+            expected.as_deref(),
             &UnpackLimits::default(),
         )
     })
@@ -125,15 +137,25 @@ pub fn uninstall(
     Ok(versions.len())
 }
 
+/// A marker with no recorded hash predates this check and cannot disagree.
+fn marker_agrees(cache: &PluginCache, name: &str, version: &str, expected: Option<&str>) -> bool {
+    match (expected, cache.installed_sha256(name, version)) {
+        (Some(expected), Some(recorded)) => recorded.eq_ignore_ascii_case(expected),
+        _ => true,
+    }
+}
+
 fn unpack_into(
     cache: &PluginCache,
     name: &str,
     version: &str,
     bytes: &[u8],
+    sha256: &str,
+    expected: Option<&str>,
     limits: &UnpackLimits,
 ) -> Result<Installed, PluginError> {
     let _lock = cache.lock()?;
-    if cache.is_cached(name, version) {
+    if cache.is_cached(name, version) && marker_agrees(cache, name, version, expected) {
         return Ok(Installed::AlreadyPresent);
     }
     let plugin_dir = cache.plugin_dir(name)?;
@@ -141,7 +163,8 @@ fn unpack_into(
     let staging = plugin_dir.join(format!(".tmp-{}", uuid::Uuid::new_v4()));
     let dest = cache.version_dir(name, version);
     let placed = extract_zip(bytes, &staging, limits)
-        .and_then(|()| Ok(std::fs::write(staging.join(INSTALLED_MARKER), "")?))
+        .and_then(|()| check_staged(&staging, name))
+        .and_then(|()| Ok(std::fs::write(staging.join(INSTALLED_MARKER), sha256)?))
         .and_then(|()| {
             if dest.exists() {
                 std::fs::remove_dir_all(&dest)?;
@@ -150,6 +173,7 @@ fn unpack_into(
         });
     if let Err(e) = placed {
         let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_dir(&plugin_dir);
         return Err(e);
     }
     Ok(Installed::Into(dest))
@@ -192,10 +216,24 @@ fn too_large(limit: u64) -> PluginError {
     ))
 }
 
-fn verify_checksum(bytes: &[u8], expected_hex: &str) -> Result<(), PluginError> {
+fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let actual = hex::encode(hasher.finalize());
+    hex::encode(hasher.finalize())
+}
+
+fn check_staged(staging: &Path, name: &str) -> Result<(), PluginError> {
+    let plugin = crate::manifest::Plugin::load(staging, &staging.join("plugin.toml"))?;
+    if plugin.name() != name {
+        return Err(PluginError::Schema(format!(
+            "the package calls itself `{}`, not `{name}`",
+            plugin.name()
+        )));
+    }
+    crate::Disclosure::from_plugin(&plugin).map(|_| ())
+}
+
+fn verify_checksum(actual: &str, expected_hex: &str) -> Result<(), PluginError> {
     if !actual.eq_ignore_ascii_case(expected_hex) {
         return Err(PluginError::Checksum(format!(
             "checksum mismatch — expected {expected_hex}, got {actual}"
@@ -280,7 +318,7 @@ mod tests {
         let src_dir = TempDir::new().unwrap();
         let archive = zip_bytes(&[(
             "plugin.toml",
-            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n",
         )]);
         let archive_path = src_dir.path().join("demo.zip");
         std::fs::write(&archive_path, &archive).unwrap();
@@ -303,7 +341,7 @@ mod tests {
         let src_dir = TempDir::new().unwrap();
         let archive = zip_bytes(&[(
             "plugin.toml",
-            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n",
         )]);
         let archive_path = src_dir.path().join("demo.zip");
         std::fs::write(&archive_path, &archive).unwrap();
@@ -329,7 +367,7 @@ mod tests {
         let src_dir = TempDir::new().unwrap();
         let archive = zip_bytes(&[(
             "plugin.toml",
-            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n",
         )]);
         let archive_path = src_dir.path().join("demo.zip");
         std::fs::write(&archive_path, &archive).unwrap();
@@ -443,9 +481,17 @@ mod tests {
             let cache = PluginCache::new(tmp.path().join("cache"));
             let mut entries = entries;
             entries.push(("plugin.toml", "[plugin]\nname = \"p\"\n"));
-            let err = unpack_into(&cache, "p", "1.0.0", &zip_bytes(&entries), &limits)
-                .unwrap_err()
-                .to_string();
+            let err = unpack_into(
+                &cache,
+                "p",
+                "1.0.0",
+                &zip_bytes(&entries),
+                "",
+                None,
+                &limits,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(err.contains(says), "{says}: {err}");
             assert!(!cache.is_cached("p", "1.0.0"), "{says}");
             assert_eq!(
@@ -468,7 +514,7 @@ mod tests {
         std::fs::write(dir.join("plugin.toml"), "truncated").unwrap();
         let archive = zip_bytes(&[(
             "plugin.toml",
-            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+            "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n",
         )]);
         let archive_path = tmp.path().join("demo.zip");
         std::fs::write(&archive_path, &archive).unwrap();
@@ -488,6 +534,63 @@ mod tests {
             install(&cache, "demo", &source).await.unwrap(),
             Installed::AlreadyPresent
         ));
+    }
+
+    fn file_source(dir: &Path, archive: &[u8], checksum: Option<String>) -> PluginSource {
+        let path = dir.join("demo.zip");
+        std::fs::write(&path, archive).unwrap();
+        PluginSource {
+            download_url: format!("file://{}", path.display()),
+            checksum,
+            version: "1.0.0".into(),
+        }
+    }
+
+    const DEMO_MANIFEST: &str =
+        "[plugin]\nname = \"demo\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n";
+
+    #[tokio::test]
+    async fn a_cached_package_that_is_not_the_archive_asked_for_is_replaced() {
+        let tmp = TempDir::new().unwrap();
+        let cache = PluginCache::new(tmp.path().join("cache"));
+        let original = zip_bytes(&[("plugin.toml", DEMO_MANIFEST), ("tool.js", "good")]);
+        let original_sum = sha256_hex(&original);
+        let source = file_source(tmp.path(), &original, Some(original_sum.clone()));
+        assert!(matches!(
+            install(&cache, "demo", &source).await.unwrap(),
+            Installed::Into(_)
+        ));
+        assert_eq!(
+            cache.installed_sha256("demo", "1.0.0").as_deref(),
+            Some(original_sum.as_str())
+        );
+        assert!(matches!(
+            install(&cache, "demo", &source).await.unwrap(),
+            Installed::AlreadyPresent
+        ));
+
+        let other = zip_bytes(&[("plugin.toml", DEMO_MANIFEST), ("tool.js", "different")]);
+        let other_source = file_source(tmp.path(), &other, Some(sha256_hex(&other)));
+        let Installed::Into(dest) = install(&cache, "demo", &other_source).await.unwrap() else {
+            panic!("a different checksum for the same version was taken for what is cached");
+        };
+        assert_eq!(
+            std::fs::read_to_string(dest.join("tool.js")).unwrap(),
+            "different"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_package_the_manifest_check_refuses_never_reaches_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        let cache = PluginCache::new(tmp.path().join("cache"));
+        let long = "x".repeat(crate::disclosure::MAX_DESCRIPTION_CHARS + 1);
+        let manifest = format!("{DEMO_MANIFEST}description = \"{long}\"\n");
+        let archive = zip_bytes(&[("plugin.toml", manifest.as_str())]);
+        let source = file_source(tmp.path(), &archive, None);
+        assert!(install(&cache, "demo", &source).await.is_err());
+        assert!(!cache.version_dir("demo", "1.0.0").exists());
+        assert!(walkdir_files(&tmp.path().join("cache").join("demo")).is_empty());
     }
 
     fn walkdir_files(dir: &Path) -> Vec<PathBuf> {

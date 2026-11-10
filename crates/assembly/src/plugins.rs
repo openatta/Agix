@@ -261,6 +261,36 @@ mod packages {
                 .set_enabled(name, enabled)
                 .map_err(|e| e.to_string())
         }
+
+        /// Keep a package that is about to be installed off until the host
+        /// enables it, by writing its entry before it exists: writing it
+        /// afterwards would leave a window in which a rescan counts it as
+        /// enabled. Returns whether an entry was written, which
+        /// [`release_hold`](Self::release_hold) takes back if the install
+        /// fails. A name the tier already has an entry for keeps it.
+        pub fn hold_disabled(&self, name: &str, scope: &str) -> Result<bool, String> {
+            let state = plugin::state::EnableState::new(self.tier_root(scope)?);
+            if state.get(name).is_some() {
+                return Ok(false);
+            }
+            state.set_enabled(name, false).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+
+        pub fn release_hold(&self, name: &str, scope: &str) {
+            if let Ok(root) = self.tier_root(scope) {
+                let _ = plugin::state::EnableState::new(root).clear(name);
+            }
+        }
+
+        pub fn resolved_enabled(&self, name: &str) -> bool {
+            let (global, scene) = self.tier_dirs();
+            plugin::state::resolve_enabled(
+                name,
+                &plugin::state::EnableState::new(global),
+                &plugin::state::EnableState::new(scene),
+            )
+        }
     }
 
     /// The two plugin-tier roots (plain `plugins/`, not `plugins/cache/` —
@@ -347,6 +377,71 @@ mod imp {
         }
     }
 
+    /// Packages on disk that discovery sets aside — a disclosure over its
+    /// limits, a manifest that no longer loads — and so never load, however
+    /// they got into the cache.
+    struct RefusedPackagesCheck((std::path::PathBuf, std::path::PathBuf));
+
+    impl HealthCheck for RefusedPackagesCheck {
+        fn name(&self) -> &str {
+            "plugins.refused"
+        }
+
+        fn check(&self) -> CheckResult {
+            let (global, scene) = &self.0;
+            let refused = plugin::scan_plugins(global, scene).refused;
+            if refused.is_empty() {
+                return CheckResult::ok("every installed plugin loads");
+            }
+            let details: Vec<serde_json::Value> = refused
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "name": r.name,
+                        "version": r.version,
+                        "reason": r.reason,
+                    })
+                })
+                .collect();
+            CheckResult::degraded(format!(
+                "{} installed plugin(s) are refused on loading and not active: {}",
+                refused.len(),
+                refused
+                    .iter()
+                    .map(|r| r.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+            .with_details(serde_json::json!({"refused": details}))
+        }
+    }
+
+    /// Says which way `plugins.enable_on_install` is set, and, while it is
+    /// still `true`, that its default is planned to change.
+    struct EnableOnInstallCheck(bool);
+
+    impl HealthCheck for EnableOnInstallCheck {
+        fn name(&self) -> &str {
+            "plugins.enable_on_install"
+        }
+
+        fn check(&self) -> CheckResult {
+            let details = serde_json::json!({"enable_on_install": self.0});
+            if self.0 {
+                CheckResult::ok(
+                    "plugin.install enables a package as soon as it is installed; \
+                     plugins.enable_on_install is planned to default to false in a later \
+                     0.3.x release, after which the host must call plugin.enable",
+                )
+            } else {
+                CheckResult::ok(
+                    "plugin.install leaves a package disabled until the host calls plugin.enable",
+                )
+            }
+            .with_details(details)
+        }
+    }
+
     pub struct PluginSubsystem {
         packages: super::packages::Packages,
     }
@@ -401,10 +496,17 @@ mod imp {
             self.packages.list()
         }
 
-        pub fn health_check(&self) -> Option<Arc<dyn base::interface::health::HealthCheck>> {
-            self.packages
-                .is_enabled()
-                .then(|| Arc::new(EnableStateCheck(self.packages.tier_dirs())) as _)
+        pub fn health_check(&self) -> Vec<Arc<dyn base::interface::health::HealthCheck>> {
+            if !self.packages.is_enabled() {
+                return Vec::new();
+            }
+            vec![
+                Arc::new(EnableStateCheck(self.packages.tier_dirs())),
+                Arc::new(RefusedPackagesCheck(self.packages.tier_dirs())),
+                Arc::new(EnableOnInstallCheck(
+                    self.packages.policy().enable_on_install,
+                )),
+            ]
         }
 
         pub async fn install(
@@ -416,12 +518,41 @@ mod imp {
             scope: &str,
         ) -> Result<serde_json::Value, String> {
             let cache = self.packages.cache_for(scope)?;
+            let held = !self.packages.policy().enable_on_install
+                && !cache.is_cached(name, version)
+                && self.packages.hold_disabled(name, scope)?;
+            let installed = self
+                .install_and_load_back(&cache, name, version, download_url, checksum, scope)
+                .await;
+            if held && installed.is_err() {
+                self.packages.release_hold(name, scope);
+            }
+            let (message, disclosure) = installed?;
+
+            self.refresh().await;
+            Ok(serde_json::json!({
+                "success": true,
+                "message": message,
+                "enabled": self.packages.resolved_enabled(name),
+                "disclosure": super::disclosure_json(&disclosure),
+            }))
+        }
+
+        async fn install_and_load_back(
+            &self,
+            cache: &plugin::cache::PluginCache,
+            name: &str,
+            version: &str,
+            download_url: &str,
+            checksum: Option<&str>,
+            scope: &str,
+        ) -> Result<(String, plugin::Disclosure), String> {
             let source = plugin::install::PluginSource {
                 download_url: download_url.to_string(),
                 checksum: checksum.map(str::to_string),
                 version: version.to_string(),
             };
-            let installed = plugin::install::install(&cache, name, &source)
+            let installed = plugin::install::install(cache, name, &source)
                 .await
                 .map_err(|e| e.to_string())?;
             let loaded = self.packages.load_back(name, version, scope);
@@ -441,19 +572,13 @@ mod imp {
                     d,
                 ),
                 (plugin::install::Installed::Into(_), Err(e)) => {
-                    let _ = plugin::install::uninstall(&cache, name, Some(version));
+                    let _ = plugin::install::uninstall(cache, name, Some(version));
                     return Err(format!(
                         "installed but refused on loading it back, so it was removed: {e}"
                     ));
                 }
             };
-
-            self.refresh().await;
-            Ok(serde_json::json!({
-                "success": true,
-                "message": message,
-                "disclosure": super::disclosure_json(&disclosure),
-            }))
+            Ok((message, disclosure))
         }
 
         pub async fn uninstall(
@@ -529,8 +654,8 @@ mod imp {
         pub fn list(&self) -> Vec<serde_json::Value> {
             Vec::new()
         }
-        pub fn health_check(&self) -> Option<Arc<dyn base::interface::health::HealthCheck>> {
-            None
+        pub fn health_check(&self) -> Vec<Arc<dyn base::interface::health::HealthCheck>> {
+            Vec::new()
         }
         pub async fn install(
             &self,

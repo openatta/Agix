@@ -13,5 +13,5 @@ pub mod scenes;
 pub mod state;
 
 pub use disclosure::Disclosure;
-pub use discovery::discover_plugins;
+pub use discovery::{discover_plugins, scan_plugins, Discovered, Refused};
 pub use manifest::{Plugin, PluginError, PluginManifest, ScriptPayload};
