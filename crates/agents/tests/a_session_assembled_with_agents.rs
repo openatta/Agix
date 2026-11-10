@@ -110,12 +110,12 @@ fn build(settings: Settings, depth: u32, with_agents: bool) -> Agent {
 #[tokio::test]
 async fn the_agent_tool_is_resident_and_needs_the_module() {
     let agent = build(settings(), 0, true);
-    let tool = agent
-        .tools()
-        .get("Agent")
-        .expect("the module registers Agent");
     assert!(
-        !tool.is_deferred(),
+        agent.tools().get("Agent").is_some(),
+        "the module registers Agent"
+    );
+    assert!(
+        !agent.deferred_tools().contains("Agent"),
         "Agent is in CodeScene's resident set and must ship its full schema"
     );
     assert!(build(settings(), 0, false).tools().get("Agent").is_none());

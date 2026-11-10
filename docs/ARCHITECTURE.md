@@ -456,8 +456,10 @@ release 构建记一条 error。
    调用点拿到的和模型看到的不是同一个工具。检查跑在引擎态工具注册**之后**,
    否则场景能占用 `Agent` / `Skill` 这些名字并赢得查找。
 2. **`ToolSearch` 永不 defer。** 它是取回 deferred 工具 schema 的唯一途径。
-3. **`Tool::is_deferred()` 不是策略输入**,是 `DeferredTool` 包装器设置的输出。
-   工具自己声明它没有裁剪 schema 的效果——只会让它对 `ToolSearch` 撒谎。
+3. **延迟是会话属性,不是工具属性。** `Builder::build()` 把场景的 `deferred_tools()`
+   写进 `EngineConfig::deferred_tools`,请求的工具表、`ToolSearch` 和调用失败时附 schema
+   都读这一份名单;会话中途接入的 MCP 工具同样按名单延迟。工具自己没有"我是延迟的"
+   这种声明,也没有包装器。
 
 ### 3.6 场景收窄模块
 

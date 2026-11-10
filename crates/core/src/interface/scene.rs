@@ -220,10 +220,12 @@ pub trait Scene: Send + Sync + 'static {
     /// extra round trip (`ToolSearch{query: "select:<name>"}`) when the model
     /// does want it, for not paying the schema the rest of the time.
     ///
-    /// Names not present in `tools()`/the registry are ignored. Enforcement
-    /// lives in `runtime::agent::Builder::build()`, which wraps the named
-    /// tools in `tools::deferred::DeferredTool` — see that module for what the
-    /// wrapper does and does not change.
+    /// Names not present in `tools()`/the registry are ignored. The list
+    /// becomes the session's `EngineConfig::deferred_tools` when
+    /// `runtime::agent::Builder::build()` runs, and covers MCP tools that
+    /// arrive later in the session too. Only what the model is shown changes:
+    /// a deferred tool is called, checked and permitted like any other, and a
+    /// call that gets its input wrong is answered with the schema.
     ///
     /// Default: empty, i.e. every tool keeps its full schema.
     fn deferred_tools(&self) -> Vec<String> {

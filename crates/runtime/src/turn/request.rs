@@ -304,22 +304,30 @@ impl Agent {
 
         let mut defs = Vec::with_capacity(selected.len());
         for t in selected {
+            let deferred = self.config.deferred_tools.contains(t.name());
             let mut description = t.description().to_string();
             // Surface the existence of `Tool::guide()`, not its body: inlining
             // the guides would add ~85 KB to every request. A deferred tool
             // needs no pointer — fetching its schema returns the guide too.
-            if can_fetch_guides && !t.is_deferred() && t.guide(&prompt_ctx).await.is_some() {
+            if can_fetch_guides && !deferred && t.guide(&prompt_ctx).await.is_some() {
                 description.push_str(&format!(
                     "\n\nDetailed guide: ToolSearch{{\"query\":\"select:{}\"}}",
                     t.name()
                 ));
             }
+            // A deferred tool's entry is its name and description; the stub is
+            // still a valid (if empty) schema so a provider that validates the
+            // `tools` array accepts it. What an empty schema means is said
+            // once, in `ToolSearch`'s description.
+            let input_schema = if deferred {
+                serde_json::json!({"type": "object", "properties": {}})
+            } else {
+                base::tool::compact_schema(t.input_schema_for(self.config.path_style))
+            };
             defs.push(base::interface::model::ToolDef {
                 name: t.name().to_string(),
                 description,
-                input_schema: base::tool::compact_schema(
-                    t.input_schema_for(self.config.path_style),
-                ),
+                input_schema,
                 source: Some(t.spec().origin.wire()),
             });
         }

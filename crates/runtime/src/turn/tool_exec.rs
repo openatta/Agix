@@ -212,6 +212,34 @@ pub(super) async fn run_catching_panics(
     }
 }
 
+/// A deferred tool's schema never reached the model, so a call that got its
+/// input wrong is answered with it, and the retry can be right the first time.
+fn with_schema(
+    tool: &dyn base::tool::Tool,
+    config: &base::context::EngineConfig,
+    message: &str,
+) -> String {
+    format!(
+        "{message}\n\nInput schema of {}: {}",
+        tool.name(),
+        base::tool::compact_schema(tool.input_schema_for(config.path_style))
+    )
+}
+
+fn with_schema_on_bad_input(
+    tool: &dyn base::tool::Tool,
+    config: &base::context::EngineConfig,
+    error: base::error::ToolError,
+) -> base::error::ToolError {
+    use base::error::ToolError;
+    match error {
+        ToolError::Schema(e) => ToolError::InvalidInput(with_schema(tool, config, &e.to_string())),
+        ToolError::InvalidInput(m) => ToolError::InvalidInput(with_schema(tool, config, &m)),
+        ToolError::Validation(m) => ToolError::Validation(with_schema(tool, config, &m)),
+        other => other,
+    }
+}
+
 pub(super) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
     payload
         .downcast_ref::<&str>()
@@ -229,6 +257,7 @@ pub(super) async fn execute_tool_inner(
         .tools
         .get(name)
         .ok_or_else(|| format!("Tool not found: {name}"))?;
+    let deferred = ctx.config.deferred_tools.contains(name);
 
     // PreToolUse: can block the call outright, rewrite its input, or answer
     // the permission question in advance.
@@ -279,7 +308,11 @@ pub(super) async fn execute_tool_inner(
         .validate_input(&input, &tool_context_for(ctx, &tool))
         .await
     {
-        return Err(message);
+        return Err(if deferred {
+            with_schema(tool.as_ref(), &ctx.config, &message)
+        } else {
+            message
+        });
     }
 
     use base::interface::permission::PermissionOutcome;
@@ -493,7 +526,7 @@ pub(super) async fn execute_tool_inner(
                 tool_use_id: ctx.tool_use_id.clone(),
                 input_json_size,
                 destructive: tool.call_traits(&input).destructive,
-                deferred: tool.is_deferred(),
+                deferred,
             },
         ));
     let tool_start = std::time::Instant::now();
@@ -512,6 +545,10 @@ pub(super) async fn execute_tool_inner(
         ),
     };
     let result = run_catching_panics(tool.call(input, tool_ctx, progress)).await;
+    let result = match result {
+        Err(e) if deferred => Err(with_schema_on_bad_input(tool.as_ref(), &ctx.config, e)),
+        other => other,
+    };
     if let Some(CloseOnDrop(gate)) = &gate {
         gate.finish();
     }

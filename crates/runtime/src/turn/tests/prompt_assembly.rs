@@ -361,6 +361,70 @@ async fn an_mcp_adapter_is_advertised_once_and_not_reported_as_shadowed() {
     );
 }
 
+/// Deferral is the session's, not the tool's: an MCP tool a server starts
+/// listing mid-session is advertised by name only when the scene defers it,
+/// exactly like one that was there when the session was built.
+#[tokio::test]
+async fn an_mcp_tool_that_arrives_mid_session_is_deferred_by_the_scene() {
+    struct Defers;
+    impl Scene for Defers {
+        fn id(&self) -> &str {
+            "defers"
+        }
+        fn name(&self) -> &str {
+            "Defers"
+        }
+        fn description(&self) -> &str {
+            "defers one MCP tool"
+        }
+        fn build_system_prompt(&self, _: &ScenePromptContext) -> Vec<PromptBlock> {
+            vec![PromptBlock::system("skeleton")]
+        }
+        fn tools(&self) -> Vec<String> {
+            vec![]
+        }
+        fn token_budget(&self) -> TokenBudget {
+            TokenBudget {
+                compact_threshold: 150_000,
+                compact_keep_recent: 20,
+            }
+        }
+        fn deferred_tools(&self) -> Vec<String> {
+            vec!["mcp__desk__late".into()]
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut agent, _rx, _tx) = crate::agent::Builder::new()
+        .scene(Arc::new(Defers))
+        .model(Arc::new(DummyModel))
+        .tools(Arc::new(InMemoryToolRegistry::new()))
+        .settings(Arc::new(test_settings(dir.path())))
+        .module(mcp_module(vec![mcp_tool("desk", "early")]))
+        .skip_warmup(true)
+        .build()
+        .unwrap();
+    assert!(agent.tooling.tools.get("mcp__desk__late").is_none());
+
+    let arrived = FakeMcp(vec![mcp_tool("desk", "early"), mcp_tool("desk", "late")]);
+    sync_mcp_adapters(agent.tooling.tools.as_ref(), &arrived, |_| true);
+    agent.tooling.mcp = Box::new(arrived);
+
+    let defs = agent.build_tool_defs().await;
+    let schema_of = |name: &str| {
+        defs.iter()
+            .find(|d| d.name == name)
+            .unwrap_or_else(|| panic!("{name} advertised"))
+            .input_schema
+            .clone()
+    };
+    assert_eq!(
+        schema_of("mcp__desk__late"),
+        json!({"type": "object", "properties": {}})
+    );
+    assert_eq!(schema_of("mcp__desk__early"), json!({"type": "object"}));
+}
+
 /// A session rooted in a monorepo sub-package must still see the
 /// repository-root conventions.
 #[tokio::test]

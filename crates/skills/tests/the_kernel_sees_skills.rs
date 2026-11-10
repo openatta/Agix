@@ -408,12 +408,12 @@ async fn the_skill_tool_is_resident_and_needs_the_module() {
         builder.build().expect("build should succeed").0
     };
     let agent = build(true);
-    let tool = agent
-        .tools()
-        .get("Skill")
-        .expect("the module registers Skill");
     assert!(
-        !tool.is_deferred(),
+        agent.tools().get("Skill").is_some(),
+        "the module registers Skill"
+    );
+    assert!(
+        !agent.deferred_tools().contains("Skill"),
         "Skill is in CodeScene's resident set and must ship its full schema"
     );
     assert!(build(false).tools().get("Skill").is_none());

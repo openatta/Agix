@@ -190,8 +190,8 @@ async fn the_session_runs_on_the_files_prompt_and_tool_surface() {
             "{dropped} is off the whitelist or disallowed"
         );
     }
-    assert!(tools.get("Grep").unwrap().is_deferred());
-    assert!(!tools.get("Read").unwrap().is_deferred());
+    assert!(agent.deferred_tools().contains("Grep"));
+    assert!(!agent.deferred_tools().contains("Read"));
 
     agent
         .run_turn("look at this".into(), "t1".into(), CancellationToken::new())

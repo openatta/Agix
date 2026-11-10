@@ -117,7 +117,9 @@ impl RunCodeTool {
                     description: spec
                         .short_description
                         .unwrap_or_else(|| t.description().to_string()),
-                    input_schema: base::tool::compact_schema(t.full_input_schema()),
+                    input_schema: base::tool::compact_schema(
+                        t.input_schema_for(base::tool::PathStyle::Absolute),
+                    ),
                     result: spec.code_result.map(str::to_string),
                 })
             })

@@ -499,6 +499,12 @@ impl Agent {
         self.tooling.tools.as_ref()
     }
 
+    /// The tools this session advertises by name only — see
+    /// `EngineConfig::deferred_tools`.
+    pub fn deferred_tools(&self) -> &std::collections::HashSet<String> {
+        &self.config.deferred_tools
+    }
+
     pub fn scene(&self) -> &Arc<dyn Scene> {
         &self.scene
     }

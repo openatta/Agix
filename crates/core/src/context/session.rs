@@ -45,8 +45,8 @@ pub struct SessionState {
     todos: std::sync::Mutex<Vec<TodoItem>>,
     /// The [`DurableState`] the session log last had.
     recorded_durable: std::sync::Mutex<DurableState>,
-    /// 本会话已激活的 deferred 工具名集合。`Tool::is_deferred()`
-    /// 为 true 的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
+    /// 本会话已激活的 deferred 工具名集合。`EngineConfig::deferred_tools`
+    /// 里的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
     activated_tools: std::sync::Mutex<HashSet<String>>,
     /// 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个

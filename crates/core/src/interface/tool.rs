@@ -544,7 +544,6 @@ pub struct ToolSpec {
     /// [`ToolContext::dispatch`].
     pub needs_dispatch: bool,
     pub permission: ToolPermissionSpec,
-    pub deferred: bool,
 }
 
 impl ToolSpec {
@@ -599,10 +598,6 @@ impl ToolSpec {
         self.permission.leaves_plan_mode = yes;
         self
     }
-    pub fn deferred(mut self, yes: bool) -> Self {
-        self.deferred = yes;
-        self
-    }
 
     fn from_methods<T: Tool + ?Sized>(tool: &T) -> Self {
         if spec_derivation::in_progress::<T>() {
@@ -626,7 +621,6 @@ impl ToolSpec {
                 self_allow_overrides_mode: tool.self_allow_overrides_mode(),
                 leaves_plan_mode: tool.leaves_plan_mode(),
             },
-            deferred: tool.is_deferred(),
         }
     }
 }
@@ -691,13 +685,6 @@ pub trait Tool: Send + Sync + 'static {
     }
     fn input_schema(&self) -> Value;
 
-    /// The schema to hand the model when it asks for this tool by name.
-    /// Differs from [`input_schema`](Self::input_schema) only for a wrapper
-    /// that withholds the real one from the per-request tool list.
-    fn full_input_schema(&self) -> Value {
-        self.input_schema()
-    }
-
     /// [`input_schema`](Self::input_schema) as worded for a session's
     /// [`PathStyle`]; only tools whose argument docs mention paths differ.
     fn input_schema_for(&self, _style: PathStyle) -> Value {
@@ -705,9 +692,6 @@ pub trait Tool: Send + Sync + 'static {
     }
 
     async fn prompt(&self, _: &PromptContext) -> String {
-        self.prompt_fragment()
-    }
-    fn prompt_fragment(&self) -> String {
         self.description().to_string()
     }
     fn self_allow_overrides_mode(&self) -> bool {
@@ -730,10 +714,7 @@ pub trait Tool: Send + Sync + 'static {
     async fn detailed_prompt(&self, ctx: &PromptContext) -> Option<String> {
         let body = self.prompt(ctx).await;
         let trimmed = body.trim();
-        if trimmed.is_empty()
-            || trimmed == self.description().trim()
-            || trimmed == self.prompt_fragment().trim()
-        {
+        if trimmed.is_empty() || trimmed == self.description().trim() {
             return None;
         }
         Some(body)
@@ -781,9 +762,6 @@ pub trait Tool: Send + Sync + 'static {
     }
     fn needs_dispatch(&self) -> bool {
         from_spec(self, |s| s.needs_dispatch, || false)
-    }
-    fn is_deferred(&self) -> bool {
-        from_spec(self, |s| s.deferred, || false)
     }
     fn short_description(&self) -> Option<String> {
         from_spec(self, |s| s.short_description, || None)
@@ -1276,9 +1254,6 @@ mod spec_tests {
         fn is_read_only(&self, _: &Value) -> bool {
             true
         }
-        fn is_deferred(&self) -> bool {
-            true
-        }
         fn code_result(&self) -> Option<&'static str> {
             Some("{n: number}")
         }
@@ -1335,7 +1310,7 @@ mod spec_tests {
     #[test]
     fn the_default_spec_reads_the_methods_a_tool_overrides() {
         let spec = Legacy.spec();
-        assert!(spec.traits.read_only && spec.deferred);
+        assert!(spec.traits.read_only);
         assert_eq!(spec.code_result, Some("{n: number}"));
         assert_eq!(
             spec.permission.content_kind,

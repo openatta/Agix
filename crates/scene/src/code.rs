@@ -23,9 +23,8 @@ use std::sync::{Mutex, OnceLock};
 /// everything else (`Skill`, `ToolSearch`).
 ///
 /// `Glob`/`Grep` stay resident because deferring them would push the model
-/// toward shelling out to `find`/`grep`. `Write` stays resident despite its
-/// own `is_deferred()`: deferring it would put a round trip in front of the
-/// first write of nearly every session.
+/// toward shelling out to `find`/`grep`. `Write` stays resident: deferring it
+/// would put a round trip in front of the first write of nearly every session.
 pub const RESIDENT_TOOLS: &[&str] = &[
     "Agent",
     "AskUserQuestion",

@@ -298,9 +298,7 @@ fn an_embedder_with_its_own_elicitation_keeps_ask_user_question() {
 }
 
 /// The code scene's deferred policy has to reach the tools registered
-/// *after* the seeding copy is built, and has to actually collapse their
-/// schemas — including tools whose own `is_deferred()` already reports
-/// `true`, since the wrapper is the only thing that collapses a schema.
+/// *after* the seeding copy is built.
 #[tokio::test]
 async fn coding_scene_defers_everything_outside_its_resident_set() {
     let (agent, _rx, _tx) = Builder::new()
@@ -322,7 +320,7 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
         .tools
         .list()
         .iter()
-        .filter(|t| !t.is_deferred())
+        .filter(|t| !agent.deferred_tools().contains(t.name()))
         .map(|t| t.name().to_string())
         .collect();
 
@@ -346,22 +344,18 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
 
     // Registered after the seeding copy.
     for late in ["CronCreate", "WebSearch"] {
-        let t = agent.tooling.tools.get(late).expect(late);
-        assert!(t.is_deferred(), "{late} must be deferred");
-        let schema = serde_json::to_string(&t.input_schema()).unwrap();
+        assert!(agent.tooling.tools.get(late).is_some(), "{late}");
         assert!(
-            schema.len() < 400,
-            "{late} still ships a full schema ({} bytes) — reported as \
-             deferred but never wrapped",
-            schema.len()
+            agent.deferred_tools().contains(late),
+            "{late} must be deferred"
         );
     }
 
     // The way back to every deferred schema must never itself be deferred.
-    assert!(!agent.tooling.tools.get("ToolSearch").unwrap().is_deferred());
+    assert!(!agent.deferred_tools().contains("ToolSearch"));
 
-    // Duplicate entries would shadow the wrapped instance, since `get`
-    // returns the first name match.
+    // Duplicate entries would shadow one another, since `get` returns the
+    // first name match.
     let mut names = agent.tooling.tools.names();
     names.sort();
     let before = names.len();
@@ -467,16 +461,15 @@ async fn scene_extra_tools_are_registered_and_follow_the_deferred_policy() {
         .build()
         .expect("build should succeed");
 
-    let probe = agent
-        .tooling
-        .tools
-        .get("Probe")
-        .expect("scene tool registered");
-    assert!(!probe.is_deferred(), "not named in deferred_tools");
-
-    let second = agent.tooling.tools.get("SecondProbe").expect("registered");
+    assert!(agent.tooling.tools.get("Probe").is_some());
     assert!(
-        second.is_deferred(),
+        !agent.deferred_tools().contains("Probe"),
+        "not named in deferred_tools"
+    );
+
+    assert!(agent.tooling.tools.get("SecondProbe").is_some());
+    assert!(
+        agent.deferred_tools().contains("SecondProbe"),
         "a scene's own tool must obey its own deferred policy"
     );
 }
@@ -656,8 +649,8 @@ async fn build_registers_web_search_and_the_other_bridged_tools() {
 }
 
 /// A scene's `deferred_tools()` must strip the schema from the
-/// advertised entry while leaving the tool named, discoverable via
-/// `ToolSearch`, and callable.
+/// advertised entry while leaving the tool named and discoverable via
+/// `ToolSearch`.
 #[tokio::test]
 async fn build_applies_the_scenes_deferred_tool_policy() {
     let settings = Arc::new(test_settings());
@@ -681,41 +674,25 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
         .build()
         .expect("build should succeed");
 
-    let deferred = agent
-        .tooling
-        .tools
-        .get("GoalCreate")
-        .expect("GoalCreate still registered");
-    assert!(deferred.is_deferred(), "CodeScene defers GoalCreate");
-    assert_eq!(
-        deferred.input_schema()["properties"],
-        serde_json::json!({}),
-        "deferred tool must not carry its real schema"
+    assert!(
+        agent.tooling.tools.get("GoalCreate").is_some(),
+        "GoalCreate still registered"
     );
     assert!(
-        deferred
-            .spec()
-            .short_description
-            .is_some_and(|d| !d.is_empty()),
-        "deferred tool must stay described, or ToolSearch lists a bare name"
+        agent.deferred_tools().contains("GoalCreate"),
+        "CodeScene defers GoalCreate"
     );
-
-    // Read is not in the deferred list — untouched.
-    let read = agent.tooling.tools.get("Read").unwrap();
-    assert!(!read.is_deferred());
-    assert!(!read.input_schema()["properties"]
-        .as_object()
-        .unwrap()
-        .is_empty());
+    assert!(!agent.deferred_tools().contains("Read"));
 
     // And the scene admits ToolSearch, without which a deferred tool
     // could never be activated.
     assert!(scene::code::CodeScene::default().permits_tool("ToolSearch"));
 
-    // The session's ToolSearch must see the session's deferred wrappers,
-    // not the template's un-wrapped originals — i.e. `select:GoalCreate` has to
-    // actually find something, or the name is advertised with no way to
-    // get the schema back.
+    // The session's ToolSearch must search the session's registry —
+    // `select:GoalCreate` has to come back with the schema, or the name is
+    // advertised with no way to get the schema back.
+    let mut ctx = platform::tool_context_for_test("/tmp".into());
+    ctx.config = agent.config.clone();
     let found = agent
         .tooling
         .tools
@@ -723,14 +700,14 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
         .expect("ToolSearch rebound onto the session registry")
         .call(
             serde_json::json!({"query": "select:GoalCreate"}),
-            platform::tool_context_for_test("/tmp".into()),
+            ctx,
             base::tool::ProgressSender::noop("t"),
         )
         .await
         .unwrap();
     match &found.content {
         base::tool::ToolResultContent::Text(s) => {
-            assert!(s.contains("GoalCreate") && !s.contains("No matches"), "{s}")
+            assert!(s.contains("<function>") && s.contains("GoalCreate"), "{s}")
         }
         _ => panic!("expected text"),
     }

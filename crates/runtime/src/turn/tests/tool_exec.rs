@@ -364,6 +364,79 @@ async fn input_the_tool_rejects_never_runs_whatever_the_permission_handler() {
     assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
 }
 
+/// Parses its input strictly, the way a real tool does.
+struct NeedsPath;
+#[async_trait::async_trait]
+impl base::tool::Tool for NeedsPath {
+    fn name(&self) -> &str {
+        "NeedsPath"
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}},
+                           "required": ["path"]})
+    }
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        _ctx: base::tool::ToolContext,
+        _progress: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct In {
+            path: String,
+        }
+        let _: In = serde_json::from_value(input)?;
+        Ok(base::tool::ToolResult::text("ok"))
+    }
+}
+
+fn deferring(mut ctx: ToolExecCtx, names: &[&str]) -> ToolExecCtx {
+    let mut config = (*ctx.config).clone();
+    config.deferred_tools = Arc::new(names.iter().map(|n| n.to_string()).collect());
+    ctx.config = Arc::new(config);
+    ctx
+}
+
+/// The model never saw a deferred tool's schema, so a call that gets the
+/// input wrong — refused by `validate_input` or by the tool's own parsing —
+/// comes back with it; a resident tool's refusal does not repeat a schema the
+/// model already has.
+#[tokio::test]
+async fn a_deferred_tool_called_with_the_wrong_input_is_answered_with_its_schema() {
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools.register(Arc::new(NeedsPath));
+    tools.register(Arc::new(PickyTool {
+        ran: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    }));
+    let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+    let resident = test_exec_ctx(tools, hooks_runner);
+    let ctx = deferring(resident.clone(), &["NeedsPath", "Picky"]);
+
+    let err = execute_tool_with_telemetry(&ctx, "NeedsPath", serde_json::json!({"file": "a"}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing field `path`"), "{err}");
+    assert!(err.contains("Input schema of NeedsPath"), "{err}");
+    assert!(err.contains("\"required\":[\"path\"]"), "{err}");
+
+    let err = execute_tool_with_telemetry(&ctx, "Picky", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("picky refuses this input"), "{err}");
+    assert!(err.contains("Input schema of Picky"), "{err}");
+
+    let err = execute_tool_with_telemetry(&resident, "NeedsPath", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(!err.contains("Input schema"), "{err}");
+
+    let ok = execute_tool_with_telemetry(&ctx, "NeedsPath", serde_json::json!({"path": "a"}))
+        .await
+        .unwrap();
+    assert_eq!(ok.text, "ok");
+}
+
 #[tokio::test]
 async fn pre_tool_use_hook_blocks_call() {
     let called = std::sync::Arc::new(std::sync::Mutex::new(None));

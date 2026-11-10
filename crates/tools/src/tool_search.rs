@@ -4,12 +4,13 @@
 //! Two things are fetchable:
 //!
 //! 1. **Deferred tools.** A scene's `deferred_tools()` replaces a tool's JSON
-//!    schema in the per-call `tools` array with a stub (see `crate::deferred`).
+//!    schema in the per-call `tools` array with a stub (the session's
+//!    `EngineConfig::deferred_tools`).
 //!    A match returns the real schema as a `<function>` line inside a
 //!    `<functions>` block of the result text and records the tool as activated
 //!    in the session. The tool list itself never changes mid-session, so the
 //!    prompt cache survives; the schema lives in the transcript instead.
-//! 2. **Usage guides.** `Tool::detailed_prompt()`; `build_tool_defs` points at
+//! 2. **Usage guides.** `Tool::guide()`; `build_tool_defs` points at
 //!    it with one line rather than paying for every guide on every request.
 //!
 //! Query forms: `select:A,B` names tools exactly (case-insensitive fallback,
@@ -214,6 +215,8 @@ impl Tool for ToolSearchTool {
         let q = input.query.trim();
 
         let all = self.registry.list();
+        let deferred = &ctx.config.deferred_tools;
+        let is_deferred = |t: &Arc<dyn Tool>| deferred.contains(t.name());
         let prompt_ctx = PromptContext {
             cwd: ctx.cwd.clone(),
             model: String::new(),
@@ -232,9 +235,8 @@ impl Tool for ToolSearchTool {
             name: t.name().to_string(),
             description: describe(t),
             guide,
-            deferred_schema: t
-                .is_deferred()
-                .then(|| base::tool::compact_schema(t.full_input_schema())),
+            deferred_schema: is_deferred(t)
+                .then(|| base::tool::compact_schema(t.input_schema_for(ctx.config.path_style))),
         };
 
         let mut matches: Vec<Match> = Vec::new();
@@ -256,7 +258,7 @@ impl Tool for ToolSearchTool {
                         continue;
                     };
                     let guide = t.guide(&prompt_ctx).await;
-                    if !t.is_deferred() && guide.is_none() {
+                    if !is_deferred(t) && guide.is_none() {
                         already_loaded.push(t.name().to_string());
                     } else if !matches.iter().any(|m| m.name == t.name()) {
                         matches.push(to_match(t, guide));
@@ -267,13 +269,13 @@ impl Tool for ToolSearchTool {
                 let mut scored: Vec<(usize, Match)> = Vec::new();
                 for t in &all {
                     let guide = t.guide(&prompt_ctx).await;
-                    if t.is_deferred() {
+                    if is_deferred(t) {
                         total_deferred += 1;
                     }
                     if guide.is_some() {
                         total_documented += 1;
                     }
-                    if !t.is_deferred() && guide.is_none() {
+                    if !is_deferred(t) && guide.is_none() {
                         continue;
                     }
                     let score = keyword_score(t.name(), &describe(t), &required, &optional);
@@ -423,13 +425,13 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    /// 一个声称 deferred 的虚构工具。
-    struct DeferredTool {
+    /// 一个会被会话延迟的虚构工具。
+    struct LateTool {
         name: &'static str,
         desc: &'static str,
     }
     #[async_trait]
-    impl Tool for DeferredTool {
+    impl Tool for LateTool {
         fn name(&self) -> &str {
             self.name
         }
@@ -439,11 +441,8 @@ mod tests {
         async fn prompt(&self, _: &PromptContext) -> String {
             self.desc.to_string()
         }
-        fn is_deferred(&self) -> bool {
-            true
-        }
-        fn short_description(&self) -> Option<String> {
-            Some(self.desc.to_string())
+        fn spec(&self) -> ToolSpec {
+            ToolSpec::new().short_description(self.desc)
         }
         async fn call(
             &self,
@@ -481,23 +480,37 @@ mod tests {
     fn make_registry() -> Arc<InMemoryToolRegistry> {
         let reg = InMemoryToolRegistry::new();
         reg.register(Arc::new(ActiveTool));
-        reg.register(Arc::new(DeferredTool {
+        reg.register(Arc::new(LateTool {
             name: "GitHubIssues",
             desc: "Fetch GitHub issues for a repo",
         }));
-        reg.register(Arc::new(DeferredTool {
+        reg.register(Arc::new(LateTool {
             name: "GitHubPRs",
             desc: "List GitHub pull requests",
         }));
-        reg.register(Arc::new(DeferredTool {
+        reg.register(Arc::new(LateTool {
             name: "Datadog",
             desc: "Query Datadog metrics",
         }));
         Arc::new(reg)
     }
 
+    const DEFERRED: &[&str] = &[
+        "GitHubIssues",
+        "GitHubPRs",
+        "Datadog",
+        "Bare",
+        "mcp__desk__ticket_get",
+        "mcp__desk__ticket_list",
+    ];
+
+    /// A session that defers [`DEFERRED`].
     fn make_ctx() -> ToolContext {
-        platform::tool_context_for_test(PathBuf::from("/tmp"))
+        let mut ctx = platform::tool_context_for_test(PathBuf::from("/tmp"));
+        let mut config = (*ctx.config).clone();
+        config.deferred_tools = Arc::new(DEFERRED.iter().map(|n| n.to_string()).collect());
+        ctx.config = Arc::new(config);
+        ctx
     }
 
     #[tokio::test]
@@ -618,25 +631,15 @@ mod tests {
 
     fn deferred_registry() -> Arc<InMemoryToolRegistry> {
         let reg = InMemoryToolRegistry::new();
-        for t in crate::deferred::apply_deferred_policy(
-            vec![
-                schema_tool("mcp__desk__ticket_get"),
-                schema_tool("mcp__desk__ticket_list"),
-                Arc::new(ActiveTool),
-            ],
-            &[
-                "mcp__desk__ticket_get".into(),
-                "mcp__desk__ticket_list".into(),
-            ],
-        ) {
-            reg.register(t);
-        }
+        reg.register(schema_tool("mcp__desk__ticket_get"));
+        reg.register(schema_tool("mcp__desk__ticket_list"));
+        reg.register(Arc::new(ActiveTool));
         Arc::new(reg)
     }
 
     /// The contract the prompt promises: the real schema comes back in a
     /// `<functions>` block, the tool is recorded as activated, and calling it
-    /// afterwards through the registry runs the wrapped tool.
+    /// afterwards through the registry runs it.
     #[tokio::test]
     async fn select_returns_the_real_schema_and_activates_the_tool() {
         let reg = deferred_registry();
@@ -799,9 +802,6 @@ mod tests {
             }
             fn input_schema(&self) -> Value {
                 json!({"type": "object"})
-            }
-            fn is_deferred(&self) -> bool {
-                true
             }
             async fn call(
                 &self,

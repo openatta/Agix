@@ -107,6 +107,12 @@ pub struct EngineConfig {
     pub verbose_tool_results: bool,
     /// See [`PathStyle`]; mirrors `Settings.path_style`.
     pub path_style: PathStyle,
+    /// Tools advertised to the model by name and description only, their
+    /// schema fetched through `ToolSearch` — the scene's
+    /// `Scene::deferred_tools`, fixed when the session is built. A property
+    /// of the session rather than of the tool, so an MCP tool that arrives
+    /// mid-session is deferred like one that was there from the start.
+    pub deferred_tools: std::sync::Arc<std::collections::HashSet<String>>,
 }
 
 /// File-op limits sub-config: the "tuning the FileRead/Write envelope"
@@ -309,6 +315,7 @@ impl EngineConfig {
             max_agent_depth: 3,
             verbose_tool_results: false,
             path_style: PathStyle::default(),
+            deferred_tools: Default::default(),
         }
     }
 

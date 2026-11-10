@@ -24,11 +24,6 @@ impl Builder {
         // goes into *this* fresh copy, not the caller-supplied one: in a
         // daemon the caller's `Arc` is shared by every session, and
         // `InMemoryToolRegistry::register` appends without replacing by name.
-        //
-        // The scene's deferred policy is *not* applied here — it runs once,
-        // after every registration below, so it can reach the engine-state
-        // tools too. Applying it here as well would only wrap the built-ins a
-        // second time.
         let tools = {
             let session_tools = Arc::new(InMemoryToolRegistry::new());
             let mut had_tool_search = false;
@@ -36,8 +31,8 @@ impl Builder {
                 // `ToolSearchTool` closes over the registry it searches. The
                 // instance in the incoming template closes over the
                 // *template*, so it would report on the template's tools —
-                // which have neither this session's deferred wrappers nor any
-                // of the engine-state tools registered below. Drop it and
+                // which have none of the engine-state tools registered below.
+                // Drop it and
                 // rebind one to this session's registry instead. (Same `Arc`,
                 // read at call time, so later registrations are visible.)
                 if t.name() == "ToolSearch" {
@@ -231,6 +226,18 @@ impl Builder {
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_settings(&settings);
             c.path_style = settings.path_style.unwrap_or_else(|| scene.path_style());
+            c.deferred_tools = Arc::new(
+                scene
+                    .deferred_tools()
+                    .into_iter()
+                    // `ToolSearch` is the only way back to a deferred tool's
+                    // schema, so deferring it would strand every other one; a
+                    // host that bound an output schema wants the model to see
+                    // `StructuredOutput` whole.
+                    .filter(|n| n != "ToolSearch")
+                    .filter(|n| n != "StructuredOutput" || self.output_schema.is_none())
+                    .collect(),
+            );
             c
         });
 
@@ -499,18 +506,6 @@ impl Builder {
                 .map(|(name, _)| name.clone()),
         ));
 
-        // The scene's deferred policy, applied once over the complete set.
-        //
-        // It has to run here rather than on the registry the caller handed in:
-        // `Agent`, `Skill`, `Cron*`, `EnterWorktree`/`ExitWorktree`,
-        // `WebSearch`, `Team*`, the MCP adapters and the scene's own
-        // contributions are all registered above, and those are most of what a
-        // scene would want to defer.
-        //
-        // Substituting by name over the same `Arc` (rather than rebuilding the
-        // registry) is what keeps `ToolSearchTool` working: it closes over this
-        // exact registry and reads it at call time, so a tool wrapped
-        // underneath it stays discoverable.
         let host_schema = self.output_schema.clone();
         match &host_schema {
             Some(schema) => tools::bind_output_schema(&tools, schema),
@@ -518,23 +513,6 @@ impl Builder {
                 tools.remove("StructuredOutput");
             }
         }
-        {
-            let mut deferred = scene.deferred_tools();
-            if host_schema.is_some() {
-                deferred.retain(|n| n != "StructuredOutput");
-            }
-            if !deferred.is_empty() {
-                for t in tools::deferred::apply_deferred_policy(tools.list(), &deferred) {
-                    // `ToolSearch` must never be deferred — it is the only way
-                    // back to a deferred tool's schema, so hiding its own
-                    // schema would strand every other deferred tool.
-                    if t.name() != "ToolSearch" {
-                        tools.replace(t);
-                    }
-                }
-            }
-        }
-
         // The scene's tool policy, applied to the registry itself rather than
         // only to what is advertised: `ToolSearch` and dispatch read this same
         // registry, so a tool the scene excludes has to be absent from it.
