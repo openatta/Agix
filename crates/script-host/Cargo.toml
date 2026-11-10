@@ -7,7 +7,12 @@ license.workspace = true
 # Note: `rquickjs` requires Rust 1.87, above the workspace's declared 1.80.
 # That raises the floor only for builds that turn this carrier on — it is an
 # optional dependency of `daemon` behind the `scripts` feature, and a build
-# without it is unaffected.
+# without it is unaffected. A host that brings its own `ScriptEngine` can turn
+# the `quickjs` feature off and link no interpreter at all.
+
+[features]
+default = ["quickjs"]
+quickjs = ["dep:rquickjs"]
 
 [dependencies]
 base        = { workspace = true }
@@ -17,7 +22,7 @@ serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
 tracing     = { workspace = true }
-rquickjs    = { workspace = true }
+rquickjs    = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio-util  = { workspace = true }
