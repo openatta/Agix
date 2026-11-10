@@ -85,6 +85,9 @@ fn concat_production_rs(path: &Path) -> String {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
+                if p.file_name().is_some_and(|n| n == "tests") {
+                    continue;
+                }
                 stack.push(p);
             } else if p.extension().is_some_and(|e| e == "rs") {
                 out.push_str(&read_without_tests(&p));

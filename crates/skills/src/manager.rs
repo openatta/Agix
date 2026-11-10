@@ -405,7 +405,7 @@ impl SkillManager {
     /// whose iteration order is randomized per-process (different every run,
     /// same skill set or not) — every consumer of this list renders it
     /// straight into user/model-facing text (`turn.rs::build_skills_text`
-    /// injects it verbatim into the system prompt, `agent.rs`'s `/skills`
+    /// injects it verbatim into the system prompt, `agent/commands.rs`'s `/skills`
     /// command, the `SkillTool` lookup). An unsorted list meant the system
     /// prompt's "## Available Skills" section came out in a different order
     /// every single process start — which, since the request carries

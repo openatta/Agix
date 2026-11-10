@@ -6,7 +6,7 @@
 //! This is a source-text reachability check, not real call-graph analysis —
 //! it greps for whether a function name string appears anywhere in the two
 //! places production wiring actually happens (`daemon/src/**` and
-//! `crates/runtime/src/agent.rs`, see that file's `Builder::build()`), for a
+//! `crates/runtime/src/agent/`, see `agent/builder/build.rs`'s `Builder::build()`), for a
 //! curated list of "wiring-shaped" functions from library crates. It cannot
 //! prove a call is *correct*, only that the identifier is referenced from a
 //! composition root instead of sitting completely unreferenced outside its
@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 /// this repo's `daemon` can call them to activate a capability. Each entry
 /// is exactly the shape of bug this test exists to catch: compiles, has
 /// unit tests, does nothing in a real session unless referenced from
-/// `daemon/src/**` or `crates/runtime/src/agent.rs`.
+/// `daemon/src/**` or `crates/runtime/src/agent/`.
 const WIRING_CHECKS: &[(&str, &str)] = &[
     ("tools", "register_builtin_tools"),
     ("tools", "register_web_search"),
@@ -98,7 +98,6 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
     // The kernel's assembly and each module's `on_session` are composition
     // roots too: a module wires its capability into the session there.
     let agent_rs = [
-        "crates/runtime/src/agent.rs",
         "crates/agents/src/lib.rs",
         "crates/mcp/src/module.rs",
         "crates/skills/src/module.rs",
@@ -106,14 +105,15 @@ fn wiring_shaped_functions_are_referenced_from_a_composition_root() {
     .iter()
     .map(|p| std::fs::read_to_string(root.join(p)).unwrap_or_else(|e| panic!("{p}: {e}")))
     .collect::<Vec<_>>()
-    .join("\n");
+    .join("\n")
+        + &concat_rs_files(&root.join("crates/runtime/src/agent"));
 
     let mut unreferenced = Vec::new();
     for &(crate_name, func_name) in WIRING_CHECKS {
         let referenced_in_daemon = count_occurrences(&daemon_src, func_name) > 0;
         // Every function also gets defined once in its own crate and usually
         // referenced by its own doc comments/tests — only daemon/src and
-        // agent.rs (excluding agent.rs's own re-definition, N/A here since
+        // agent/ (excluding agent/'s own re-definition, N/A here since
         // none of these are defined in `runtime`) count as "wired".
         let referenced_in_agent = count_occurrences(&agent_rs, func_name) > 0;
         if !referenced_in_daemon && !referenced_in_agent {
@@ -200,8 +200,11 @@ fn wiring_check_scan_logic_actually_detects_absence() {
     let root = repo_root();
     let daemon_src = concat_rs_files(&root.join("daemon/src"))
         + &concat_rs_files(&root.join("crates/assembly/src"));
-    let agent_rs = std::fs::read_to_string(root.join("crates/runtime/src/agent.rs"))
-        .expect("crates/runtime/src/agent.rs should exist");
+    let agent_rs = concat_rs_files(&root.join("crates/runtime/src/agent"));
+    assert!(
+        !agent_rs.is_empty(),
+        "crates/runtime/src/agent/ should exist"
+    );
     let bogus = "definitely_not_a_real_function_name_zzz_12345";
     assert_eq!(count_occurrences(&daemon_src, bogus), 0);
     assert_eq!(count_occurrences(&agent_rs, bogus), 0);

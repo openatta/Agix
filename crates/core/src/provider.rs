@@ -14,7 +14,7 @@
 //! can't depend on `model` without inverting the crate layering). The
 //! construction site is `daemon::model_router::build_task_router`; wiring it
 //! into `SessionPool`/`AgentTool`'s sub-agent spawn points is
-//! `crates/runtime/src/agent.rs::Builder::task_router` /
+//! `crates/runtime/src/agent/builder/mod.rs::Builder::task_router` /
 //! `crates/agents/src/agent_tool/inner.rs::Inner::model_for_subagent`.
 
 use serde::{Deserialize, Serialize};
