@@ -63,7 +63,8 @@ when no one is watching.
    provider's cache, and long sessions compact themselves and carry on. On
    six engineering tasks, against another open agent harness on the same
    model, that came to **34% less wall time and 13% fewer prompt tokens, with
-   every run correct** ([how it was measured](tests/live/tests/compare_dsh.rs)).
+   every run correct** (the other harness's wall time includes its process
+   start, while the Agix daemon is already running; [how it was measured](tests/live/tests/compare_dsh.rs)).
 5. **Your product stays in charge.** Every session, task, sub-agent, goal and
    prompt is visible, stoppable and editable over one JSON-RPC protocol.
    45 extension points let you replace or intercept any subsystem from Rust

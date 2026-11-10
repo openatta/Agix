@@ -111,7 +111,7 @@ token 用量。改了 `tests/live` 后 lint 也要带上 feature：
 | `live_scenes.rs` | `scene.register` 运行时登记的声明式场景：请求里只有它列的 `Read` / `Write`，`prompt.md` 的令牌在系统提示里，照样把活干完；同 id 再登记得 `-32602`；`scene.describe` / `scene.list` 报出它和会话数；有会话时 `scene.deactivate`、`scene.unregister` 都得 `-32009`，关掉会话后才停得掉、撤得掉 |
 | `live_providers.rs` | `harnix` 场景里 `task_models.title` 与 `task_models.compact` 各指向另一个 Flash 名字：命名请求、压缩请求各恰一次、落在各自的模型上，对话请求都留在默认厂商的模型上 |
 | `live_autonomy.rs` | `TodoWrite` 的列表随多步任务更新，`session.export` 的 `runtime.json` 里是做完两项、剩一项待办；模型用 `CronCreate` 建的每分钟任务按时以 `initiator:"schedule"` 的一轮跑起来，`CronDelete` 之后再过两次检查也不再跑；宿主 `schedule.create` 的一次性任务无人连接也跑、跑一次就没了，非法表达式被拒；`max_rounds` 用完的目标以 `blocked`（`round limit`）结束，`execution.max_budget_tokens` 耗尽的一轮以 `budget_exceeded` 结束、目标解除武装；两个后台子 agent，一个只经 `TaskMessage` 拿到要写的词、`TaskWait` / `TaskOutput` 收回，另一个被 `TaskStop` 停成 `stopped`；声明式场景里的 `Sleep` 真等了要的时长、超过 30 秒的被拒、被中断时立即收尾，`Ping` 对页面报出 200 和 404 |
-| `live_workspace.rs` | 声明式场景提供的工作区工具：`git_project` 上 `EnterWorktree` 后写的文件只在 `.agix/worktrees/<slug>` 里，主工作区 `git status` 看不见，`ExitWorktree` 带 `discard_changes` 删掉目录与分支；非 git 目录里 `EnterWorktree` 失败；`NotebookEdit` 改、插、删 cell 后笔记本仍合法，越界的 `cell_index` 报错且不改文件；`Glob` / `Grep` 原样交回中文与带音标的文件名，二进制文件不进 `Grep` 的结果。在自己进的 worktree（`.agix/worktrees/` 下）里写文件被当成改 agent 配置、无人值守时被拒，是产品缺陷，写文件的三条 `#[ignore]` |
+| `live_workspace.rs` | 声明式场景提供的工作区工具：`git_project` 上 `EnterWorktree` 后写的文件只在 `.agix/worktrees/<slug>` 里，主工作区 `git status` 看不见，`ExitWorktree` 带 `discard_changes` 删掉目录与分支；非 git 目录里 `EnterWorktree` 失败；`NotebookEdit` 改、插、删 cell 后笔记本仍合法，越界的 `cell_index` 报错且不改文件；`Glob` / `Grep` 原样交回中文与带音标的文件名，二进制文件不进 `Grep` 的结果。|
 
 **权限模式：用例不用 `bypassPermissions`。** bypass 下一条规则都不看，deny 规则也不生效
 （只剩输入校验与 `Bash` 的 OS 沙箱）——用例跑在 bypass 上，权限面就等于没被端到端走过。

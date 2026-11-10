@@ -841,8 +841,8 @@ macOS profile 加 `(deny lsopen)`、`(deny user-preference-write)`、`(deny appl
 (`/private/tmp/screens`、`$SCREENDIR`)的 socket——往一个 tmux 会话里敲命令就是在沙箱外跑;
 Linux 上 bwrap 加 `--unshare-ipc` 并遮住 `$XDG_RUNTIME_DIR/bus`、`$XDG_RUNTIME_DIR/systemd`、
 `DBUS_SESSION_BUS_ADDRESS` 指向的路径与 screen 的 socket 目录(`/run/screen`;tmux 的在 `/tmp`,
-本来就是命令私有的;抽象 socket 的总线只有断网才断得掉;Linux 这一半未在真机 bubblewrap 上
-跑过)。`tmux -S` 自己选的 socket 找不到。有人值守的会话不加:命令经人确认,`open` 打开浏览器
+本来就是命令私有的;抽象 socket 的总线只有断网才断得掉;Linux 这一半已在 Debian 12 aarch64 的真机
+bubblewrap 上跑过,CI 的 `sandbox-linux` job 也在真 bubblewrap 上跑)。`tmux -S` 自己选的 socket 找不到。有人值守的会话不加:命令经人确认,`open` 打开浏览器
 之类照常可用;钥匙串也照常可用——`git push` 走 osxkeychain 凭据助手、`codesign`、
 `xcrun notarytool` 都要它,而钥匙串对不在 ACL 里的程序还会弹窗再问一次。
 网络敞开时,命令能连到的本机服务(sshd、容器守护进程)在任何策略下都是出口。
@@ -853,8 +853,8 @@ daemon 自己是最近的那个本机服务:连上它的 socket 就是宿主,能
 socket(项目就在状态目录里时除外)和这个进程监听的 socket(`--socket` 放在别处的也算),按解析后
 的路径比,符号链接、相对路径绕不过;这个进程的 TCP / WebSocket 端口同样拒绝。Linux 上 bwrap
 拒绝不了 connect,只能把 `/dev/null` 挂到状态目录与各场景目录下的每个 socket 文件、以及这个进程
-监听的 socket 上(目录本身照常可读);TCP 端口在 Linux 上只有断网才断得掉(Linux 这一半同样未在
-真机 bubblewrap 上跑过)。daemon 这一侧另有一道:unix socket 上对端进程是 daemon 自己起的
+监听的 socket 上(目录本身照常可读);TCP 端口在 Linux 上只有断网才断得掉(Linux 这一半同样已在真机 bubblewrap
+上跑过,CI 的 `sandbox-linux` job 覆盖)。daemon 这一侧另有一道:unix socket 上对端进程是 daemon 自己起的
 (它的子孙,或者还在 daemon 起的某个进程组里——父进程退出后被 init 收养的后台进程也算),连接
 直接以 `UNAUTHORIZED` 拒绝,不论命令进没进沙箱;`setsid` 离开进程组的孤儿认不出来,这时靠沙箱。
 TCP / WebSocket 靠 token:子进程环境里没有 `AGIX_DAEMON_TOKEN`,但 `--token` 写在命令行上时
