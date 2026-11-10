@@ -893,3 +893,159 @@ async fn audit2_an_agent_hook_still_judges_when_the_model_holds_every_sub_agent_
     run.finish().await;
     Ok(())
 }
+
+const WAIT_FOR_GO: &str = "touch waiting; while [ ! -e go ]; do sleep 0.05; done; echo released";
+
+/// The first task of `kind` in `session.tasks`.
+async fn task_of_kind(run: &mut LiveRun, session: &str, kind: &str) -> anyhow::Result<Value> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(task) = run
+            .tasks(session)
+            .await?
+            .into_iter()
+            .find(|t| t["kind"] == kind)
+        {
+            return Ok(task);
+        }
+        anyhow::ensure!(Instant::now() < deadline, "no {kind} task appeared");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// `session.stopTask` on a background `context: fork` skill stops that
+/// sub-agent; the turn that forked it goes on, as it does for any stopped
+/// task (protocol `session.stopTask`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_stopping_a_background_forked_skill_leaves_the_turn_running() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("bg-fork-stop", &stub)
+        .settings(json!({
+            "permission_rules": [
+                { "tool": "Skill", "action": "allow" },
+                { "tool": "Bash", "action": "allow" }
+            ]
+        }))
+        .start()
+        .await?;
+    run.write_file(
+        ".agents/skills/bgfork/SKILL.md",
+        "---\nname: bgfork\ndescription: works in the background\ncontext: fork\nbackground: true\n---\n\
+         FORK-MARK work for a while\n",
+    )?;
+    let session = run.session().await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls("s-1", "Skill", json!({ "skill": "bgfork" })),
+            Reply::calls("b-1", "Bash", json!({ "command": WAIT_FOR_GO })),
+            Reply::text("parent done"),
+        ],
+    );
+    stub.script_when(
+        "FORK-MARK",
+        [Reply::delayed(
+            Duration::from_secs(120),
+            Reply::text("fork done"),
+        )],
+    );
+    let handle = run
+        .spawn_turn(&session, "PARENT-MARK fork it, then wait", json!({}))
+        .await?;
+    let waiting = run.project.join("waiting");
+    wait_until(
+        "the parent's command waiting",
+        Duration::from_secs(30),
+        || waiting.exists(),
+    )
+    .await?;
+    let fork = task_of_kind(&mut run, &session, "agent").await?;
+    let stopped = run
+        .client
+        .call(
+            "session.stopTask",
+            json!({ "session_id": session, "task_id": fork["task_id"] }),
+        )
+        .await?;
+    anyhow::ensure!(stopped.error.is_none(), "{stopped:?}");
+    std::fs::write(run.project.join("go"), "")?;
+    let events = handle.await??;
+    let stop = events
+        .turn_complete_event
+        .as_ref()
+        .map(|e| e["stop_reason"].clone())
+        .unwrap_or_default();
+    assert_eq!(
+        stop,
+        json!("end_turn"),
+        "stopping the forked skill's task ended the turn that forked it; Bash said {:?}",
+        events.tool_results
+    );
+    run.finish().await;
+    Ok(())
+}
+
+/// An interrupt stops the background agents its turn started; their tasks
+/// end `stopped`, not `done` (protocol `session.interrupt`, `session.tasks`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_background_agent_stopped_by_an_interrupt_ends_stopped() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("bg-agent-interrupt", &stub)
+        .settings(json!({
+            "permission_rules": [
+                { "tool": "Agent", "action": "allow" },
+                { "tool": "Bash", "action": "allow" }
+            ]
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    stub.script_when(
+        "PARENT-MARK",
+        [
+            Reply::calls(
+                "a-bg",
+                "Agent",
+                json!({ "prompt": "BG-MARK work", "description": "bg", "background": true }),
+            ),
+            Reply::calls("b-1", "Bash", json!({ "command": WAIT_FOR_GO })),
+            Reply::text("parent done"),
+        ],
+    );
+    stub.script_when(
+        "BG-MARK",
+        [Reply::delayed(
+            Duration::from_secs(120),
+            Reply::text("bg done"),
+        )],
+    );
+    let handle = run
+        .spawn_turn(&session, "PARENT-MARK start a helper, then wait", json!({}))
+        .await?;
+    let waiting = run.project.join("waiting");
+    wait_until(
+        "the parent's command waiting",
+        Duration::from_secs(30),
+        || waiting.exists(),
+    )
+    .await?;
+    task_of_kind(&mut run, &session, "agent").await?;
+    let interrupted = interrupt(&mut run, &session).await?;
+    assert_eq!(interrupted["interrupted"], json!(true), "{interrupted}");
+    std::fs::write(run.project.join("go"), "")?;
+    handle.await??;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let task = loop {
+        let task = task_of_kind(&mut run, &session, "agent").await?;
+        if task["status"] != "running" && task["status"] != "waiting" {
+            break task;
+        }
+        anyhow::ensure!(Instant::now() < deadline, "the agent never ended: {task}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(task["status"], json!("stopped"), "{task}");
+    run.finish().await;
+    Ok(())
+}
