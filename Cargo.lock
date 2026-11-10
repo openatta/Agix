@@ -1208,10 +1208,12 @@ dependencies = [
 name = "guards"
 version = "0.3.12-2026111002"
 dependencies = [
+ "hooks",
  "proc-macro2",
  "quote",
  "serde_json",
  "syn 2.0.117",
+ "telemetry",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 //! `TelemetryEvent` 枚举 + 各 payload 结构化定义。
 //!
-//! 每一种事件都有生产者：`crates/telemetry/tests/producers.rs` 逐个 kind 查
+//! 每一种事件都有生产者：`tests/guards/tests/wiring.rs` 逐个 kind 查
 //! 工作区里有没有构造它的地方，没有就失败。加一种事件要连同发它的地方一起加。
 
 use serde::Serialize;

@@ -88,9 +88,9 @@ handle 和一个后台 future,事件过滤、脱敏之后交给你给的每个 `
 
 下表由 `telemetry::events::inventory` 生成:第二、三列是 `event_kinds!` 里每种事件旁边的
 声明,第四列从 payload 类型的 JSON schema 读出(`?` 是可能缺省或为 `null` 的字段,括号里是
-枚举字段的取值)。`crates/telemetry/tests/producers.rs` 保证两件事:表和代码一致
-(`AGIX_UPDATE_DOCS=1` 重写这张表),以及**表里每一种都有生产者**——引擎里确有发出它的
-地方。所以这里列出的每一种都会出现在日志里,只要它描述的事发生了。
+枚举字段的取值)。两件事有测试保证:表和代码一致(`crates/telemetry/tests/producers.rs`,
+`AGIX_UPDATE_DOCS=1` 重写这张表),以及**表里每一种都有生产者**(`tests/guards/tests/wiring.rs`)
+——引擎里确有发出它的地方。所以这里列出的每一种都会出现在日志里,只要它描述的事发生了。
 
 <!-- BEGIN GENERATED TABLE — see telemetry::events::inventory::render_markdown -->
 | `type` | 何时发 | 记在哪 | 字段(信封之外) |

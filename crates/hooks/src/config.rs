@@ -275,7 +275,7 @@ pub enum HookEvent {
 /// for it forever. [`HookEvent::is_wired`] exists so the composition root can
 /// say so out loud at startup instead.
 ///
-/// Kept honest by `daemon/tests/hook_event_wiring.rs`, which scans the
+/// Kept honest by `tests/guards/tests/wiring.rs`, which scans the
 /// production sources for firing sites and fails if this list and the code
 /// disagree in either direction — so wiring one of these up without removing
 /// it here is a test failure, not a stale comment.

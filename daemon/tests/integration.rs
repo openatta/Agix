@@ -12,7 +12,6 @@ mod daemon_e2e;
 mod daemon_socket_from_a_command;
 mod extension_entries;
 mod extension_points_doc;
-mod hook_event_wiring;
 mod hook_events_doc;
 mod host_scenes;
 mod managed_settings;
