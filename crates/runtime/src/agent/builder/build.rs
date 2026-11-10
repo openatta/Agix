@@ -248,7 +248,7 @@ impl Builder {
         // One `SessionState` for the whole session. It is the session's mutable side: permission mode
         // (which `EnterPlanMode`/`ExitPlanMode` flip), the read cache that
         // `Edit`/`Write` consult for read-before-edit staleness, the read
-        // dedup marker, file snapshots backing `/rewind`, todos, the task
+        // dedup marker, todos, the task
         // list, running sub-agent tasks, and the accumulated
         // "allow writes here for this project" paths. Every tool call gets
         // the same `Arc`; none of that state works if it does not survive

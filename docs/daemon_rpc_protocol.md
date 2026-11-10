@@ -2148,8 +2148,7 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 下次再检查。**正在进行的 turn 不会被中断**;还有后台任务在跑的会话也算忙,这一轮照旧用原来的
 配置,任务都结束之后才重建,所以后台任务不会因为配置变化被停掉。重建保留会话结束了的任务
 (`session.tasks` / `session.taskOutput` 照查)和模型还没读到的 `<task-notification>`,也保留
-`plan` 模式、todo 列表、`ToolSearch` 加载过的 deferred 工具、读过的文件记录与 `/rewind` 的文件
-快照;`plan` 之外的权限模式取新配置(在 `plan` 里的仍在 `plan` 里,退出后回到进入前的模式,§4.5)。重建时转录读不
+`plan` 模式、todo 列表、`ToolSearch` 加载过的 deferred 工具、读过的文件记录;`plan` 之外的权限模式取新配置(在 `plan` 里的仍在 `plan` 里,退出后回到进入前的模式,§4.5)。重建时转录读不
 出来,会话不重建、照旧在原来的引擎上跑,这次 `run_turn` 返回 `INTERNAL_ERROR`(见 `session.resume`)。
 
 **多数情况下不需要显式调用**:daemon 监视每个项目的 `settings.json` /

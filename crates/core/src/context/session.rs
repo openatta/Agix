@@ -1,4 +1,4 @@
-//! 会话可变状态 + 文件快照 + 副作用注入接口。
+//! 会话可变状态 + 副作用注入接口。
 
 use crate::error::EffectError;
 use crate::permission::PermissionMode;
@@ -69,13 +69,6 @@ pub struct SessionState {
     /// each under the key it can be retracted by — see
     /// [`SessionState::post_notice`].
     notices: std::sync::Mutex<Vec<(Option<String>, String)>>,
-    /// 文件历史快照。每次 FileWrite/FileEdit/NotebookEdit 改文件
-    /// 之前，先把"原内容"快照进来（按 turn 编号 + 文件路径分桶）。`/rewind`
-    /// 命令展示并恢复。新文件首次写入时存 `None` 作为"原状态" → restore = 删除
-    /// 文件。
-    file_snapshots: std::sync::Mutex<FileSnapshotRegistry>,
-    /// 当前 turn 编号。Engine.run_turn 开头 +1；快照记录时取此值。
-    current_turn: std::sync::Mutex<u64>,
     /// 已读取文件缓存。`FileRead` 成功后记录文件路径
     /// 与当时的 mtime；`FileEdit` / `FileWrite` 的 `validate_input` 用它做
     /// staleness 检测。
@@ -115,84 +108,6 @@ pub struct PlanState {
 struct ModeSlot {
     current: PermissionMode,
     before_plan: Option<PermissionMode>,
-}
-
-/// 一条文件快照。把"工具改之前"的状态存下来，用于 `/rewind`。
-#[derive(Debug, Clone)]
-pub struct FileSnapshot {
-    /// 单调递增 id（把不同 turn / 同一 turn 内多次修改区分开）
-    pub id: u64,
-    /// 这次修改属于哪一 turn（用于 `/rewind to <turn>` 一次回退多文件）
-    pub turn: u64,
-    pub path: std::path::PathBuf,
-    /// 改之前的字节。None = 文件原本不存在（restore = 删除）
-    pub before: Option<Vec<u8>>,
-    /// 操作来源工具名（"Write" / "Edit" / "NotebookEdit"），仅用于展示
-    pub tool_name: String,
-    pub recorded_at: time::OffsetDateTime,
-}
-
-#[derive(Debug, Default)]
-pub struct FileSnapshotRegistry {
-    next_id: u64,
-    entries: Vec<FileSnapshot>,
-    /// 防止"同一 turn 同一文件被改 N 次时 N 个快照"。每条 (turn, path) 只保留
-    /// **第一**次的快照（其余 mutation 后续也只是从 first-snapshot 出发）。
-    first_seen_per_turn: HashSet<(u64, PathBuf)>,
-}
-
-impl FileSnapshotRegistry {
-    /// Append a snapshot row (called by FileEdit/FileWrite before mutation).
-    pub fn record(
-        &mut self,
-        turn: u64,
-        path: PathBuf,
-        before: Option<Vec<u8>>,
-        tool_name: impl Into<String>,
-    ) {
-        let key = (turn, path.clone());
-        if !self.first_seen_per_turn.insert(key) {
-            // already snapshot'd this file in this turn; later mutations
-            // chain on top of the first snapshot
-            return;
-        }
-        self.next_id += 1;
-        self.entries.push(FileSnapshot {
-            id: self.next_id,
-            turn,
-            path,
-            before,
-            tool_name: tool_name.into(),
-            recorded_at: time::OffsetDateTime::now_utc(),
-        });
-    }
-
-    /// All snapshots recorded in this session, in chronological order.
-    pub fn entries(&self) -> &[FileSnapshot] {
-        &self.entries
-    }
-
-    /// All snapshots whose `turn` is strictly greater than `target_turn`.
-    /// `/rewind to N` restores these in reverse order (newest first).
-    pub fn entries_after(&self, target_turn: u64) -> Vec<&FileSnapshot> {
-        self.entries
-            .iter()
-            .filter(|s| s.turn > target_turn)
-            .collect()
-    }
-
-    /// Look up a single snapshot by id (None if not found).
-    pub fn entry_by_id(&self, id: u64) -> Option<&FileSnapshot> {
-        self.entries.iter().find(|s| s.id == id)
-    }
-
-    /// Distinct turn numbers that have any snapshot, ascending.
-    pub fn turns_with_snapshots(&self) -> Vec<u64> {
-        let mut out: Vec<u64> = self.entries.iter().map(|s| s.turn).collect();
-        out.sort();
-        out.dedup();
-        out
-    }
 }
 
 /// 一次文件读取记录，包含读取时的 mtime。
@@ -237,116 +152,12 @@ impl SessionState {
             goal_recording: Default::default(),
             goal_events: tokio::sync::broadcast::channel(64).0,
             turn_origin: std::sync::Mutex::new(super::goal::TurnOrigin::default()),
-            file_snapshots: std::sync::Mutex::new(FileSnapshotRegistry::default()),
-            current_turn: std::sync::Mutex::new(0),
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
             structured_output: std::sync::Mutex::new(None),
             tools: std::sync::RwLock::new(None),
             exec: std::sync::RwLock::new(None),
         }
-    }
-
-    /// Increment + return the new turn number. Engine.run_turn calls this once
-    /// per turn (right at the start) so subsequent snapshots tag with the
-    /// new turn id.
-    pub fn bump_turn(&self) -> u64 {
-        let mut t = self.current_turn.lock().unwrap_or_else(|e| e.into_inner());
-        *t += 1;
-        *t
-    }
-
-    pub fn current_turn(&self) -> u64 {
-        *self.current_turn.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Snapshot a file's pre-mutation state. If the file doesn't exist, store
-    /// `None` (restore = delete). Re-records on the same (turn, path) are
-    /// no-ops — the first snapshot in a turn is the canonical "before" state.
-    pub fn snapshot_file(&self, path: &std::path::Path, tool_name: impl Into<String>) {
-        let turn = self.current_turn();
-        let before = match std::fs::read(path) {
-            Ok(bytes) => Some(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(_) => return, // unreadable for some other reason; don't fail the tool
-        };
-        self.file_snapshots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record(turn, path.to_path_buf(), before, tool_name);
-    }
-
-    /// Read-only access to the snapshot registry (for `/rewind` listing).
-    pub fn file_snapshots_snapshot(&self) -> Vec<FileSnapshot> {
-        self.file_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entries()
-            .to_vec()
-    }
-
-    pub fn file_snapshot_turns(&self) -> Vec<u64> {
-        self.file_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .turns_with_snapshots()
-    }
-
-    /// Restore a single snapshot by id. Returns the path that was restored.
-    pub fn restore_snapshot(&self, id: u64) -> Result<PathBuf, std::io::Error> {
-        let snap = {
-            let reg = self
-                .file_snapshots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.entry_by_id(id).cloned().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "snapshot not found")
-            })?
-        };
-        match &snap.before {
-            Some(bytes) => std::fs::write(&snap.path, bytes)?,
-            None => match std::fs::remove_file(&snap.path) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            },
-        }
-        Ok(snap.path)
-    }
-
-    /// Restore every snapshot taken **after** `target_turn`. Used by
-    /// `/rewind to <turn>` — bring the FS back to whatever it was at the end
-    /// of `target_turn`. Restores newest → oldest so file-A-modified-twice
-    /// ends up at the older state, not the intermediate one.
-    pub fn restore_to_turn(&self, target_turn: u64) -> Result<Vec<PathBuf>, std::io::Error> {
-        let to_restore: Vec<FileSnapshot> = {
-            let reg = self
-                .file_snapshots
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            reg.entries_after(target_turn)
-                .into_iter()
-                .cloned()
-                .collect()
-        };
-        let mut restored = Vec::new();
-        // newest first — apply older snapshots last so they win on duplicate paths
-        for snap in to_restore.into_iter().rev() {
-            match &snap.before {
-                Some(bytes) => std::fs::write(&snap.path, bytes)?,
-                None => {
-                    if let Err(e) = std::fs::remove_file(&snap.path) {
-                        if e.kind() != std::io::ErrorKind::NotFound {
-                            return Err(e);
-                        }
-                    }
-                }
-            }
-            if !restored.iter().any(|p| p == &snap.path) {
-                restored.push(snap.path);
-            }
-        }
-        Ok(restored)
     }
 
     /// Register work this session is running, under `cancel` — the token the
@@ -533,8 +344,6 @@ impl SessionState {
             running_tasks,
             goal,
             notices,
-            file_snapshots,
-            current_turn,
             read_cache,
             last_read_path,
         } = previous;
@@ -561,14 +370,6 @@ impl SessionState {
             let mut notices = lock(&self.notices);
             let posted_since = std::mem::replace(&mut *notices, unread);
             notices.extend(posted_since);
-        }
-        // Snapshots are keyed by turn number: the counter goes with them, or
-        // the next turns would reuse numbers the registry already holds.
-        *lock(&self.file_snapshots) = std::mem::take(&mut *lock(file_snapshots));
-        let turn = *lock(current_turn);
-        {
-            let mut now = lock(&self.current_turn);
-            *now = (*now).max(turn);
         }
         let earlier_reads = lock(read_cache).clone();
         {
@@ -1215,9 +1016,6 @@ mod tests {
         before.enter_plan_mode();
         before.set_todos(vec![todo("step one")]);
         before.activate_tools(["TodoWrite".to_string()]);
-        before.bump_turn();
-        before.bump_turn();
-        before.snapshot_file(&file, "Write");
         before.record_read(&file);
         before.post_notice(None, "unread");
 
@@ -1233,8 +1031,6 @@ mod tests {
         );
         assert_eq!(after.todos(), vec![todo("step one")]);
         assert!(after.activated_tools().contains("TodoWrite"));
-        assert_eq!(after.current_turn(), 2);
-        assert_eq!(after.file_snapshot_turns(), vec![2]);
         assert_eq!(after.check_read_staleness(&file), None);
         assert!(after.is_consecutive_read(&file));
         assert_eq!(after.take_notices(), vec!["unread".to_string()]);
