@@ -1064,13 +1064,19 @@ fn segment_taken(segment: &str, others: &[&str]) -> String {
 }
 
 /// What a server's tools are offered as: one adapter per tool, named among
-/// the server's others by [`crate::naming::tool_names`].
+/// the server's others by [`crate::naming::tool_names`]. A name the server
+/// lists twice is offered once, as its first listing.
 fn server_adapters(
     client: &McpClientHandle,
     tools: Vec<crate::client::McpToolMeta>,
     cache: &Arc<Mutex<McpOutputCache>>,
     elicitation_cell: &Arc<Mutex<Option<ElicitationCallback>>>,
 ) -> Vec<Arc<dyn Tool>> {
+    let mut seen = std::collections::HashSet::new();
+    let tools: Vec<_> = tools
+        .into_iter()
+        .filter(|t| seen.insert(t.name.clone()))
+        .collect();
     let names =
         crate::naming::tool_names(client.server_name(), tools.iter().map(|t| t.name.as_str()));
     tools
