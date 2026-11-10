@@ -178,6 +178,7 @@ pub struct ChunkAccumulator {
     /// Set once a terminal event has been produced, so a stray trailing chunk
     /// after `finish_reason` cannot emit a second `EndTurn`.
     finished: bool,
+    truncated: bool,
 }
 
 impl ChunkAccumulator {
@@ -291,6 +292,13 @@ impl ChunkAccumulator {
         out
     }
 
+    /// [`Self::finish`] for a stream that was cut off: a tool call still open
+    /// is only a call if what arrived of its arguments is a whole JSON value.
+    pub fn finish_truncated(&mut self) -> Vec<ModelEvent> {
+        self.truncated = true;
+        self.finish()
+    }
+
     /// The provider said why the reply ended.
     pub fn saw_finish_reason(&self) -> bool {
         self.stop_reason.is_some()
@@ -299,7 +307,18 @@ impl ChunkAccumulator {
     fn drain_tool_calls(&mut self) -> Vec<ModelEvent> {
         std::mem::take(&mut self.pending)
             .into_values()
-            .map(|p| crate::tool_use_from_arguments(p.id, p.name, p.arguments))
+            .map(|p| {
+                if self.truncated
+                    && serde_json::from_str::<serde_json::Value>(&p.arguments).is_err()
+                {
+                    return ModelEvent::MalformedToolUse {
+                        id: p.id,
+                        name: p.name,
+                        raw_input: p.arguments,
+                    };
+                }
+                crate::tool_use_from_arguments(p.id, p.name, p.arguments)
+            })
             .collect()
     }
 }
@@ -399,6 +418,10 @@ where
                  taking what arrived as the whole reply"
             );
             yield Ok(ModelEvent::Truncated);
+            for e in acc.finish_truncated() {
+                yield Ok(e);
+            }
+            return;
         }
         for e in acc.finish() {
             yield Ok(e);
@@ -879,6 +902,35 @@ data: [DONE]\n\
         assert!(!truncated(&finished), "{finished:?}");
         let done = events(DONE).await;
         assert!(!truncated(&done), "{done:?}");
+    }
+
+    #[tokio::test]
+    async fn a_cut_stream_turns_an_unfinished_tool_call_into_a_malformed_one() {
+        const CUT_EMPTY: &[u8] = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\"}}]}}]}\n\n";
+        const CUT_PARTIAL: &[u8] = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\"}}]}}]}\n\n";
+        for blob in [CUT_EMPTY, CUT_PARTIAL] {
+            let events: Vec<ModelEvent> =
+                events_from_bytes(chunked(blob, 13), Duration::from_secs(90))
+                    .map(|r| r.expect("no errors in this fixture"))
+                    .collect()
+                    .await;
+            assert!(
+                events.iter().any(|e| matches!(e, ModelEvent::Truncated)),
+                "{events:?}"
+            );
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, ModelEvent::MalformedToolUse { id, .. } if id == "c1")),
+                "{events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, ModelEvent::ToolUse { .. })),
+                "{events:?}"
+            );
+        }
     }
 
     /// An error chunk ends the stream as a failure of its kind; parsed as an
