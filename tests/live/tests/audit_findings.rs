@@ -1122,3 +1122,70 @@ async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_
     run.finish().await;
     Ok(())
 }
+
+/// A turn cut off by `session.close` still ends for every subscriber with a
+/// terminal frame (§5.5): a tab watching it is not left waiting.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "audit: confirmed defect, fix pending"]
+async fn audit2_a_turn_cut_off_by_close_ends_with_a_terminal_frame_for_its_watchers(
+) -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let scratch = tempfile::tempdir()?;
+    let (holding, release) = (
+        scratch.path().join("holding"),
+        scratch.path().join("release"),
+    );
+    let hook = executable(
+        scratch.path(),
+        "hold.sh",
+        &format!(
+            "#!/bin/sh\ncat >/dev/null\ntouch '{holding}'\n\
+             while [ ! -e '{release}' ]; do sleep 0.05; done\necho '{{}}'\n",
+            holding = holding.display(),
+            release = release.display(),
+        ),
+    )?;
+    let mut run = stubbed("close-mid-turn", &stub)
+        .settings(json!({
+            "permission_rules": [{ "tool": "Bash", "action": "allow" }],
+            "hooks_config": { "PreToolUse": [{
+                "type": "command", "command": hook, "timeout": 120_000
+            }] }
+        }))
+        .start()
+        .await?;
+    let session = run.session().await?;
+    let watcher = run.watch(&session, false).await?;
+    stub.script([
+        Reply::calls("b-1", "Bash", json!({ "command": "echo hi" })),
+        Reply::text("done"),
+    ]);
+    let handle = run.spawn_turn(&session, "run it", json!({})).await?;
+    wait_until("the hook holding the call", Duration::from_secs(30), || {
+        holding.exists()
+    })
+    .await?;
+    let turn_id = watcher
+        .wait_for("the tool_use frame", Duration::from_secs(30), |e| {
+            e["kind"] == "tool_use"
+        })
+        .await?["turn_id"]
+        .clone();
+    let closed = run.client.session_close(&session).await?;
+    anyhow::ensure!(closed.error.is_none(), "{closed:?}");
+    std::fs::write(&release, "")?;
+    let initiator = handle.await?;
+    let terminal = watcher
+        .wait_for("a terminal frame", Duration::from_secs(10), |e| {
+            e["kind"] == "turn_complete" || e["kind"] == "error"
+        })
+        .await;
+    assert!(
+        terminal.is_ok(),
+        "the watcher got no turn_complete or error for turn {turn_id}; the initiator got {:?}",
+        initiator.map(|e| e.response)
+    );
+    drop(watcher);
+    run.finish().await;
+    Ok(())
+}
