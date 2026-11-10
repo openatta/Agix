@@ -702,8 +702,13 @@ managed 层管的是权限,不是沙箱:它挡得住模型发起的调用,挡不
 的、`.git` / `.agix` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
 只读调用里够得比"读"更远的也不放行(`Tool::accept_edits_allows`):`WebFetch` / `Ping`
 只放行 `sandbox.allowed_domains` 列出的主机(含子域),URL 本身就能把数据带到主机那里;
-进了会话所在仓库之外的仓库的只读 `git`(`Bash` / `Monitor`)照样询问。读项目外的文件仍然
-放行。
+进了会话所在仓库之外的仓库的只读 `git`(`Bash` / `Monitor`)照样询问。读项目外的文件也与
+`default` 一样询问:能免询问读的范围是 `security::readable_roots`——会话的工作目录、它能写的
+附加目录(`sandbox.additional_directories` 与实例状态目录)和 `sandbox.read_directories`,
+`sandbox.read_anywhere` 时不限。`Read` / `Glob` / `Grep` 按目标路径判,只读的 `Bash` /
+`Monitor` 命令按 `bash::paths` 对路径参数的判断(含 `cd` 之后的相对路径、glob 在磁盘上的
+匹配;`~`、`$VAR`、命令替换展开不了,一律当作项目外)。这些判断与工具自己在 `default` 下
+放行用的是同一个函数,所以这几个工具的读在 `acceptEdits` 下不比 `default` 多放行。
 
 `plan` 拒绝一切非只读工具,唯独离开计划模式的那一个(`ExitPlanMode`,
 `Tool::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外

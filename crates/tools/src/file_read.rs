@@ -40,6 +40,12 @@ pub struct FileReadInput {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FileReadTool;
 
+fn reads_within_roots(input: &Value, ctx: &ToolContext) -> bool {
+    serde_json::from_value::<FileReadInput>(input.clone()).is_ok_and(|parsed| {
+        crate::security::read_allowed(&resolve_path(&parsed.file_path, &ctx.cwd), ctx)
+    })
+}
+
 #[async_trait]
 impl Tool for FileReadTool {
     fn spec(&self) -> ToolSpec {
@@ -113,14 +119,14 @@ impl Tool for FileReadTool {
         }
     }
 
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        if let Ok(parsed) = serde_json::from_value::<FileReadInput>(input.clone()) {
-            let path = resolve_path(&parsed.file_path, &ctx.cwd);
-            if crate::security::read_allowed(&path, ctx) {
-                return PermissionDecision::allow();
-            }
-        }
+    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
+        reads_within_roots(input, ctx)
+    }
 
+    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
+        if reads_within_roots(input, ctx) {
+            return PermissionDecision::allow();
+        }
         PermissionDecision::Ask {
             message: "Read outside the project requires confirmation".into(),
             decision_reason: None,

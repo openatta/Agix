@@ -1311,6 +1311,12 @@ WebAssembly 载体整个移除。
 - **`dontAsk` 会话的子 Agent 也是 `dontAsk`。** agent 类型 frontmatter 的 `permission_mode`
   以前在父会话是 `dontAsk` 时照样生效,写 `bypassPermissions` 的类型能让子 Agent 免规则运行;
   现在与 `plan` 一样取两者中更严的那个,也就是 `dontAsk`。
+- **`acceptEdits` 下读项目外的文件要询问,与 `default` 一致。** 以前 `Read` / `Glob` / `Grep`
+  读项目外、`cat ~/Documents/x` 这类只读 `Bash` / `Monitor` 命令在 `acceptEdits` 下免询问;
+  现在会话工作目录、`sandbox.additional_directories`、`sandbox.read_directories` 之外的读照样
+  询问(无人值守的会话里 `Read` / `Glob` / `Grep` 就是拒绝,`Bash` / `Monitor` 仍按"沙箱完整
+  生效即放行")。`acceptEdits` 下要免询问读的目录,写进
+  `sandbox.read_directories`(或开 `sandbox.read_anywhere`)。
 
 #### 插件
 

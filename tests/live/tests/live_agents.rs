@@ -453,10 +453,9 @@ async fn an_agent_types_allowed_tools_and_max_turns_bound_its_sub_agent() -> any
     Ok(())
 }
 
-/// An agent type's mode can make its sub-agent stricter than the parent,
-/// never freer: under an `acceptEdits` parent, which reads anywhere unasked,
-/// a `default` type is asked about a read outside the project — and its
-/// question waits the session's prompt timeout, not a fixed one.
+/// A `default` agent type under an `acceptEdits` parent is asked about a read
+/// outside the project — and its question waits the session's prompt timeout,
+/// not a fixed one.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_types_permission_mode_governs_what_its_sub_agent_is_asked() -> anyhow::Result<()>
 {

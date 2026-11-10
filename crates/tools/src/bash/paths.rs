@@ -22,6 +22,12 @@ struct Operand {
     glob: bool,
 }
 
+/// Whether a read-only `line` may run without asking: its paths stay under the
+/// readable roots and its git in the session's own repository.
+pub(crate) fn stays_where_the_session_may_read(line: &str, ctx: &ToolContext) -> bool {
+    path_args_stay_within(line, ctx) && git_stays_in_the_sessions_repository(line, ctx)
+}
+
 /// Whether every path-looking argument of every command in `line` resolves
 /// inside the session's cwd or one of its additional directories.
 ///
@@ -32,7 +38,7 @@ struct Operand {
 /// against every directory the line may be in by then. A glob is checked as
 /// what it matches on disk now, so `.*/x` reaching `../x` and `link*/x`
 /// following a symlink out are seen for what they are.
-pub(super) fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
+fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
     if ctx.session.read_anywhere {
         return true;
     }
@@ -148,7 +154,7 @@ pub(super) fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
 /// (`core.fsmonitor`, `diff.external`, `core.sshCommand`…) names programs git
 /// starts on its own; the session's is the user's, one shipped in the project
 /// is whoever wrote the project's.
-pub(crate) fn git_stays_in_the_sessions_repository(line: &str, ctx: &ToolContext) -> bool {
+fn git_stays_in_the_sessions_repository(line: &str, ctx: &ToolContext) -> bool {
     let segments = shell::segments(line);
     let runs_git = |segment: &shell::Segment| {
         invocation::invocations(&segment.source).iter().any(|i| {

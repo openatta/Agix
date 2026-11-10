@@ -2,6 +2,7 @@
 //! is one file of this directory. One file alone:
 //! `cargo test -p daemon --test integration session_lifecycle::`.
 
+mod accept_edits_reads;
 mod assemble_defaults;
 mod bash_read_only_lane;
 mod carrier_invariants;

@@ -603,8 +603,7 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     use base::interface::permission::PermissionOutcome;
     use base::permission::PermissionMode;
     let project = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    std::fs::write(outside.path().join("notes.txt"), "x").unwrap();
+    std::fs::write(project.path().join("notes.txt"), "x").unwrap();
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
     let parent = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
@@ -631,7 +630,9 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
         async move { sub.check(tool, &input, &cwd, "sub").await }
     };
     let write = serde_json::json!({"file_path": project.path().join("a.txt"), "content": "x"});
-    let read_outside = serde_json::json!({"file_path": outside.path().join("notes.txt")});
+    // A read-only `Monitor` command: `acceptEdits` lets it through, `default`
+    // asks.
+    let watch = serde_json::json!({"command": "tail -f notes.txt", "description": "watch"});
 
     sub_session.set_permission_mode(PermissionMode::AcceptEdits);
     assert!(matches!(
@@ -639,7 +640,7 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
         PermissionOutcome::Permit
     ));
     assert!(matches!(
-        check("Read", read_outside.clone()).await,
+        check("Monitor", watch.clone()).await,
         PermissionOutcome::Permit
     ));
 
@@ -652,10 +653,10 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     sub_session.set_permission_mode(PermissionMode::Default);
     assert!(
         matches!(
-            check("Read", read_outside.clone()).await,
+            check("Monitor", watch.clone()).await,
             PermissionOutcome::Deny { .. }
         ),
-        "a default-mode sub-agent is asked about a read outside; with no channel, refused"
+        "a default-mode sub-agent is asked about a Monitor command; with no channel, refused"
     );
 
     sub_session.set_permission_mode(PermissionMode::BypassPermissions);

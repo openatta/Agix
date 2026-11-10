@@ -159,3 +159,98 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
     .await;
     assert!(matches!(scratch, PermissionOutcome::Permit), "{scratch:?}");
 }
+
+async fn accept_edits_allows_reading(ctx: &ToolContext, dir: &Path) -> [bool; 5] {
+    let gate = permissions::gate::PermissionGate::empty();
+    let file = dir.join("notes.txt").display().to_string();
+    let dir = dir.display().to_string();
+    let calls: [(&dyn Tool, serde_json::Value); 5] = [
+        (
+            &tools::file_read::FileReadTool,
+            serde_json::json!({ "file_path": file }),
+        ),
+        (
+            &tools::glob::GlobTool,
+            serde_json::json!({ "pattern": "*", "path": dir }),
+        ),
+        (
+            &tools::grep::GrepTool,
+            serde_json::json!({ "pattern": "x", "path": dir }),
+        ),
+        (
+            &tools::bash::BashTool,
+            serde_json::json!({ "command": format!("cat {file}") }),
+        ),
+        (
+            &tools::monitor::MonitorTool,
+            serde_json::json!({ "command": format!("tail -f {file}"), "description": "watch" }),
+        ),
+    ];
+    let mut out = [false; 5];
+    for (slot, (tool, input)) in out.iter_mut().zip(calls) {
+        let Ok(decision) = gate.check(tool, &input, ctx).await else {
+            panic!("{} refused its input: {input}", tool.name());
+        };
+        assert!(
+            !matches!(decision, base::permission::PermissionDecision::Deny { .. }),
+            "{}: {decision:?}",
+            tool.name()
+        );
+        *slot = matches!(decision, base::permission::PermissionDecision::Allow { .. });
+    }
+    out
+}
+
+#[tokio::test]
+async fn accept_edits_asks_before_reading_outside_the_readable_roots() {
+    let project = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("notes.txt"), "x").unwrap();
+    std::fs::write(elsewhere.path().join("notes.txt"), "x").unwrap();
+    let accept_edits = |state: fn(&mut SessionState, &Path)| {
+        let mut ctx = ctx_in(project.path(), |s| state(s, elsewhere.path()));
+        ctx.permission_mode = base::permission::PermissionMode::AcceptEdits;
+        ctx
+    };
+
+    let plain = accept_edits(|_, _| {});
+    assert_eq!(
+        accept_edits_allows_reading(&plain, project.path()).await,
+        [true; 5]
+    );
+    assert_eq!(
+        accept_edits_allows_reading(&plain, elsewhere.path()).await,
+        [false; 5]
+    );
+
+    let listed = accept_edits(|s, dir| s.read_directories = vec![dir.to_path_buf()]);
+    assert_eq!(
+        accept_edits_allows_reading(&listed, elsewhere.path()).await,
+        [true; 5]
+    );
+
+    let anywhere = accept_edits(|s, _| s.read_anywhere = true);
+    assert_eq!(
+        accept_edits_allows_reading(&anywhere, elsewhere.path()).await,
+        [true; 5]
+    );
+}
+
+#[tokio::test]
+async fn accept_edits_asks_before_a_shell_read_of_the_home_directory() {
+    let project = tempfile::tempdir().unwrap();
+    let mut ctx = ctx_in(project.path(), |_| {});
+    ctx.permission_mode = base::permission::PermissionMode::AcceptEdits;
+    let decision = permissions::gate::PermissionGate::empty()
+        .check(
+            &tools::bash::BashTool,
+            &serde_json::json!({ "command": "cat ~/.zshrc" }),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(decision, base::permission::PermissionDecision::Ask { .. }),
+        "{decision:?}"
+    );
+}

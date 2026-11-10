@@ -885,9 +885,7 @@ async fn an_agent_types_stricter_mode_asks_and_its_question_waits_only_the_sessi
         ".agix/agents/careful.md",
         "---\ndescription: Asks first\npermission_mode: default\n---\nCareful.\n",
     )?;
-    let outside = run.world.root().join("outside");
-    std::fs::create_dir_all(&outside)?;
-    std::fs::write(outside.join("notes.txt"), "OUTSIDE-NOTES-7731\n")?;
+    run.write_file("notes.txt", "NOTES-7731\n")?;
     let session = run.session().await?;
     let watcher = run.watch(&session, false).await?;
     stub.script_when(
@@ -896,7 +894,7 @@ async fn an_agent_types_stricter_mode_asks_and_its_question_waits_only_the_sessi
             Reply::calls(
                 "a1",
                 "Agent",
-                json!({ "prompt": "read it", "description": "reader", "subagent_type": "careful" }),
+                json!({ "prompt": "watch it", "description": "watcher", "subagent_type": "careful" }),
             ),
             Reply::text("done"),
         ],
@@ -904,18 +902,18 @@ async fn an_agent_types_stricter_mode_asks_and_its_question_waits_only_the_sessi
     stub.script([
         Reply::calls(
             "s1",
-            "Read",
-            json!({ "file_path": outside.join("notes.txt").to_string_lossy() }),
+            "Monitor",
+            json!({ "command": "tail -f notes.txt", "description": "watch the notes" }),
         ),
-        Reply::text("could not read it"),
+        Reply::text("could not watch it"),
     ]);
     let started = std::time::Instant::now();
     let events = run.turn(&session, "PARENT-MARK delegate").await?;
     assert!(events.turn_complete);
     assert_eq!(
         prompted_tools(&watcher),
-        ["Read"],
-        "an acceptEdits parent reads anywhere unasked; its `default` sub-agent asks"
+        ["Monitor"],
+        "an acceptEdits parent runs a read-only Monitor unasked; its `default` sub-agent asks"
     );
     assert!(
         started.elapsed() < Duration::from_secs(60),

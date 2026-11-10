@@ -65,6 +65,13 @@ pub struct GrepInput {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GrepTool;
 
+fn searches_within_roots(input: &Value, ctx: &ToolContext) -> bool {
+    match serde_json::from_value::<GrepInput>(input.clone()).map(|i| i.path) {
+        Ok(Some(p)) => crate::security::read_allowed(&resolve_path(&p, &ctx.cwd), ctx),
+        _ => true,
+    }
+}
+
 #[async_trait]
 impl Tool for GrepTool {
     fn spec(&self) -> ToolSpec {
@@ -116,18 +123,17 @@ impl Tool for GrepTool {
         }
     }
 
+    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
+        searches_within_roots(input, ctx)
+    }
+
     async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        let path = serde_json::from_value::<GrepInput>(input.clone())
-            .ok()
-            .and_then(|i| i.path);
-        match path {
-            Some(p) if !crate::security::read_allowed(&resolve_path(&p, &ctx.cwd), ctx) => {
-                PermissionDecision::Ask {
-                    message: "Grep outside the project requires confirmation".into(),
-                    decision_reason: None,
-                }
-            }
-            _ => PermissionDecision::allow(),
+        if searches_within_roots(input, ctx) {
+            return PermissionDecision::allow();
+        }
+        PermissionDecision::Ask {
+            message: "Grep outside the project requires confirmation".into(),
+            decision_reason: None,
         }
     }
 

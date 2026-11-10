@@ -99,7 +99,7 @@ impl Tool for MonitorTool {
     fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
         serde_json::from_value::<MonitorInput>(input.clone()).is_ok_and(|p| {
             crate::bash::classify::is_read_only(&p.command)
-                && crate::bash::git_stays_in_the_sessions_repository(&p.command, ctx)
+                && crate::bash::stays_where_the_session_may_read(&p.command, ctx)
         })
     }
 
