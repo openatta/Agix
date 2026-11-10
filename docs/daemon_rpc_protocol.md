@@ -27,6 +27,11 @@ daemon 的真实响应逐字段比对;`daemon.doctor` 的例子由 `crates/assem
 `documented_shape_tests` 比对。文档里写了的方法必须可调用、可调用的方法必须写进
 §6,由 `daemon/tests/protocol_doc_matches_dispatch.rs` 保证。
 
+带 `// → params` 的请求示例会被 `daemon/tests/protocol_doc_wire.rs` 原样(只把 `"…"` 的
+id 和路径换成真的)发给一个真实 daemon,不得被拒为 `INVALID_PARAMS` /
+`METHOD_NOT_FOUND`;§7、§8 表里每个 `kind` 的字段集合,以及 §9.1 的 `error.data`,也由它
+跟真实发出的帧、真实返回的错误比对。
+
 ---
 
 ## 1. 传输与编码
@@ -360,7 +365,7 @@ glob 清单),项目自己写的忽略。三态:
 | `plan` | 只允许只读工具 |
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
-| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问(项目外的写入照样询问;`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机) |
+| `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问。项目外的写入照样询问,**项目外的读(`Read` / `Grep` / `Glob`)照样放行**(`.ssh` 一类的受保护路径仍被拒)。只读的 `Bash` / `Monitor` 命令只要跑 `git`,就还要求每一次 `git` 找到的仓库就是会话目录自己所在的那个(不能是裸仓库;`cd` 进项目自带的嵌套 `.git`、或 `cd` 到去向不明的目录再跑 `git`,都要询问),因为仓库配置(`core.fsmonitor`、`diff.external` 一类)会让 git 自己去启动程序,会话自己的仓库是用户的,项目里带来的是别人写的。`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机 |
 | `bypassPermissions` | 不询问、不看任何规则 —— 规则里的 `deny`、`.ssh` / `.aws` / `.gnupg` 与 `/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
 
 `auto`、`yolo` 是 `bypassPermissions` 的另外两种写法:在 settings.json、`options.permission_mode`、
@@ -1801,10 +1806,9 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 不等它结束。
 
 ```jsonc
-// → params
-{ "session_id": "…", "task_id": "…",
-  "tail_bytes": 8192,       // 可选:要最后多少字节,默认 8 KiB,最多 256 KiB
-  "from_byte": 0 }          // 可选,与 tail_bytes 二选一:从这个偏移读到末尾
+// → params:二选一,同时给 INVALID_PARAMS
+{ "session_id": "…", "task_id": "…", "tail_bytes": 8192 }   // 要最后多少字节,默认 8 KiB,最多 256 KiB
+{ "session_id": "…", "task_id": "…", "from_byte": 0 }       // 从这个偏移读到末尾
 // ← result
 { "output": "…",            // tail_bytes:最后这么多字节(在字符边界上截);from_byte:从那里到末尾
   "truncated": false,       // tail_bytes:前面还有没给的,或者早已丢掉的;from_byte:dropped > 0
@@ -2180,11 +2184,13 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 发起对一个 MCP server 的 OAuth 登录(`mcp_auth.md` §3)。
 
 ```jsonc
-// → params
+// → params:两种 redirect 各一例
 { "server": "docs",
   "redirect": "loopback",          // 可省,默认 loopback;或 "external"
-  "redirect_uri": "https://…",     // 只给 external,且必须给:https、回环上的 http、带 "." 的私有 scheme
   "scopes": [ "files:read" ] }     // 可省;省略按 挑战 > 配置的 oauth.scopes > 资源元数据 取
+{ "server": "docs",
+  "redirect": "external",
+  "redirect_uri": "https://…" }    // 只给 external,且必须给:https、回环上的 http、带 "." 的私有 scheme
 ```
 
 ```jsonc
@@ -2726,7 +2732,7 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 
 ### 9.1 `error.data` 的形状
 
-**只有三个错误码带结构化 `data`**,客户端可以依赖:
+**只有四个错误码带结构化 `data`**,客户端可以依赖:
 
 ```jsonc
 // SESSION_BUSY
@@ -2739,6 +2745,9 @@ transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
 
 // SIDECHAIN_TERMINAL
 { "session_id": "S1c1", "parent_session_id": "S1", "final_state": "completed" }  // completed | failed
+
+// METHOD_NOT_FOUND
+{ "module": "mcp" }   // 只在方法所属的模块没有编入这个构建时;未知方法没有 data
 ```
 
 其余错误码**没有 `data`**,信息全在 `message` 里 —— 包括
