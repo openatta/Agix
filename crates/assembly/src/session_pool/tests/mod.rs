@@ -3,6 +3,7 @@
 use super::*;
 
 mod auto_name;
+mod event_golden;
 mod eviction;
 mod goal_record;
 mod mcp_for_project;

@@ -260,227 +260,61 @@ impl SessionPool {
                 self.broadcast_to_session(&sid, &frame).await;
                 continue;
             }
-            match event {
-                Some(AgentEvent::SystemInit { .. }) => continue,
-                Some(AgentEvent::TurnStart { .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"turn_start"}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::StepStart { step, .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"step_start","step":step}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::StepEnd {
-                    step,
-                    stop_reason,
-                    usage,
-                    tool_calls,
-                    seq,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"step_end","step":step,"stop_reason":stop_reason,
-                            "tool_calls":tool_calls,"seq":seq,
-                            "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
-                        }),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::TextDelta { text, .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"text_delta","text":text}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::ThinkingDelta { text, .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"thinking_delta","text":text}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::ToolUseStart { id: tid, name, .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"tool_use_start","id":tid,"name":name}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::ToolArgsDelta {
-                    id: tid,
-                    partial_json,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"tool_args_delta","id":tid,"partial_json":partial_json}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::ToolUse {
-                    id: tid,
-                    name,
-                    input,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"tool_use","id":tid,"name":name,"input":input}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::ToolResult {
-                    id: tid,
-                    name,
-                    content,
-                    is_error,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"tool_result","id":tid,"name":name,"content":content,"is_error":is_error}),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                // Context was compacted mid-turn. The only moment this is
-                // worth saying: the user sees the consequence (the model
-                // stopped remembering something) and has no way back to the
-                // cause once the turn is over.
-                //
-                // Destructured exhaustively on purpose — a field added to
-                // `CompactAction` must fail this build rather than quietly
-                // stop reaching the client, which is how `Usage`'s two cache
-                // fields missed `turn_complete` for a release.
-                Some(AgentEvent::CompactAction {
-                    strategy,
-                    messages_before,
-                    messages_after,
-                    turn_id: _,
-                    dropped_rounds,
-                    dropped_messages,
-                    estimated_tokens_saved,
-                    tokens_before,
-                    tokens_after,
-                }) => {
-                    let mut event = serde_json::json!({
-                        "kind":"compact","strategy":strategy,
-                        "messages_before":messages_before,"messages_after":messages_after,
-                        "tokens_before":tokens_before,"tokens_after":tokens_after
-                    });
-                    let map = event.as_object_mut().expect("json! built an object");
-                    for (key, value) in [
-                        ("dropped_rounds", dropped_rounds),
-                        ("dropped_messages", dropped_messages),
-                        ("estimated_tokens_saved", estimated_tokens_saved),
-                    ] {
-                        if let Some(v) = value {
-                            map.insert(key.into(), serde_json::json!(v));
-                        }
+            let Some(event) = event else {
+                // The engine is gone. Dropping the entry is what lets the
+                // next call on this id resume it from its transcript instead
+                // of sending into a closed channel.
+                let f = StreamFrame::event(
+                    &sid,
+                    &turn_id,
+                    serde_json::json!({
+                        "kind":"error","code":"engine_stopped",
+                        "message":"engine stopped before the turn completed"
+                    }),
+                );
+                self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
+                    .await;
+                let dead = {
+                    let mut sessions = self.sessions.lock().await;
+                    let ours = sessions
+                        .get(&sid)
+                        .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex));
+                    if ours {
+                        sessions.remove(&sid)
+                    } else {
+                        None
                     }
-                    let f = StreamFrame::event(&sid, &turn_id, event);
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::UserMessageDelivered {
-                    message_id,
-                    content,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
+                };
+                if let Some(dead) = dead {
+                    self.evict(&sid, &dead);
+                    dead.idle.notify_waiters();
+                    self.emit_session_event(
+                        "session_closed",
                         &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"user_message_delivered","message_id":message_id,
-                            "content":content
-                        }),
+                        serde_json::json!({"reason": "engine_stopped"}),
                     );
-                    self.broadcast_to_session(&sid, &f).await;
                 }
-                Some(AgentEvent::UserMessageRefused {
-                    message_id,
-                    content,
-                    message,
-                    ..
-                }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"user_message_refused","message_id":message_id,
-                            "content":content,"message":message
-                        }),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::UserMessagesReturned { messages, .. }) => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"user_messages_returned","messages":messages
-                        }),
-                    );
-                    self.broadcast_to_session(&sid, &f).await;
-                }
-                Some(AgentEvent::TurnComplete {
+                warn!(%sid, "engine stopped before the turn completed");
+                return Err(PoolError::EngineStopped);
+            };
+            let Some(body) = turn_event_body(&event) else {
+                continue;
+            };
+            let f = StreamFrame::event(&sid, &turn_id, body);
+            match event {
+                AgentEvent::TurnComplete {
                     stop_reason,
                     api_calls: ac,
-                    tool_calls,
-                    usage,
-                    message,
-                    last_call_usage,
                     context,
-                    structured_output,
-                    seq,
-                    truncated,
                     ..
-                }) => {
+                } => {
                     api_calls = ac;
-                    ended_with = stop_reason.clone();
+                    ended_with = stop_reason;
                     if context.is_some() {
                         if let Some(live) = self.sessions.lock().await.get_mut(&sid) {
                             live.context = context;
                         }
                     }
-                    let mut event = serde_json::json!({
-                        "kind":"turn_complete","stop_reason":stop_reason,"api_calls":api_calls,
-                        "tool_calls":tool_calls,"seq":seq,
-                        "last_call_usage":serde_json::to_value(last_call_usage).unwrap_or_else(|_| serde_json::json!({})),
-                        // Serialized whole rather than field by field: a
-                        // hand-written projection is invisible to the
-                        // compiler when `Usage` grows.
-                        "usage":serde_json::to_value(usage).unwrap_or_else(|_| serde_json::json!({}))
-                    });
-                    if let Some(message) = message {
-                        event["message"] = serde_json::json!(message);
-                    }
-                    if let Some(context) = context {
-                        event["context"] = serde_json::json!(context);
-                    }
-                    if let Some(output) = structured_output {
-                        event["structured_output"] = output;
-                    }
-                    if truncated {
-                        event["truncated"] = serde_json::json!(true);
-                    }
-                    let f = StreamFrame::event(&sid, &turn_id, event);
                     if !self
                         .broadcast_terminal(&sid, &event_rx_mutex, &f, None)
                         .await
@@ -492,58 +326,16 @@ impl SessionPool {
                     }
                     break;
                 }
-                Some(AgentEvent::Error { code, message, .. }) => {
+                AgentEvent::Error { code, message, .. } => {
                     // The caller learns this from its error response; every
                     // other watcher would otherwise see a turn that never ends.
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({"kind":"error","code":code,"message":message}),
-                    );
                     self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
                         .await;
                     self.release_turn_slot(&sid, &event_rx_mutex, event_rx, &turn_id)
                         .await;
                     return Err(PoolError::Engine(EngineFailure { code, message }));
                 }
-                // The engine is gone. Dropping the entry is what lets the
-                // next call on this id resume it from its transcript instead
-                // of sending into a closed channel.
-                None => {
-                    let f = StreamFrame::event(
-                        &sid,
-                        &turn_id,
-                        serde_json::json!({
-                            "kind":"error","code":"engine_stopped",
-                            "message":"engine stopped before the turn completed"
-                        }),
-                    );
-                    self.broadcast_terminal(&sid, &event_rx_mutex, &f, Some(client.id()))
-                        .await;
-                    let dead = {
-                        let mut sessions = self.sessions.lock().await;
-                        let ours = sessions
-                            .get(&sid)
-                            .is_some_and(|live| Arc::ptr_eq(&live.event_rx, &event_rx_mutex));
-                        if ours {
-                            sessions.remove(&sid)
-                        } else {
-                            None
-                        }
-                    };
-                    if let Some(dead) = dead {
-                        self.evict(&sid, &dead);
-                        dead.idle.notify_waiters();
-                        self.emit_session_event(
-                            "session_closed",
-                            &sid,
-                            serde_json::json!({"reason": "engine_stopped"}),
-                        );
-                    }
-                    warn!(%sid, "engine stopped before the turn completed");
-                    return Err(PoolError::EngineStopped);
-                }
-                _ => continue,
+                _ => self.broadcast_to_session(&sid, &f).await,
             }
         }
 

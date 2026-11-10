@@ -1,0 +1,1939 @@
+{
+  "agent": [
+    {
+      "between_turns": null,
+      "case": "text_delta",
+      "event": {
+        "kind": "text_delta",
+        "text": "hello",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "text_delta",
+            "text": "hello"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "thinking_delta",
+      "event": {
+        "kind": "thinking_delta",
+        "text": "hmm",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "thinking_delta",
+            "text": "hmm"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "tool_use_start",
+      "event": {
+        "id": "toolu_1",
+        "kind": "tool_use_start",
+        "name": "Bash",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "id": "toolu_1",
+            "kind": "tool_use_start",
+            "name": "Bash"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "tool_args_delta",
+      "event": {
+        "id": "toolu_1",
+        "kind": "tool_args_delta",
+        "partial_json": "{\"comm",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "id": "toolu_1",
+            "kind": "tool_args_delta",
+            "partial_json": "{\"comm"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "tool_use",
+      "event": {
+        "id": "toolu_1",
+        "input": {
+          "command": "ls"
+        },
+        "kind": "tool_use",
+        "name": "Bash",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "id": "toolu_1",
+            "input": {
+              "command": "ls"
+            },
+            "kind": "tool_use",
+            "name": "Bash"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped": 3,
+            "kind": "tool_progress",
+            "message": "step 2",
+            "name": "Bash",
+            "progress": 2,
+            "tool_use_id": "toolu_1",
+            "total": 10
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "tool_progress",
+      "event": {
+        "dropped": 3,
+        "kind": "tool_progress",
+        "message": "step 2",
+        "name": "Bash",
+        "progress": 2.0,
+        "tool_use_id": "toolu_1",
+        "total": 10.0,
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped": 3,
+            "kind": "tool_progress",
+            "message": "step 2",
+            "name": "Bash",
+            "progress": 2,
+            "tool_use_id": "toolu_1",
+            "total": 10
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped": 0,
+            "kind": "tool_progress",
+            "message": "a quarter",
+            "name": "Bash",
+            "progress": 0.25,
+            "tool_use_id": "toolu_1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "tool_progress_fraction",
+      "event": {
+        "dropped": 0,
+        "kind": "tool_progress",
+        "message": "a quarter",
+        "name": "Bash",
+        "progress": 0.25,
+        "tool_use_id": "toolu_1",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped": 0,
+            "kind": "tool_progress",
+            "message": "a quarter",
+            "name": "Bash",
+            "progress": 0.25,
+            "tool_use_id": "toolu_1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped": 0,
+            "kind": "tool_progress",
+            "message": "working",
+            "name": "Bash",
+            "tool_use_id": "toolu_1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "tool_progress_bare",
+      "event": {
+        "dropped": 0,
+        "kind": "tool_progress",
+        "message": "working",
+        "name": "Bash",
+        "tool_use_id": "toolu_1",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped": 0,
+            "kind": "tool_progress",
+            "message": "working",
+            "name": "Bash",
+            "tool_use_id": "toolu_1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "tool_result",
+      "event": {
+        "content": "a\nb",
+        "id": "toolu_1",
+        "is_error": false,
+        "kind": "tool_result",
+        "name": "Bash",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "content": "a\nb",
+            "id": "toolu_1",
+            "is_error": false,
+            "kind": "tool_result",
+            "name": "Bash"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "tool_result_unflagged",
+      "event": {
+        "content": "a",
+        "id": "toolu_1",
+        "is_error": null,
+        "kind": "tool_result",
+        "name": "Bash",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "content": "a",
+            "id": "toolu_1",
+            "is_error": null,
+            "kind": "tool_result",
+            "name": "Bash"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt",
+            "message": "run ls?",
+            "paths": [
+              "/tmp/x"
+            ],
+            "prompt_id": "p1",
+            "prompt_type": "permission",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "permission_prompt",
+      "event": {
+        "kind": "permission_prompt",
+        "message": "run ls?",
+        "paths": [
+          "/tmp/x"
+        ],
+        "prompt_id": "p1",
+        "task_id": "a1",
+        "tool_name": "Bash",
+        "tool_use_id": "toolu_1",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt",
+            "message": "run ls?",
+            "paths": [
+              "/tmp/x"
+            ],
+            "prompt_id": "p1",
+            "prompt_type": "permission",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt",
+            "message": "write?",
+            "paths": [],
+            "prompt_id": "p2",
+            "prompt_type": "permission",
+            "tool_name": "Write"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "permission_prompt_bare",
+      "event": {
+        "kind": "permission_prompt",
+        "message": "write?",
+        "paths": [],
+        "prompt_id": "p2",
+        "tool_name": "Write",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt",
+            "message": "write?",
+            "paths": [],
+            "prompt_id": "p2",
+            "prompt_type": "permission",
+            "tool_name": "Write"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "header": "Pick",
+            "kind": "prompt",
+            "options": [
+              {
+                "key": "a",
+                "label": "A"
+              }
+            ],
+            "prompt_id": "toolu_q",
+            "prompt_type": "question",
+            "question": "which?",
+            "tool_use_id": "toolu_q"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "question_prompt",
+      "event": {
+        "header": "Pick",
+        "kind": "question_prompt",
+        "options": [
+          {
+            "key": "a",
+            "label": "A"
+          }
+        ],
+        "prompt_id": "toolu_q",
+        "question": "which?",
+        "task_id": "a1",
+        "tool_use_id": "toolu_q",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "header": "Pick",
+            "kind": "prompt",
+            "options": [
+              {
+                "key": "a",
+                "label": "A"
+              }
+            ],
+            "prompt_id": "toolu_q",
+            "prompt_type": "question",
+            "question": "which?",
+            "tool_use_id": "toolu_q"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "header": null,
+            "kind": "prompt",
+            "options": [],
+            "prompt_id": "q2",
+            "prompt_type": "question",
+            "question": "why?",
+            "tool_use_id": null
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "question_prompt_bare",
+      "event": {
+        "kind": "question_prompt",
+        "prompt_id": "q2",
+        "question": "why?",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "header": null,
+            "kind": "prompt",
+            "options": [],
+            "prompt_id": "q2",
+            "prompt_type": "question",
+            "question": "why?",
+            "tool_use_id": null
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "turn_start",
+      "event": {
+        "kind": "turn_start",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "turn_start"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "step_start",
+      "event": {
+        "kind": "step_start",
+        "step": 0,
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "step_start",
+            "step": 0
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "step_end",
+      "event": {
+        "kind": "step_end",
+        "seq": 4,
+        "step": 0,
+        "stop_reason": "tool_use",
+        "tool_calls": 1,
+        "turn_id": "inner",
+        "usage": {
+          "cache_creation_input_tokens": 2,
+          "cache_read_input_tokens": 1,
+          "input_tokens": 10,
+          "output_tokens": 5
+        }
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "step_end",
+            "seq": 4,
+            "step": 0,
+            "stop_reason": "tool_use",
+            "tool_calls": 1,
+            "usage": {
+              "cache_creation_input_tokens": 2,
+              "cache_read_input_tokens": 1,
+              "input_tokens": 10,
+              "output_tokens": 5
+            }
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "turn_complete",
+      "event": {
+        "api_calls": 2,
+        "context": {
+          "compact_threshold": 800,
+          "tokens": 100,
+          "window": 1000
+        },
+        "kind": "turn_complete",
+        "last_call_usage": {
+          "cache_creation_input_tokens": 2,
+          "cache_read_input_tokens": 1,
+          "input_tokens": 10,
+          "output_tokens": 5
+        },
+        "message": "stopped by hook",
+        "seq": 6,
+        "stop_reason": "end_turn",
+        "structured_output": {
+          "ok": true
+        },
+        "tool_calls": 1,
+        "truncated": true,
+        "turn_id": "inner",
+        "usage": {
+          "cache_creation_input_tokens": 2,
+          "cache_read_input_tokens": 1,
+          "input_tokens": 10,
+          "output_tokens": 5
+        }
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "api_calls": 2,
+            "context": {
+              "compact_threshold": 800,
+              "tokens": 100,
+              "window": 1000
+            },
+            "kind": "turn_complete",
+            "last_call_usage": {
+              "cache_creation_input_tokens": 2,
+              "cache_read_input_tokens": 1,
+              "input_tokens": 10,
+              "output_tokens": 5
+            },
+            "message": "stopped by hook",
+            "seq": 6,
+            "stop_reason": "end_turn",
+            "structured_output": {
+              "ok": true
+            },
+            "tool_calls": 1,
+            "truncated": true,
+            "usage": {
+              "cache_creation_input_tokens": 2,
+              "cache_read_input_tokens": 1,
+              "input_tokens": 10,
+              "output_tokens": 5
+            }
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "turn_complete_bare",
+      "event": {
+        "api_calls": 1,
+        "kind": "turn_complete",
+        "seq": 2,
+        "stop_reason": "end_turn",
+        "tool_calls": 0,
+        "turn_id": "inner",
+        "usage": {
+          "cache_creation_input_tokens": 2,
+          "cache_read_input_tokens": 1,
+          "input_tokens": 10,
+          "output_tokens": 5
+        }
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "api_calls": 1,
+            "kind": "turn_complete",
+            "last_call_usage": {
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0,
+              "input_tokens": 0,
+              "output_tokens": 0
+            },
+            "seq": 2,
+            "stop_reason": "end_turn",
+            "tool_calls": 0,
+            "usage": {
+              "cache_creation_input_tokens": 2,
+              "cache_read_input_tokens": 1,
+              "input_tokens": 10,
+              "output_tokens": 5
+            }
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "user_message_delivered",
+      "event": {
+        "content": "also this",
+        "kind": "user_message_delivered",
+        "message_id": "m1",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "content": "also this",
+            "kind": "user_message_delivered",
+            "message_id": "m1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "user_message_refused",
+      "event": {
+        "content": "no",
+        "kind": "user_message_refused",
+        "message": "not now",
+        "message_id": "m1",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "content": "no",
+            "kind": "user_message_refused",
+            "message": "not now",
+            "message_id": "m1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "user_message_refused_bare",
+      "event": {
+        "content": "no",
+        "kind": "user_message_refused",
+        "message_id": "m1",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "content": "no",
+            "kind": "user_message_refused",
+            "message": null,
+            "message_id": "m1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "user_messages_returned",
+      "event": {
+        "kind": "user_messages_returned",
+        "messages": [
+          {
+            "content": "late",
+            "message_id": "m1"
+          }
+        ],
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "user_messages_returned",
+            "messages": [
+              {
+                "content": "late",
+                "message_id": "m1"
+              }
+            ]
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "system_init",
+      "event": {
+        "kind": "system_init",
+        "mcp_servers": [],
+        "scene": "code",
+        "tools": [
+          {
+            "description": "run",
+            "name": "Bash"
+          }
+        ]
+      },
+      "in_turn": null
+    },
+    {
+      "between_turns": null,
+      "case": "system",
+      "event": {
+        "kind": "system",
+        "message": "note"
+      },
+      "in_turn": null
+    },
+    {
+      "between_turns": null,
+      "case": "compact_action",
+      "event": {
+        "dropped_messages": 28,
+        "dropped_rounds": 3,
+        "estimated_tokens_saved": 9000,
+        "kind": "compact_action",
+        "messages_after": 12,
+        "messages_before": 40,
+        "strategy": "Snip",
+        "tokens_after": 3000,
+        "tokens_before": 12000,
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "dropped_messages": 28,
+            "dropped_rounds": 3,
+            "estimated_tokens_saved": 9000,
+            "kind": "compact",
+            "messages_after": 12,
+            "messages_before": 40,
+            "strategy": "Snip",
+            "tokens_after": 3000,
+            "tokens_before": 12000
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "compact_action_bare",
+      "event": {
+        "dropped_messages": null,
+        "dropped_rounds": null,
+        "estimated_tokens_saved": null,
+        "kind": "compact_action",
+        "messages_after": 2,
+        "messages_before": 40,
+        "strategy": "Summary",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "compact",
+            "messages_after": 2,
+            "messages_before": 40,
+            "strategy": "Summary",
+            "tokens_after": 0,
+            "tokens_before": 0
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "session_changed",
+      "event": {
+        "kind": "session_changed",
+        "session_id": "s2"
+      },
+      "in_turn": null
+    },
+    {
+      "between_turns": null,
+      "case": "session_persisted",
+      "event": {
+        "kind": "session_persisted",
+        "session_id": "s1"
+      },
+      "in_turn": null
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "added": [
+              "deploy"
+            ],
+            "kind": "skills_changed",
+            "removed": [
+              "old"
+            ]
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "skills_changed",
+      "event": {
+        "added": [
+          "deploy"
+        ],
+        "kind": "skills_changed",
+        "removed": [
+          "old"
+        ],
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "added": [
+              "deploy"
+            ],
+            "kind": "skills_changed",
+            "removed": [
+              "old"
+            ]
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "notification",
+            "message": "deploy ready",
+            "status": "proactive"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "notification",
+      "event": {
+        "kind": "notification",
+        "message": "deploy ready",
+        "status": "proactive",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "notification",
+            "message": "deploy ready",
+            "status": "proactive"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "notification",
+            "message": "look",
+            "status": null
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "notification_bare",
+      "event": {
+        "kind": "notification",
+        "message": "look",
+        "status": null,
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "notification",
+            "message": "look",
+            "status": null
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "agent_spawned",
+      "event": {
+        "agent_id": "a1",
+        "kind": "agent_spawned",
+        "parent_turn": 2,
+        "turn_id": "inner"
+      },
+      "in_turn": null
+    },
+    {
+      "between_turns": null,
+      "case": "agent_completed",
+      "event": {
+        "agent_id": "a1",
+        "kind": "agent_completed",
+        "outcome": "done",
+        "turn_id": "inner"
+      },
+      "in_turn": null
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "failed": [
+              "r2"
+            ],
+            "kind": "team_progress",
+            "members": [
+              "r1",
+              "r2"
+            ],
+            "stage": "read",
+            "stage_count": 2,
+            "stage_index": 0,
+            "status": "completed",
+            "team": "review",
+            "team_id": "tm1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "team_progress",
+      "event": {
+        "failed": [
+          "r2"
+        ],
+        "kind": "team_progress",
+        "members": [
+          "r1",
+          "r2"
+        ],
+        "stage": "read",
+        "stage_count": 2,
+        "stage_index": 0,
+        "status": "completed",
+        "team": "review",
+        "team_id": "tm1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "failed": [
+              "r2"
+            ],
+            "kind": "team_progress",
+            "members": [
+              "r1",
+              "r2"
+            ],
+            "stage": "read",
+            "stage_count": 2,
+            "stage_index": 0,
+            "status": "completed",
+            "team": "review",
+            "team_id": "tm1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": null,
+      "case": "error",
+      "event": {
+        "code": "overloaded",
+        "kind": "error",
+        "message": "try later",
+        "turn_id": "inner"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "code": "overloaded",
+            "kind": "error",
+            "message": "try later"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "kind": "text_delta",
+              "text": "hello",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_text_delta",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "kind": "text_delta",
+          "text": "hello",
+          "turn_id": "inner"
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "kind": "text_delta",
+              "text": "hello",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "dropped": 1,
+              "kind": "tool_progress",
+              "message": "m",
+              "name": "Read",
+              "progress": 42,
+              "tool_use_id": "toolu_in",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_tool_progress",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "dropped": 1,
+          "kind": "tool_progress",
+          "message": "m",
+          "name": "Read",
+          "progress": 42.0,
+          "tool_use_id": "toolu_in",
+          "turn_id": "inner"
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "dropped": 1,
+              "kind": "tool_progress",
+              "message": "m",
+              "name": "Read",
+              "progress": 42,
+              "tool_use_id": "toolu_in",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "kind": "permission_prompt",
+              "message": "ok?",
+              "paths": [],
+              "prompt_id": "p3",
+              "tool_name": "Bash",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_permission_prompt",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "kind": "permission_prompt",
+          "message": "ok?",
+          "paths": [],
+          "prompt_id": "p3",
+          "tool_name": "Bash",
+          "turn_id": "inner"
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "kind": "permission_prompt",
+              "message": "ok?",
+              "paths": [],
+              "prompt_id": "p3",
+              "tool_name": "Bash",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "dropped_messages": 6,
+              "dropped_rounds": 1,
+              "estimated_tokens_saved": null,
+              "kind": "compact_action",
+              "messages_after": 3,
+              "messages_before": 9,
+              "strategy": "Snip",
+              "tokens_after": 0,
+              "tokens_before": 0,
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_compact_action",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "dropped_messages": 6,
+          "dropped_rounds": 1,
+          "estimated_tokens_saved": null,
+          "kind": "compact_action",
+          "messages_after": 3,
+          "messages_before": 9,
+          "strategy": "Snip",
+          "turn_id": "inner"
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "dropped_messages": 6,
+              "dropped_rounds": 1,
+              "estimated_tokens_saved": null,
+              "kind": "compact_action",
+              "messages_after": 3,
+              "messages_before": 9,
+              "strategy": "Snip",
+              "tokens_after": 0,
+              "tokens_before": 0,
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "kind": "system_init",
+              "mcp_servers": [],
+              "scene": "code",
+              "tools": []
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_system_init",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "kind": "system_init",
+          "mcp_servers": [],
+          "scene": "code",
+          "tools": []
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "kind": "system_init",
+              "mcp_servers": [],
+              "scene": "code",
+              "tools": []
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "api_calls": 1,
+              "kind": "turn_complete",
+              "last_call_usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0
+              },
+              "seq": 2,
+              "stop_reason": "end_turn",
+              "tool_calls": 0,
+              "turn_id": "inner",
+              "usage": {
+                "cache_creation_input_tokens": 2,
+                "cache_read_input_tokens": 1,
+                "input_tokens": 10,
+                "output_tokens": 5
+              }
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_turn_complete",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "api_calls": 1,
+          "kind": "turn_complete",
+          "seq": 2,
+          "stop_reason": "end_turn",
+          "tool_calls": 0,
+          "turn_id": "inner",
+          "usage": {
+            "cache_creation_input_tokens": 2,
+            "cache_read_input_tokens": 1,
+            "input_tokens": 10,
+            "output_tokens": 5
+          }
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "api_calls": 1,
+              "kind": "turn_complete",
+              "last_call_usage": {
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0
+              },
+              "seq": 2,
+              "stop_reason": "end_turn",
+              "tool_calls": 0,
+              "turn_id": "inner",
+              "usage": {
+                "cache_creation_input_tokens": 2,
+                "cache_read_input_tokens": 1,
+                "input_tokens": 10,
+                "output_tokens": 5
+              }
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "agent_label": "explore#1a2b3c4d",
+              "agent_session_id": "child",
+              "agent_type": "explore",
+              "event": {
+                "kind": "text_delta",
+                "text": "deep",
+                "turn_id": "inner"
+              },
+              "kind": "subagent_progress",
+              "parent_session_id": "s1",
+              "parent_tool_use_id": "toolu_agent",
+              "parent_turn": 2,
+              "task_id": "a1"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_nested",
+      "event": {
+        "agent_label": "explore#1a2b3c4d",
+        "agent_session_id": "child",
+        "agent_type": "explore",
+        "event": {
+          "agent_label": "explore#1a2b3c4d",
+          "agent_session_id": "child",
+          "agent_type": "explore",
+          "event": {
+            "kind": "text_delta",
+            "text": "deep",
+            "turn_id": "inner"
+          },
+          "kind": "subagent_progress",
+          "parent_session_id": "s1",
+          "parent_tool_use_id": "toolu_agent",
+          "parent_turn": 2,
+          "task_id": "a1"
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "s1",
+        "parent_tool_use_id": "toolu_agent",
+        "parent_turn": 2,
+        "task_id": "a1"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "explore#1a2b3c4d",
+            "agent_session_id": "child",
+            "agent_type": "explore",
+            "event": {
+              "agent_label": "explore#1a2b3c4d",
+              "agent_session_id": "child",
+              "agent_type": "explore",
+              "event": {
+                "kind": "text_delta",
+                "text": "deep",
+                "turn_id": "inner"
+              },
+              "kind": "subagent_progress",
+              "parent_session_id": "s1",
+              "parent_tool_use_id": "toolu_agent",
+              "parent_turn": 2,
+              "task_id": "a1"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": "toolu_agent",
+            "parent_turn": 2,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "general#00",
+            "agent_session_id": "child",
+            "agent_type": null,
+            "event": {
+              "kind": "text_delta",
+              "text": "x",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": null,
+            "parent_turn": 0,
+            "task_id": null
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "subagent_bare",
+      "event": {
+        "agent_label": "general#00",
+        "agent_session_id": "child",
+        "agent_type": null,
+        "event": {
+          "kind": "text_delta",
+          "text": "x",
+          "turn_id": "inner"
+        },
+        "kind": "subagent_progress",
+        "parent_session_id": "",
+        "parent_turn": 0
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "agent_label": "general#00",
+            "agent_session_id": "child",
+            "agent_type": null,
+            "event": {
+              "kind": "text_delta",
+              "text": "x",
+              "turn_id": "inner"
+            },
+            "kind": "subagent_progress",
+            "parent_tool_use_id": null,
+            "parent_turn": 0,
+            "task_id": null
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    }
+  ],
+  "daemon": [
+    {
+      "case": "engine_stopped",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "code": "engine_stopped",
+            "kind": "error",
+            "message": "engine stopped before the turn completed"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "case": "session_closed",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "code": "session_closed",
+            "kind": "error",
+            "message": "the session was closed before the turn completed"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "case": "task_started",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "task_started",
+            "task": {
+              "detail": {},
+              "ended_ms": null,
+              "kind": "agent",
+              "started_ms": 1,
+              "status": "running",
+              "task_id": "a1"
+            }
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "task_updated",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "task_updated",
+            "task": {
+              "detail": {},
+              "ended_ms": null,
+              "kind": "agent",
+              "started_ms": 1,
+              "status": "running",
+              "task_id": "a1"
+            }
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "task_finished",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "task_finished",
+            "task": {
+              "detail": {},
+              "ended_ms": null,
+              "kind": "agent",
+              "started_ms": 1,
+              "status": "running",
+              "task_id": "a1"
+            }
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "task_progress",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "appended": "out",
+            "from_byte": 0,
+            "kind": "task_progress",
+            "next_byte": 3,
+            "skipped_bytes": 0,
+            "task_id": "a1"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "goal_changed",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "goal": {
+              "id": "g1",
+              "objective": "ship",
+              "status": "active"
+            },
+            "kind": "goal_changed"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "goal_cleared",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "goal": null,
+            "kind": "goal_changed"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "extension_entry",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "entry": {
+              "event": "note",
+              "ns": "host",
+              "payload": {
+                "a": 1
+              },
+              "seq": 3
+            },
+            "kind": "extension_entry"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    },
+    {
+      "case": "subscription_dropped",
+      "frame": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "subscription_dropped",
+            "reason": "overflow"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      }
+    }
+  ]
+}
