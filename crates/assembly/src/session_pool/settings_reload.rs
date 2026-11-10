@@ -446,11 +446,10 @@ impl SessionPool {
         }
 
         let mut status = self.project_status(Some(&root), scene_id).await;
-        self.emit_event(serde_json::json!({
-            "kind": "project_trust_changed",
-            "project_root": root,
-            "trust": status["trust"],
-        }));
+        self.emit_event(api::DaemonEvent::ProjectTrustChanged {
+            project_root: root.clone(),
+            trust: status["trust"].as_str().unwrap_or_default().to_string(),
+        });
         status["written_to"] = serde_json::Value::String(path.display().to_string());
         Ok(status)
     }

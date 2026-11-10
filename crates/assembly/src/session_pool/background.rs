@@ -191,11 +191,10 @@ impl SessionPool {
                     if let Some(live) = sessions.remove(sid) {
                         pool.evict(sid, &live);
                         info!(%sid, "session evicted (idle timeout)");
-                        pool.emit_session_event(
-                            "session_evicted",
-                            sid,
-                            serde_json::json!({"reason": "idle"}),
-                        );
+                        pool.emit_event(api::DaemonEvent::SessionEvicted {
+                            session_id: sid.to_string(),
+                            reason: api::EvictReason::Idle,
+                        });
                     }
                 }
                 if !to_evict.is_empty() {

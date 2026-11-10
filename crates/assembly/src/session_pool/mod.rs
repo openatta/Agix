@@ -688,7 +688,7 @@ pub struct SessionPool {
     /// auto-detection, future error events) — see `daemon.subscribeEvents`.
     /// `send()` returning `Err` just means "no subscribers right now", not
     /// a real error, so callers of `emit_event` ignore it.
-    events_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    events_tx: tokio::sync::broadcast::Sender<api::DaemonEvent>,
     /// The plugin subsystem — see `crate::plugins`. Everything plugins
     /// contribute arrives through it, and in a build without the `plugins`
     /// feature it is a stub that contributes nothing.
@@ -1018,14 +1018,26 @@ fn mcp_status_entries(manager: &McpManager) -> Vec<serde_json::Value> {
 const MCP_SESSION_CONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(feature = "mcp")]
-fn mcp_connect_failed_event(manager: &McpManager, name: &str) -> serde_json::Value {
+fn mcp_connect_failed_event(manager: &McpManager, name: &str) -> api::DaemonEvent {
     let error = manager
         .failed()
         .iter()
         .find(|f| f.name == name)
         .map(|f| f.error.clone())
         .unwrap_or_else(|| "connect failed — see daemon log for the specific reason".into());
-    serde_json::json!({ "kind": "mcp_connect_failed", "server": name, "error": error })
+    api::DaemonEvent::McpConnectFailed {
+        server: name.to_string(),
+        error,
+    }
+}
+
+#[cfg(feature = "mcp")]
+fn mcp_connected_event(status: &mcp::manager::ServerStatus) -> api::DaemonEvent {
+    api::DaemonEvent::McpConnected {
+        server: status.name.clone(),
+        transport: status.transport.to_string(),
+        tool_count: status.tool_count,
+    }
 }
 
 /// Build the router a settings tier's `providers`/`task_models` describe.
@@ -1281,46 +1293,18 @@ impl SessionPool {
 
     /// Subscribe to daemon-level async notifications (MCP connect
     /// outcomes, import auto-detection, ...) — see `daemon.subscribeEvents`.
-    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<api::DaemonEvent> {
         self.events_tx.subscribe()
     }
 
     /// Publish a daemon-level notification to every current subscriber. A
     /// `send` error just means nobody's listening right now — not a real
     /// failure, so this is intentionally infallible from the caller's side.
-    pub fn emit_event(&self, event: serde_json::Value) {
-        self.record_daemon_event(&event);
+    pub fn emit_event(&self, event: api::DaemonEvent) {
+        if let Some(recorded) = event.telemetry() {
+            let _ = self.pool_telemetry.record(recorded);
+        }
         let _ = self.events_tx.send(event);
-    }
-
-    /// The `daemon.event`s that are also pool-level telemetry. Read off the
-    /// event rather than recorded at each emission site, of which there are
-    /// several per kind.
-    fn record_daemon_event(&self, event: &serde_json::Value) {
-        let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
-        let recorded = match event["kind"].as_str() {
-            Some("mcp_connected") => telemetry::TelemetryEvent::mcp_server_connected(
-                "",
-                0,
-                None,
-                telemetry::McpServerConnectedPayload {
-                    server_name: text("server"),
-                    transport: text("transport"),
-                    tool_count: event["tool_count"].as_u64().unwrap_or(0) as usize,
-                },
-            ),
-            Some("mcp_connect_failed") => telemetry::TelemetryEvent::mcp_connection_error(
-                "",
-                0,
-                None,
-                telemetry::McpConnectionErrorPayload {
-                    server_name: text("server"),
-                    error_message: text("error"),
-                },
-            ),
-            _ => return,
-        };
-        let _ = self.pool_telemetry.record(recorded);
     }
 
     /// Record how long the daemon took to start, in the pool-level
@@ -1331,16 +1315,6 @@ impl SessionPool {
             .record(telemetry::TelemetryEvent::startup_timing(
                 "", 0, None, timing,
             ));
-    }
-
-    /// A session came into or left memory, or was deleted — a `daemon.event`
-    /// so a host learns of it without subscribing to every session.
-    fn emit_session_event(&self, kind: &str, session_id: &str, extra: serde_json::Value) {
-        let mut event = serde_json::json!({"kind": kind, "session_id": session_id});
-        if let (Some(event), serde_json::Value::Object(extra)) = (event.as_object_mut(), extra) {
-            event.extend(extra);
-        }
-        self.emit_event(event);
     }
 
     /// The project directory this pool's sessions run in.

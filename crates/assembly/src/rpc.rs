@@ -676,23 +676,45 @@ pub struct TelemetryOptions {
     pub output: String, // absolute path to telemetry output file
 }
 
-/// A notification frame the daemon pushes outside any request.
+/// A `daemon.event` notification: what the pool reported, or what the
+/// server says about the subscription itself.
 #[derive(Debug, Clone, Serialize)]
-pub struct StreamFrame {
+pub struct DaemonEventFrame<'a> {
     pub jsonrpc: &'static str,
     pub method: &'static str,
-    pub params: Value,
+    pub params: DaemonEventParams<'a>,
 }
 
-impl StreamFrame {
-    /// A daemon-level async notification (MCP connect outcome, import
-    /// auto-detection, ...) pushed to any connection subscribed via
-    /// `daemon.subscribeEvents` — not tied to any particular session/turn.
-    pub fn daemon_event(event: Value) -> Self {
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum DaemonEventParams<'a> {
+    Pool(&'a crate::session_pool::api::DaemonEvent),
+    Server(ServerDaemonEvent),
+}
+
+/// The `daemon.event` kinds the server makes up itself rather than relays
+/// from the pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ServerDaemonEvent {
+    /// This connection read too slowly and missed `missed` notifications.
+    EventsLagged { missed: u64 },
+}
+
+impl<'a> DaemonEventFrame<'a> {
+    pub fn pool(event: &'a crate::session_pool::api::DaemonEvent) -> Self {
+        Self::of(DaemonEventParams::Pool(event))
+    }
+
+    pub fn server(event: ServerDaemonEvent) -> Self {
+        Self::of(DaemonEventParams::Server(event))
+    }
+
+    fn of(params: DaemonEventParams<'a>) -> Self {
         Self {
             jsonrpc: "2.0",
             method: "daemon.event",
-            params: event,
+            params,
         }
     }
 }
@@ -894,11 +916,22 @@ mod tests {
     }
 
     #[test]
-    fn stream_frame_format() {
-        let f = StreamFrame::daemon_event(serde_json::json!({"kind": "session_created"}));
-        let s = serde_json::to_string(&f).unwrap();
-        assert!(s.contains(r#""method":"daemon.event""#));
-        assert!(s.contains(r#""kind":"session_created""#));
+    fn daemon_event_frame_format() {
+        let event = crate::session_pool::api::DaemonEvent::SessionDeleted {
+            session_id: "s1".into(),
+            parent_session_id: None,
+        };
+        let frame: Value = serde_json::to_value(DaemonEventFrame::pool(&event)).unwrap();
+        assert_eq!(
+            frame,
+            serde_json::json!({"jsonrpc": "2.0", "method": "daemon.event",
+                               "params": {"kind": "session_deleted", "session_id": "s1"}})
+        );
+        let lagged = DaemonEventFrame::server(ServerDaemonEvent::EventsLagged { missed: 3 });
+        assert_eq!(
+            serde_json::to_value(lagged).unwrap()["params"],
+            serde_json::json!({"kind": "events_lagged", "missed": 3})
+        );
     }
 
     #[test]

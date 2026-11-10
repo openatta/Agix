@@ -1,5 +1,364 @@
 {
   "$defs": {
+    "CloseReason": {
+      "enum": [
+        "closed",
+        "engine_stopped"
+      ],
+      "type": "string"
+    },
+    "DaemonEvent": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "mcp_connected",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "tool_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "transport": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server",
+            "transport",
+            "tool_count"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "mcp_connect_failed",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "mcp_auth_required",
+              "type": "string"
+            },
+            "scopes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "server": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server",
+            "scopes"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "mcp_auth_completed",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "mcp_auth_failed",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server",
+            "error"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "import_detected",
+              "type": "string"
+            },
+            "sources": {
+              "items": {
+                "$ref": "#/$defs/ImportSource"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "sources"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "session_created",
+              "type": "string"
+            },
+            "project_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scene": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "scene"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "session_resumed",
+              "type": "string"
+            },
+            "project_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scene": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "scene"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "session_evicted",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/EvictReason"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "session_closed",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/CloseReason"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "session_deleted",
+              "type": "string"
+            },
+            "parent_session_id": {
+              "description": "Set on a sidechain deleted along with its parent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "initiator": {
+              "$ref": "#/$defs/Initiator"
+            },
+            "kind": {
+              "const": "turn_started",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "turn_id",
+            "initiator"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "initiator": {
+              "$ref": "#/$defs/Initiator"
+            },
+            "kind": {
+              "const": "turn_completed",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "session_id",
+            "turn_id",
+            "initiator"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "project_trust_changed",
+              "type": "string"
+            },
+            "project_root": {
+              "type": "string"
+            },
+            "trust": {
+              "description": "`none`, `trusted` or `untrusted`, as `project.status` reports it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "project_root",
+            "trust"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EvictReason": {
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "capacity"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "rebuild",
+          "description": "The old engine of an in-place rebuild did not stop in time.",
+          "type": "string"
+        }
+      ]
+    },
+    "ImportSource": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "description"
+      ],
+      "type": "object"
+    },
+    "Initiator": {
+      "description": "Who asked for a turn. A client's turn crosses no scene boundary; the\ndaemon's own turns go to sessions it already serves.",
+      "enum": [
+        "client",
+        "schedule",
+        "goal"
+      ],
+      "type": "string"
+    },
     "PermissionRule": {
       "properties": {
         "behavior": {
@@ -140,6 +499,30 @@
           "const": "plugin",
           "description": "由已安装插件贡献。卸载插件时用 `PermissionGate::remove_rules_by_source`\n整批撤销。",
           "type": "string"
+        }
+      ]
+    },
+    "ServerDaemonEvent": {
+      "description": "The `daemon.event` kinds the server makes up itself rather than relays\nfrom the pool.",
+      "oneOf": [
+        {
+          "description": "This connection read too slowly and missed `missed` notifications.",
+          "properties": {
+            "kind": {
+              "const": "events_lagged",
+              "type": "string"
+            },
+            "missed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "missed"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1034,182 +1417,329 @@
       "description": "params 为 {kind,…};协议文档 §8",
       "kinds": {
         "events_lagged": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
+          "description": "This connection read too slowly and missed `missed` notifications.",
           "properties": {
             "kind": {
-              "const": "events_lagged"
+              "const": "events_lagged",
+              "type": "string"
+            },
+            "missed": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "missed"
           ],
           "type": "object"
         },
         "import_detected": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "import_detected"
+              "const": "import_detected",
+              "type": "string"
+            },
+            "sources": {
+              "items": {
+                "$ref": "#/$defs/ImportSource"
+              },
+              "type": "array"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "sources"
           ],
           "type": "object"
         },
         "mcp_auth_completed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "mcp_auth_completed"
+              "const": "mcp_auth_completed",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "server"
           ],
           "type": "object"
         },
         "mcp_auth_failed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
+            "error": {
+              "type": "string"
+            },
             "kind": {
-              "const": "mcp_auth_failed"
+              "const": "mcp_auth_failed",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "server",
+            "error"
           ],
           "type": "object"
         },
         "mcp_auth_required": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "mcp_auth_required"
+              "const": "mcp_auth_required",
+              "type": "string"
+            },
+            "scopes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "server": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "server",
+            "scopes"
           ],
           "type": "object"
         },
         "mcp_connect_failed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
+            "error": {
+              "type": "string"
+            },
             "kind": {
-              "const": "mcp_connect_failed"
+              "const": "mcp_connect_failed",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "server",
+            "error"
           ],
           "type": "object"
         },
         "mcp_connected": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "mcp_connected"
+              "const": "mcp_connected",
+              "type": "string"
+            },
+            "server": {
+              "type": "string"
+            },
+            "tool_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "transport": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "server",
+            "transport",
+            "tool_count"
           ],
           "type": "object"
         },
         "project_trust_changed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "project_trust_changed"
+              "const": "project_trust_changed",
+              "type": "string"
+            },
+            "project_root": {
+              "type": "string"
+            },
+            "trust": {
+              "description": "`none`, `trusted` or `untrusted`, as `project.status` reports it.",
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "project_root",
+            "trust"
           ],
           "type": "object"
         },
         "session_closed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "session_closed"
+              "const": "session_closed",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/CloseReason"
+            },
+            "session_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id",
+            "reason"
           ],
           "type": "object"
         },
         "session_created": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "session_created"
+              "const": "session_created",
+              "type": "string"
+            },
+            "project_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scene": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id",
+            "scene"
           ],
           "type": "object"
         },
         "session_deleted": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "session_deleted"
+              "const": "session_deleted",
+              "type": "string"
+            },
+            "parent_session_id": {
+              "description": "Set on a sidechain deleted along with its parent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id"
           ],
           "type": "object"
         },
         "session_evicted": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "session_evicted"
+              "const": "session_evicted",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/EvictReason"
+            },
+            "session_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id",
+            "reason"
           ],
           "type": "object"
         },
         "session_resumed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
             "kind": {
-              "const": "session_resumed"
+              "const": "session_resumed",
+              "type": "string"
+            },
+            "project_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scene": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id",
+            "scene"
           ],
           "type": "object"
         },
         "turn_completed": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
+            "initiator": {
+              "$ref": "#/$defs/Initiator"
+            },
             "kind": {
-              "const": "turn_completed"
+              "const": "turn_completed",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id",
+            "turn_id",
+            "initiator"
           ],
           "type": "object"
         },
         "turn_started": {
-          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §8 的 kind 表)",
           "properties": {
+            "initiator": {
+              "$ref": "#/$defs/Initiator"
+            },
             "kind": {
-              "const": "turn_started"
+              "const": "turn_started",
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "session_id",
+            "turn_id",
+            "initiator"
           ],
           "type": "object"
         }

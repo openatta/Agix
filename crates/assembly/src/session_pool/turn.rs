@@ -24,14 +24,11 @@ impl SessionPool {
             return false;
         };
         if let Some(turn) = live.turn.release(ticket.generation, &ticket.turn_id) {
-            self.emit_session_event(
-                "turn_completed",
-                &ticket.sid,
-                serde_json::json!({
-                    "turn_id": ticket.turn_id,
-                    "initiator": turn.initiator.as_str(),
-                }),
-            );
+            self.emit_event(api::DaemonEvent::TurnCompleted {
+                session_id: ticket.sid.to_string(),
+                turn_id: ticket.turn_id.to_string(),
+                initiator: turn.initiator,
+            });
             live.hub.retain_task_asks();
         }
         live.turn.idle.notify_waiters();
@@ -145,11 +142,11 @@ impl SessionPool {
                 }
                 let running = RunningTurn::new(turn_id.clone(), initiator, initiator_id);
                 if let Ok(generation) = live.turn.claim(running) {
-                    self.emit_session_event(
-                        "turn_started",
-                        &sid,
-                        serde_json::json!({"turn_id": turn_id, "initiator": initiator.as_str()}),
-                    );
+                    self.emit_event(api::DaemonEvent::TurnStarted {
+                        session_id: sid.to_string(),
+                        turn_id: turn_id.to_string(),
+                        initiator,
+                    });
                     // Whoever starts a turn watches it. Not a special role —
                     // it lands in the same subscriber set as any tab that
                     // called `session.subscribe`, and leaves the same way.
@@ -270,11 +267,10 @@ impl SessionPool {
                 if let Some(dead) = dead {
                     self.evict(&sid, &dead);
                     dead.turn.idle.notify_waiters();
-                    self.emit_session_event(
-                        "session_closed",
-                        &sid,
-                        serde_json::json!({"reason": "engine_stopped"}),
-                    );
+                    self.emit_event(api::DaemonEvent::SessionClosed {
+                        session_id: sid.to_string(),
+                        reason: api::CloseReason::EngineStopped,
+                    });
                 }
                 warn!(%sid, "engine stopped before the turn completed");
                 return Err(PoolError::EngineStopped);

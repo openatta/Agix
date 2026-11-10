@@ -19,7 +19,6 @@ runtime       = { workspace = true }
 scene         = { workspace = true }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
-serde_json    = { workspace = true }
 anyhow        = { workspace = true }
 tracing       = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -31,6 +30,7 @@ assembly      = { workspace = true }
 script-host   = { workspace = true, optional = true }
 
 [dev-dependencies]
+serde_json    = { workspace = true }
 model         = { workspace = true }
 permissions   = { workspace = true }
 history       = { workspace = true }

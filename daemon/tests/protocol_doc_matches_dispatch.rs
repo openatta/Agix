@@ -469,10 +469,10 @@ fn the_rpc_schema_lists_the_documented_event_kinds() {
     );
     assert_eq!(
         schema_names(&["notifications", "daemon.event", "kinds"]),
-        to_vec(assembly::rpc_schema::daemon_event_kinds())
+        sorted(assembly::rpc_schema::daemon_event_kinds())
     );
     assert_eq!(
-        to_vec(assembly::rpc_schema::daemon_event_kinds()),
+        sorted(assembly::rpc_schema::daemon_event_kinds()),
         documented_daemon_event_kinds(&doc)
     );
 }

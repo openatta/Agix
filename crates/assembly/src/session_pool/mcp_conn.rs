@@ -93,11 +93,10 @@ impl SessionPool {
                 },
                 Err(reason) => reason,
             };
-            self.emit_event(serde_json::json!({
-                "kind": "mcp_connect_failed",
-                "server": name,
-                "error": refusal,
-            }));
+            self.emit_event(api::DaemonEvent::McpConnectFailed {
+                server: name.clone(),
+                error: refusal,
+            });
             admitted.refused.push(name.clone());
         }
         admitted
@@ -140,12 +139,7 @@ impl SessionPool {
             let key = (Some(pool.cwd.clone()), settings.paths.scope.clone());
             let manager = pool.first_mcp_connect(key, &settings).await;
             for status in manager.server_statuses() {
-                pool.emit_event(serde_json::json!({
-                    "kind": "mcp_connected",
-                    "server": status.name,
-                    "transport": status.transport,
-                    "tool_count": status.tool_count,
-                }));
+                pool.emit_event(mcp_connected_event(&status));
             }
             let not_connected = manager.failed().iter().map(|f| &f.name);
             for name in not_connected.chain(manager.pending().iter().map(|p| &p.name)) {
@@ -230,12 +224,7 @@ impl SessionPool {
                 updated
             };
             pool.emit_event(match connected {
-                Some(s) => serde_json::json!({
-                    "kind": "mcp_connected",
-                    "server": s.name,
-                    "transport": s.transport,
-                    "tool_count": s.tool_count,
-                }),
+                Some(s) => mcp_connected_event(&s),
                 None => mcp_connect_failed_event(&updated, &server),
             });
             pool.invalidate_mcp_keys(std::slice::from_ref(&key)).await;
@@ -306,12 +295,7 @@ impl SessionPool {
             .collect();
 
         for status in &statuses {
-            self.emit_event(serde_json::json!({
-                "kind": "mcp_connected",
-                "server": status.name,
-                "transport": status.transport,
-                "tool_count": status.tool_count,
-            }));
+            self.emit_event(mcp_connected_event(status));
         }
         for name in &unreachable {
             self.emit_event(mcp_connect_failed_event(&manager, name));
@@ -501,12 +485,7 @@ impl SessionPool {
         // Same notification contract as the startup background connect —
         // see `connect_mcp_servers_in_background`.
         match statuses.iter().find(|s| s.name == name) {
-            Some(s) => self.emit_event(serde_json::json!({
-                "kind": "mcp_connected",
-                "server": s.name,
-                "transport": s.transport,
-                "tool_count": s.tool_count,
-            })),
+            Some(s) => self.emit_event(mcp_connected_event(s)),
             None => self.emit_event(failure),
         }
 
@@ -533,15 +512,17 @@ impl SessionPool {
             };
             pool.emit_event(match &event {
                 AuthEvent::Required { server, scopes, .. }
-                | AuthEvent::StepUp { server, scopes, .. } => serde_json::json!({
-                    "kind": "mcp_auth_required", "server": server, "scopes": scopes,
-                }),
-                AuthEvent::Completed { server, .. } => serde_json::json!({
-                    "kind": "mcp_auth_completed", "server": server,
-                }),
-                AuthEvent::Failed { server, error, .. } => serde_json::json!({
-                    "kind": "mcp_auth_failed", "server": server, "error": error,
-                }),
+                | AuthEvent::StepUp { server, scopes, .. } => api::DaemonEvent::McpAuthRequired {
+                    server: server.clone(),
+                    scopes: scopes.clone(),
+                },
+                AuthEvent::Completed { server, .. } => api::DaemonEvent::McpAuthCompleted {
+                    server: server.clone(),
+                },
+                AuthEvent::Failed { server, error, .. } => api::DaemonEvent::McpAuthFailed {
+                    server: server.clone(),
+                    error: error.clone(),
+                },
             });
             if let AuthEvent::Required { url, .. } = event {
                 tokio::spawn(async move { pool.demote_mcp_servers(&url).await });
@@ -652,20 +633,17 @@ impl SessionPool {
         names.sort();
         for (name, outcome) in outcomes {
             self.emit_event(match outcome {
-                Ok(s) => serde_json::json!({
-                    "kind": "mcp_connected",
-                    "server": s.name,
-                    "transport": s.transport,
-                    "tool_count": s.tool_count,
-                }),
-                Err(error) => serde_json::json!({
-                    "kind": "mcp_connect_failed",
-                    "server": name,
-                    "error": match error {
+                Ok(s) => mcp_connected_event(&s),
+                Err(error) => api::DaemonEvent::McpConnectFailed {
+                    server: name,
+                    error: match error {
                         Some(error) => format!("connect failed after authorizing: {error}"),
-                        None => "connect failed after authorizing — see mcp.status and the daemon log".into(),
+                        None => {
+                            "connect failed after authorizing — see mcp.status and the daemon log"
+                                .into()
+                        }
                     },
-                }),
+                },
             });
         }
         names

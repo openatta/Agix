@@ -203,11 +203,10 @@ impl SessionPool {
                     match store.delete(child).await {
                         Ok(()) => {
                             self.schedule.remove_session(&child_str);
-                            self.emit_session_event(
-                                "session_deleted",
-                                &child_str,
-                                serde_json::json!({"parent_session_id": parent_session_id}),
-                            );
+                            self.emit_event(api::DaemonEvent::SessionDeleted {
+                                session_id: child_str.clone(),
+                                parent_session_id: Some(parent_session_id.to_string()),
+                            });
                             true
                         }
                         Err(e) => {
@@ -244,11 +243,10 @@ impl SessionPool {
                 self.end_cut_off_turn(session_id, &live);
                 self.stop_removed(session_id, &live);
                 info!(%session_id, "session removed");
-                self.emit_session_event(
-                    "session_closed",
-                    session_id,
-                    serde_json::json!({"reason": "closed"}),
-                );
+                self.emit_event(api::DaemonEvent::SessionClosed {
+                    session_id: session_id.to_string(),
+                    reason: api::CloseReason::Closed,
+                });
                 (live.state, live.process_groups)
             })
         };
@@ -345,7 +343,10 @@ impl SessionPool {
         let scratch = base::paths::session_scratch_dir(&self.paths.global_root(), session_id);
         let _ = std::fs::remove_dir_all(scratch);
         self.schedule.remove_session(session_id);
-        self.emit_session_event("session_deleted", session_id, serde_json::json!({}));
+        self.emit_event(api::DaemonEvent::SessionDeleted {
+            session_id: session_id.to_string(),
+            parent_session_id: None,
+        });
 
         Ok(serde_json::json!({
             "session_id": session_id,
@@ -435,11 +436,10 @@ impl SessionPool {
             if let Some(stopping) = stopping {
                 self.evict(session_id, &stopping);
                 stopping.turn.idle.notify_waiters();
-                self.emit_session_event(
-                    "session_evicted",
-                    session_id,
-                    serde_json::json!({"reason": "rebuild"}),
-                );
+                self.emit_event(api::DaemonEvent::SessionEvicted {
+                    session_id: session_id.to_string(),
+                    reason: api::EvictReason::Rebuild,
+                });
             }
             return Err(CreateError::previous_engine_running(session_id));
         }

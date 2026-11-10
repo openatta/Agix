@@ -552,13 +552,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
             if sources.is_empty() {
                 return;
             }
-            pool.emit_event(serde_json::json!({
-                "kind": "import_detected",
-                "sources": sources.iter().map(|s| serde_json::json!({
-                    "source": s.kind().as_str(),
-                    "description": s.describe(),
-                })).collect::<Vec<_>>(),
-            }));
+            pool.emit_event(import_detected(&sources));
         });
     }
 
@@ -659,6 +653,20 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
     daemon::discovery::remove_instance_file(&instances_dir, &instance_name);
     info!("daemon stopped");
     Ok(())
+}
+
+fn import_detected(
+    sources: &[base::frozen::ImportSource],
+) -> daemon::session_pool::api::DaemonEvent {
+    daemon::session_pool::api::DaemonEvent::ImportDetected {
+        sources: sources
+            .iter()
+            .map(|s| daemon::session_pool::api::ImportSource {
+                source: s.kind().as_str().to_string(),
+                description: s.describe(),
+            })
+            .collect(),
+    }
 }
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);

@@ -7,7 +7,7 @@ impl DaemonServer {
     /// `daemon.subscribeEvents` — no params. Returns an immediate ack
     /// (`{"subscribed": true}`) and, from then on, pushes every future
     /// `daemon.event` notification (see `SessionPool::emit_event`) to this
-    /// same connection as a `StreamFrame` — indefinitely, until the
+    /// same connection as a `DaemonEventFrame` — indefinitely, until the
     /// connection closes. Does not replay past events; subscribe before the
     /// event you care about can happen (e.g. right after startup, before
     /// relying on `mcp_connected`/`import_detected`). Subscribing again on
@@ -26,14 +26,14 @@ impl DaemonServer {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        let frame = crate::rpc::StreamFrame::daemon_event(event);
+                        let frame = crate::rpc::DaemonEventFrame::pool(&event);
                         if !send_frame(&forward, &frame).await {
                             break; // connection closed
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
-                        let frame = crate::rpc::StreamFrame::daemon_event(
-                            serde_json::json!({"kind": "events_lagged", "missed": missed}),
+                        let frame = crate::rpc::DaemonEventFrame::server(
+                            crate::rpc::ServerDaemonEvent::EventsLagged { missed },
                         );
                         if !send_frame(&forward, &frame).await {
                             break;

@@ -598,11 +598,10 @@ impl SessionPool {
             if let Some((evicted, live)) = evict_lru(&mut sessions) {
                 self.evict(&evicted, &live);
                 info!(sid = %evicted, "session evicted (LRU, pool full)");
-                self.emit_session_event(
-                    "session_evicted",
-                    &evicted,
-                    serde_json::json!({"reason": "capacity"}),
-                );
+                self.emit_event(api::DaemonEvent::SessionEvicted {
+                    session_id: evicted.to_string(),
+                    reason: api::EvictReason::Capacity,
+                });
             }
         }
 
@@ -664,18 +663,12 @@ impl SessionPool {
             ));
         }
         if !rebuilt {
-            self.emit_session_event(
-                if resume {
-                    "session_resumed"
-                } else {
-                    "session_created"
-                },
-                &session_id,
-                serde_json::json!({
-                    "scene": scene_id,
-                    "project_root": project_root_for_meta,
-                }),
-            );
+            self.emit_event(api::DaemonEvent::session_loaded(
+                resume,
+                session_id.clone(),
+                scene_id.to_string(),
+                project_root_for_meta.clone(),
+            ));
         }
         info!(%session_id, "session created");
         Ok(session_id)

@@ -193,7 +193,7 @@ async fn denied_in_status(pool: &SessionPool) -> Vec<(String, String)> {
 /// One `mcp_connect_failed` per server, however often it was sent: writing
 /// settings also wakes the config watcher, which reloads on its own.
 async fn failed_events(
-    events: &mut tokio::sync::broadcast::Receiver<serde_json::Value>,
+    events: &mut tokio::sync::broadcast::Receiver<daemon::session_pool::api::DaemonEvent>,
     expected: usize,
 ) -> Vec<(String, String)> {
     let mut failed = std::collections::BTreeMap::new();
@@ -202,11 +202,8 @@ async fn failed_events(
             .await
             .expect("timed out waiting for mcp_connect_failed")
             .unwrap();
-        if event["kind"] == "mcp_connect_failed" {
-            failed.insert(
-                event["server"].as_str().unwrap().to_string(),
-                event["error"].as_str().unwrap().to_string(),
-            );
+        if let daemon::session_pool::api::DaemonEvent::McpConnectFailed { server, error } = event {
+            failed.insert(server, error);
         }
     }
     failed.into_iter().collect()

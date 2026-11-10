@@ -19,7 +19,8 @@ pub struct TurnRequest {
 
 /// Who asked for a turn. A client's turn crosses no scene boundary; the
 /// daemon's own turns go to sessions it already serves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Initiator {
     Client,
     Schedule,

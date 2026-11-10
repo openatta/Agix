@@ -89,24 +89,6 @@ const METHODS: &[&str] = &[
 
 const SESSION_EVENT_KINDS: &[&str] = crate::rpc::events::SessionEventPayload::KINDS;
 
-const DAEMON_EVENT_KINDS: &[&str] = &[
-    "mcp_connected",
-    "mcp_connect_failed",
-    "mcp_auth_required",
-    "mcp_auth_completed",
-    "mcp_auth_failed",
-    "import_detected",
-    "session_created",
-    "session_resumed",
-    "session_evicted",
-    "session_closed",
-    "session_deleted",
-    "turn_started",
-    "turn_completed",
-    "events_lagged",
-    "project_trust_changed",
-];
-
 const ERROR_CODES: &[(i32, &str)] = &[
     (-32700, "PARSE_ERROR"),
     (-32600, "INVALID_REQUEST"),
@@ -147,6 +129,34 @@ fn schema_value(schema: schemars::Schema) -> Value {
 
 fn untyped() -> Value {
     json!({ "description": UNTYPED })
+}
+
+/// The variants of an enum tagged by `kind`, each under its tag.
+fn tagged_variants<T: schemars::JsonSchema>(generator: &mut SchemaGenerator) -> Map<String, Value> {
+    let reference = schema_value(generator.subschema_for::<T>());
+    let name = reference["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .unwrap_or_default()
+        .to_string();
+    let schema = generator
+        .definitions()
+        .get(&name)
+        .cloned()
+        .unwrap_or(reference);
+    let mut variants = Map::new();
+    for variant in schema["oneOf"].as_array().into_iter().flatten() {
+        if let Some(kind) = variant["properties"]["kind"]["const"].as_str() {
+            variants.insert(kind.to_string(), variant.clone());
+        }
+    }
+    variants
+}
+
+fn daemon_event_variants(generator: &mut SchemaGenerator) -> Map<String, Value> {
+    let mut kinds = tagged_variants::<crate::session_pool::api::DaemonEvent>(generator);
+    kinds.extend(tagged_variants::<crate::rpc::ServerDaemonEvent>(generator));
+    kinds
 }
 
 fn kinds_schema(kinds: &[&str], section: &str) -> Value {
@@ -206,7 +216,7 @@ pub fn rpc_json_schema() -> Value {
             },
             "daemon.event": {
                 "description": "params 为 {kind,…};协议文档 §8",
-                "kinds": kinds_schema(DAEMON_EVENT_KINDS, "§8"),
+                "kinds": daemon_event_variants(&mut generator),
             },
         },
         "errors": errors,
@@ -223,8 +233,11 @@ pub fn session_event_kinds() -> &'static [&'static str] {
     SESSION_EVENT_KINDS
 }
 
-pub fn daemon_event_kinds() -> &'static [&'static str] {
-    DAEMON_EVENT_KINDS
+pub fn daemon_event_kinds() -> Vec<String> {
+    daemon_event_variants(&mut SchemaGenerator::default())
+        .into_iter()
+        .map(|(kind, _)| kind)
+        .collect()
 }
 
 pub fn error_codes() -> &'static [(i32, &'static str)] {
