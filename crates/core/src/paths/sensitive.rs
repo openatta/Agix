@@ -793,6 +793,35 @@ mod tests {
             .is_empty());
     }
 
+    /// Linux 沙箱撤掉围栏的分支（引擎 git、pdftotext、项目在状态目录内）按
+    /// `existing()` 逐个遮挡凭据。场景目录是符号链接时它的密钥文件也得在里面；
+    /// 0.3.11 的 `scene_dirs` 用跟随链接的 `is_dir()` 列场景，这里的
+    /// `real_subdirs` 不跟随，链进来的场景整个漏掉。
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "audit: confirmed defect, fix pending"]
+    fn audit3_a_scene_linked_in_from_elsewhere_has_its_key_files_located() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        let elsewhere = dir.path().join("dotfiles/scene");
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("settings.json"), "").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("scenes/linked")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let located = SensitivePaths::new(Some(&root), None).credential_locations(&[]);
+        let keys = located
+            .iter()
+            .find(|l| l.under_each_scene && matches!(l.secret, Secret::KeyFiles(_)))
+            .unwrap();
+        assert!(
+            keys.existing()
+                .contains(&root.join("scenes/linked/settings.json")),
+            "{:?}",
+            keys.existing()
+        );
+    }
+
     #[test]
     fn the_existing_secrets_of_a_location_are_found_on_disk() {
         let dir = tempfile::tempdir().unwrap();
