@@ -19,7 +19,6 @@ libc          = { workspace = true }
 scene         = { workspace = true }
 history       = { workspace = true }
 hooks         = { workspace = true }
-session       = { workspace = true }
 plugin        = { workspace = true, optional = true }
 script-host   = { workspace = true, optional = true }
 skills        = { workspace = true, optional = true }
@@ -59,8 +58,8 @@ tonic              = { version = "0.12", optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
 
 [dev-dependencies]
+session       = { workspace = true }
 tempfile = { workspace = true }
-compaction = { workspace = true }
 
 [features]
 # ── The script carrier and the package layer ────────────────────────────

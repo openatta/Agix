@@ -16,41 +16,36 @@ path = "src/main.rs"
 base          = { workspace = true }
 platform      = { workspace = true }
 runtime       = { workspace = true }
-model         = { workspace = true }
-permissions   = { workspace = true }
 scene         = { workspace = true }
-history       = { workspace = true }
-hooks         = { workspace = true }
-session       = { workspace = true }
-tools         = { workspace = true }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
-serde         = { workspace = true }
 serde_json    = { workspace = true }
-thiserror     = { workspace = true }
 anyhow        = { workspace = true }
 tracing       = { workspace = true }
 tracing-subscriber = { workspace = true }
-async-trait   = { workspace = true }
 lexopt        = "0.3"
-reqwest       = { workspace = true }
 time          = { workspace = true }
-futures       = { workspace = true }
 telemetry     = { workspace = true }
-notify        = { workspace = true }
-url           = { workspace = true }
 assembly      = { workspace = true }
 # Only for the extension-point docs test, which reads the carrier's bindable points.
 script-host   = { workspace = true, optional = true }
 
 [dev-dependencies]
+model         = { workspace = true }
+permissions   = { workspace = true }
+history       = { workspace = true }
+hooks         = { workspace = true }
+session       = { workspace = true }
+tools         = { workspace = true }
+async-trait   = { workspace = true }
+futures       = { workspace = true }
+url           = { workspace = true }
 tokio-tungstenite = { workspace = true }
 agents      = { workspace = true }
 mcp         = { workspace = true }
 skills      = { workspace = true }
 tempfile = { workspace = true }
 libc = { workspace = true }
-compaction = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 zip = { workspace = true }

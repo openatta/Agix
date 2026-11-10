@@ -11,8 +11,6 @@ name = "test_runner"
 path = "src/lib.rs"
 
 [dependencies]
-rpc-client    = { workspace = true }
-daemon        = { workspace = true }
 base          = { workspace = true }
 runtime       = { workspace = true }
 agents        = { workspace = true }
@@ -23,8 +21,6 @@ tools         = { workspace = true, features = ["web", "structured-output"] }
 mcp           = { workspace = true }
 permissions   = { workspace = true }
 skills        = { workspace = true }
-hooks         = { workspace = true }
-compaction    = { workspace = true }
 history       = { workspace = true }
 tokio         = { workspace = true, features = ["full"] }
 tokio-util    = { workspace = true }
@@ -33,11 +29,7 @@ serde_json    = { workspace = true }
 async-trait   = { workspace = true }
 futures       = { workspace = true }
 anyhow        = { workspace = true }
-url           = { workspace = true }
 tracing       = { workspace = true }
-tracing-subscriber = { workspace = true }
-clap          = { version = "4", features = ["derive"] }
-shellexpand   = "3"
 zip           = { workspace = true }
 sha2          = { workspace = true }
 hex           = { workspace = true }
@@ -45,6 +37,7 @@ time          = { workspace = true }
 script-host   = { workspace = true }
 
 [dev-dependencies]
+hooks         = { workspace = true }
 platform = { workspace = true }
 tempfile      = { workspace = true }
 

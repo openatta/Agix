@@ -19,19 +19,17 @@ scene         = { workspace = true }
 permissions   = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
-futures       = { workspace = true }
 async-trait   = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
-thiserror     = { workspace = true }
 anyhow        = { workspace = true }
 tracing       = { workspace = true }
 uuid          = { workspace = true }
-time          = { workspace = true }
 schemars      = { workspace = true }
 notify        = { workspace = true }
 
 [dev-dependencies]
+futures       = { workspace = true }
 platform = { workspace = true }
 skills   = { workspace = true }
 tempfile = { workspace = true }

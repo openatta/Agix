@@ -24,12 +24,8 @@ async-trait   = { workspace = true }
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 thiserror     = { workspace = true }
-anyhow        = { workspace = true }
 tracing       = { workspace = true }
-uuid          = { workspace = true }
 time          = { workspace = true }
-schemars = { workspace = true }
-notify        = { workspace = true }
 # Attachment images arrive as raw bytes (Attachment::File) and must reach the
 # API as base64 — see `resolve_attachments` in turn/attachments.rs.
 base64        = { workspace = true }
@@ -45,6 +41,8 @@ ptc = ["dep:ptc"]
 structured-output = ["tools/structured-output"]
 
 [dev-dependencies]
+anyhow        = { workspace = true }
+uuid          = { workspace = true }
 url      = { workspace = true }
 permissions = { workspace = true }
 tempfile = { workspace = true }

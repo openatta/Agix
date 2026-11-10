@@ -15,13 +15,11 @@ model         = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
 async-trait   = { workspace = true }
-tracing       = { workspace = true }
 futures       = { workspace = true }
-serde_json    = { workspace = true }
 thiserror     = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+serde_json    = { workspace = true }
 # `test-util` gives paused-clock tests, so the summarization-timeout test runs
 # instantly instead of sleeping for real.
 tokio = { workspace = true, features = ["test-util"] }
