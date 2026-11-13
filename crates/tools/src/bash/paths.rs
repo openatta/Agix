@@ -156,6 +156,10 @@ fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
 /// (`core.fsmonitor`, `diff.external`, `core.sshCommand`…) names programs git
 /// starts on its own; the session's is the user's, one shipped in the project
 /// is whoever wrote the project's.
+///
+/// So is the session's own repository when the project is not trusted: its
+/// git then stays in the lane only where the strict profile fully holds what
+/// those programs can do.
 fn git_stays_in_the_sessions_repository(line: &str, ctx: &ToolContext) -> bool {
     let segments = shell::segments(line);
     let runs_git = |segment: &shell::Segment| {
@@ -166,6 +170,11 @@ fn git_stays_in_the_sessions_repository(line: &str, ctx: &ToolContext) -> bool {
     };
     if !segments.iter().any(runs_git) {
         return true;
+    }
+    if ctx.config.project_trust.is_untrusted()
+        && ctx.confinement.strict != base::interface::exec::Enforcement::Full
+    {
+        return false;
     }
     let own = repository_of(&ctx.cwd);
     if matches!(own, Some(Repository::Bare(_))) {

@@ -26,7 +26,7 @@ pub use self::skill::{
 
 use self::memory::collect_memory_files_with;
 use self::utils::truncate_chars;
-use crate::engine_exec::{EngineExec, GitAccess};
+use crate::engine_exec::{read_head, EngineExec, EngineExecError, GitAccess};
 use crate::paths::ConfigPaths;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -164,10 +164,45 @@ async fn run_git_text(engine: &EngineExec, cwd: &Path, args: &[&str]) -> Option<
     (!s.is_empty()).then_some(s)
 }
 
-async fn run_git_check(engine: &EngineExec, cwd: &Path) -> bool {
-    run_git_text(engine, cwd, &["rev-parse", "--is-inside-work-tree"])
+/// Whether `cwd` is in a work tree, as git says; `Err` when the engine may
+/// not run git there at all.
+async fn run_git_check(engine: &EngineExec, cwd: &Path) -> Result<bool, EngineExecError> {
+    match engine
+        .git(
+            cwd,
+            GitAccess::ReadOnly,
+            &["rev-parse", "--is-inside-work-tree"],
+            GIT_TIMEOUT,
+        )
         .await
-        .is_some_and(|out| out == "true")
+    {
+        Err(refused @ EngineExecError::Refused(_)) => Err(refused),
+        Err(_) => Ok(false),
+        Ok(out) => Ok(out.status.success && out.stdout_lossy().trim() == "true"),
+    }
+}
+
+/// The branch checked out in `cwd`: from git, or where the engine may not run
+/// git, from the repository's `HEAD` file.
+async fn current_branch(engine: &EngineExec, cwd: &Path) -> Option<String> {
+    match engine
+        .git(
+            cwd,
+            GitAccess::ReadOnly,
+            &["symbolic-ref", "--short", "HEAD"],
+            GIT_TIMEOUT,
+        )
+        .await
+    {
+        Err(EngineExecError::Refused(_)) => {
+            read_head(&*engine.exec().filesystem, cwd).await?.branch
+        }
+        Err(_) => None,
+        Ok(out) => {
+            let branch = out.stdout_lossy().trim().to_string();
+            (out.status.success && !branch.is_empty()).then_some(branch)
+        }
+    }
 }
 
 /// A worktree has `.git` as a file holding a `gitdir:` line, not a directory.
@@ -215,12 +250,26 @@ async fn detect_main_branch(engine: &EngineExec, cwd: &Path) -> Option<String> {
 }
 
 async fn collect_git_fields(engine_git: &EngineExec, cwd: &Path) -> GitFields {
-    let is_git = run_git_check(engine_git, cwd).await;
-    if !is_git {
-        return GitFields::none();
+    match run_git_check(engine_git, cwd).await {
+        Ok(true) => {}
+        Ok(false) => return GitFields::none(),
+        // The engine may not run this repository's git: its branch is all
+        // the snapshot takes, read from `HEAD`.
+        Err(_) => {
+            let Some(head) = read_head(&*engine_git.exec().filesystem, cwd).await else {
+                return GitFields::none();
+            };
+            return GitFields {
+                is_git: true,
+                is_worktree: head.linked,
+                git_branch: head.branch,
+                ..GitFields::none()
+            };
+        }
     }
+    let is_git = true;
     let is_worktree = is_worktree(engine_git, cwd).await;
-    let git_branch = run_git_text(engine_git, cwd, &["symbolic-ref", "--short", "HEAD"]).await;
+    let git_branch = current_branch(engine_git, cwd).await;
     let git_main_branch = detect_main_branch(engine_git, cwd).await;
     let git_user_name = run_git_text(engine_git, cwd, &["config", "user.name"]).await;
     let git_status = run_git_text(
@@ -445,8 +494,7 @@ impl FrozenContext {
         if !self.is_git {
             return;
         }
-        self.git_branch =
-            run_git_text(engine_git, &self.cwd, &["symbolic-ref", "--short", "HEAD"]).await;
+        self.git_branch = current_branch(engine_git, &self.cwd).await;
         self.git_status = run_git_text(
             engine_git,
             &self.cwd,
@@ -612,6 +660,41 @@ mod tests {
         assert_eq!(ctx.git_branch.as_deref(), Some("topic"));
         assert_eq!(ctx.git_status.as_deref(), Some("M a.rs"));
         assert!(process.seen().iter().all(|argv| argv.starts_with(&git(""))));
+    }
+
+    /// An untrusted project's repository, no sandbox: no git runs, the branch
+    /// comes from `HEAD`.
+    #[tokio::test]
+    async fn an_untrusted_repository_outside_a_sandbox_gives_only_its_branch() {
+        use crate::interface::exec::in_process::{InMemoryFileSystem, ScriptedProcess};
+        let dir = TempDir::new().unwrap();
+        let process = ScriptedProcess::new();
+        let exec = crate::interface::exec::ExecProviders {
+            process: std::sync::Arc::new(process.clone()),
+            filesystem: std::sync::Arc::new(
+                InMemoryFileSystem::new()
+                    .with_file(dir.path().join(".git/HEAD"), "ref: refs/heads/topic\n"),
+            ),
+            ..crate::interface::exec::ExecProviders::in_process()
+        };
+        let engine = EngineExec::new(
+            exec,
+            crate::engine_exec::Confinement::Unconfined,
+            crate::project_trust::ProjectTrust::Untrusted,
+        );
+        let mut ctx = FrozenContext::collect(
+            dir.path().to_path_buf(),
+            &test_paths(dir.path()),
+            &crate::interface::environment::SystemEnvironment,
+            &engine,
+        )
+        .await;
+        assert!(ctx.is_git);
+        assert_eq!(ctx.git_branch.as_deref(), Some("topic"));
+        assert!(ctx.git_status.is_none() && ctx.git_log.is_none() && ctx.user_email.is_none());
+        ctx.refresh_git_status(&engine).await;
+        assert_eq!(ctx.git_branch.as_deref(), Some("topic"));
+        assert!(process.seen().is_empty(), "git ran: {:?}", process.seen());
     }
 
     #[tokio::test]

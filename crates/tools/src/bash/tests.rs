@@ -437,6 +437,40 @@ fn to_sandbox_policy_maps_each_network_mode_variant() {
 }
 
 #[test]
+fn an_untrusted_projects_git_leaves_the_lane_unless_the_strict_profile_holds() {
+    use base::project_trust::ProjectTrust;
+    let dir = tempfile::tempdir().unwrap();
+    let lane = |trust, strict| {
+        let mut ctx = ctx_in(dir.path());
+        let mut config = (*ctx.config).clone();
+        config.project_trust = trust;
+        ctx.config = std::sync::Arc::new(config);
+        ctx.confinement.strict = strict;
+        (
+            super::stays_where_the_session_may_read("git status --short", &ctx),
+            super::stays_where_the_session_may_read("ls", &ctx),
+        )
+    };
+    assert_eq!(
+        lane(ProjectTrust::Untrusted, Enforcement::None),
+        (false, true)
+    );
+    assert_eq!(
+        lane(ProjectTrust::Untrusted, Enforcement::Partial),
+        (false, true)
+    );
+    assert_eq!(
+        lane(ProjectTrust::Untrusted, Enforcement::Full),
+        (true, true)
+    );
+    assert_eq!(lane(ProjectTrust::Trusted, Enforcement::None), (true, true));
+    assert_eq!(
+        lane(ProjectTrust::NoProject, Enforcement::None),
+        (true, true)
+    );
+}
+
+#[test]
 fn the_strict_policy_reads_the_sessions_roots_and_writes_only_its_tmpdir() {
     use base::interface::exec::{EnvScope, ReadScope};
     let dir = tempfile::tempdir().unwrap();

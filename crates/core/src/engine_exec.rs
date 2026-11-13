@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::interface::exec::{
-    capture, Captured, Enforcement, ExecError, ExecProviders, NetworkMode, ProcessSpec,
+    capture, Captured, Enforcement, ExecError, ExecProviders, FileSystem, NetworkMode, ProcessSpec,
     SandboxPolicy,
 };
 use crate::project_trust::ProjectTrust;
@@ -83,6 +83,12 @@ pub enum Admission {
     Refuse(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Program {
+    Git,
+    Helper,
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum EngineExecError {
     /// Not started: the admission refused it, or it has to be sandboxed and
@@ -96,14 +102,72 @@ pub enum EngineExecError {
 }
 
 /// The one decision point for every git the engine starts.
+///
+/// An untrusted project's repository configuration is whoever wrote the
+/// project's: the programs it names (filter drivers, `diff.external`,
+/// `core.sshCommand`) git starts on its own. So a git outside any sandbox
+/// does not run in one.
 pub fn admit_git(
-    _trust: ProjectTrust,
+    trust: ProjectTrust,
     _access: &GitAccess<'_>,
-    _confinement: &Confinement,
+    confinement: &Confinement,
 ) -> Admission {
-    Admission::Run {
-        options: ENGINE_GIT_OPTIONS,
+    match (confinement, trust) {
+        (Confinement::Sandboxed { .. }, _)
+        | (Confinement::Unconfined, ProjectTrust::Trusted | ProjectTrust::NoProject) => {
+            Admission::Run {
+                options: ENGINE_GIT_OPTIONS,
+            }
+        }
+        (Confinement::Unconfined, ProjectTrust::Untrusted) => {
+            Admission::Refuse(UNTRUSTED_UNCONFINED.into())
+        }
     }
+}
+
+const UNTRUSTED_UNCONFINED: &str = "the project is not trusted and the engine's git would run \
+     outside any sandbox, where the programs its repository configuration names would run \
+     unconfined; trust the project (`project.trust`) or let the sandbox hold the session's commands";
+
+/// What a repository's `HEAD` says, read as a file rather than asked of git.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Head {
+    /// The branch checked out; `None` when `HEAD` is detached.
+    pub branch: Option<String>,
+    /// The repository's `.git` is a `gitdir:` link: a worktree or a
+    /// submodule checkout.
+    pub linked: bool,
+}
+
+/// The `HEAD` of the repository `dir` is in: the first `.git` in `dir` or
+/// above it, a directory or a file whose `gitdir:` line names one. `None`
+/// where there is no repository or its `HEAD` cannot be read.
+///
+/// For a snapshot of a repository whose git the engine may not run: nothing
+/// in the repository is executed or interpreted beyond these two files.
+pub async fn read_head(fs: &dyn FileSystem, dir: &Path) -> Option<Head> {
+    for at in dir.ancestors() {
+        let dot_git = at.join(".git");
+        let Ok(meta) = fs.metadata_following_symlinks(&dot_git).await else {
+            continue;
+        };
+        let (git_dir, linked) = if meta.is_dir {
+            (dot_git, false)
+        } else {
+            let link = fs.read_to_string(&dot_git).await.ok()?;
+            let target = link.lines().next()?.strip_prefix("gitdir:")?.trim();
+            (at.join(target), true)
+        };
+        let head = fs.read_to_string(&git_dir.join("HEAD")).await.ok()?;
+        let head = head.trim();
+        let branch = head
+            .strip_prefix("ref:")
+            .map(str::trim)
+            .and_then(|r| r.strip_prefix("refs/heads/"))
+            .map(str::to_string);
+        return Some(Head { branch, linked });
+    }
+    None
 }
 
 impl EngineExec {
@@ -143,7 +207,8 @@ impl EngineExec {
             ("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()),
             ("GIT_ASKPASS".to_string(), String::new()),
         ]);
-        self.run(spec, access.writable(), deadline).await
+        self.run(spec, access.writable(), Program::Git, deadline)
+            .await
     }
 
     /// A helper program, confined as the session's commands are, writing
@@ -154,16 +219,17 @@ impl EngineExec {
         writable: &[PathBuf],
         deadline: Duration,
     ) -> Result<Captured, EngineExecError> {
-        self.run(spec, writable, deadline).await
+        self.run(spec, writable, Program::Helper, deadline).await
     }
 
     async fn run(
         &self,
         spec: ProcessSpec,
         writable: &[PathBuf],
+        program: Program,
         deadline: Duration,
     ) -> Result<Captured, EngineExecError> {
-        let spec = self.confine(spec, writable)?;
+        let spec = self.confine(spec, writable, program)?;
         let captured = tokio::time::timeout(
             deadline,
             capture(&*self.exec.process, spec, CancellationToken::new()),
@@ -180,6 +246,7 @@ impl EngineExec {
         &self,
         spec: ProcessSpec,
         writable: &[PathBuf],
+        program: Program,
     ) -> Result<ProcessSpec, EngineExecError> {
         let Confinement::Sandboxed {
             policy,
@@ -201,6 +268,11 @@ impl EngineExec {
                     "the session's commands are sandboxed and `sandbox.require_enforcement` \
                      is on, but {} cannot be sandboxed here ({unmet})",
                     spec.program
+                )));
+            }
+            if program == Program::Git && self.trust.is_untrusted() {
+                return Err(EngineExecError::Refused(format!(
+                    "{UNTRUSTED_UNCONFINED} ({unmet})"
                 )));
             }
             warn_unconfined_once(&unmet);
@@ -382,6 +454,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(process.seen(), [git_key("status")]);
+    }
+
+    #[test]
+    fn only_an_untrusted_projects_git_outside_any_sandbox_is_refused() {
+        let sandboxed = Confinement::Sandboxed {
+            policy: SandboxPolicy::default(),
+            require_enforcement: false,
+            tmpdir: None,
+        };
+        for trust in [
+            ProjectTrust::NoProject,
+            ProjectTrust::Trusted,
+            ProjectTrust::Untrusted,
+        ] {
+            assert!(
+                matches!(
+                    admit_git(trust, &GitAccess::ReadOnly, &sandboxed),
+                    Admission::Run { .. }
+                ),
+                "{trust:?} in a sandbox"
+            );
+            let unconfined = admit_git(trust, &GitAccess::ReadOnly, &Confinement::Unconfined);
+            assert_eq!(
+                matches!(unconfined, Admission::Refuse(_)),
+                trust == ProjectTrust::Untrusted,
+                "{trust:?} unconfined: {unconfined:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_projects_git_a_sandbox_cannot_hold_does_not_run() {
+        let process = ScriptedProcess::new().with(git_key("status"), ScriptedRun::ok(""));
+        let exec = ExecProviders {
+            sandbox: Arc::new(NoSandbox),
+            ..with_process(process.clone())
+        };
+        let engine = EngineExec::new(
+            exec,
+            Confinement::Sandboxed {
+                policy: SandboxPolicy::default(),
+                require_enforcement: false,
+                tmpdir: None,
+            },
+            ProjectTrust::Untrusted,
+        );
+        let refused = engine
+            .git(
+                Path::new("/repo"),
+                GitAccess::ReadOnly,
+                &["status"],
+                DEADLINE,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, EngineExecError::Refused(_)),
+            "{refused:?}"
+        );
+        assert!(process.seen().is_empty(), "git ran anyway");
+    }
+
+    #[tokio::test]
+    async fn read_head_follows_a_gitdir_link_and_walks_up() {
+        use crate::interface::exec::in_process::InMemoryFileSystem;
+        let fs = InMemoryFileSystem::new();
+        fs.write_str(Path::new("/repo/.git/HEAD"), "ref: refs/heads/feature/x\n")
+            .await
+            .unwrap();
+        fs.create_dir_all(Path::new("/repo/src/deep"))
+            .await
+            .unwrap();
+        assert_eq!(
+            read_head(&fs, Path::new("/repo/src/deep")).await,
+            Some(Head {
+                branch: Some("feature/x".into()),
+                linked: false
+            })
+        );
+
+        fs.write_str(Path::new("/wt/.git"), "gitdir: /repo/.git/worktrees/wt\n")
+            .await
+            .unwrap();
+        fs.write_str(
+            Path::new("/repo/.git/worktrees/wt/HEAD"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_head(&fs, Path::new("/wt")).await,
+            Some(Head {
+                branch: None,
+                linked: true
+            })
+        );
+
+        fs.write_str(Path::new("/sub/.git"), "gitdir: ../repo/.git\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_head(&fs, Path::new("/sub"))
+                .await
+                .and_then(|h| h.branch),
+            Some("feature/x".into())
+        );
+        fs.create_dir_all(Path::new("/plain")).await.unwrap();
+        assert_eq!(read_head(&fs, Path::new("/plain")).await, None);
     }
 
     #[tokio::test]

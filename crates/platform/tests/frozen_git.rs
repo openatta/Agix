@@ -101,9 +101,9 @@ async fn the_engines_git_does_not_run_the_repositorys_fsmonitor() {
 }
 
 /// The session's commands are sandboxed and the host requires that, but
-/// the sandbox cannot hold git: the engine goes without git context
-/// rather than run git outside it. Without the requirement it runs the
-/// plain git the session's commands then get too.
+/// the sandbox cannot hold git: the engine does not run git outside it, and
+/// takes no more than the branch `HEAD` names. Without the requirement it
+/// runs the plain git the session's commands then get too.
 #[tokio::test]
 async fn a_git_the_sandbox_cannot_hold_is_not_run_when_the_host_requires_one() {
     let pwd = std::env::current_dir().unwrap();
@@ -133,9 +133,11 @@ async fn a_git_the_sandbox_cannot_hold_is_not_run_when_the_host_requires_one() {
     };
 
     let refused = collect(true).await;
-    assert!(!refused.is_git);
     assert!(refused.git_status.is_none());
-    assert!(refused.git_branch.is_none());
+    assert!(refused.git_log.is_none());
+    assert!(refused.git_main_branch.is_none());
+    let head = base::engine_exec::read_head(&*platform::local_providers().filesystem, &pwd).await;
+    assert_eq!(refused.git_branch, head.and_then(|h| h.branch));
 
     assert!(collect(false).await.is_git);
 }
@@ -223,4 +225,44 @@ async fn refresh_git_status_picks_up_a_commit_made_mid_session() {
          mid-session, got: {:?}",
         ctx.git_status
     );
+}
+
+/// An untrusted project, its commands unsandboxed: the engine runs none of
+/// its repository's git — not even the fsmonitor a plain git would — and the
+/// snapshot has the branch from `HEAD`.
+#[tokio::test]
+async fn an_untrusted_repository_outside_a_sandbox_gives_only_its_branch() {
+    let dir = TempDir::new().unwrap();
+    let repo = dir.path();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "-b", "topic"]);
+    let marker = repo.join("fsmonitor-ran");
+    run(&[
+        "config",
+        "core.fsmonitor",
+        &format!("touch '{}'; false", marker.display()),
+    ]);
+    let engine_git = EngineExec::new(
+        platform::local_providers(),
+        Confinement::Unconfined,
+        ProjectTrust::Untrusted,
+    );
+    let ctx = FrozenContext::collect(
+        repo.to_path_buf(),
+        &test_paths(repo),
+        &SystemEnvironment,
+        &engine_git,
+    )
+    .await;
+    assert!(ctx.is_git);
+    assert_eq!(ctx.git_branch.as_deref(), Some("topic"));
+    assert!(ctx.git_status.is_none() && ctx.git_user_name.is_none());
+    assert!(!marker.exists(), "the engine ran the repository's git");
 }

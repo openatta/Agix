@@ -78,12 +78,23 @@ struct Daemon {
 
 impl Daemon {
     async fn start() -> Self {
+        Self::start_with(json!({}), false).await
+    }
+
+    /// `global` is merged over a global tier that turns the sandbox off;
+    /// `project` gives the work directory a project tier of its own.
+    async fn start_with(global: Value, project: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (home, work) = (dir.path().join("home"), dir.path().join("work"));
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&work).unwrap();
-        let global = json!({ "sandbox": {"dangerously_disable_sandbox": true} });
-        std::fs::write(home.join("settings.json"), global.to_string()).unwrap();
+        if project {
+            std::fs::create_dir_all(work.join(".agix")).unwrap();
+            std::fs::write(work.join(".agix/settings.json"), "{}").unwrap();
+        }
+        let mut settings = global;
+        settings["sandbox"]["dangerously_disable_sandbox"] = json!(true);
+        std::fs::write(home.join("settings.json"), settings.to_string()).unwrap();
 
         let sock = dir.path().join("agix.sock");
         let paths =
@@ -204,4 +215,23 @@ async fn a_helper_program_a_variable_names_is_asked_about_not_run() {
     );
     let shown = serde_json::to_string(&daemon.model.nth_request(3).unwrap()).unwrap();
     assert!(shown.contains("x.sh"), "`ls` ran without asking: {shown}");
+}
+
+/// An untrusted project's repository configuration can name programs git
+/// starts; with no sandbox to hold them its git is asked about, not let
+/// through as a read. A trusted project's is not, nor is `ls`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_untrusted_projects_git_is_asked_about_without_a_sandbox() {
+    for (trust, asked) in [
+        ("untrusted", vec!["toolu_git".to_string()]),
+        ("trusted", Vec::new()),
+    ] {
+        let daemon = Daemon::start_with(json!({"project_trust": {"default": trust}}), true).await;
+        daemon
+            .model
+            .push_turn(bash_round("toolu_git", "git status --short"));
+        daemon.model.push_turn(bash_round("toolu_ls", "ls"));
+        daemon.model.push_turn(text_round("done"));
+        assert_eq!(daemon.turn_denying_prompts().await, asked, "{trust}");
+    }
 }
