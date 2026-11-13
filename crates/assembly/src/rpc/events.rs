@@ -582,6 +582,7 @@ impl SessionEventPayload {
             AgentEvent::Error {
                 failure,
                 turn_id: _,
+                persisted: _,
             } => Self::error(failure),
         })
     }

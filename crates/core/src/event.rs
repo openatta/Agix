@@ -381,6 +381,10 @@ pub enum AgentEvent {
     Error {
         failure: TurnFailure,
         turn_id: String,
+        /// As `TurnComplete::persisted`: what the turn got to — the user's
+        /// message at least — is in the session's log.
+        #[serde(default = "logged")]
+        persisted: bool,
     },
 }
 

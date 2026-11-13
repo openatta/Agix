@@ -296,10 +296,14 @@ impl Agent {
                                     exit_reason = "shutdown_command";
                                     break;
                                 }
+                                // A user turn's failure was announced as it
+                                // ended, with what its log took.
+                                Err(_) if user_turn.is_some() => {}
                                 Err(e) => {
                                     let _ = self.channels.event_tx.send(AgentEvent::Error {
                                         failure: e.failure(),
                                         turn_id: self.current_turn_id.clone(),
+                                        persisted: true,
                                     });
                                 }
                             }

@@ -617,7 +617,8 @@ impl Agent {
     /// `persisted`, "its log has all of it" — the daemon hands the session to
     /// the next caller on it, and may rebuild it from that log straight away.
     /// A turn whose log writes failed still completes: it ran, and reporting
-    /// it failed would have it sent again.
+    /// it failed would have it sent again. A turn that fails ends with
+    /// `Error`, which says `persisted` the same way.
     pub(super) async fn finish_turn(
         &mut self,
         outcome: Result<TurnOutcome, TurnError>,
@@ -649,6 +650,13 @@ impl Agent {
         }
         crate::agent::lock_turn_cancel(&self.channels.current_turn_cancel)
             .ended(&self.current_turn_id);
+        if let Err(e) = &outcome {
+            let _ = self.channels.event_tx.send(AgentEvent::Error {
+                failure: e.failure(),
+                turn_id: self.current_turn_id.clone(),
+                persisted,
+            });
+        }
         if let Ok(o) = &outcome {
             {
                 let spent = &mut self.session_state.ledger().spent;

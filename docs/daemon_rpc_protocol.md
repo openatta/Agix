@@ -847,7 +847,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
       "phase":"running",                 // 同 session.get 的 turn_state:idle | running | rebuilding | operating
       "generation":3,                    // 第几代引擎;每次原地重建换下一代
       "turn":{ "turn_id":"t2", "running_ms":41250 },   // 只在 running 时有值,否则 null
-      "log":{ "behind":false },          // 上一轮 turn_complete 报了 persisted:false、还没补写上(§7.2)
+      "log":{ "behind":false },          // 上一轮写日志失败(turn_complete 报 persisted:false,或以 error 结束时同样没写进去)、还没补写上(§7.2)
       "last_failure":{ "kind":"auth" } } // 最近一次失败的一轮,kind 同 §9.1;没失败过为 null
   ],
   "stopping_engines": 0 }               // 已移出内存、还没停下的引擎数
@@ -2831,7 +2831,9 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 文件改过,所以照样以 `turn_complete` 结束、`run_turn` 照样成功 —— 不要把它当失败重发。但
 transcript、目标、计划模式与 todo 的落盘落在后面,内存里的会话是唯一完整的一份:daemon 不会
 因空闲或腾位置驱逐它,需要重建的调用(`session.setPrompt`、换厂商的 `session.setModel`)先让
-引擎补写,补写失败就拒绝,`ENGINE_ERROR`,`kind` 为 `persist_failed`,会话照旧。下一轮开头会
+引擎补写,补写失败就拒绝,`ENGINE_ERROR`,`kind` 为 `persist_failed`,会话照旧。以 `error`
+结束的一轮写日志失败时也是这样,只是 `error` 帧上没有 `persisted`,要看 `daemon.doctor` 里会话的
+`log.behind`。下一轮开头会
 自动补写,之后某一轮报 `persisted: true` 就说明日志已经追上。`session.close` 照常关闭,引擎
 退出前再试一次补写。
 
@@ -2985,7 +2987,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | `session_closed` | 这一轮中途会话被关闭或删除 | `false` |
 | `engine_stopped` | 引擎在一轮中途退出;会话已移出内存,下一次调用从 transcript 恢复它 | `true` |
 | `engine_unreachable` | 引擎没有接下、没有回答一个回合之外的请求 | `true` |
-| `persist_failed` | 会话的日志缺了它在内存里的一部分(上一轮 `turn_complete` 报 `persisted: false`),重建前补写又失败;会话没有重建,照旧在跑 | `true` |
+| `persist_failed` | 会话的日志缺了它在内存里的一部分(上一轮写日志失败,如 `turn_complete` 报 `persisted: false`),重建前补写又失败;会话没有重建,照旧在跑 | `true` |
 | `internal` | 引擎内部错误 | `false` |
 
 以后可能增加取值;不认识的 `kind` 按 `retryable` 处理。

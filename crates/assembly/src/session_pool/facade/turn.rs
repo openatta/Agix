@@ -422,9 +422,14 @@ impl SessionPool {
                     }
                     return Ok((api_calls, ended_with, event_rx));
                 }
-                AgentEvent::Error { ref failure, .. } => {
+                AgentEvent::Error {
+                    ref failure,
+                    persisted,
+                    ..
+                } => {
                     let failure = failure.clone();
                     core.set_last_failure(failure.kind);
+                    core.log().set_behind(!persisted);
                     // The caller learns this from its own result; every other
                     // watcher would otherwise see a turn that never ends.
                     let last = frame_of(SessionEvent::Agent(event));

@@ -633,6 +633,64 @@ async fn a_session_whose_log_fell_behind_is_neither_rebuilt_nor_evicted_until_it
     assert!(!core.log().is_behind());
 }
 
+/// Fails every call as the provider refusing the key.
+struct RefusesTheKey;
+
+#[async_trait::async_trait]
+impl base::interface::model::Model for RefusesTheKey {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+
+    async fn stream(
+        &self,
+        _: Vec<base::prompt::PromptBlock>,
+        _: Vec<base::interface::model::ToolDef>,
+        _: Vec<base::interface::model::ModelMessage>,
+        _: base::interface::model::StreamParams,
+        _: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        Err(base::interface::model::ModelError::auth(
+            "invalid x-api-key",
+        ))
+    }
+}
+
+/// A turn that fails still has the user's message to write. When the log
+/// does not take it, the session is behind its log just as after a turn that
+/// completed unwritten: a rebuild from that log is refused.
+#[tokio::test]
+async fn a_failed_turn_the_log_did_not_take_leaves_the_session_behind_its_log() {
+    let store = Arc::new(StoreThatGoesDown::default());
+    let (pool, _dir) = super::mcp_for_project::test_pool_with_store(Some(store.clone())).await;
+    answered_by(&pool, Arc::new(RefusesTheKey)).await;
+    let sid = new_session(&pool).await;
+    let (generation, _) = slot_and_state(&pool, &sid).await;
+
+    store.down.store(true, Ordering::SeqCst);
+    match pool
+        .run_turn(turn(&sid, "t1", "first", OnBusy::Reject), None)
+        .await
+    {
+        Err(PoolError::Engine(failure)) => {
+            assert_eq!(failure.kind, base::event::FailureKind::Auth)
+        }
+        Err(e) => panic!("{e}"),
+        Ok(v) => panic!("the turn succeeded: {v:?}"),
+    }
+    let core = pool.live.core_of(&sid).await.unwrap();
+    assert!(core.log().is_behind(), "the pool knows the log is behind");
+
+    match pool.set_session_prompt(&sid, append).await {
+        Err(PoolError::Engine(failure)) => {
+            assert_eq!(failure.kind, base::event::FailureKind::PersistFailed)
+        }
+        Err(e) => panic!("{e}"),
+        Ok(v) => panic!("rebuilt from a log that lacks part of the session: {v:?}"),
+    }
+    assert_eq!(slot_and_state(&pool, &sid).await.0, generation);
+}
+
 /// `session.get` says a session is being rebuilt while it is, and idle once
 /// the rebuild is done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

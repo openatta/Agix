@@ -244,7 +244,8 @@ transcript 不变,恢复策略重发的就是失败的那个请求;每次调用�
 落盘和宣布结束都只在 `finish_turn` 做一次,所以哪条路都跳不过。顺序本身是契约:宿主
 把 `TurnComplete` 读作"会话空闲",`persisted` 为真时还是"它的日志已经有了全部"——daemon 收到它就
 把会话交给下一个调用方,并可能立刻从日志重建它。写日志失败的一轮照样以 `TurnComplete` 结束
-(它确实跑了,报失败会诱导重发),只是 `persisted` 为假:池把会话记成日志落后
+(它确实跑了,报失败会诱导重发),只是 `persisted` 为假;以失败结束的一轮发的 `Error` 同样带
+`persisted`。两种结局只要 `persisted` 为假,池就把会话记成日志落后
 (`SessionCore` 的 `LogHealth`),落后期间不驱逐它,重建前先发 `InputMessage::Flush` 让引擎补写,
 补写失败就不重建、报 `persist_failed`;没写进去的目标变更和持久状态退回 `SessionState`,下一次写
 时再写。每一步开始前也落一次盘,进程在
