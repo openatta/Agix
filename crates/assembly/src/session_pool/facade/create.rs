@@ -238,7 +238,7 @@ impl SessionPool {
             .permission(permission)
             .session_id(session_id.clone())
             .commands_override(binding.commands.clone())
-            .cron_store(self.schedule.clone())
+            .cron_store(self.scheduler.store())
             .question_prompts(options.is_some_and(SessionOptions::answers_questions));
         if let Some(ref store) = self.history_store {
             builder = builder.history_store(store.clone());

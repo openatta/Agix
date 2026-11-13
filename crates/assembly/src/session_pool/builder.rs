@@ -173,9 +173,7 @@ impl SessionPoolBuilder {
         #[cfg(feature = "mcp")]
         let (mcp_auth, mcp_policy) = self.mcp.into_auth(&settings);
         let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
-        let schedule = Arc::new(tools::cron::CronStore::load_or_default(Some(
-            settings.paths.user_data_dir.join("scheduled_tasks.json"),
-        )));
+        let scheduler = Scheduler::load(settings.paths.user_data_dir.join("scheduled_tasks.json"));
 
         let paths = self.paths;
         let scene = self.scene;
@@ -217,7 +215,7 @@ impl SessionPoolBuilder {
             mcp_policy,
             managed_settings_path,
             managed_settings,
-            schedule,
+            scheduler,
             this: this.clone(),
             events_tx,
             health: std::sync::RwLock::new(base::interface::health::HealthChecks::new()),

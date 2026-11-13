@@ -110,26 +110,29 @@ impl SessionPool {
             .get(session_id)
             .and_then(|live| live.state.clone());
         let mut tasks = state.as_ref().map(|s| s.task_infos()).unwrap_or_default();
-        tasks.extend(self.schedule.list_for(session_id).into_iter().map(|job| {
-            base::context::TaskInfo {
-                task_id: job.id,
-                kind: base::context::TaskType::CronJob,
-                status: base::context::TaskStatus::Waiting,
-                started_ms: job.created_ms,
-                ended_ms: None,
-                detail: serde_json::json!({
-                    "cron": job.cron,
-                    "prompt": job.prompt,
-                    "recurring": job.recurring,
-                    "durable": job.durable,
-                    "expires_ms": job.expires_ms,
+        tasks.extend(
+            self.scheduler
+                .list(Some(session_id))
+                .into_iter()
+                .map(|job| base::context::TaskInfo {
+                    task_id: job.id,
+                    kind: base::context::TaskType::CronJob,
+                    status: base::context::TaskStatus::Waiting,
+                    started_ms: job.created_ms,
+                    ended_ms: None,
+                    detail: serde_json::json!({
+                        "cron": job.cron,
+                        "prompt": job.prompt,
+                        "recurring": job.recurring,
+                        "durable": job.durable,
+                        "expires_ms": job.expires_ms,
+                    }),
+                    error: None,
+                    waiting_for: Vec::new(),
+                    usage: None,
+                    structured_output: None,
                 }),
-                error: None,
-                waiting_for: Vec::new(),
-                usage: None,
-                structured_output: None,
-            }
-        }));
+        );
         Ok(api::SessionTasks {
             active: state.is_some(),
             tasks,
@@ -194,7 +197,7 @@ impl SessionPool {
     /// `TaskStop` stops it — a shell command's whole process group goes.
     /// `false` if there is no such running task.
     pub async fn stop_task(&self, session_id: &str, task_id: &str) -> bool {
-        if self.schedule.remove_for(session_id, task_id) {
+        if self.scheduler.remove_for(session_id, task_id) {
             return true;
         }
         let state = self

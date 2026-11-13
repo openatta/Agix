@@ -56,6 +56,7 @@ use facade::settings_reload::*;
 use mcp_status::*;
 use parts::hub::SessionHub;
 use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
+use parts::scheduler::{Scheduler, TurnLauncher};
 use permission_scripts::*;
 use pool_telemetry::*;
 
@@ -664,9 +665,9 @@ pub struct SessionPool {
     /// it found there: applied on top of every settings it loads.
     managed_settings_path: PathBuf,
     managed_settings: Option<base::managed_settings::ManagedSettings>,
-    /// Every session's scheduled jobs, fired by this pool's scheduler (see
-    /// `start_scheduler`) whether or not the session is in memory.
-    schedule: Arc<tools::cron::CronStore>,
+    /// Every session's scheduled jobs, fired as turns of their sessions
+    /// whether or not the session is in memory.
+    scheduler: Scheduler,
     /// This pool, for the tasks it starts that outlive the call that started
     /// them. Set by `Arc::new_cyclic` in the builder, so always there.
     this: std::sync::Weak<SessionPool>,

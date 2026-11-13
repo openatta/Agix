@@ -205,7 +205,7 @@ impl SessionPool {
                     }
                     match store.delete(child).await {
                         Ok(()) => {
-                            self.schedule.remove_session(&child_str);
+                            self.scheduler.remove_session(&child_str);
                             self.emit_event(api::DaemonEvent::SessionDeleted {
                                 session_id: child_str.clone(),
                                 parent_session_id: Some(parent_session_id.to_string()),
@@ -345,7 +345,7 @@ impl SessionPool {
         delete_result.map_err(|e| PoolError::Internal(e.to_string()))?;
         let scratch = base::paths::session_scratch_dir(&self.paths.global_root(), session_id);
         let _ = std::fs::remove_dir_all(scratch);
-        self.schedule.remove_session(session_id);
+        self.scheduler.remove_session(session_id);
         self.emit_event(api::DaemonEvent::SessionDeleted {
             session_id: session_id.to_string(),
             parent_session_id: None,

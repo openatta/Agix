@@ -95,65 +95,21 @@ impl SessionPool {
 
     /// Fire scheduled jobs as they come due, for as long as the pool lives.
     ///
-    /// Checks at the top of every minute — a 5-field cron expression's
-    /// resolution. A due job runs as a turn of its session through
-    /// [`Self::run_turn`], the same path a client's message takes, so it
-    /// queues behind a running turn, is announced as `turn_started` /
-    /// `turn_completed` with initiator `"schedule"`, and its frames reach
-    /// whoever watches the session. A session that is not in memory is
-    /// resumed for it. Jobs missed while the daemon was down are not caught up.
+    /// A due job runs as a turn of its session through [`Self::run_turn`],
+    /// the same path a client's message takes, so it queues behind a running
+    /// turn, is announced as `turn_started` / `turn_completed` with initiator
+    /// `"schedule"`, and its frames reach whoever watches the session. A
+    /// session that is not in memory is resumed for it. Jobs missed while the
+    /// daemon was down are not caught up.
     pub fn start_scheduler(self: &Arc<Self>) {
-        let pool = Arc::downgrade(self);
-        tokio::spawn(async move {
-            loop {
-                let into_minute = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() % 60_000)
-                    .unwrap_or(0) as u64;
-                tokio::time::sleep(Duration::from_millis(60_000 - into_minute + 50)).await;
-                let Some(pool) = pool.upgrade() else {
-                    return;
-                };
-                tokio::spawn(async move {
-                    pool.run_due_jobs(time::OffsetDateTime::now_utc()).await;
-                });
-            }
-        });
+        let launcher: std::sync::Weak<dyn TurnLauncher> = self.this.clone();
+        self.scheduler.start(launcher);
     }
 
     /// Fire every job due at `now`, each as its session's turn, and return
     /// once those turns have ended. The scheduler calls this every minute.
     pub async fn run_due_jobs(&self, now: time::OffsetDateTime) {
-        let turns: Vec<_> = self
-            .schedule
-            .pop_due_at(now)
-            .into_iter()
-            .map(|job| self.fire_scheduled(job))
-            .collect();
-        futures::future::join_all(turns).await;
-    }
-
-    /// Run one scheduled job as a turn of its session.
-    pub(in crate::session_pool) async fn fire_scheduled(&self, job: tools::cron::CronJob) {
-        let Some(session_id) = job.session_id.clone() else {
-            warn!(job_id = %job.id, "scheduled job belongs to no session; dropping it");
-            self.schedule.remove(&job.id);
-            return;
-        };
-        info!(job_id = %job.id, %session_id, "scheduled job fired");
-        let request = TurnRequest {
-            session_id: Some(session_id.clone()),
-            message: job.prompt.clone(),
-            attachments: Vec::new(),
-            turn_id: format!("schedule-{}-{}", job.id, Id::new()),
-            options: None,
-            on_busy: OnBusy::Queue,
-            initiator: Initiator::Schedule,
-        };
-        let response = self.run_turn(request, None).await;
-        if let Err(e) = response {
-            warn!(job_id = %job.id, %session_id, error = %e, "scheduled job's turn failed");
-        }
+        self.scheduler.run_due(self, now).await;
     }
 
     /// Schedule `prompt` to run as a turn of `session_id` on `cron`.
@@ -161,42 +117,21 @@ impl SessionPool {
         &self,
         new: api::NewSchedule,
     ) -> Result<tools::cron::CronJob, PoolError> {
-        let text = |value: &str| value.trim().to_string();
-        let (session_id, cron, prompt) =
-            (text(&new.session_id), text(&new.cron), text(&new.prompt));
-        if session_id.is_empty() || cron.is_empty() || prompt.is_empty() {
-            return Err(PoolError::InvalidRequest(
-                "schedule.create needs session_id, cron and prompt".to_string(),
-            ));
+        let job = Scheduler::prepare(new)?;
+        let session_id = job.session_id.as_deref().unwrap_or_default();
+        if !self.session_exists(session_id).await {
+            return Err(PoolError::no_session(session_id));
         }
-        if !tools::cron::cron_expression_valid(&cron) {
-            return Err(PoolError::InvalidRequest(format!(
-                "invalid cron expression `{cron}`: expected 5 fields, M H DoM Mon DoW"
-            )));
-        }
-        if !self.session_exists(&session_id).await {
-            return Err(PoolError::no_session(&session_id));
-        }
-        Ok(self.schedule.add_job(tools::cron::NewCronJob {
-            cron,
-            prompt,
-            recurring: new.recurring,
-            durable: new.durable,
-            session_id: Some(session_id),
-            expires_ms: None,
-        }))
+        Ok(self.scheduler.add(job))
     }
 
     /// Scheduled jobs, all of them or one session's.
     pub fn schedule_list(&self, session_id: Option<&str>) -> Vec<tools::cron::CronJob> {
-        match session_id {
-            Some(sid) => self.schedule.list_for(sid),
-            None => self.schedule.list(),
-        }
+        self.scheduler.list(session_id)
     }
 
     pub fn schedule_remove(&self, id: &str) -> bool {
-        self.schedule.remove(id)
+        self.scheduler.remove(id)
     }
 
     pub fn start_janitor(self: &Arc<Self>) {
@@ -231,5 +166,30 @@ impl SessionPool {
                 }
             }
         });
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnLauncher for SessionPool {
+    async fn launch_scheduled(&self, job: tools::cron::CronJob) {
+        let Some(session_id) = job.session_id.clone() else {
+            warn!(job_id = %job.id, "scheduled job belongs to no session; dropping it");
+            self.scheduler.remove(&job.id);
+            return;
+        };
+        info!(job_id = %job.id, %session_id, "scheduled job fired");
+        let request = TurnRequest {
+            session_id: Some(session_id.clone()),
+            message: job.prompt.clone(),
+            attachments: Vec::new(),
+            turn_id: format!("schedule-{}-{}", job.id, Id::new()),
+            options: None,
+            on_busy: OnBusy::Queue,
+            initiator: Initiator::Schedule,
+        };
+        let response = self.run_turn(request, None).await;
+        if let Err(e) = response {
+            warn!(job_id = %job.id, %session_id, error = %e, "scheduled job's turn failed");
+        }
     }
 }
