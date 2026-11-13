@@ -1224,7 +1224,7 @@ Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tic
 
 `on_session` 在会话的工具表、事件总线、权限、hooks 都建好之后、场景的工具策略
 生效之前调用,所以模块注册的工具与内建工具受同一套场景约束。`SessionContext`
-交出这些部件,外加三样晚绑定的服务:`provide_agent_spawner` / `agent_spawner`、
+交出这些部件,外加三样晚绑定的服务:`provide_delegator` / `delegator`、
 `provide_skill_catalog` / `skill_catalog`、`provide_mcp` / `mcp_for_delegates`。
 
 - 模块按装入顺序运行;`requires` 列出的必须排在前面,缺失、排在后面、重复装入都让

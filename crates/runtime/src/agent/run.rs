@@ -40,12 +40,6 @@ impl Agent {
         &self.session_end.ended
     }
 
-    /// How this session starts sub-agents, for a host that starts one itself
-    /// (`AgentSpawner::start_agent`). Refuses when no module provided one.
-    pub fn agent_spawner(&self) -> Arc<dyn base::interface::agent_spawner::AgentSpawner> {
-        self.tooling.agent_spawner.clone()
-    }
-
     /// How this session delegates, for a host that starts a sub-agent itself
     /// (`DelegateMode::Host`). Refuses when no module provided one.
     pub fn delegator(&self) -> Arc<dyn base::interface::delegate::Delegator> {

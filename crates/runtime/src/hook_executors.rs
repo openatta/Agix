@@ -5,8 +5,11 @@
 //! `PromptHookExecutor` doc comment in `hooks::runner`); without an executor
 //! a `"type": "prompt"` or `"type": "agent"` hook is `HookOutcome::Skipped`
 //! with "no executor configured". `Builder::build()` wires these in using
-//! the same `model`/agent-spawning capability it already has on hand.
+//! the session's `model` and its `Delegator`.
 
+use base::interface::delegate::{
+    DelegateEnd, DelegateMode, DelegateRequest, Delegated, Delegator, StopsWith, Workdir,
+};
 use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelEvent, ModelMessage, StreamParams,
 };
@@ -98,27 +101,23 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
     }
 }
 
-/// Runs a `"type": "agent"` hook by delegating to the same `AgentSpawner`
-/// used for sub-agent tool calls (see `agents::spawner::RuntimeAgentSpawner`).
-/// The `HookInput` payload is folded into the prompt text (`AgentSpawner`
-/// has no separate "context" parameter); a hook's `model` runs the agent on
-/// that model, routed the way the session routes a model name.
-pub struct AgentSpawnerHookExecutor {
-    spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
+/// Runs a `"type": "agent"` hook as a `DelegateMode::Hook` delegate of the
+/// session, stopping with the hook's `stop`. The `HookInput` payload is folded
+/// into the prompt; a hook's `model` runs the agent on that model, routed the
+/// way the session routes a model name.
+pub struct DelegatorHookExecutor {
+    delegator: Arc<dyn Delegator>,
     cwd: std::path::PathBuf,
 }
 
-impl AgentSpawnerHookExecutor {
-    pub fn new(
-        spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
-        cwd: std::path::PathBuf,
-    ) -> Self {
-        Self { spawner, cwd }
+impl DelegatorHookExecutor {
+    pub fn new(delegator: Arc<dyn Delegator>, cwd: std::path::PathBuf) -> Self {
+        Self { delegator, cwd }
     }
 }
 
 #[async_trait::async_trait]
-impl AgentHookExecutor for AgentSpawnerHookExecutor {
+impl AgentHookExecutor for DelegatorHookExecutor {
     async fn execute(
         &self,
         prompt: &str,
@@ -127,17 +126,27 @@ impl AgentHookExecutor for AgentSpawnerHookExecutor {
         stop: &CancellationToken,
     ) -> Result<String, String> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
-        let full_prompt = format!("{prompt}\n\nContext:\n{payload_json}");
-        let request = base::interface::agent_spawner::SpawnRequest::new(
-            full_prompt,
-            self.cwd.clone(),
-            stop.child_token(),
-        )
-        .model(model.map(str::to_string))
-        .mode(base::interface::agent_spawner::SpawnMode::Hook {
+        let mode = DelegateMode::Hook {
             judged_session: payload.session_id.clone(),
-        });
-        self.spawner.spawn(request).await.map_err(|e| e.to_string())
+        };
+        let stops_with = StopsWith::Call(stop.child_token());
+        let mut req = DelegateRequest::new(
+            format!("{prompt}\n\nContext:\n{payload_json}"),
+            mode,
+            stops_with,
+        );
+        req.model = model.map(str::to_string);
+        req.workdir = Workdir::At(self.cwd.clone());
+        match self.delegator.delegate(req).await {
+            Ok(Delegated::Finished(outcome)) => match outcome.end {
+                DelegateEnd::Failed(e) => Err(e),
+                DelegateEnd::Completed | DelegateEnd::Cancelled | DelegateEnd::CutShort(_) => {
+                    Ok(outcome.text)
+                }
+            },
+            Ok(Delegated::Started(_)) => Err("the hook's agent was started, not run".into()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
@@ -211,30 +220,47 @@ mod tests {
         assert_eq!(out, r#"{"decision":"approve"}"#);
     }
 
-    struct StubSpawner {
+    struct StubDelegator {
         response: &'static str,
     }
+
     #[async_trait::async_trait]
-    impl base::interface::agent_spawner::AgentSpawner for StubSpawner {
-        async fn spawn(
+    impl Delegator for StubDelegator {
+        async fn delegate(
             &self,
-            request: base::interface::agent_spawner::SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            Ok(match request.model {
-                Some(model) => format!("ran on {model}"),
-                None => self.response.to_string(),
-            })
+            req: DelegateRequest,
+        ) -> Result<Delegated, base::interface::delegate::DelegateError> {
+            assert!(
+                matches!(&req.mode, DelegateMode::Hook { judged_session } if judged_session == "test")
+            );
+            let text = match (&req.model, &req.stops_with) {
+                (_, StopsWith::Call(stop)) if stop.is_cancelled() => "stopped".to_string(),
+                (Some(model), _) => format!("ran on {model}"),
+                (None, _) => self.response.to_string(),
+            };
+            Ok(Delegated::Finished(
+                base::interface::delegate::DelegateOutcome {
+                    text,
+                    end: DelegateEnd::Completed,
+                    structured: None,
+                    session_id: "hook-agent".into(),
+                },
+            ))
         }
+
+        async fn stop_member(&self, _: &base::interface::delegate::TeamSeat) {}
+    }
+
+    fn judge() -> DelegatorHookExecutor {
+        let delegator = Arc::new(StubDelegator {
+            response: r#"{"ok":true}"#,
+        });
+        DelegatorHookExecutor::new(delegator, std::path::PathBuf::from("/tmp"))
     }
 
     #[tokio::test]
-    async fn agent_spawner_hook_executor_returns_the_spawned_agents_text() {
-        let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-            Arc::new(StubSpawner {
-                response: r#"{"ok":true}"#,
-            });
-        let executor = AgentSpawnerHookExecutor::new(spawner, std::path::PathBuf::from("/tmp"));
-        let out = executor
+    async fn an_agent_hook_answers_with_its_agents_text() {
+        let out = judge()
             .execute(
                 "review this",
                 None,
@@ -248,12 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_agent_hooks_model_is_the_model_its_agent_runs_on() {
-        let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-            Arc::new(StubSpawner {
-                response: r#"{"ok":true}"#,
-            });
-        let executor = AgentSpawnerHookExecutor::new(spawner, std::path::PathBuf::from("/tmp"));
-        let out = executor
+        let out = judge()
             .execute(
                 "review this",
                 Some("claude-haiku-4-5"),
@@ -263,5 +284,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, "ran on claude-haiku-4-5");
+    }
+
+    #[tokio::test]
+    async fn an_agent_hooks_agent_stops_with_the_hook() {
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let out = judge()
+            .execute("review this", None, &test_input(), &stop)
+            .await
+            .unwrap();
+        assert_eq!(out, "stopped");
     }
 }

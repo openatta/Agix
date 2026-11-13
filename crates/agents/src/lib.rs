@@ -3,13 +3,12 @@
 //!
 //! A session assembled with [`AgentsModule`] can delegate: it gets the `Agent`
 //! tool (withheld at the depth limit), provides the session's delegator to
-//! forked skills and the host, and its agent spawner to `"agent"` hooks, and —
-//! when `execution.team_enabled` and the scene does teamwork — the team tools.
+//! `"agent"` hooks, forked skills and the host, and — when
+//! `execution.team_enabled` and the scene does teamwork — the team tools.
 //! Each delegate it spawns is assembled with the same modules as its parent.
 
 pub mod agent_tool;
 mod delegate;
-pub mod spawner;
 mod type_watcher;
 
 use std::sync::Arc;
@@ -21,7 +20,6 @@ use crate::agent_tool::{AgentCatalog, AgentTool, SharedAgentTypeMap};
 use crate::delegate::{
     DelegateEnv, Delegator, HookAgents, Limits, PersistentMembers, SubagentSlots, ToolPool,
 };
-use crate::spawner::RuntimeAgentSpawner;
 
 pub const MODULE_ID: &str = "agents";
 
@@ -111,9 +109,6 @@ impl Module for AgentsModule {
         let delegator = Delegator::new(env, catalog, pool, limits, members);
         let tool = Arc::new(AgentTool::new(delegator.clone()));
 
-        let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-            Arc::new(RuntimeAgentSpawner::new(delegator.clone()));
-        cx.provide_agent_spawner(spawner);
         let delegator: Arc<dyn base::interface::delegate::Delegator> = delegator;
         cx.provide_delegator(delegator.clone());
 

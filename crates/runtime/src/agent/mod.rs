@@ -101,7 +101,7 @@ pub struct Agent {
 pub(crate) struct Identity {
     pub(crate) agent_depth: u32,
     pub(crate) agent_type: Option<String>,
-    pub(crate) team_seat: Option<base::interface::agent_spawner::TeamSeat>,
+    pub(crate) team_seat: Option<base::interface::delegate::TeamSeat>,
     drive_goals: bool,
     pub(crate) skip_warmup: bool,
 }
@@ -123,7 +123,6 @@ pub(crate) struct Tooling {
     pub(crate) skills: Arc<dyn base::interface::skill_catalog::SkillCatalog>,
     pub(crate) commands: std::sync::Arc<crate::commands::CommandRegistry>,
     pub(crate) mcp: Box<dyn base::interface::mcp_servers::McpServers>,
-    agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
     delegator: Arc<dyn base::interface::delegate::Delegator>,
     pub(crate) tool_middleware: Arc<Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>>,
     pub(crate) result_transformers:

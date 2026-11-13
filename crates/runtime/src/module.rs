@@ -17,7 +17,6 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use base::context::{EngineConfig, SessionState};
 use base::frozen::SkillEntry;
-use base::interface::agent_spawner::AgentSpawner;
 use base::interface::delegate::{DelegateError, DelegateRequest, Delegated, Delegator, TeamSeat};
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
@@ -85,21 +84,14 @@ pub struct SessionContext<'a> {
     /// Agent types the session's plugins declare.
     pub plugin_agent_types: &'a [base::agent_type::AgentTypeDefinition],
     pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,
-    pub(crate) agent_spawner: &'a LateAgentSpawner,
     pub(crate) delegator: &'a LateDelegator,
     pub(crate) skill_catalog: &'a LateSkillCatalog,
     pub(crate) session_ended: &'a CancellationToken,
 }
 
 impl SessionContext<'_> {
-    /// Makes `spawner` the session's way to start a sub-agent — for `"agent"`
-    /// hooks, forked skills, and any module after this one.
-    pub fn provide_agent_spawner(&mut self, spawner: Arc<dyn AgentSpawner>) {
-        self.agent_spawner.set(spawner);
-    }
-
-    /// Makes `delegator` the session's way to delegate — for forked skills,
-    /// a host's `startAgent`, and any module after this one.
+    /// Makes `delegator` the session's way to delegate — for `"agent"` hooks,
+    /// forked skills, a host's `startAgent`, and any module after this one.
     pub fn provide_delegator(&mut self, delegator: Arc<dyn Delegator>) {
         self.delegator.set(delegator);
     }
@@ -113,11 +105,6 @@ impl SessionContext<'_> {
     /// turn on the session's behalf stops on it.
     pub fn session_ended(&self) -> CancellationToken {
         self.session_ended.clone()
-    }
-
-    /// The session's spawner if a module earlier in the list provided one.
-    pub fn agent_spawner(&self) -> Option<Arc<dyn AgentSpawner>> {
-        self.agent_spawner.get()
     }
 
     /// Makes `servers` the MCP servers the session is connected to.
@@ -203,69 +190,9 @@ impl SkillCatalog for LateSkillCatalog {
     }
 }
 
-/// An [`AgentSpawner`] whose implementation arrives after the things holding
-/// it were built: hooks and skills are constructed before the module that
-/// knows how to spawn agents has run. Until one is provided — or in a session
-/// assembled without one — every spawn is refused.
-#[derive(Default, Clone)]
-pub(crate) struct LateAgentSpawner(Arc<OnceLock<Arc<dyn AgentSpawner>>>);
-
-impl LateAgentSpawner {
-    pub(crate) fn set(&self, spawner: Arc<dyn AgentSpawner>) {
-        let _ = self.0.set(spawner);
-    }
-
-    fn get(&self) -> Option<Arc<dyn AgentSpawner>> {
-        self.0.get().cloned()
-    }
-
-    fn require(&self) -> Result<&Arc<dyn AgentSpawner>, Box<dyn std::error::Error + Send>> {
-        self.0.get().ok_or_else(|| {
-            Box::new(std::io::Error::other(
-                "this session was assembled without sub-agents",
-            )) as Box<dyn std::error::Error + Send>
-        })
-    }
-}
-
-#[async_trait]
-impl AgentSpawner for LateAgentSpawner {
-    async fn spawn(
-        &self,
-        request: base::interface::agent_spawner::SpawnRequest,
-    ) -> Result<String, Box<dyn std::error::Error + Send>> {
-        self.require()?.spawn(request).await
-    }
-
-    async fn start_agent(
-        &self,
-        request: base::interface::agent_spawner::AgentRequest,
-        session: Arc<SessionState>,
-        cancel: CancellationToken,
-    ) -> Result<
-        base::interface::agent_spawner::StartedAgent,
-        base::interface::agent_spawner::StartAgentError,
-    > {
-        match self.0.get() {
-            Some(spawner) => spawner.start_agent(request, session, cancel).await,
-            None => Err(
-                base::interface::agent_spawner::StartAgentError::Unsupported(
-                    "this session was assembled without sub-agents".into(),
-                ),
-            ),
-        }
-    }
-
-    async fn stop_team_member(&self, team_name: &str, member_name: &str) {
-        if let Some(spawner) = self.get() {
-            spawner.stop_team_member(team_name, member_name).await;
-        }
-    }
-}
-
-/// A [`Delegator`] provided after the things holding it were built: the
-/// agent, and the host through it, hold this before the module that
-/// delegates has run. Until one is provided — or in a session assembled
+/// A [`Delegator`] provided after the things holding it were built: hooks,
+/// skills, the agent and the host through it hold this before the module
+/// that delegates has run. Until one is provided — or in a session assembled
 /// without one — every request is refused.
 #[derive(Default, Clone)]
 pub(crate) struct LateDelegator(Arc<OnceLock<Arc<dyn Delegator>>>);

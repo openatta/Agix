@@ -326,9 +326,7 @@ pub enum AgentEvent {
         agent_session_id: String,
         /// Named agent type, when the spawn selected one.
         agent_type: Option<String>,
-        /// Parent session id, when the spawn site knew it (`""` otherwise —
-        /// e.g. the generic `AgentSpawner` bridge, which has no
-        /// `ToolContext`).
+        /// Parent session id, when the spawn site knew it (`""` otherwise).
         parent_session_id: String,
         /// Parent turn number, `0` when unknown (same caveat as above).
         parent_turn: u32,

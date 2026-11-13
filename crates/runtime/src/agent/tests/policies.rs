@@ -9,7 +9,7 @@ fn build_hook_runner_defaults_to_empty_without_hooks_config() {
     let runner = build_hook_runner(
         &settings,
         model,
-        Arc::new(crate::module::LateAgentSpawner::default()),
+        Arc::new(crate::module::LateDelegator::default()),
         None,
     );
     assert!(runner.is_empty());
@@ -27,7 +27,7 @@ fn build_hook_runner_parses_hooks_config_into_real_hooks() {
     let runner = build_hook_runner(
         &settings,
         model,
-        Arc::new(crate::module::LateAgentSpawner::default()),
+        Arc::new(crate::module::LateDelegator::default()),
         None,
     );
     assert!(!runner.is_empty());
@@ -53,7 +53,7 @@ fn build_hook_runner_keeps_hooks_for_unwired_events_and_only_warns() {
     let runner = build_hook_runner(
         &settings,
         model,
-        Arc::new(crate::module::LateAgentSpawner::default()),
+        Arc::new(crate::module::LateDelegator::default()),
         None,
     );
     assert!(
@@ -76,7 +76,7 @@ fn build_hook_runner_degrades_to_empty_on_malformed_hooks_config() {
     let runner = build_hook_runner(
         &settings,
         model,
-        Arc::new(crate::module::LateAgentSpawner::default()),
+        Arc::new(crate::module::LateDelegator::default()),
         None,
     );
     assert!(runner.is_empty());

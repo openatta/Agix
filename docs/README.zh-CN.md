@@ -186,7 +186,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 `build()` 先按场景收窄模块清单、检查每个模块声明的依赖,再建好这个会话自己的工具表、
 事件总线、权限与 hooks,然后让各模块贡献自己的东西(`on_session`)。模块注册的工具和
 内建工具受同一个场景白名单约束。有两样东西是**晚绑定**的,因为读它们的东西比提供它们的
-先建好:agent spawner(由 `agents` 提供,给 agent 型 hook 与 fork 型 skill 用)和 skill
+先建好:delegator(由 `agents` 提供,给 agent 型 hook、fork 型 skill 与宿主的 `startAgent` 用)和 skill
 目录(由 `skills` 提供)。子 Agent 用父会话收窄后的模块清单装配,所以每一层嵌套都一样。
 
 ### 一轮是什么

@@ -12,12 +12,12 @@ use super::*;
 /// (project > scene > global) so `Command` hooks can reference a bare
 /// script name — see `hooks::HookRunner::with_hooks_search_dirs` docs.
 ///
-/// `model`/`agent_tool` back the `"type": "prompt"` / `"type": "agent"`
+/// `model`/`delegator` back the `"type": "prompt"` / `"type": "agent"`
 /// hook executors (`crate::hook_executors`).
 pub(in crate::agent) fn build_hook_runner(
     settings: &LoadedSettings,
     model: Arc<dyn Model>,
-    agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
+    delegator: Arc<dyn base::interface::delegate::Delegator>,
     session_id: Option<String>,
 ) -> Arc<HookRunner> {
     // Key by key, not whole-map. `HooksSettings` is keyed by `HookEvent`,
@@ -82,8 +82,8 @@ pub(in crate::agent) fn build_hook_runner(
         settings.model.max_tokens,
         session_id,
     ));
-    let agent_executor = Arc::new(crate::hook_executors::AgentSpawnerHookExecutor::new(
-        agent_spawner,
+    let agent_executor = Arc::new(crate::hook_executors::DelegatorHookExecutor::new(
+        delegator,
         settings.paths.working_dir().to_path_buf(),
     ));
     let runner = HookRunner::new(parsed)

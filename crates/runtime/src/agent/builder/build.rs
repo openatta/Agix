@@ -191,7 +191,6 @@ impl Builder {
                 .into_iter()
                 .chain(std::mem::take(&mut quickjs_layer.agent_types))
                 .collect();
-        let agent_spawner = crate::module::LateAgentSpawner::default();
         let delegator = crate::module::LateDelegator::default();
         let session_ended = CancellationToken::new();
         let own_runner = self.hooks.is_none();
@@ -199,7 +198,7 @@ impl Builder {
             build_hook_runner(
                 &settings,
                 model.clone(),
-                Arc::new(agent_spawner.clone()),
+                Arc::new(delegator.clone()),
                 Some(session.session_id_str().to_string()),
             )
         });
@@ -432,7 +431,6 @@ impl Builder {
                 host: &host,
                 plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
-                agent_spawner: &agent_spawner,
                 delegator: &delegator,
                 skill_catalog: &skill_catalog,
                 session_ended: &session_ended,
@@ -806,7 +804,6 @@ impl Builder {
                     skills: Arc::new(skill_catalog),
                     commands: command_registry,
                     mcp,
-                    agent_spawner: Arc::new(agent_spawner),
                     delegator: Arc::new(delegator),
                     tool_middleware: Arc::new(tool_middleware),
                     result_transformers: Arc::new(result_transformers),

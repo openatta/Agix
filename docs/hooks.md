@@ -147,7 +147,7 @@ hook 是写在设置里的外部回调:引擎走到一个具名时刻(调工具�
   "may_approve": false }
 ```
 
-用会话的 agent spawner 起一个子 Agent,任务是 `prompt` 后接 `Context:` 和 payload 的
+用会话的 delegator 起一个子 Agent,任务是 `prompt` 后接 `Context:` 和 payload 的
 JSON。子 Agent 的最终回答应当是 `{"ok": true|false, "reason": "…"}`:`ok: false` 或缺 `ok` 记为
 `block`,`reason` 作 `message`;`ok: true` 缺省什么都不说,写了 `"may_approve": true` 的记为
 `approve`(配在 `PreToolUse` 上就是替人答应权限询问,见"回答";为什么缺省不算见 `prompt`)。

@@ -2,7 +2,6 @@
 //! gives a delegate alike.
 
 use super::*;
-use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
 
 /// `(parent_session_id, agent_type)` of one model call.
 type Lineage = (Option<String>, Option<String>);
@@ -248,10 +247,10 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
     }
 }
 
-/// The hook agent's model: on its first call it asks the spawner for a hook
-/// agent judging its own session, and keeps what the spawner said.
+/// The hook agent's model: on its first call it asks the delegator for a
+/// hook agent judging its own session, and keeps what the delegator said.
 struct GuardThatAsksForAGuard {
-    spawner: Arc<std::sync::OnceLock<Arc<dyn AgentSpawner>>>,
+    delegator: Arc<std::sync::OnceLock<Arc<dyn base::interface::delegate::Delegator>>>,
     asked: Arc<std::sync::atomic::AtomicBool>,
     nested: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
 }
@@ -272,19 +271,8 @@ impl Model for GuardThatAsksForAGuard {
         use base::interface::model::ModelEvent;
         let own_session = params.origin.map(|o| o.session_id).unwrap_or_default();
         if !self.asked.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            let spawner = self.spawner.get().expect("wired").clone();
-            let nested = spawner
-                .spawn(
-                    SpawnRequest::new(
-                        "judge",
-                        std::env::temp_dir(),
-                        tokio_util::sync::CancellationToken::new(),
-                    )
-                    .mode(SpawnMode::Hook {
-                        judged_session: own_session,
-                    }),
-                )
-                .await
+            let delegator = self.delegator.get().expect("wired").clone();
+            let nested = finished_text(delegator.delegate(judge_request(own_session)).await)
                 .map_err(|e| e.to_string());
             *self.nested.lock().unwrap() = Some(nested);
         }
@@ -300,39 +288,38 @@ impl Model for GuardThatAsksForAGuard {
     }
 }
 
+fn judge_request(judged_session: String) -> DelegateRequest {
+    let mode = DelegateMode::Hook { judged_session };
+    let stop = StopsWith::Call(tokio_util::sync::CancellationToken::new());
+    let mut req = DelegateRequest::new("judge", mode, stop);
+    req.workdir = Workdir::At(std::env::temp_dir());
+    req
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_own() {
-    let spawner_cell = Arc::new(std::sync::OnceLock::new());
+    let delegator_cell = Arc::new(std::sync::OnceLock::new());
     let nested = Arc::new(std::sync::Mutex::new(None));
     let slots = SubagentSlots::new(1);
     let agent_tool = TestParent {
         slots: slots.clone(),
         ..TestParent::new(Arc::new(GuardThatAsksForAGuard {
-            spawner: spawner_cell.clone(),
+            delegator: delegator_cell.clone(),
             asked: Arc::default(),
             nested: nested.clone(),
         }))
     }
     .agent_tool();
-    let spawner: Arc<dyn AgentSpawner> = Arc::new(crate::spawner::RuntimeAgentSpawner::new(
-        agent_tool.delegator.clone(),
-    ));
-    let _ = spawner_cell.set(spawner.clone());
+    let delegator: Arc<dyn base::interface::delegate::Delegator> = agent_tool.delegator.clone();
+    let _ = delegator_cell.set(delegator.clone());
     let _held = slots.slots.clone().try_acquire_owned().unwrap();
 
-    let verdict = spawner
-        .spawn(
-            SpawnRequest::new(
-                "judge",
-                std::env::temp_dir(),
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .mode(SpawnMode::Hook {
-                judged_session: "parent-session".into(),
-            }),
-        )
-        .await
-        .map_err(|e| e.to_string());
+    let verdict = finished_text(
+        delegator
+            .delegate(judge_request("parent-session".into()))
+            .await,
+    )
+    .map_err(|e| e.to_string());
 
     assert_eq!(verdict.as_deref(), Ok("{\"ok\": true}"));
     let nested = nested.lock().unwrap().clone().expect("the guard asked");

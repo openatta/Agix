@@ -418,7 +418,6 @@ impl Model for ModelNameModel {
 
 #[tokio::test]
 async fn a_spawn_on_a_model_asks_for_that_model() {
-    use base::interface::agent_spawner::AgentSpawner;
     let asked_for = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tools = Arc::new(InMemoryToolRegistry::new());
     let agent_tool = TestParent {
@@ -430,19 +429,13 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
         }))
     }
     .agent_tool();
-    let spawner = crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone());
-
-    let answer = spawner
-        .spawn(
-            base::interface::agent_spawner::SpawnRequest::new(
-                "review",
-                std::path::PathBuf::from("/tmp"),
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .model(Some("claude-haiku-4-5".into())),
-        )
-        .await
-        .unwrap();
+    let mut req = DelegateRequest::new(
+        "review",
+        DelegateMode::Wait,
+        StopsWith::Call(tokio_util::sync::CancellationToken::new()),
+    );
+    req.model = Some("claude-haiku-4-5".into());
+    let answer = finished_text(agent_tool.delegate(req).await).unwrap();
     assert_eq!(answer, "{\"ok\":true}");
     let asked_for = asked_for.lock().unwrap();
     assert!(!asked_for.is_empty());
@@ -526,15 +519,16 @@ async fn a_background_sub_agent_and_a_spawned_one_get_the_scenes_tools_once() {
     );
 
     offered.lock().unwrap().clear();
-    use base::interface::agent_spawner::AgentSpawner as _;
-    crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone())
-        .spawn(base::interface::agent_spawner::SpawnRequest::new(
+    agent_tool
+        .wait_for(
             "look",
             std::env::temp_dir(),
             tokio_util::sync::CancellationToken::new(),
-        ))
+            None,
+            None,
+        )
         .await
-        .expect("a spawner sub-agent is built and runs");
+        .expect("a waited sub-agent is built and runs");
     assert!(
         offered_once(&offered.lock().unwrap(), "scene_probe"),
         "{:?}",

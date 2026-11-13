@@ -113,8 +113,9 @@ feature 下(`assembly` / `daemon` 的同名 feature 转发过去)。
 `SessionContext` 把正在构建的会话交给模块。两样东西是**晚绑定**的,因为读它们的
 东西比提供它们的模块先建好:
 
-- **agent spawner**:`"agent"` 型 hook 与 `context: fork` 的 skill 拿到的是一个之后才
-  填入实现的 spawner,由 agents 模块 `provide_agent_spawner`;没有人提供时派生被拒绝。
+- **delegator**:`"agent"` 型 hook、`context: fork` 的 skill 与宿主的 `startAgent` 拿到的
+  是一个之后才填入实现的 `Delegator`,由 agents 模块 `provide_delegator`;没有人提供时委派
+  被拒绝。
 - **skill 目录**:命令表、agent、其它模块拿到的都是同一个晚绑定的 `SkillCatalog`,
   由 skills 模块提供;没有时为空。
 
@@ -127,7 +128,7 @@ MCP 连接由 mcp 模块交给会话独占(`provide_mcp`),和原先会话独占 
 `^[a-zA-Z0-9_-]{1,64}$`,权限规则按这个名字写。
 
 装配顺序是 **mcp → agents → skills**:agents 要看到它可以授予子 agent 的 MCP 服务器,
-fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会话(收窄后)的模块
+fork 型 skill 要 agents 提供的 delegator。委派出去的子会话用父会话(收窄后)的模块
 清单装配,所以嵌套委派照旧;MCP 连接只给第一个装配它的会话。agent 类型写了
 `mcp_servers` 的,子会话拿到父会话连接按 server 收窄出的一份 `McpServers`
 (`McpServers::granted`,连接共用、不重连),经 `Builder::mcp_servers` 归子会话独占:

@@ -251,9 +251,10 @@ requirements, builds the session's own tool registry, event bus, permissions
 and hooks, then lets each module contribute (`on_session`). Module tools are
 subject to the same scene whitelist as built-in ones. Two things are
 *late-bound* because what reads them is built before what provides them: the
-agent spawner (provided by `agents`, used by agent-type hooks and forked skills)
-and the skill catalog (provided by `skills`). A sub-agent is assembled from its
-parent's narrowed module list, so nesting works the same at every depth.
+delegator (provided by `agents`, used by agent-type hooks, forked skills and a
+host's `startAgent`) and the skill catalog (provided by `skills`). A sub-agent
+is assembled from its parent's narrowed module list, so nesting works the same
+at every depth.
 
 ### What a turn is
 

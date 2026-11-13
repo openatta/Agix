@@ -2,9 +2,8 @@
 
 use super::*;
 
-/// `AgentTool::spawn_background` (the `context: fork` + `background:
-/// true` skill path, via `RuntimeAgentSpawner::spawn` in the background)
-/// must return a task id immediately — without waiting for the spawned
+/// A `DelegateMode::Background` delegate (the `context: fork` +
+/// `background: true` skill path) must return a task id immediately — without waiting for the spawned
 /// sub-agent turn to finish — and that id must already be registered on
 /// the *caller's* session (the real `session.register_task` /
 /// `find_running_task` machinery `TaskOutput`/`TaskStop` also use), in
@@ -26,22 +25,11 @@ async fn spawn_background_returns_immediately_with_a_registered_task() {
         ..TestParent::new(model)
     }
     .agent_tool();
-    use base::interface::agent_spawner::AgentSpawner as _;
-    let spawner = crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone());
     let session = agent_tool.parent_state();
 
     let start = std::time::Instant::now();
-    let task_id = spawner
-        .spawn(
-            base::interface::agent_spawner::SpawnRequest::new(
-                "do the thing",
-                std::path::PathBuf::from("/tmp"),
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .mode(base::interface::agent_spawner::SpawnMode::Background {
-                session: session.clone(),
-            }),
-        )
+    let task_id = agent_tool
+        .start_in_background_for_test("do the thing", &session)
         .await
         .expect("a background spawn itself should not error — it only registers the task");
     assert!(

@@ -25,10 +25,10 @@ impl crate::module::Module for Probe {
         cx: &mut crate::module::SessionContext<'_>,
     ) -> Result<(), crate::module::ModuleError> {
         self.saw.lock().unwrap().push(format!(
-            "{} depth={} spawner={}",
+            "{} depth={} delegator={}",
             self.id,
             cx.depth,
-            cx.agent_spawner().is_some()
+            cx.delegator().is_some()
         ));
         Ok(())
     }
@@ -60,7 +60,7 @@ fn modules_run_in_order_once_the_session_exists() {
         .expect("build should succeed");
     assert_eq!(
         *saw.lock().unwrap(),
-        ["a depth=0 spawner=false", "b depth=0 spawner=false"],
+        ["a depth=0 delegator=false", "b depth=0 delegator=false"],
         "no module here provides a spawner, so neither sees one"
     );
 }
@@ -208,8 +208,8 @@ fn a_scene_that_names_no_modules_runs_every_assembled_one() {
     assert_eq!(
         saw,
         [
-            "a depth=0 spawner=false",
-            "b depth=0 spawner=false",
+            "a depth=0 delegator=false",
+            "b depth=0 delegator=false",
             "handed a",
             "handed b",
             "handed lister",
@@ -227,7 +227,7 @@ fn a_module_the_scene_does_not_permit_does_not_run_and_is_not_handed_on() {
     result.unwrap();
     assert_eq!(
         saw,
-        ["a depth=0 spawner=false", "handed a", "handed lister"],
+        ["a depth=0 delegator=false", "handed a", "handed lister"],
         "`b` is outside the whitelist and `c` is disabled; delegates must not get them either"
     );
 }
@@ -238,7 +238,7 @@ fn disabling_a_module_leaves_the_rest_running() {
     result.unwrap();
     assert_eq!(
         saw,
-        ["b depth=0 spawner=false", "handed b", "handed lister"]
+        ["b depth=0 delegator=false", "handed b", "handed lister"]
     );
 }
 

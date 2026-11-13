@@ -35,7 +35,7 @@
 //! | [`backoff::BackoffPolicy`] | whether a failed request is sent again, and when |
 //! | [`permission::PermissionPolicy`] | whether a tool call runs |
 //! | [`permission::PermissionGrants`] | the allows handed out during a session |
-//! | [`agent_spawner::AgentSpawner`] | how sub-agents are launched |
+//! | [`delegate::Delegator`] | how sub-agents are launched |
 //! | [`import_callback::ImportCallback`] | the host's answer to an import prompt |
 //! | [`event_sink::EventSink`] | where the engine's events go |
 //! | [`health::HealthCheck`] | whether a subsystem is working |
@@ -63,7 +63,6 @@
 //! (`tools`). Anyone looking for the full map wants the extension-point
 //! index, not this directory.
 
-pub mod agent_spawner;
 pub mod backoff;
 pub mod budget_policy;
 pub mod catalog;

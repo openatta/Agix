@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-pub use super::agent_spawner::{StartedAgent, TeamSeat};
 use super::permission::Grant;
 use super::tool::Tool;
 use super::tool_selector::ToolSelector;
@@ -134,6 +133,20 @@ pub enum MemberLifetime {
 pub enum Delegated {
     Finished(DelegateOutcome),
     Started(StartedAgent),
+}
+
+/// Which team a member works in, and its name there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TeamSeat {
+    pub team: String,
+    pub member: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StartedAgent {
+    pub task_id: String,
+    /// The sidechain session the agent runs in.
+    pub agent_session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -94,7 +94,7 @@ pub struct Builder {
     /// see [`Builder::agent_depth`].
     agent_depth: u32,
     /// See [`Builder::team_seat`].
-    team_seat: Option<base::interface::agent_spawner::TeamSeat>,
+    team_seat: Option<base::interface::delegate::TeamSeat>,
     /// Scheduled jobs, kept and fired by whoever owns this store — see
     /// [`Builder::cron_store`].
     cron_store: Option<Arc<tools::cron::CronStore>>,
@@ -555,7 +555,7 @@ impl Builder {
     }
 
     /// The team this agent is a member of, and its name there.
-    pub fn team_seat(mut self, seat: base::interface::agent_spawner::TeamSeat) -> Self {
+    pub fn team_seat(mut self, seat: base::interface::delegate::TeamSeat) -> Self {
         self.team_seat = Some(seat);
         self
     }
