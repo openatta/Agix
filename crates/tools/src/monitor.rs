@@ -173,10 +173,7 @@ impl Tool for MonitorTool {
                     .min(MAX_TIMEOUT_MS),
             )
         });
-        let spec = match crate::bash::confine_shell("Monitor", &input.command, &ctx) {
-            Ok(spec) => spec,
-            Err(refused) => return Ok(refused),
-        };
+        let spec = crate::bash::confine_shell("Monitor", &input.command, &ctx);
         // Under the turn's token, like a background sub-agent: it outlives the
         // turn that started it, and goes when the turn is interrupted or the
         // session closes.
@@ -476,7 +473,7 @@ mod tests {
             ..base::context::SessionEnv::new(dir.path().to_path_buf())
         });
         unattended.session = Arc::new(session);
-        unattended.dangerously_disable_sandbox = false;
+        std::sync::Arc::make_mut(&mut unattended.config).dangerously_disable_sandbox = false;
         unattended.exec.sandbox = Arc::new(Holds);
         for (command, reach) in [
             ("tail -f log.txt", Reach::Inside),
@@ -511,7 +508,7 @@ mod tests {
         let tool: Arc<dyn Tool> = Arc::new(MonitorTool);
         let decide = |network, requires_network_policy, attendance| {
             let mut ctx = ctx_in(dir.path());
-            ctx.dangerously_disable_sandbox = false;
+            std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
             ctx.sandbox.network_mode = network;
             ctx.sandbox.unattended_requires_network_policy = requires_network_policy;
             ctx.exec.sandbox = Arc::new(Holds);
@@ -805,7 +802,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (mut ctx, session) = session_in(dir.path());
         ctx.exec.sandbox = Arc::new(Confines(Enforcement::Full));
-        ctx.dangerously_disable_sandbox = false;
+        std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
         start(
             ctx,
             json!({"command": "echo outside", "description": "where"}),
@@ -820,21 +817,43 @@ mod tests {
 
     #[tokio::test]
     async fn a_sandbox_that_cannot_hold_the_script_refuses_it_when_enforcement_is_required() {
+        use base::interface::permission::{
+            PermissionOutcome, PermissionPolicy, PermissionRequest, Stage, ToolFacts,
+        };
         let dir = TempDir::new().unwrap();
-        let (mut ctx, session) = session_in(dir.path());
+        let (mut ctx, _session) = session_in(dir.path());
         ctx.exec.sandbox = Arc::new(Confines(Enforcement::Partial));
-        ctx.dangerously_disable_sandbox = false;
+        std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
         ctx.sandbox.require_enforcement = true;
-        let result = start(ctx, json!({"command": "echo hi", "description": "refused"})).await;
-        assert!(result.is_error);
-        assert_eq!(
-            result.structured_content.as_ref().unwrap()["refused"],
-            "sandbox_unenforceable"
+        ctx.confinement = crate::bash::confinement_report(
+            &ctx.sandbox,
+            &ctx.exec,
+            false,
+            &ctx.cwd,
+            &ctx.session_id,
         );
-        assert!(
-            session.task_infos().is_empty(),
-            "a refused script is no task"
-        );
+        let tool: Arc<dyn Tool> = Arc::new(MonitorTool);
+        let input = json!({"command": "echo hi", "description": "refused"});
+        let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
+        let outcome = permissions::policy::Policy::empty()
+            .decide(
+                &PermissionRequest::new(
+                    "Monitor",
+                    Some(&tool),
+                    &input,
+                    &ctx.cwd,
+                    &ctx.session_id,
+                    &ctx.session,
+                )
+                .with_facts(&facts)
+                .with_ctx(&ctx)
+                .with_attendance(ctx.attendance),
+            )
+            .await;
+        let PermissionOutcome::Deny { reason } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(reason.stage, Stage::Confinement);
     }
 
     #[tokio::test]

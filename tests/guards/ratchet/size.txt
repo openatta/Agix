@@ -4,7 +4,7 @@
 # AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration size::
 file  crates/compaction/src/compact.rs                     -                                        1158
 file  crates/core/src/context/session.rs                   -                                        1166
-file  crates/core/src/interface/tool.rs                    -                                        1070
+file  crates/core/src/interface/tool.rs                    -                                        1073
 file  crates/core/src/interface/catalog.rs                   -                                        827
 file  crates/core/src/memory.rs                            -                                        1102
 file  crates/core/src/settings.rs                          -                                        1644

@@ -104,10 +104,6 @@ const FIELDS: &[(&str, &str)] = &[
     ),
     ("SessionEnv::unattended", "Engine: from the engine's scene"),
     (
-        "SessionEnv::sandbox_disabled",
-        "Engine: from the engine's settings",
-    ),
-    (
         "SessionEnv::base_mode",
         "Engine: the mode the engine is configured with",
     ),

@@ -67,19 +67,9 @@ impl Policy {
     }
 }
 
-/// The confinement a permitted call runs under follows from why it was let
-/// through: on a command's own word it is held tighter than one a person (or
-/// a rule, a hook, bypass) let through, and nobody attending tightens it too.
 fn permit(basis: Basis, facts: &ToolFacts, attendance: Option<Attendance>) -> PermissionOutcome {
-    let unattended = attendance == Some(Attendance::Unattended);
-    let profile = match (&basis, facts.runs) {
-        (Basis::Contained | Basis::AcceptEdits, Some(_)) => ExecProfile::Strict,
-        (Basis::UnattendedConfined, _) => ExecProfile::Unattended,
-        _ if unattended => ExecProfile::Unattended,
-        _ => ExecProfile::Session,
-    };
-    let obligations =
-        Obligations::scanning_nested_repos(facts.runs.is_some() && profile != ExecProfile::Strict);
+    let profile = ExecProfile::for_permit(&basis, facts.runs, attendance);
+    let obligations = Obligations::after(facts.runs, profile);
     PermissionOutcome::Permit {
         basis,
         profile,

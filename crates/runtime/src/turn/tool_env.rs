@@ -251,7 +251,6 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
         snapshot_file: None,
         effects: None,
         running_tasks: Some(ctx.session_state.clone()),
-        dangerously_disable_sandbox: ctx.config.dangerously_disable_sandbox,
         max_file_read_bytes: ctx.config.file_limits.max_file_read_bytes as usize,
         // The *live* mode, not the session's opening value — plan mode is
         // entered and left mid-session.
@@ -278,6 +277,7 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
             &ctx.session_id,
         ),
         attendance: attendance_of(&ctx.session_state, ctx.from_code),
+        approval: None,
         turn: ctx.turn.clone(),
     }
 }
@@ -296,7 +296,6 @@ impl Agent {
             snapshot_file: None,
             effects: None,
             running_tasks: Some(self.session_state.clone()),
-            dangerously_disable_sandbox: self.config.dangerously_disable_sandbox,
             max_file_read_bytes: self.config.file_limits.max_file_read_bytes as usize,
             permission_mode: self.session_state.permission_mode(),
             config: self.config.clone(),
@@ -318,6 +317,7 @@ impl Agent {
                 &self.session.session_id,
             ),
             attendance: attendance_of(&self.session_state, false),
+            approval: None,
             turn: self.turn.scope.clone(),
         }
     }

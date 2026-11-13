@@ -84,9 +84,6 @@ pub struct SessionEnv {
     /// Nobody answers this session's questions or permission prompts — see
     /// `SceneSpec::interactive`.
     pub unattended: bool,
-    /// `sandbox.dangerously_disable_sandbox`, for checks made before a
-    /// command runs.
-    pub sandbox_disabled: bool,
     /// The permission mode the engine is configured to run in.
     pub base_mode: PermissionMode,
 }

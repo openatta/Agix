@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 fn ctx_with(providers: ExecProviders, require_enforcement: bool) -> ToolContext {
     let mut ctx = platform::tool_context_for_test(std::path::PathBuf::from("/work"));
-    ctx.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     ctx.sandbox.require_enforcement = require_enforcement;
     ctx.exec = providers;
     ctx
@@ -72,7 +72,7 @@ async fn the_local_set_is_the_same_construction() {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = ctx_with(platform::local_providers(), false);
     ctx.cwd = dir.path().to_path_buf();
-    ctx.dangerously_disable_sandbox = true;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = true;
     let result = run(ctx, "echo from-the-machine").await;
     assert!(format!("{:?}", result.content).contains("from-the-machine"));
 }
@@ -88,16 +88,38 @@ async fn the_second_provider_does_not_pretend_to_be_a_sandbox() {
         network: Arc::new(base::interface::exec::in_process::OfflineNetwork::new()),
         sandbox: Arc::new(NoSandbox),
     };
-    let result = run(ctx_with(providers, true), "ls").await;
-    assert!(result.is_error);
+    use base::interface::permission::{
+        PermissionOutcome, PermissionPolicy, PermissionRequest, Stage, ToolFacts,
+    };
+    let mut ctx = ctx_with(providers, true);
+    ctx.confinement =
+        tools::bash::confinement_report(&ctx.sandbox, &ctx.exec, false, &ctx.cwd, "acceptance");
     assert_eq!(
-        result
-            .structured_content
-            .as_ref()
-            .and_then(|v| v.get("refused"))
-            .and_then(|v| v.as_str()),
-        Some("sandbox_unenforceable"),
+        ctx.confinement.session,
+        base::interface::exec::Enforcement::None
     );
+    let tool: Arc<dyn Tool> = Arc::new(tools::bash::BashTool);
+    let input = serde_json::json!({ "command": "ls" });
+    let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
+    let outcome = permissions::policy::Policy::empty()
+        .decide(
+            &PermissionRequest::new(
+                "Bash",
+                Some(&tool),
+                &input,
+                &ctx.cwd,
+                &ctx.session_id,
+                &ctx.session,
+            )
+            .with_facts(&facts)
+            .with_ctx(&ctx)
+            .with_attendance(ctx.attendance),
+        )
+        .await;
+    let PermissionOutcome::Deny { reason } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(reason.stage, Stage::Confinement);
 }
 
 /// A command nobody scripted fails rather than succeeding empty. An empty

@@ -903,7 +903,6 @@ fn session_env(
         read_anywhere: settings.sandbox.read_anywhere,
         cache_directories: settings.sandbox.cache_directories.paths(&cwd),
         unattended: !scene.interactive,
-        sandbox_disabled: settings.sandbox.dangerously_disable_sandbox,
         base_mode: config.permission_mode,
         cwd,
     }

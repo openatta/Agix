@@ -32,6 +32,39 @@ pub(super) struct Call<'a> {
     pub(super) host: HostSays,
 }
 
+impl Call<'_> {
+    /// A command the session's sandbox is to hold, under a host that
+    /// demands it be held fully.
+    fn runs_in_sandbox(&self) -> bool {
+        self.facts.runs.is_some()
+            && !self.ctx.config.dangerously_disable_sandbox
+            && self.ctx.confinement.require_enforcement
+    }
+
+    /// The strict profile a command let through on its own word would run
+    /// under is not fully held, and the host demands it be: the command is
+    /// asked about instead, and runs under the session's profile if allowed.
+    fn strict_unheld(&self) -> bool {
+        self.runs_in_sandbox() && unenforced(self.ctx.confinement.strict)
+    }
+}
+
+fn unenforced(enforcement: base::interface::exec::Enforcement) -> bool {
+    enforcement != base::interface::exec::Enforcement::Full
+}
+
+fn unenforceable(tool: &str) -> String {
+    format!(
+        "Refused: {tool} would run under a sandbox policy this build on this platform ({}) \
+         cannot enforce all of, and `sandbox.require_enforcement` is on. The backend is behind \
+         a compile-time feature that is off by default: rebuild with `--features sandbox`, and \
+         on Linux install bubblewrap. Or set `sandbox.require_enforcement: false` to accept what \
+         this build can do, or `sandbox.dangerously_disable_sandbox: true` to stop asking for a \
+         sandbox.",
+        std::env::consts::OS
+    )
+}
+
 struct Asked {
     reason: Reason,
     answerable: Answerable,
@@ -66,6 +99,11 @@ impl Policy {
         }
         if let Some(denied) = call.delegated.denial(call) {
             return Verdict::Deny(denied);
+        }
+        // Ahead of bypass: `require_enforcement` is the host's word that no
+        // command runs less than fully held, whatever the mode.
+        if call.runs_in_sandbox() && unenforced(call.ctx.confinement.session) {
+            return Verdict::deny(Stage::Confinement, unenforceable(call.name));
         }
         if call.mode == PermissionMode::BypassPermissions {
             return self.under_bypass(call);
@@ -106,7 +144,11 @@ impl Policy {
 
         let writes_configuration = !call.facts.traits.read_only && call.named.names_configuration();
         let background = call.facts.runs.is_some_and(|r| r.background);
-        if contained(&call.facts.reach) && !background && !writes_configuration {
+        if contained(&call.facts.reach)
+            && !background
+            && !writes_configuration
+            && !call.strict_unheld()
+        {
             return Verdict::Permit(Basis::Contained);
         }
         if let Some(rule) = rule_allow {
@@ -279,6 +321,7 @@ fn by_mode(call: &Call<'_>, writes_configuration: bool) -> Verdict {
     match call.mode {
         PermissionMode::AcceptEdits
             if facts.traits.read_only
+                && !call.strict_unheld()
                 && matches!(
                     facts.reach,
                     Reach::SessionOnly | Reach::Inside | Reach::Host { listed: true }

@@ -901,6 +901,66 @@ async fn permission_deny_blocks_the_call() {
     );
 }
 
+/// Records the approval its call was handed.
+struct ApprovalProbe(Arc<std::sync::Mutex<Option<base::interface::permission::Approval>>>);
+#[async_trait::async_trait]
+impl base::tool::Tool for ApprovalProbe {
+    fn name(&self) -> &str {
+        "ApprovalProbe"
+    }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "records its approval (test tool)"
+    }
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        ctx: base::tool::ToolContext,
+        _progress: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        *self.0.lock().unwrap() = ctx.approval;
+        Ok(base::tool::ToolResult::text("recorded"))
+    }
+}
+
+/// Lets a call through on a rule into the strict profile.
+struct StrictPermission;
+#[async_trait::async_trait]
+impl base::interface::permission::PermissionPolicy for StrictPermission {
+    async fn decide(
+        &self,
+        _req: &base::interface::permission::PermissionRequest<'_>,
+    ) -> base::interface::permission::PermissionOutcome {
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Contained,
+            profile: base::interface::permission::ExecProfile::Strict,
+            obligations: Default::default(),
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_call_runs_on_what_the_policy_let_it_through_on() {
+    use base::interface::permission::{Approval, Basis, ExecProfile};
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools.register(Arc::new(ApprovalProbe(seen.clone())));
+    let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+    let ctx = test_exec_ctx_with_permission(tools, hooks_runner, Arc::new(StrictPermission));
+    execute_tool_with_telemetry(&ctx, "ApprovalProbe", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        seen.lock().unwrap().take(),
+        Some(Approval::new(Basis::Contained, ExecProfile::Strict))
+    );
+}
+
 #[tokio::test]
 async fn permission_prompt_with_no_response_blocks_until_cancelled() {
     // Conventional confirmation-prompt UX: no arbitrary timeout, the

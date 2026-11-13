@@ -87,8 +87,14 @@ enum Answer {
     Cancelled { waited_ms: u64 },
 }
 
+/// A call let through: what it runs on, and whether a person approved it.
+pub(super) struct Authorized {
+    pub approval: base::interface::permission::Approval,
+    pub by_person: bool,
+}
+
 /// Decide the call once, put a question to whoever can answer it, and record
-/// the conclusion. `Ok` says whether a person approved the call.
+/// the conclusion.
 pub(super) async fn authorize(
     ctx: &ToolExecCtx,
     name: &str,
@@ -96,9 +102,9 @@ pub(super) async fn authorize(
     input: &serde_json::Value,
     tool_ctx: &base::tool::ToolContext,
     hook: &base::interface::permission::HookAnswer,
-) -> Result<bool, String> {
+) -> Result<Authorized, String> {
     use base::interface::permission::{
-        Basis, PermissionOutcome, PermissionRequest, Stage, ToolFacts,
+        Approval, Basis, PermissionOutcome, PermissionRequest, Stage, ToolFacts,
     };
     let started = std::time::Instant::now();
     let facts = ToolFacts::gather(tool.as_ref(), input, tool_ctx).await;
@@ -121,7 +127,15 @@ pub(super) async fn authorize(
             paths,
             reason,
             ..
-        } => ask(ctx, name, tool, input, prompt_id, message, paths, reason).await,
+        } => {
+            let asked = Asked {
+                prompt_id,
+                message,
+                paths,
+                reason,
+            };
+            ask(ctx, name, tool, input, &facts, tool_ctx, asked).await
+        }
         decided => Answer::Decided(decided),
     };
     let concluded = match &answer {
@@ -135,8 +149,11 @@ pub(super) async fn authorize(
     };
     record_permission_decision(ctx, tool, name, input, &concluded, started);
     let refusal = match answer {
-        Answer::Decided(PermissionOutcome::Permit { basis, .. }) => {
-            return Ok(basis == Basis::Person)
+        Answer::Decided(PermissionOutcome::Permit { basis, profile, .. }) => {
+            return Ok(Authorized {
+                by_person: basis == Basis::Person,
+                approval: Approval::new(basis, profile),
+            })
         }
         Answer::Decided(PermissionOutcome::Deny { reason }) if reason.stage == Stage::Hook => {
             Refusal {
@@ -171,21 +188,33 @@ pub(super) async fn authorize(
     Err(refusal.error)
 }
 
+/// The question the policy left open.
+struct Asked {
+    prompt_id: String,
+    message: String,
+    paths: Vec<std::path::PathBuf>,
+    reason: base::interface::permission::Reason,
+}
+
 /// Put the policy's question to the host and wait for it. Only the session
 /// going away interrupts the wait; an unanswered prompt within the deadline is
 /// not consent.
-#[allow(clippy::too_many_arguments)]
 async fn ask(
     ctx: &ToolExecCtx,
     name: &str,
     tool: &Arc<dyn base::tool::Tool>,
     input: &serde_json::Value,
-    prompt_id: String,
-    message: String,
-    paths: Vec<std::path::PathBuf>,
-    asked: base::interface::permission::Reason,
+    facts: &base::interface::permission::ToolFacts,
+    tool_ctx: &base::tool::ToolContext,
+    asked: Asked,
 ) -> Answer {
-    use base::interface::permission::{Basis, PermissionOutcome, Reason};
+    use base::interface::permission::{Basis, ExecProfile, Obligations, PermissionOutcome, Reason};
+    let Asked {
+        prompt_id,
+        message,
+        paths,
+        reason: asked,
+    } = asked;
     let refused =
         |refusal: Refusal| Answer::Refused(Reason::new(asked.stage, &refusal.reason), refusal);
     let waited = std::time::Instant::now();
@@ -241,10 +270,11 @@ async fn ask(
             return Answer::Cancelled { waited_ms: waited.elapsed().as_millis() as u64 };
         }
     };
+    let profile = ExecProfile::for_permit(&Basis::Person, facts.runs, Some(tool_ctx.attendance));
     let permitted = Answer::Decided(PermissionOutcome::Permit {
         basis: Basis::Person,
-        profile: Default::default(),
-        obligations: Default::default(),
+        profile,
+        obligations: Obligations::after(facts.runs, profile),
     });
     match outcome.answer_as::<crate::agent::PermissionDecision>() {
         Some(crate::agent::PermissionDecision::Permit) => permitted,

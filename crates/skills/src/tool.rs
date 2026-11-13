@@ -701,18 +701,21 @@ async fn expand_dynamic_context(
     out
 }
 
-/// Why the policy will not let a skill's inline command run, if it will not.
-/// Nobody can be asked about one, so its input is checked and it is judged
-/// as a call nobody can approve.
-async fn inline_command_refused(
-    permission: &dyn base::interface::permission::PermissionPolicy,
+/// What the policy lets a skill's inline command run on, or why it will not
+/// let it run. Nobody can be asked about one, so its input is checked and it
+/// is judged as a call nobody can approve.
+async fn inline_command_approval(
+    permission: Option<&dyn base::interface::permission::PermissionPolicy>,
     bash: &Arc<dyn base::tool::Tool>,
     input: &serde_json::Value,
     ctx: &ToolContext,
-) -> Option<String> {
-    use base::interface::permission::{Attendance, PermissionOutcome, ToolFacts};
+) -> Result<base::interface::permission::Approval, String> {
+    use base::interface::permission::{Approval, Attendance, PermissionOutcome, ToolFacts};
+    let Some(permission) = permission else {
+        return Err("no permission check is wired for this skill".to_string());
+    };
     if let base::tool::ValidationResult::Err(message, _) = bash.validate_input(input, ctx).await {
-        return Some(message);
+        return Err(message);
     }
     let attendance = match ctx.attendance {
         Attendance::Attended => Attendance::NoOneToAsk(
@@ -734,9 +737,9 @@ async fn inline_command_refused(
     .with_ctx(ctx)
     .with_attendance(attendance);
     match permission.decide(&request).await {
-        PermissionOutcome::Permit { .. } => None,
-        PermissionOutcome::Deny { reason } => Some(reason.message),
-        PermissionOutcome::Prompt { message, .. } => Some(message),
+        PermissionOutcome::Permit { basis, profile, .. } => Ok(Approval::new(basis, profile)),
+        PermissionOutcome::Deny { reason } => Err(reason.message),
+        PermissionOutcome::Prompt { message, .. } => Err(message),
     }
 }
 
@@ -754,18 +757,15 @@ async fn run_skill_shell_command(
         tracing::warn!(command = %command, "skill inline command not run: the session has no Bash");
         return format!("[`{command}` not run: this session has no Bash tool]");
     };
-    let refused = match permission {
-        None => Some("no permission check is wired for this skill".to_string()),
-        Some(permission) => inline_command_refused(permission, &bash, &input, ctx).await,
+    let mut ctx = ctx.clone();
+    ctx.approval = match inline_command_approval(permission, &bash, &input, &ctx).await {
+        Ok(approval) => Some(approval),
+        Err(reason) => {
+            tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
+            return format!("[`{command}` not run: {reason}]");
+        }
     };
-    if let Some(reason) = refused {
-        tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
-        return format!("[`{command}` not run: {reason}]");
-    }
-    let result = bash
-        .call(input, ctx.clone(), ProgressSender::noop(""))
-        .await;
-    match result {
+    match bash.call(input, ctx, ProgressSender::noop("")).await {
         // Trim exactly one trailing newline, matching shell `$(...)` command
         // substitution semantics — without this, every inline placeholder
         // splice leaves a stray blank line/line-break before whatever

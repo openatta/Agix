@@ -24,41 +24,96 @@ impl Sandbox for Reports {
     }
 }
 
-async fn run_under(backend: Reports, require: bool, disable: bool) -> ToolResult {
-    let dir = tempfile::tempdir().unwrap();
-    let mut ctx = ctx_in(dir.path());
+/// The session's sandbox as `backend` holds it, under a host that does or
+/// does not demand it hold every command fully.
+fn enforcing(dir: &std::path::Path, backend: impl Sandbox + 'static, require: bool) -> ToolContext {
+    let mut ctx = ctx_in(dir);
     ctx.sandbox.require_enforcement = require;
-    ctx.dangerously_disable_sandbox = disable;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     ctx.exec.sandbox = std::sync::Arc::new(backend);
-    BashTool
-        .call(
-            serde_json::json!({"command": "echo ran"}),
-            ctx,
-            ProgressSender::noop("bash"),
+    ctx.confinement = super::sandbox::confinement_report(
+        &ctx.sandbox,
+        &ctx.exec,
+        ctx.config.dangerously_disable_sandbox,
+        &ctx.cwd,
+        &ctx.session_id,
+    );
+    ctx
+}
+
+async fn decided(
+    ctx: &ToolContext,
+    command: &str,
+    mode: base::permission::PermissionMode,
+) -> base::interface::permission::PermissionOutcome {
+    use base::interface::permission::{PermissionPolicy, PermissionRequest, ToolFacts};
+    let tool: std::sync::Arc<dyn Tool> = std::sync::Arc::new(BashTool);
+    let input = serde_json::json!({ "command": command });
+    ctx.session.set_permission_mode(mode);
+    let facts = ToolFacts::gather(tool.as_ref(), &input, ctx).await;
+    permissions::policy::Policy::empty()
+        .decide(
+            &PermissionRequest::new(
+                "Bash",
+                Some(&tool),
+                &input,
+                &ctx.cwd,
+                &ctx.session_id,
+                &ctx.session,
+            )
+            .with_facts(&facts)
+            .with_ctx(ctx)
+            .with_attendance(ctx.attendance),
         )
         .await
-        .expect("the tool answers rather than erroring")
 }
 
-fn refused(r: &ToolResult) -> bool {
-    r.is_error
-        && r.structured_content
-            .as_ref()
-            .and_then(|v| v.get("refused"))
-            .is_some()
+fn stage(outcome: &base::interface::permission::PermissionOutcome) -> Option<Stage> {
+    use base::interface::permission::PermissionOutcome;
+    match outcome {
+        PermissionOutcome::Deny { reason } | PermissionOutcome::Prompt { reason, .. } => {
+            Some(reason.stage)
+        }
+        PermissionOutcome::Permit { .. } => None,
+    }
 }
+
+use base::interface::permission::Stage;
+use base::permission::PermissionMode;
 
 /// The hard invariant: a policy that asked for constraint never quietly
-/// becomes an unconstrained run when the host said it must not.
+/// becomes an unconstrained run when the host said it must not — and the
+/// refusal comes before anyone is asked, so nobody approves a command that
+/// would then not run.
 #[tokio::test]
-async fn an_unenforceable_policy_is_refused_when_the_host_demands_enforcement() {
-    let r = run_under(
+async fn an_unenforceable_policy_is_refused_before_anyone_is_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = enforcing(
+        dir.path(),
         Reports(Enforcement::None, SandboxMode::Unavailable),
         true,
-        false,
-    )
-    .await;
-    assert!(refused(&r), "got: {:?}", r.content);
+    );
+    for mode in [
+        PermissionMode::Default,
+        PermissionMode::AcceptEdits,
+        PermissionMode::BypassPermissions,
+    ] {
+        for command in ["cargo build", "ls"] {
+            let outcome = decided(&ctx, command, mode).await;
+            assert_eq!(
+                stage(&outcome),
+                Some(Stage::Confinement),
+                "{mode:?} {command}"
+            );
+            assert!(
+                matches!(
+                    outcome,
+                    base::interface::permission::PermissionOutcome::Deny { .. }
+                ),
+                "{outcome:?}"
+            );
+        }
+    }
 }
 
 /// "Most of your policy" is not an absolute boundary, and a host that
@@ -66,27 +121,39 @@ async fn an_unenforceable_policy_is_refused_when_the_host_demands_enforcement() 
 /// exactly this case.
 #[tokio::test]
 async fn a_partly_enforced_policy_is_also_refused() {
-    let r = run_under(
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = enforcing(
+        dir.path(),
         Reports(Enforcement::Partial, SandboxMode::LinuxBwrap),
         true,
-        false,
-    )
-    .await;
-    assert!(refused(&r), "got: {:?}", r.content);
+    );
+    let outcome = decided(&ctx, "cargo build", PermissionMode::Default).await;
+    assert_eq!(stage(&outcome), Some(Stage::Confinement), "{outcome:?}");
 }
 
-/// And the other half: without that setting the command still runs, so
-/// turning the contract on did not break every host without bubblewrap.
+/// And the other half: without that setting the command is judged as
+/// always and still runs, so turning the contract on did not break every
+/// host without bubblewrap.
 #[tokio::test]
 async fn an_unenforceable_policy_still_runs_when_the_host_accepts_it() {
-    let r = run_under(
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = enforcing(
+        dir.path(),
         Reports(Enforcement::None, SandboxMode::Unavailable),
         false,
-        false,
-    )
-    .await;
-    assert!(!refused(&r));
-    assert!(format!("{:?}", r.content).contains("ran"));
+    );
+    let outcome = decided(&ctx, "cargo build", PermissionMode::Default).await;
+    assert_eq!(stage(&outcome), Some(Stage::ModeDefault), "{outcome:?}");
+    let ran = BashTool
+        .call(
+            serde_json::json!({"command": "echo ran"}),
+            ctx,
+            ProgressSender::noop("bash"),
+        )
+        .await
+        .unwrap();
+    assert!(!ran.is_error, "{:?}", ran.content);
+    assert!(format!("{:?}", ran.content).contains("ran"));
 }
 
 /// Turning the sandbox off is not a shortfall. Refusing here would make
@@ -94,14 +161,110 @@ async fn an_unenforceable_policy_still_runs_when_the_host_accepts_it() {
 /// each other instead of answering different questions.
 #[tokio::test]
 async fn a_sandbox_that_was_switched_off_is_not_a_failure_to_enforce() {
-    let r = run_under(
-        Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec),
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = enforcing(
+        dir.path(),
+        Reports(Enforcement::None, SandboxMode::Unavailable),
         true,
-        true,
-    )
-    .await;
-    assert!(!refused(&r), "got: {:?}", r.content);
+    );
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = true;
+    let outcome = decided(&ctx, "cargo build", PermissionMode::Default).await;
+    assert_eq!(stage(&outcome), Some(Stage::ModeDefault), "{outcome:?}");
 }
+
+/// Holds the session's policy fully and the strict one only in part.
+struct StrictFallsShort;
+
+impl Sandbox for StrictFallsShort {
+    fn confine(
+        &self,
+        spec: ProcessSpec,
+        policy: &base::interface::exec::SandboxPolicy,
+    ) -> Confined {
+        let strict = matches!(policy.read, base::interface::exec::ReadScope::Only(_));
+        Confined {
+            spec,
+            mode: SandboxMode::LinuxBwrap,
+            enforcement: if strict {
+                Enforcement::Partial
+            } else {
+                Enforcement::Full
+            },
+            unmet: if strict {
+                vec!["the strict read scope".into()]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+}
+
+/// A read-only command lets itself through only into the strict profile.
+/// Where that cannot be held fully and the host demands it be, it is asked
+/// about instead; without the demand the lane stays open.
+#[tokio::test]
+async fn the_read_only_lane_closes_only_when_its_strict_profile_cannot_be_held_as_demanded() {
+    let dir = tempfile::tempdir().unwrap();
+    let demanding = enforcing(dir.path(), StrictFallsShort, true);
+    let outcome = decided(&demanding, "ls", PermissionMode::Default).await;
+    assert_eq!(stage(&outcome), Some(Stage::ModeDefault), "{outcome:?}");
+    let accepting = enforcing(dir.path(), StrictFallsShort, false);
+    assert!(decided(&accepting, "ls", PermissionMode::Default)
+        .await
+        .is_permit());
+}
+
+/// What the call's approval names is the policy its command is confined by.
+#[test]
+fn a_command_is_confined_by_the_profile_its_approval_names() {
+    use base::interface::permission::{Approval, Basis, ExecProfile};
+    #[derive(Default)]
+    struct Records(std::sync::Mutex<Option<base::interface::exec::SandboxPolicy>>);
+    impl Sandbox for Records {
+        fn confine(
+            &self,
+            spec: ProcessSpec,
+            policy: &base::interface::exec::SandboxPolicy,
+        ) -> Confined {
+            *self.0.lock().unwrap() = Some(policy.clone());
+            Confined {
+                spec,
+                mode: SandboxMode::MacOSSandboxExec,
+                enforcement: Enforcement::Full,
+                unmet: Vec::new(),
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let records = std::sync::Arc::new(Records::default());
+    let mut ctx = ctx_in(dir.path());
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
+    ctx.exec.sandbox = records.clone();
+    let mut confined_as = |approval: Option<Approval>| {
+        ctx.approval = approval;
+        let _ = confine_shell("Bash", "true", &ctx);
+        records.0.lock().unwrap().take().unwrap()
+    };
+
+    let unjudged = confined_as(None);
+    assert!(!unjudged.deny_ipc_escapes && !unjudged.only_additional_writable);
+    let session = confined_as(Some(Approval::new(Basis::Person, ExecProfile::Session)));
+    assert!(!session.deny_ipc_escapes && !session.only_additional_writable);
+    assert_eq!(session.additional_writable, unjudged.additional_writable);
+    let unattended = confined_as(Some(Approval::new(
+        Basis::UnattendedConfined,
+        ExecProfile::Unattended,
+    )));
+    assert!(unattended.deny_ipc_escapes);
+    assert_eq!(
+        unattended.additional_writable, unjudged.additional_writable,
+        "otherwise the session's"
+    );
+    let strict = confined_as(Some(Approval::new(Basis::Contained, ExecProfile::Strict)));
+    assert!(strict.only_additional_writable && strict.deny_ipc_escapes);
+    assert_eq!(strict.network_mode, sandbox::NetworkMode::DenyAll);
+}
+
 use super::*;
 use base::tool::ToolResultContent;
 use serde_json::json;
@@ -129,19 +292,6 @@ fn a_sandboxed_command_may_write_the_cache_directories() {
     assert!(!writable.iter().any(|p| p.starts_with("~")));
 }
 
-#[test]
-fn only_an_unattended_command_is_kept_from_acting_through_other_processes() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut ctx = ctx_in(dir.path());
-    assert!(!sandbox_policy(&ctx).deny_ipc_escapes);
-    let session = base::context::SessionState::for_tests_in(base::context::SessionEnv {
-        unattended: true,
-        ..base::context::SessionEnv::new(dir.path().to_path_buf())
-    });
-    ctx.session = std::sync::Arc::new(session);
-    assert!(sandbox_policy(&ctx).deny_ipc_escapes);
-}
-
 fn unattended_in_a_holding_sandbox(
     cwd: &std::path::Path,
     network: base::context::config::NetworkModeConfig,
@@ -152,7 +302,7 @@ fn unattended_in_a_holding_sandbox(
         ..base::context::SessionEnv::new(cwd.to_path_buf())
     });
     ctx.session = std::sync::Arc::new(session);
-    ctx.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     ctx.sandbox.network_mode = network;
     ctx.exec.sandbox =
         std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
@@ -163,7 +313,7 @@ fn report(ctx: &ToolContext) -> base::interface::exec::ConfinementReport {
     super::sandbox::confinement_report(
         &ctx.sandbox,
         &ctx.exec,
-        ctx.dangerously_disable_sandbox,
+        ctx.config.dangerously_disable_sandbox,
         &ctx.cwd,
         &ctx.session_id,
     )
@@ -182,7 +332,7 @@ fn a_holding_sandbox_holds_an_unattended_command_whatever_the_network_by_default
         assert!(report(&ctx).holds_unattended(), "{network:?}");
     }
     let mut off = unattended_in_a_holding_sandbox(dir.path(), NetworkModeConfig::DenyAll);
-    off.dangerously_disable_sandbox = true;
+    std::sync::Arc::make_mut(&mut off.config).dangerously_disable_sandbox = true;
     assert!(!report(&off).holds_unattended());
 }
 
@@ -273,7 +423,7 @@ async fn a_bypass_session_still_runs_bash_through_the_sandbox() {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = ctx_in(dir.path());
     ctx.permission_mode = base::permission::PermissionMode::BypassPermissions;
-    ctx.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     let counts = std::sync::Arc::new(Counts::default());
     ctx.exec.sandbox = counts.clone();
     BashTool
@@ -295,10 +445,10 @@ fn a_confined_command_gets_the_sessions_own_writable_tmpdir() {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = ctx_in(dir.path());
     ctx.session_id = uuid::Uuid::new_v4().to_string();
-    ctx.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     ctx.exec.sandbox =
         std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
-    let spec = confine_shell("Bash", "true", &ctx).unwrap();
+    let spec = confine_shell("Bash", "true", &ctx);
     let tmp = tmpdir_of(&spec).expect("TMPDIR is set");
     assert!(tmp.is_dir());
     assert_ne!(tmp, std::env::temp_dir());
@@ -315,10 +465,10 @@ fn each_session_gets_its_own_tmpdir_under_the_state_root() {
         ctx.session_id = session.to_string();
         ctx.sandbox.paths =
             std::sync::Arc::new(base::paths::SensitivePaths::new(Some(state.path()), None));
-        ctx.dangerously_disable_sandbox = false;
+        std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
         ctx.exec.sandbox =
             std::sync::Arc::new(Reports(Enforcement::Full, SandboxMode::MacOSSandboxExec));
-        let tmp = tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()).unwrap();
+        let tmp = tmpdir_of(&confine_shell("Bash", "true", &ctx)).unwrap();
         let writable = sandbox_policy(&ctx).additional_writable;
         (tmp, writable)
     };
@@ -336,17 +486,11 @@ fn each_session_gets_its_own_tmpdir_under_the_state_root() {
 fn a_command_nothing_confines_keeps_the_callers_tmpdir() {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = ctx_in(dir.path());
-    ctx.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     ctx.exec.sandbox = std::sync::Arc::new(Reports(Enforcement::None, SandboxMode::Unavailable));
-    assert_eq!(
-        tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()),
-        None
-    );
-    ctx.dangerously_disable_sandbox = true;
-    assert_eq!(
-        tmpdir_of(&confine_shell("Bash", "true", &ctx).unwrap()),
-        None
-    );
+    assert_eq!(tmpdir_of(&confine_shell("Bash", "true", &ctx)), None);
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = true;
+    assert_eq!(tmpdir_of(&confine_shell("Bash", "true", &ctx)), None);
 }
 
 /// The engine's own git goes into the sandbox exactly when the session's
@@ -383,10 +527,10 @@ async fn the_engines_git_is_sandboxed_exactly_when_the_sessions_commands_are() {
     );
     ctx.exec.process = std::sync::Arc::new(process.clone());
 
-    ctx.dangerously_disable_sandbox = true;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = true;
     assert!(!engine_exec(&ctx).is_sandboxed());
 
-    ctx.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut ctx.config).dangerously_disable_sandbox = false;
     let bookkeeping = dir.path().join(".git");
     engine_exec(&ctx)
         .git(

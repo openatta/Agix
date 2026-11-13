@@ -216,10 +216,7 @@ impl Tool for BashTool {
                 .min(MAX_TIMEOUT_MS),
         );
 
-        let spec = match confine_shell("Bash", &input.command, &ctx) {
-            Ok(spec) => spec,
-            Err(refused) => return Ok(refused),
-        };
+        let spec = confine_shell("Bash", &input.command, &ctx);
 
         // The command runs under its own token, a child of the turn's: the
         // turn being interrupted still stops it, and so does stopping just

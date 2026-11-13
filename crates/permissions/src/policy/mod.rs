@@ -307,7 +307,6 @@ impl Policy {
         ctx.permission_mode = mode;
         let env = ctx.session.env();
         ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
-        ctx.dangerously_disable_sandbox = env.sandbox_disabled;
         if let Some(attendance) = attendance {
             ctx.attendance = attendance;
         }

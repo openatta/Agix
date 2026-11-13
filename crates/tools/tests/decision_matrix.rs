@@ -9,7 +9,8 @@
 //! `UPDATE_GOLDEN=1 cargo test -p tools --test integration decision_matrix::` 重新生成。
 //!
 //! 家目录用固定的 `/home/matrix`，不读环境；沙箱用一个恒报 Full 的桩，让无人值守的
-//! Bash 放行通道不随运行机器变化。
+//! Bash 放行通道不随运行机器变化。快照末尾另有一节：`sandbox.require_enforcement` 打开、
+//! 沙箱只兑现一部分时 Bash 和 Monitor 的结论，按工具自己声明的事实判。
 //!
 //! 自己声明 `permission_facts` 的工具另有一条等价断言：它的事实和从旧答案推出的事实，
 //! 经同一个按中心判定顺序写的 `conclusion` 得出相同结论；策略对旧答案的结论、对它自己
@@ -63,6 +64,21 @@ impl Sandbox for HoldsEverything {
             mode: SandboxMode::LinuxBwrap,
             enforcement: Enforcement::Full,
             unmet: Vec::new(),
+        }
+    }
+}
+
+/// Holds a command only in part, under a host that demands it be held fully:
+/// the cells `sandbox.require_enforcement` decides.
+struct HoldsPartly;
+
+impl Sandbox for HoldsPartly {
+    fn confine(&self, spec: ProcessSpec, _: &SandboxPolicy) -> Confined {
+        Confined {
+            spec,
+            mode: SandboxMode::LinuxBwrap,
+            enforcement: Enforcement::Partial,
+            unmet: vec!["the domain allowlist".into()],
         }
     }
 }
@@ -325,6 +341,15 @@ fn raw(no_hook: &PermissionOutcome, approved: &PermissionOutcome) -> &'static st
 }
 
 fn session(cwd: &Path, mode: PermissionMode, unattended: bool) -> Arc<SessionState> {
+    session_in(cwd, mode, unattended, Arc::new(HoldsEverything))
+}
+
+fn session_in(
+    cwd: &Path,
+    mode: PermissionMode,
+    unattended: bool,
+    sandbox: Arc<dyn Sandbox>,
+) -> Arc<SessionState> {
     let state = SessionState::for_tests(cwd.to_path_buf());
     state.attach(EngineAttachment::new(
         SessionEnv {
@@ -333,7 +358,7 @@ fn session(cwd: &Path, mode: PermissionMode, unattended: bool) -> Arc<SessionSta
             ..SessionEnv::new(cwd.to_path_buf())
         },
         ExecProviders {
-            sandbox: Arc::new(HoldsEverything),
+            sandbox,
             ..platform::local_providers()
         },
         1,
@@ -384,28 +409,117 @@ pub(crate) async fn render() -> (String, usize) {
     );
     let mut cells = 0usize;
     for tool in &all {
-        let _ = writeln!(out, "\n## {}", tool.name());
-        for sample in samples(tool.name(), &cwd, &home) {
-            let _ = writeln!(out, "\n{}", label(&sample.input));
-            for (mode_name, mode) in MODES {
-                for (rule_name, rule) in RULES {
-                    let policy = permission(tool.name(), rule);
-                    let [a_raw, a_none, a_hook] =
-                        rendered(&policy, tool, &sample.input, &cwd, mode, false).await;
-                    let [u_raw, u_none, u_hook] =
-                        rendered(&policy, tool, &sample.input, &cwd, mode, true).await;
-                    let _ = writeln!(
-                        out,
-                        "{mode_name:<17} {rule_name:<11} | att {a_raw} -> {a_none} / {a_hook} \
-                         | unatt {u_raw} -> {u_none} / {u_hook}",
-                    );
-                    cells += 4;
-                }
+        cells += table(&mut out, tool, &cwd, &home, &label, Sandboxing::Holds).await;
+    }
+    let _ = writeln!(out, "\n# cells: {cells}");
+
+    let _ = writeln!(
+        out,
+        "\n# `sandbox.require_enforcement` on, and a sandbox that holds a command only in part"
+    );
+    let mut confinement = 0usize;
+    for tool in all
+        .iter()
+        .filter(|t| matches!(t.name(), "Bash" | "Monitor"))
+    {
+        confinement += table(
+            &mut out,
+            tool,
+            &cwd,
+            &home,
+            &label,
+            Sandboxing::HoldsPartlyAsDemanded,
+        )
+        .await;
+    }
+    let _ = writeln!(out, "\n# confinement cells: {confinement}");
+    (out, cells + confinement)
+}
+
+/// How the session's sandbox holds a command.
+#[derive(Clone, Copy)]
+enum Sandboxing {
+    Holds,
+    /// Only in part, and `sandbox.require_enforcement` is on.
+    HoldsPartlyAsDemanded,
+}
+
+/// Every sample of `tool` in every cell, printed; the number of cells.
+async fn table(
+    out: &mut String,
+    tool: &Arc<dyn Tool>,
+    cwd: &Path,
+    home: &str,
+    label: &dyn Fn(&Value) -> String,
+    sandboxing: Sandboxing,
+) -> usize {
+    let mut cells = 0usize;
+    let _ = writeln!(out, "\n## {}", tool.name());
+    for sample in samples(tool.name(), cwd, home) {
+        let _ = writeln!(out, "\n{}", label(&sample.input));
+        for (mode_name, mode) in MODES {
+            for (rule_name, rule) in RULES {
+                let policy = permission(tool.name(), rule);
+                let at = |unattended| Setup {
+                    mode,
+                    unattended,
+                    sandboxing,
+                };
+                let [a_raw, a_none, a_hook] =
+                    rendered(&policy, tool, &sample.input, cwd, at(false)).await;
+                let [u_raw, u_none, u_hook] =
+                    rendered(&policy, tool, &sample.input, cwd, at(true)).await;
+                let _ = writeln!(
+                    out,
+                    "{mode_name:<17} {rule_name:<11} | att {a_raw} -> {a_none} / {a_hook} \
+                     | unatt {u_raw} -> {u_none} / {u_hook}",
+                );
+                cells += 4;
             }
         }
     }
-    let _ = writeln!(out, "\n# cells: {cells}");
-    (out, cells)
+    cells
+}
+
+/// The session a cell's call is made in.
+#[derive(Clone, Copy)]
+struct Setup {
+    mode: PermissionMode,
+    unattended: bool,
+    sandboxing: Sandboxing,
+}
+
+impl Setup {
+    fn holding(mode: PermissionMode, unattended: bool) -> Self {
+        Self {
+            mode,
+            unattended,
+            sandboxing: Sandboxing::Holds,
+        }
+    }
+
+    fn session(&self, cwd: &Path) -> Arc<SessionState> {
+        let sandbox: Arc<dyn Sandbox> = match self.sandboxing {
+            Sandboxing::Holds => Arc::new(HoldsEverything),
+            Sandboxing::HoldsPartlyAsDemanded => Arc::new(HoldsPartly),
+        };
+        session_in(cwd, self.mode, self.unattended, sandbox)
+    }
+
+    fn context(&self, session: &Arc<SessionState>, cwd: &Path) -> ToolContext {
+        let mut ctx = context_like_the_runtime(session, cwd);
+        if let Sandboxing::HoldsPartlyAsDemanded = self.sandboxing {
+            ctx.sandbox.require_enforcement = true;
+            ctx.confinement = tools::bash::confinement_report(
+                &ctx.sandbox,
+                &ctx.exec,
+                ctx.config.dangerously_disable_sandbox,
+                cwd,
+                &ctx.session_id,
+            );
+        }
+        ctx
+    }
 }
 
 #[tokio::test]
@@ -464,7 +578,6 @@ fn context_like_the_runtime(session: &Arc<SessionState>, cwd: &Path) -> ToolCont
     ctx.permission_mode = session.permission_mode();
     let env = session.env();
     ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
-    ctx.dangerously_disable_sandbox = env.sandbox_disabled;
     ctx.attendance = if env.unattended {
         Attendance::Unattended
     } else {
@@ -473,7 +586,7 @@ fn context_like_the_runtime(session: &Arc<SessionState>, cwd: &Path) -> ToolCont
     ctx.confinement = tools::bash::confinement_report(
         &ctx.sandbox,
         &ctx.exec,
-        ctx.dangerously_disable_sandbox,
+        ctx.config.dangerously_disable_sandbox,
         cwd,
         &ctx.session_id,
     );
@@ -500,19 +613,17 @@ async fn old_answers(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolF
 /// What the runtime makes of a call: `None` when its input is refused before
 /// anyone judges it, else the policy's conclusion on the call's old answers,
 /// or on what the tool states with `stated`.
-#[allow(clippy::too_many_arguments)]
 async fn concluded(
     policy: &Policy,
     tool: &Arc<dyn Tool>,
     input: &Value,
     cwd: &Path,
-    mode: PermissionMode,
-    unattended: bool,
+    setup: Setup,
     hook: &HookAnswer,
     stated: bool,
 ) -> Option<PermissionOutcome> {
-    let session = session(cwd, mode, unattended);
-    let ctx = context_like_the_runtime(&session, cwd);
+    let session = setup.session(cwd);
+    let ctx = setup.context(&session, cwd);
     if tool.validate_input(input, &ctx).await.is_err() {
         return None;
     }
@@ -530,21 +641,22 @@ async fn concluded(
 }
 
 /// One attendance of one cell, as the golden prints it.
-#[allow(clippy::too_many_arguments)]
 async fn rendered(
     policy: &Policy,
     tool: &Arc<dyn Tool>,
     input: &Value,
     cwd: &Path,
-    mode: PermissionMode,
-    unattended: bool,
+    setup: Setup,
 ) -> [&'static str; 3] {
     let approve = HookAnswer::Approve {
         hook: "matrix".into(),
     };
     let none = HookAnswer::None;
-    let no_hook = concluded(policy, tool, input, cwd, mode, unattended, &none, false).await;
-    let hook = concluded(policy, tool, input, cwd, mode, unattended, &approve, false).await;
+    // Whether a command runs in the sandbox at all is a fact only a tool's own
+    // answer states.
+    let stated = matches!(setup.sandboxing, Sandboxing::HoldsPartlyAsDemanded);
+    let no_hook = concluded(policy, tool, input, cwd, setup, &none, stated).await;
+    let hook = concluded(policy, tool, input, cwd, setup, &approve, stated).await;
     match (no_hook, hook) {
         (Some(no_hook), Some(hook)) => [raw(&no_hook, &hook), word(&no_hook), word(&hook)],
         _ => ["Deny"; 3],
@@ -662,8 +774,7 @@ async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> V
             &tool,
             input,
             cwd,
-            PermissionMode::BypassPermissions,
-            false,
+            Setup::holding(PermissionMode::BypassPermissions, false),
             &HookAnswer::None,
             false,
         )
@@ -681,7 +792,7 @@ async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> V
             assert_eq!(stated.traits, old.traits, "{name} {input}");
             assert_eq!(stated.stance, old.stance, "{name} {input}");
             assert_eq!(stated.origin, old.origin, "{name} {input}");
-            let confined = !ctx.dangerously_disable_sandbox
+            let confined = !ctx.config.dangerously_disable_sandbox
                 && (!ctx.sandbox.unattended_requires_network_policy
                     || !matches!(
                         ctx.sandbox.network_mode,
@@ -698,7 +809,15 @@ async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> V
                         HookAnswer::None
                     };
                     let on = |stated| {
-                        concluded(&policy, &tool, input, cwd, mode, unattended, &hook, stated)
+                        concluded(
+                            &policy,
+                            &tool,
+                            input,
+                            cwd,
+                            Setup::holding(mode, unattended),
+                            &hook,
+                            stated,
+                        )
                     };
                     let (gate, policy_said) = if refused_before_facts {
                         (None, None)
@@ -1010,6 +1129,25 @@ async fn every_stage_of_the_policy_is_reached() {
                 Default,
             )
             .await,
+        ),
+        (
+            Stage::Confinement,
+            concluded(
+                &plain(RuleCase::None),
+                &registry.get("Bash").unwrap(),
+                &build,
+                &cwd,
+                Setup {
+                    mode: Default,
+                    unattended: false,
+                    sandboxing: Sandboxing::HoldsPartlyAsDemanded,
+                },
+                &no_hook,
+                true,
+            )
+            .await
+            .as_ref()
+            .and_then(stage_of),
         ),
         (
             Stage::Rule,

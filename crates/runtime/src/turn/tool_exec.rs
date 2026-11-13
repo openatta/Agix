@@ -258,7 +258,7 @@ pub(super) async fn execute_tool_inner(
 
     // The hook may rewrite the input, and permission judges what will run.
     let (input, hook) = pre_tool_use(ctx, name, input).await;
-    let tool_ctx = tool_context_for(ctx, &tool);
+    let mut tool_ctx = tool_context_for(ctx, &tool);
     if let base::tool::ValidationResult::Err(message, _) =
         tool.validate_input(&input, &tool_ctx).await
     {
@@ -268,7 +268,9 @@ pub(super) async fn execute_tool_inner(
             message
         });
     }
-    let user_approved = authorize(ctx, name, &tool, &input, &tool_ctx, &hook).await?;
+    let authorized = authorize(ctx, name, &tool, &input, &tool_ctx, &hook).await?;
+    let user_approved = authorized.by_person;
+    tool_ctx.approval = Some(authorized.approval);
 
     let input_for_post_hook = input.clone();
     let input_json_size = serde_json::to_string(&input)
@@ -314,58 +316,9 @@ pub(super) async fn execute_tool_inner(
     drop(gate);
     let latency_ms = tool_start.elapsed().as_millis() as u64;
 
-    let mut outcome = match result {
-        Ok(r) => {
-            let (text, images) = render_tool_result_content(r.content);
-            if !images.is_empty() {
-                ctx.images
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .extend(images);
-            }
-            Ok(base::interface::tool_middleware::ToolAnswer {
-                text,
-                new_messages: r.new_messages,
-                reported_failure: r.is_error,
-                structured: r.structured_content,
-            })
-        }
-        Err(e) => Err(e.to_string()),
-    };
-    // Both ways a call can go wrong: the engine could not run it, or it ran
-    // and called its own result a failure. Reading only `is_err` reported a
-    // shell command that exited non-zero as a success.
-    let (is_error, error_message, result_content_size) = match &outcome {
-        Ok(answer) if answer.reported_failure => (
-            true,
-            Some(telemetry_error_text(&answer.text)),
-            answer.text.len() as u64,
-        ),
-        Ok(answer) => (false, None, answer.text.len() as u64),
-        Err(message) => (true, Some(telemetry_error_text(message)), 0),
-    };
-    let _ = ctx
-        .telemetry_handle
-        .record(telemetry::TelemetryEvent::tool_execution(
-            &ctx.session_id,
-            ctx.turn_no,
-            Some(ctx.turn_id.clone()),
-            telemetry::ToolExecutionPayload {
-                tool_name: name.to_string(),
-                tool_use_id: ctx.tool_use_id.clone(),
-                outcome: if is_error {
-                    telemetry::ToolOutcome::Failed
-                } else {
-                    telemetry::ToolOutcome::Succeeded
-                },
-                is_error,
-                error_message,
-                latency_ms,
-                input_json_size,
-                result_content_size,
-                user_approved,
-            },
-        ));
+    let mut outcome = answer_of(ctx, result);
+    let measured = (latency_ms, input_json_size, user_approved);
+    record_execution(ctx, name, &outcome, measured);
 
     // PostToolUse: the tool already ran, but this can still act two ways.
     //
@@ -464,6 +417,76 @@ pub(super) async fn execute_tool_inner(
     }
 
     apply_result_transformers(ctx, name, &input_for_post_hook, outcome)
+}
+
+/// What a tool's result becomes for the model: its text, with the images it
+/// returned set aside for the round.
+fn answer_of(
+    ctx: &ToolExecCtx,
+    result: Result<base::tool::ToolResult, base::error::ToolError>,
+) -> base::interface::tool_middleware::ToolOutcome {
+    match result {
+        Ok(r) => {
+            let (text, images) = render_tool_result_content(r.content);
+            if !images.is_empty() {
+                ctx.images
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(images);
+            }
+            Ok(base::interface::tool_middleware::ToolAnswer {
+                text,
+                new_messages: r.new_messages,
+                reported_failure: r.is_error,
+                structured: r.structured_content,
+            })
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `tool_execution`, with what was measured of the call: its latency, its
+/// input's size, whether a person approved it.
+fn record_execution(
+    ctx: &ToolExecCtx,
+    name: &str,
+    outcome: &base::interface::tool_middleware::ToolOutcome,
+    (latency_ms, input_json_size, user_approved): (u64, u64, bool),
+) {
+    // Both ways a call can go wrong: the engine could not run it, or it ran
+    // and called its own result a failure. Reading only `is_err` reported a
+    // shell command that exited non-zero as a success.
+    let (is_error, error_message, result_content_size) = match outcome {
+        Ok(answer) if answer.reported_failure => (
+            true,
+            Some(telemetry_error_text(&answer.text)),
+            answer.text.len() as u64,
+        ),
+        Ok(answer) => (false, None, answer.text.len() as u64),
+        Err(message) => (true, Some(telemetry_error_text(message)), 0),
+    };
+    let _ = ctx
+        .telemetry_handle
+        .record(telemetry::TelemetryEvent::tool_execution(
+            &ctx.session_id,
+            ctx.turn_no,
+            Some(ctx.turn_id.clone()),
+            telemetry::ToolExecutionPayload {
+                tool_name: name.to_string(),
+                tool_use_id: ctx.tool_use_id.clone(),
+                outcome: if is_error {
+                    telemetry::ToolOutcome::Failed
+                } else {
+                    telemetry::ToolOutcome::Succeeded
+                },
+                is_error,
+                error_message,
+                latency_ms,
+                input_json_size,
+                result_content_size,
+                user_approved,
+            },
+        ));
 }
 
 /// Run the registered transformers over this call's outcome.

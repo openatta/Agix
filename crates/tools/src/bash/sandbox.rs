@@ -1,6 +1,6 @@
 //! Sandbox policy for shell-running tools: settings to policy, confining a command, the session TMPDIR and the engine's own git.
 
-use base::tool::{ToolContext, ToolResult};
+use base::tool::ToolContext;
 use platform::sandbox;
 use std::time::Duration;
 
@@ -60,8 +60,22 @@ pub(super) fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
         .chain(cache_directories(ctx))
         .chain([session_temp_dir(&ctx.sandbox, &ctx.session_id)])
         .collect();
-    policy.deny_ipc_escapes = ctx.session.env().unattended;
     policy
+}
+
+/// The policy the call's approval says its command runs under. A call
+/// nothing judged runs under the session's.
+pub(super) fn policy_for_profile(ctx: &ToolContext) -> sandbox::SandboxPolicy {
+    use base::interface::permission::ExecProfile;
+    match ctx.approval.as_ref().map(|a| a.profile) {
+        Some(ExecProfile::Strict) => strict_sandbox_policy(ctx),
+        Some(ExecProfile::Unattended) => {
+            let mut policy = sandbox_policy(ctx);
+            policy.deny_ipc_escapes = true;
+            policy
+        }
+        _ => sandbox_policy(ctx),
+    }
 }
 
 /// The policy a command let through on its own word runs under
@@ -178,20 +192,20 @@ fn clear_stale_session_temp_dirs(parent: &std::path::Path) {
 }
 
 /// `command` as the process a shell-running tool spawns: wrapped by the OS
-/// sandbox unless the session turned it off. `Err` is the refusal to return
-/// instead, when the sandbox cannot hold the command and the host said it
-/// must.
+/// sandbox under the profile its approval names, unless the session turned
+/// the sandbox off. Whether a sandbox that cannot hold all of it may run it
+/// at all is the permission policy's to say (`Stage::Confinement`).
 pub(crate) fn confine_shell(
     tool: &str,
     command: &str,
     ctx: &ToolContext,
-) -> Result<base::interface::exec::ProcessSpec, ToolResult> {
+) -> base::interface::exec::ProcessSpec {
     use base::interface::exec::{Enforcement, ProcessSpec, SandboxMode};
     let intent = ProcessSpec::new("bash", &ctx.cwd).args(["-c".to_string(), command.to_string()]);
-    if ctx.dangerously_disable_sandbox {
-        return Ok(intent);
+    if ctx.config.dangerously_disable_sandbox {
+        return intent;
     }
-    let mut confined = ctx.exec.sandbox.confine(intent, &sandbox_policy(ctx));
+    let mut confined = ctx.exec.sandbox.confine(intent, &policy_for_profile(ctx));
     if confined.enforcement != Enforcement::None {
         if let Some(tmp) = prepared_session_temp_dir(&ctx.sandbox, &ctx.session_id) {
             confined
@@ -201,55 +215,22 @@ pub(crate) fn confine_shell(
         }
     }
 
-    // A policy that cannot be enforced is the one case where "log it and
-    // carry on" is the wrong default *and* the wrong thing to change
-    // silently: refusing breaks every Linux host without bubblewrap and
-    // every Windows host, while permitting means a command the operator
-    // believes is constrained runs with nothing holding it. So the engine
-    // reports honestly and lets the host decide which it wants.
-    //
-    // `Partial` counts as unenforced here. A host that turned
-    // `require_enforcement` on wants an absolute boundary, and "most of
-    // your policy" is not one.
-    let shortfall = match confined.enforcement {
-        Enforcement::Full => None,
-        Enforcement::None if confined.mode == SandboxMode::Disabled => None,
-        _ => Some(confined.unmet.join("; ")),
+    let short = match confined.enforcement {
+        Enforcement::Full => false,
+        Enforcement::None => confined.mode != SandboxMode::Disabled,
+        _ => true,
     };
-    if let Some(shortfall) = shortfall {
-        if ctx.sandbox.require_enforcement {
-            return Err(ToolResult {
-                content: base::tool::ToolResultContent::Text(format!(
-                    "Refused: a sandbox policy is configured but this build on this \
-                     platform ({}) cannot enforce all of it — {shortfall} — and \
-                     `sandbox.require_enforcement` is on. The backend is behind a \
-                     compile-time feature that is off by default: rebuild with \
-                     `--features sandbox`, and on Linux install bubblewrap. Or set \
-                     `sandbox.require_enforcement: false` to accept what this build \
-                     can do, or `sandbox.dangerously_disable_sandbox: true` to stop \
-                     asking for a sandbox.",
-                    std::env::consts::OS
-                )),
-                is_error: true,
-                structured_content: Some(serde_json::json!({
-                    "refused": "sandbox_unenforceable",
-                    "platform": std::env::consts::OS,
-                    "unmet": confined.unmet,
-                })),
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            });
-        }
+    if short {
         tracing::warn!(
             tool,
             platform = std::env::consts::OS,
-            unmet = %shortfall,
+            unmet = %confined.unmet.join("; "),
             "sandbox policy is not fully enforced. Install bwrap (Linux), \
              set sandbox.require_enforcement to refuse instead, or \
              dangerously_disable_sandbox to stop asking."
         );
     }
-    Ok(confined.spec)
+    confined.spec
 }
 
 /// What the session's sandbox holds a command to, for the permission policy
@@ -283,7 +264,7 @@ pub fn engine_exec(ctx: &ToolContext) -> base::engine_exec::EngineExec {
     engine_exec_for(
         &ctx.sandbox,
         &ctx.exec,
-        ctx.dangerously_disable_sandbox,
+        ctx.config.dangerously_disable_sandbox,
         &ctx.session_id,
         ctx.config.project_trust,
     )

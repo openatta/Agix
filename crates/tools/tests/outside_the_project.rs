@@ -100,7 +100,7 @@ async fn runs_unattended(ctx: &ToolContext) -> bool {
     ctx.confinement = tools::bash::confinement_report(
         &ctx.sandbox,
         &ctx.exec,
-        ctx.dangerously_disable_sandbox,
+        ctx.config.dangerously_disable_sandbox,
         &ctx.cwd,
         &ctx.session_id,
     );
@@ -138,11 +138,11 @@ async fn an_unattended_command_runs_only_inside_the_sandbox() {
     );
 
     let mut unconfined = ctx_in(project.path(), |s| s.unattended = true);
-    unconfined.dangerously_disable_sandbox = true;
+    std::sync::Arc::make_mut(&mut unconfined.config).dangerously_disable_sandbox = true;
     assert!(!runs_unattended(&unconfined).await);
 
     let mut unattended = ctx_in(project.path(), |s| s.unattended = true);
-    unattended.dangerously_disable_sandbox = false;
+    std::sync::Arc::make_mut(&mut unattended.config).dangerously_disable_sandbox = false;
     let holds = tools::bash::sandbox_status().starts_with("available");
     assert_eq!(runs_unattended(&unattended).await, holds);
 

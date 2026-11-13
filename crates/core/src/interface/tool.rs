@@ -297,7 +297,6 @@ pub struct ToolContext {
     pub snapshot_file: Option<Arc<dyn SnapshotFile>>,
     pub effects: Option<Arc<dyn EffectsCallback>>,
     pub running_tasks: Option<Arc<dyn RunningTasksCallback>>,
-    pub dangerously_disable_sandbox: bool,
     pub max_file_read_bytes: usize,
     pub permission_mode: PermissionMode,
     pub config: Arc<crate::context::EngineConfig>,
@@ -330,6 +329,8 @@ pub struct ToolContext {
     pub confinement: crate::interface::exec::ConfinementReport,
     /// Whether someone can be asked about what this call does.
     pub attendance: crate::interface::permission::Attendance,
+    /// What the policy let this call through on; `None` when nothing judged it.
+    pub approval: Option<crate::interface::permission::Approval>,
     pub turn: Arc<TurnScope>,
 }
 
@@ -366,6 +367,8 @@ impl TurnScope {
 
 impl ToolContext {
     pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
+        let mut config = crate::context::EngineConfig::defaults_for("test");
+        config.dangerously_disable_sandbox = true;
         Self {
             cwd: cwd.clone(),
             session_id: "test".into(),
@@ -376,10 +379,9 @@ impl ToolContext {
             snapshot_file: None,
             effects: None,
             running_tasks: None,
-            dangerously_disable_sandbox: true,
             max_file_read_bytes: 0,
             permission_mode: PermissionMode::default(),
-            config: Arc::new(crate::context::EngineConfig::defaults_for("test")),
+            config: Arc::new(config),
             session: Arc::new(crate::context::SessionState::for_tests(cwd)),
             tool_use_id: String::new(),
             agent: None,
@@ -392,6 +394,7 @@ impl ToolContext {
             from_code: false,
             confinement: Default::default(),
             attendance: crate::interface::permission::Attendance::Attended,
+            approval: None,
             turn: Arc::default(),
         }
     }
@@ -410,7 +413,6 @@ impl ToolContext {
             snapshot_file: None,
             effects: None,
             running_tasks: None,
-            dangerously_disable_sandbox: false,
             max_file_read_bytes: 10 * 1024 * 1024,
             permission_mode: PermissionMode::default(),
             config: Arc::new(crate::context::EngineConfig::defaults_for("unknown")),
@@ -426,6 +428,7 @@ impl ToolContext {
             from_code: false,
             confinement: Default::default(),
             attendance: crate::interface::permission::Attendance::Attended,
+            approval: None,
             turn: Arc::default(),
         }
     }

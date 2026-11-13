@@ -12,6 +12,9 @@ use crate::context::SessionState;
 use crate::interface::tool::{CallTraits, PermissionDecision, Tool, ToolContext, ToolOrigin};
 use crate::permission::{PermissionMode, PermissionRule};
 
+mod profile;
+pub use profile::{Approval, ExecProfile, Obligations};
+
 /// What a tool's permission match content is, which decides how rules are
 /// matched against it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,6 +448,9 @@ pub enum Stage {
     Credentials,
     Hook,
     ToolRefusal,
+    /// The session's sandbox cannot hold the command as fully as
+    /// `sandbox.require_enforcement` demands.
+    Confinement,
     Rule,
     ManagedRule,
     /// A rule the delegate runs under: its type's deny rules.
@@ -467,6 +473,7 @@ impl Stage {
             Self::Credentials => "credentials",
             Self::Hook => "hook",
             Self::ToolRefusal => "tool_refusal",
+            Self::Confinement => "confinement",
             Self::Rule => "rule",
             Self::ManagedRule => "managed_rule",
             Self::DelegateRule => "delegate_rule",
@@ -507,33 +514,6 @@ impl Reason {
 impl std::fmt::Display for Reason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
-    }
-}
-
-/// How a permitted command is confined.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum ExecProfile {
-    #[default]
-    Session,
-    /// Let through on its own word: held tighter than one a person approved.
-    Strict,
-    /// Nobody attends the session.
-    Unattended,
-}
-
-/// What the caller owes once a permitted call has run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub struct Obligations {
-    pub scan_nested_repos: bool,
-}
-
-impl Obligations {
-    pub fn scanning_nested_repos(yes: bool) -> Self {
-        Self {
-            scan_nested_repos: yes,
-        }
     }
 }
 

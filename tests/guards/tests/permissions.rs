@@ -4,9 +4,9 @@
 //! by a delegate; no other policy stands between a call and the rules.
 //! PERM-3: a call is let through by the policy, or by the person the runtime
 //! asked — nowhere else builds a `PermissionOutcome::Permit`.
-//! PERM-4: whether anyone attends a session is read in one place, and the
-//! profile a command runs under in one more; everything else is handed the
-//! attendance.
+//! PERM-4: whether anyone attends a session is read in one place; everything
+//! else is handed the attendance, and a command the profile its approval
+//! names.
 //! PERM-5: only the shell's confinement, the engine's own processes and the
 //! confinement report confine a process; the backends implement `confine`
 //! and call nothing.
@@ -141,16 +141,10 @@ fn only_the_policy_and_the_person_asked_let_a_call_through() {
     );
 }
 
-const READS_UNATTENDED: &[(&str, &str)] = &[
-    (
-        "crates/runtime/src/turn/tool_env.rs::attendance_of",
-        "the attendance of a session's calls, worked out once per call",
-    ),
-    (
-        "crates/tools/src/bash/sandbox.rs::sandbox_policy",
-        "the profile a command runs under; D1-6a moves the choice to the runtime",
-    ),
-];
+const READS_UNATTENDED: &[(&str, &str)] = &[(
+    "crates/runtime/src/turn/tool_env.rs::attendance_of",
+    "the attendance of a session's calls, worked out once per call",
+)];
 
 #[test]
 fn attendance_is_read_in_one_place_and_handed_on() {
