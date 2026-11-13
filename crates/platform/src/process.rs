@@ -138,7 +138,7 @@ impl Process for LocalProcess {
     async fn spawn(
         &self,
         spec: ProcessSpec,
-        _cancel: CancellationToken,
+        cancel: CancellationToken,
     ) -> Result<Box<dyn ProcessHandle>, ExecError> {
         let mut cmd = tokio::process::Command::new(&spec.program);
         cmd.args(&spec.args)
@@ -201,16 +201,44 @@ impl Process for LocalProcess {
                 ledger.record(group);
             }
         }
+        #[cfg(unix)]
+        let cancel_watch = group.map(|group| stop_on_cancel(group, cancel));
+        #[cfg(not(unix))]
+        drop(cancel);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         Ok(Box::new(LocalHandle {
             child,
             #[cfg(unix)]
             group,
+            #[cfg(unix)]
+            _cancel_watch: cancel_watch,
             kept: self.ledger.is_some(),
             output: Some(interleave(stdout, stderr)),
         }))
     }
+}
+
+/// Stops the group when `cancel` fires, for as long as the returned guard
+/// (held by the handle) lives.
+#[cfg(unix)]
+fn stop_on_cancel(group: libc::pid_t, cancel: CancellationToken) -> tokio_util::sync::DropGuard {
+    let handle_gone = CancellationToken::new();
+    let watching = handle_gone.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = watching.cancelled() => {}
+            _ = cancel.cancelled() => {
+                signal_group(group, libc::SIGTERM);
+                let deadline = tokio::time::Instant::now() + TERM_GRACE;
+                while tokio::time::Instant::now() < deadline && group_alive(group) {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                signal_group(group, libc::SIGKILL);
+            }
+        }
+    });
+    handle_gone.drop_guard()
 }
 
 /// Both pipes as one tagged stream.
@@ -260,6 +288,8 @@ struct LocalHandle {
     child: tokio::process::Child,
     #[cfg(unix)]
     group: Option<libc::pid_t>,
+    #[cfg(unix)]
+    _cancel_watch: Option<tokio_util::sync::DropGuard>,
     /// A ledger keeps the group past this handle and takes it off the
     /// process-wide list when it reaps it.
     kept: bool,
@@ -532,6 +562,25 @@ mod tests {
         let (_, _, status) = run_with(process, sh("true")).await;
         assert!(status.success);
         assert!(ledger.groups().is_empty(), "{:?}", ledger.groups());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_the_spawn_token_stops_the_whole_group() {
+        let cancel = CancellationToken::new();
+        let mut h = LocalProcess::default()
+            .spawn(sh("sleep 300 & echo $!; wait"), cancel.clone())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
+        cancel.cancel();
+        let stopped = gone_within(pid, std::time::Duration::from_secs(3)).await;
+        if !stopped {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(stopped, "the background sleep outlived the cancellation");
+        assert!(!h.wait().await.unwrap().success);
     }
 
     #[cfg(unix)]
