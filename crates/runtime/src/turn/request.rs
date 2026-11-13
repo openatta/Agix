@@ -272,7 +272,7 @@ impl Agent {
         let can_fetch_guides = selected.iter().any(|t| t.name() == TOOL_SEARCH_NAME);
         let prompt_ctx = base::tool::PromptContext {
             cwd: self.settings.paths.working_dir().to_path_buf(),
-            model: self.settings.model.model_name.clone(),
+            model: self.settings.values.model.model_name.clone(),
             session_id: self.session.session_id.clone(),
             is_interactive: false,
             all_tool_names: selected.iter().map(|t| t.name().to_string()).collect(),
@@ -327,7 +327,7 @@ impl Agent {
         Arc::new(telemetry::model::TelemetryModel::new(
             model,
             self.telemetry.telemetry_handle.clone(),
-            self.settings.model.model_name.clone(),
+            self.settings.values.model.model_name.clone(),
         ))
     }
 
@@ -353,9 +353,9 @@ impl Agent {
             params: base::interface::model::StreamParams {
                 model: model.to_string(),
                 max_tokens,
-                thinking_mode: self.settings.model.thinking_mode.clone(),
-                effort: self.settings.model.effort,
-                fallback_model: self.settings.model.fallback_model.clone(),
+                thinking_mode: self.settings.values.model.thinking_mode.clone(),
+                effort: self.settings.values.model.effort,
+                fallback_model: self.settings.values.model.fallback_model.clone(),
                 cache_edits: self.compaction.cached_mc.lend_pending_edits(),
                 origin,
                 input_map,
@@ -393,8 +393,8 @@ impl Agent {
             params: base::interface::model::StreamParams {
                 model: model.to_string(),
                 max_tokens,
-                thinking_mode: self.settings.model.thinking_mode.clone(),
-                effort: self.settings.model.effort,
+                thinking_mode: self.settings.values.model.thinking_mode.clone(),
+                effort: self.settings.values.model.effort,
                 fallback_model,
                 cache_edits: Vec::new(),
                 origin,
@@ -531,7 +531,7 @@ impl Agent {
                 }
                 let fallback = match call.so_far.switched_model {
                     true => None,
-                    false => self.settings.model.fallback_model.clone(),
+                    false => self.settings.values.model.fallback_model.clone(),
                 };
                 // The retry keeps skills and MCP instructions: they cost a few
                 // KB, the history is what blew the budget, and the compaction

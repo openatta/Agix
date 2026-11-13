@@ -126,8 +126,8 @@ impl Agent {
         let mut structured_output_calls: u32 = 0;
 
         let mut max_tokens_recovery: u32 = 0;
-        let mut effective_max_tokens = self.settings.model.max_tokens;
-        let mut effective_model = self.settings.model.model_name.clone();
+        let mut effective_max_tokens = self.settings.values.model.max_tokens;
+        let mut effective_model = self.settings.values.model.model_name.clone();
         // What the turn has spent, kept once. The budget reads it through
         // `Spend` and a caller reads it whole; a second accumulator beside it
         // would let the two disagree about the cache.
@@ -256,7 +256,7 @@ impl Agent {
                 memory_summary: frozen
                     .memory_index
                     .as_deref()
-                    .filter(|m| self.settings.memory_enabled && !m.is_empty())
+                    .filter(|m| self.settings.values.memory_enabled && !m.is_empty())
                     .map(std::borrow::Cow::Borrowed),
             };
             let reminder = self.scene.reminder(&ctx);
@@ -273,7 +273,7 @@ impl Agent {
         // misses its budget stops spending on the selection call.
         type Recall = (Vec<String>, Vec<base::memory::DurableMemory>);
         let mut prefetch_handle: Option<tokio_util::task::AbortOnDropHandle<Recall>> =
-            if !self.settings.memory_enabled {
+            if !self.settings.values.memory_enabled {
                 None
             } else {
                 let store = self.memory.memory_store.clone();
@@ -286,7 +286,7 @@ impl Agent {
                     .map(|f| f.already_surfaced.clone())
                     .unwrap_or_default();
                 let recent_tools = self.tooling.tools.names();
-                let model_name = self.settings.model.model_name.clone();
+                let model_name = self.settings.values.model.model_name.clone();
                 let session_id = self.session.session_id.clone();
                 let retriever = Arc::clone(&self.memory.memory_retriever);
                 let hooks = Arc::clone(&self.memory.retrieval_hooks);
@@ -779,7 +779,7 @@ impl Agent {
                         stop_reason: stop_reason.clone(),
                         input_message_count: sent_message_count,
                         tool_count: sent_tool_count,
-                        default_model: effective_model == self.settings.model.model_name,
+                        default_model: effective_model == self.settings.values.model.model_name,
                         // A turn's own call. The auxiliary ones are labelled
                         // by `telemetry::model::TelemetryModel`, which is
                         // where they are visible at all.
@@ -1138,7 +1138,7 @@ impl Agent {
             // Gated on `memory_enabled` — see the prefetch block above for why this matters
             // (the flag's whole point is opting out of the memory subsystem entirely, not just
             // the static prompt injection).
-            if self.settings.memory_enabled && self.memory.extract_after_turn {
+            if self.settings.values.memory_enabled && self.memory.extract_after_turn {
                 let session_messages = self.session.messages().to_vec();
                 let store = self.memory.memory_store.clone();
                 // `task_models.memory` lets an app point this background
@@ -1152,12 +1152,12 @@ impl Agent {
                         self.accounted(router.model_for("memory")),
                         router
                             .model_name_for("memory")
-                            .unwrap_or(&self.settings.model.model_name)
+                            .unwrap_or(&self.settings.values.model.model_name)
                             .to_string(),
                     ),
                     None => (
                         self.llm.model.clone(),
-                        self.settings.model.model_name.clone(),
+                        self.settings.values.model.model_name.clone(),
                     ),
                 };
                 let prompt_intro = self.scene.memory_extraction_intro.clone();

@@ -107,7 +107,9 @@ pub(super) fn build_prompt_context<'a>(
                 f.git_branch.clone(),
                 f.is_worktree,
                 f.git_status.clone(),
-                f.memory_index.clone().filter(|_| settings.memory_enabled),
+                f.memory_index
+                    .clone()
+                    .filter(|_| settings.values.memory_enabled),
                 f.output_style.as_ref().map(|os| os.content.clone()),
                 f.shell.clone(),
                 f.home_dir.clone(),
@@ -138,7 +140,7 @@ pub(super) fn build_prompt_context<'a>(
         git_branch: git_branch.map(Cow::Owned),
         git_status: git_status.map(Cow::Owned),
         is_worktree,
-        language: settings.language.clone().map(Cow::Owned),
+        language: settings.values.language.clone().map(Cow::Owned),
         // `local_data_dir` is already the `.agix/` dir (flat, no scope
         // segment) — no need to prepend another `.agix/`.
         scratchpad_dir: settings
@@ -345,6 +347,7 @@ impl Agent {
             if !already && !own.trim().is_empty() {
                 sections.push((
                     self.settings
+                        .values
                         .instruction_file
                         .as_ref()
                         .map(|p| p.display().to_string())
@@ -378,7 +381,7 @@ impl Agent {
     /// The conversation's opening `<system-reminder>`: the scene's session
     /// facts, the project instructions and today's date, as one user message.
     pub(super) async fn inject_session_context(&mut self) {
-        let model = self.settings.model.model_name.clone();
+        let model = self.settings.values.model.model_name.clone();
         let facts = {
             let ctx = build_prompt_context(
                 &self.settings,
@@ -492,7 +495,7 @@ impl Agent {
             &base::interface::prompt_assembler::AssemblyRequest {
                 registry: self.prompt.prompt_registry.as_ref(),
                 scene: self.scene.as_ref(),
-                settings: &self.settings,
+                settings: &self.settings.values,
                 memory_store: &self.memory.memory_store,
                 ctx: &ctx,
                 rules: &rules,
@@ -629,7 +632,7 @@ impl Agent {
                 }],
             }])
         };
-        let model = self.settings.model.model_name.clone();
+        let model = self.settings.values.model.model_name.clone();
         let blocks = self.build_prompt_blocks(&model).await;
         let tools = self.build_tool_defs().await;
         let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
@@ -664,7 +667,7 @@ impl Agent {
         ContextReport {
             basis: "next_step_without_new_input".to_string(),
             model,
-            max_tokens: self.settings.model.max_tokens,
+            max_tokens: self.settings.values.model.max_tokens,
             system,
             tools,
             messages: MessagesReport {

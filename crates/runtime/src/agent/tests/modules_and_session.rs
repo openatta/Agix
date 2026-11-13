@@ -75,7 +75,7 @@ impl crate::module::Module for SeesPrompt {
         &self,
         cx: &mut crate::module::SessionContext<'_>,
     ) -> Result<(), crate::module::ModuleError> {
-        *self.0.lock().unwrap() = Some(cx.settings.prompt_append.clone());
+        *self.0.lock().unwrap() = Some(cx.settings.values.prompt_append.clone());
         Ok(())
     }
 }
@@ -91,7 +91,7 @@ fn a_session_prompt_reaches_the_agent_and_not_its_modules() {
         .build()
         .expect("build should succeed");
     assert_eq!(
-        agent.settings().prompt_append.as_deref(),
+        agent.settings().values.prompt_append.as_deref(),
         Some("SESSION-ONLY")
     );
     assert_eq!(
@@ -445,12 +445,12 @@ async fn the_model_chosen_on_the_sessions_state_is_the_one_the_next_turn_uses() 
         .build()
         .expect("build should succeed");
 
-    assert_eq!(agent.settings.model.model_name, "test");
+    assert_eq!(agent.settings.values.model.model_name, "test");
     agent
         .session_state()
         .set_model_choice(Some("claude-opus-5".into()));
     assert_eq!(
-        agent.settings.model.model_name, "test",
+        agent.settings.values.model.model_name, "test",
         "a turn already running keeps its model"
     );
 
@@ -465,7 +465,7 @@ async fn the_model_chosen_on_the_sessions_state_is_the_one_the_next_turn_uses() 
         )
         .await;
 
-    assert_eq!(agent.settings.model.model_name, "claude-opus-5");
+    assert_eq!(agent.settings.values.model.model_name, "claude-opus-5");
 }
 
 /// The counter a host builds the session with is what its size — the number

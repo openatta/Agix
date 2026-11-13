@@ -30,12 +30,12 @@ impl Agent {
                 self.accounted(router.model_for("compact")),
                 router
                     .model_name_for("compact")
-                    .unwrap_or(&self.settings.model.model_name)
+                    .unwrap_or(&self.settings.values.model.model_name)
                     .to_string(),
             ),
             None => (
                 self.llm.model.clone(),
-                self.settings.model.model_name.clone(),
+                self.settings.values.model.model_name.clone(),
             ),
         };
         if model_name.is_empty() {
@@ -164,7 +164,7 @@ impl Agent {
                 context_tokens,
                 context_limit: budget.compact_threshold,
                 keep_recent: budget.compact_keep_recent,
-                enabled: self.settings.compaction.reactive,
+                enabled: self.settings.values.compaction.reactive,
                 circuit_open: self.compaction.compaction_state.circuit_open,
             },
         ) {

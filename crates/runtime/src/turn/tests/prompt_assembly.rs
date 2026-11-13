@@ -534,11 +534,12 @@ async fn rebuilt_prompt_still_carries_skills_and_scene_skeleton() {
 fn scene_execution_params_tighten_the_api_call_ceiling() {
     let dir = tempfile::tempdir().unwrap();
     let settings = test_settings(dir.path());
-    assert_eq!(settings.execution.max_api_calls_per_turn, 25);
+    assert_eq!(settings.values.execution.max_api_calls_per_turn, 25);
 
     let resolve = |scene_limit: u32| {
         let scene = scene_with(vec![], scene_limit);
         settings
+            .values
             .execution
             .max_api_calls_per_turn
             .min(scene.execution.max_api_calls_per_turn)

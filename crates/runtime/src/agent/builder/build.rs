@@ -74,7 +74,7 @@ impl Builder {
         let model: Arc<dyn Model> = Arc::new(telemetry::model::TelemetryModel::new(
             model,
             telemetry_handle.clone(),
-            settings.model.model_name.clone(),
+            settings.values.model.model_name.clone(),
         ));
         let permission = self.permission.unwrap_or_else(|| {
             let policy = permissions::policy::Policy::from_settings(&settings, Vec::new());
@@ -84,7 +84,8 @@ impl Builder {
                 policy.with_no_one_to_ask(NO_HOST_TO_ASK)
             }))
         });
-        let instruction_file = self.instruction_file.or(settings.instruction_file.clone());
+        let configured_instruction_file = settings.values.instruction_file.clone();
+        let instruction_file = self.instruction_file.or(configured_instruction_file);
         // Pre-read AGENTS.md / CLAUDE.md content for userContext injection.
         let instruction_provider: Arc<
             dyn base::interface::instruction_provider::InstructionProvider,
@@ -225,7 +226,7 @@ impl Builder {
 
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_loaded(&settings);
-            c.path_style = settings.path_style.unwrap_or(scene.path_style);
+            c.path_style = settings.values.path_style.unwrap_or(scene.path_style);
             c.deferred_tools = Arc::new(
                 scene
                     .tools
@@ -301,11 +302,11 @@ impl Builder {
                 Arc::new(telemetry::model::TelemetryModel::new(
                     router.model_for(WEB_SEARCH_TASK),
                     telemetry_handle.clone(),
-                    settings.model.model_name.clone(),
+                    settings.values.model.model_name.clone(),
                 )) as Arc<dyn Model>,
                 name.to_string(),
             ),
-            None => (model.clone(), settings.model.model_name.clone()),
+            None => (model.clone(), settings.values.model.model_name.clone()),
         };
         tools::register_web_search(&tools, search_model, search_model_name);
 
@@ -316,7 +317,7 @@ impl Builder {
             let model = Arc::new(telemetry::model::TelemetryModel::new(
                 router.model_for(WEB_FETCH_TASK),
                 telemetry_handle.clone(),
-                settings.model.model_name.clone(),
+                settings.values.model.model_name.clone(),
             )) as Arc<dyn Model>;
             Some((model, name.to_string()))
         });
@@ -646,13 +647,13 @@ impl Builder {
         let recovery_policy: Arc<dyn base::interface::recovery_policy::RecoveryPolicy> =
             self.recovery_policy.clone().unwrap_or_else(|| {
                 Arc::new(base::interface::recovery_policy::DefaultRecovery::new(
-                    settings.model.fallback_model.clone(),
+                    settings.values.model.fallback_model.clone(),
                 ))
             });
         let turn_policy: Arc<dyn base::interface::turn_policy::TurnPolicy> =
             self.turn_policy.clone().unwrap_or_else(|| {
                 Arc::new(base::interface::turn_policy::LimitsPolicy::new(
-                    settings.execution.max_api_calls_per_turn,
+                    settings.values.execution.max_api_calls_per_turn,
                     scene.execution.max_api_calls_per_turn,
                     5,
                 ))
@@ -661,7 +662,7 @@ impl Builder {
         let budget_policy: Arc<dyn base::interface::budget_policy::BudgetPolicy> =
             self.budget_policy.clone().unwrap_or_else(|| {
                 Arc::new(base::interface::budget_policy::EngineBudget::from_settings(
-                    &settings,
+                    &settings.values,
                 ))
             });
 
@@ -671,7 +672,7 @@ impl Builder {
         };
 
         // Capture feature flags before settings is moved into the Agent struct
-        let cached_mc_enabled = settings.compaction.cached_microcompact;
+        let cached_mc_enabled = settings.values.compaction.cached_microcompact;
 
         let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> =
             if rust_layer.registers_on_prompt_registry()
@@ -887,6 +888,7 @@ fn session_env(
     let resolve = |dir: &std::path::PathBuf| cwd.join(dir);
     base::context::SessionEnv {
         additional_writable_dirs: settings
+            .values
             .sandbox
             .additional_directories
             .iter()
@@ -894,14 +896,15 @@ fn session_env(
             .chain(config.sandbox_policy.paths.state_working_dirs())
             .collect(),
         read_directories: settings
+            .values
             .sandbox
             .read_directories
             .iter()
             .map(resolve)
             .chain(config.sandbox_policy.paths.readable_state_root())
             .collect(),
-        read_anywhere: settings.sandbox.read_anywhere,
-        cache_directories: settings.sandbox.cache_directories.paths(&cwd),
+        read_anywhere: settings.values.sandbox.read_anywhere,
+        cache_directories: settings.values.sandbox.cache_directories.paths(&cwd),
         unattended: !scene.interactive,
         base_mode: config.permission_mode,
         cwd,

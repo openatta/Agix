@@ -118,7 +118,7 @@ impl Agent {
         // dirty tree) while there is still nothing to undo.
         {
             let scope = self.settings.paths.scope.clone();
-            let model = self.settings.model.model_name.clone();
+            let model = self.settings.values.model.model_name.clone();
             self.fire_lifecycle_hook(hooks::HookEvent::Setup, |i| {
                 i.with_reason(format!("scene={scope} model={model}"))
             })
@@ -364,7 +364,7 @@ impl Agent {
     /// endpoint. All operations run in parallel via `tokio::join!` to
     /// minimize startup latency.
     async fn warmup(&mut self) {
-        let base_url = self.settings.model.base_url.clone();
+        let base_url = self.settings.values.model.base_url.clone();
         let session_memory = self.session.session_memory.clone();
         let network = self.exec.network.clone();
         let engine_git = crate::turn::engine_exec_from(
@@ -523,7 +523,7 @@ impl Agent {
 
     /// Recorder status — None when no recording is configured.
     pub fn recorder(&self) -> Option<&base::settings::RecorderConfig> {
-        self.settings.recorder.as_ref()
+        self.settings.values.recorder.as_ref()
     }
 
     /// The session's permission: its policy and its grants.

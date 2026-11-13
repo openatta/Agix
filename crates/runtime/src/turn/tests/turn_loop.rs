@@ -86,7 +86,7 @@ fn prompt_context_includes_os() {
     );
     assert_eq!(ctx_with_frozen.shell, "/usr/bin/zsh");
     assert_eq!(ctx_with_frozen.model_name, "fallback-model");
-    assert_ne!(ctx_with_frozen.model_name, settings.model.model_name);
+    assert_ne!(ctx_with_frozen.model_name, settings.values.model.model_name);
 }
 
 /// Answers directly (no tool calls) and records every message it was sent,

@@ -23,7 +23,7 @@ pub(in crate::agent) fn build_hook_runner(
     // Key by key, not whole-map. `HooksSettings` is keyed by `HookEvent`,
     // which has no serde fallback, so one unrecognized event name would
     // otherwise fail the entire map and silently turn off every hook.
-    let parsed: hooks::HooksSettings = match &settings.hooks_config {
+    let parsed: hooks::HooksSettings = match &settings.values.hooks_config {
         Some(v) => {
             let (parsed, report) = hooks::parse_hooks_settings(v);
             for name in &report.unknown_events {
@@ -78,8 +78,8 @@ pub(in crate::agent) fn build_hook_runner(
         .collect();
     let prompt_executor = Arc::new(crate::hook_executors::ModelPromptHookExecutor::new(
         model,
-        settings.model.model_name.clone(),
-        settings.model.max_tokens,
+        settings.values.model.model_name.clone(),
+        settings.values.model.max_tokens,
         session_id,
     ));
     let agent_executor = Arc::new(crate::hook_executors::DelegatorHookExecutor::new(
@@ -89,7 +89,7 @@ pub(in crate::agent) fn build_hook_runner(
     let runner = HookRunner::new(parsed)
         .with_hooks_search_dirs(hooks_search_dirs)
         .with_project_untrusted(project_untrusted)
-        .with_subprocess_env(settings.sandbox.subprocess_env.clone())
+        .with_subprocess_env(settings.values.sandbox.subprocess_env.clone())
         .with_prompt_executor(prompt_executor)
         .with_agent_executor(agent_executor);
     Arc::new(runner)

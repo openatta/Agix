@@ -83,7 +83,7 @@ impl Agent {
         let Some(model) = self.session_state.model_choice() else {
             return;
         };
-        if self.settings.model.model_name != model {
+        if self.settings.values.model.model_name != model {
             let mut settings = (*self.settings).clone();
             settings.values.model.model_name = model;
             self.settings = Arc::new(settings);
@@ -658,7 +658,7 @@ impl Agent {
                 + u64::from(last_call.cache_creation_input_tokens),
             compact_threshold: self.context_budget().compact_threshold as u64,
             window: base::context::config::infer_context_window_tokens(
-                &self.settings.model.model_name,
+                &self.settings.values.model.model_name,
             ) as u64,
         }
     }
