@@ -82,7 +82,24 @@ impl DaemonServer {
             return;
         };
         tokio::spawn(async move {
-            let resp = self.dispatch(req, client.clone()).await;
+            let method = req.method.clone();
+            let dispatched = std::panic::AssertUnwindSafe(self.dispatch(req, client.clone()));
+            let resp = match futures::FutureExt::catch_unwind(dispatched).await {
+                Ok(resp) => resp,
+                Err(panic) => {
+                    let what = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_default();
+                    tracing::error!(%method, panic = %what, "a request handler panicked");
+                    RpcResponse::err(
+                        id,
+                        codes::INTERNAL_ERROR,
+                        format!("internal error while serving `{method}`"),
+                    )
+                }
+            };
             if !notification {
                 send_frame(&client, &resp).await;
             }

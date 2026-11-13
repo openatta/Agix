@@ -161,7 +161,9 @@ fork 型 skill 要 agents 提供的 spawner。委派出去的子会话用父会�
 
 `release` profile(fat LTO、`opt-level = "s"`、`panic = "abort"`)在 panic 时中止进程,
 由 supervisor 拉起;只有明确要 `release-fast`(`opt-level = 3`、`panic = "unwind"`)时
-才展开,任务里的 panic 只结束那个任务;工具调用里的 panic 变成这次调用的错误结果,这一轮照常往下走。
+才展开,任务里的 panic 只结束那个任务;工具调用里的 panic 变成这次调用的错误结果,这一轮照常往下走;
+处理一个 JSON-RPC 请求时的 panic(比如宿主的 `customize_session` 里)变成这个请求的
+`INTERNAL_ERROR`,不会让客户端一直等着,连接和其它请求照常服务。
 也就是说,**`release` 构建里这层兜底不生效**:一个工具 panic 会带走整个进程和它上面所有会话,
 不是只带走这一次调用。这是有意的取舍(`release` 要小、要快,崩了由 supervisor 拉起、会话从日志恢复),
 不想要的部署用 `release-fast`,或者保证工具代码不 panic。`daemon.doctor` 的 `build.panic` 一项

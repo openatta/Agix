@@ -1,7 +1,9 @@
 //! What a host adds to a session engine through `Assembly::customize_session`
 //! is on every engine the session runs on, including the one rebuilt after a
-//! settings change.
+//! settings change; and a customizer that panics fails the request it ran
+//! under instead of leaving the client waiting.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,7 +11,8 @@ use std::time::Duration;
 use base::event::AgentEvent;
 use base::interface::event_sink::EventSink;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
-use daemon::DaemonServer;
+use daemon::rpc::codes;
+use daemon::{DaemonServer, SessionCustomizer};
 use model::client::AnthropicClient;
 use model::mock::MockAnthropicClient;
 use model::stream::{BlockDelta, ContentBlockStart, MessageDeltaPayload, StreamEvent, Usage};
@@ -51,11 +54,50 @@ impl EventSink for CountTurns {
     }
 }
 
-async fn call(
-    sock: &std::path::Path,
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
+/// A daemon on a socket in `dir` whose sessions go through `customize`.
+async fn serve(
+    dir: &Path,
+    model: Arc<MockAnthropicClient>,
+    customize: SessionCustomizer,
+) -> PathBuf {
+    let sock = dir.join("customize.sock");
+    let cwd = dir.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let mut config = load_daemon_config(
+        "claude-sonnet-4-6",
+        2000,
+        Some(&sock),
+        "code",
+        &StaticDaemonPaths::new(dir.to_path_buf()),
+    );
+    config.settings.values.memory_enabled = false;
+    let pool = daemon::assemble::pool(
+        &config,
+        Arc::new(scene::code::CodeScene::default()),
+        daemon::Assembly {
+            cwd: Some(cwd),
+            model_client: Some(model as Arc<dyn AnthropicClient>),
+            customize_session: Some(customize),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the daemon assembles");
+    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+    let bind = sock.clone();
+    tokio::spawn(async move {
+        let _ = server.serve_unix(&bind).await;
+    });
+    for _ in 0..80 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    sock
+}
+
+async fn respond(sock: &Path, method: &str, params: serde_json::Value) -> serde_json::Value {
     let request = serde_json::json!({"jsonrpc":"2.0","method":method,"params":params,"id":1});
     let mut conn = UnixStream::connect(sock).await.unwrap();
     conn.write_all(format!("{request}\n").as_bytes())
@@ -69,61 +111,35 @@ async fn call(
         assert!(n > 0, "{method}: connection closed before a response");
         let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
         if frame.get("id").is_some() {
-            assert!(frame.get("result").is_some(), "{method} failed: {frame}");
-            return frame["result"].clone();
+            return frame;
         }
     }
+}
+
+async fn call(sock: &Path, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let frame = respond(sock, method, params).await;
+    assert!(frame.get("result").is_some(), "{method} failed: {frame}");
+    frame["result"].clone()
 }
 
 #[tokio::test]
 async fn a_rebuilt_session_still_has_what_the_host_added() {
     let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("customize.sock");
-    let cwd = dir.path().join("work");
-    std::fs::create_dir_all(&cwd).unwrap();
-    let mut config = load_daemon_config(
-        "claude-sonnet-4-6",
-        2000,
-        Some(&sock),
-        "code",
-        &StaticDaemonPaths::new(dir.path().to_path_buf()),
-    );
-    config.settings.values.memory_enabled = false;
-
     let model = Arc::new(MockAnthropicClient::new());
     model.push_turn(one_turn());
     model.push_turn(one_turn());
-
     let turns = Arc::new(CountTurns::default());
     let builds: Arc<Mutex<Vec<bool>>> = Arc::default();
     let (sink, seen) = (turns.clone(), builds.clone());
-    let pool = daemon::assemble::pool(
-        &config,
-        Arc::new(scene::code::CodeScene::default()),
-        daemon::Assembly {
-            cwd: Some(cwd),
-            model_client: Some(model as Arc<dyn AnthropicClient>),
-            customize_session: Some(Arc::new(move |builder, ctx| {
-                seen.lock().unwrap().push(ctx.resumed);
-                builder.event_sink(sink.clone())
-            })),
-            ..Default::default()
-        },
+    let sock = serve(
+        dir.path(),
+        model,
+        Arc::new(move |builder, ctx| {
+            seen.lock().unwrap().push(ctx.resumed);
+            builder.event_sink(sink.clone())
+        }),
     )
-    .await
-    .expect("the daemon assembles");
-    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
-    let serving = server.clone();
-    let bind = sock.clone();
-    tokio::spawn(async move {
-        let _ = serving.serve_unix(&bind).await;
-    });
-    for _ in 0..80 {
-        if sock.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    .await;
 
     let sid = call(&sock, "session.create", serde_json::json!({})).await["session_id"].clone();
     call(
@@ -156,4 +172,33 @@ async fn a_rebuilt_session_still_has_what_the_host_added() {
         2,
         "the sink the host attached saw the turn served by the rebuilt engine too"
     );
+}
+
+#[tokio::test]
+async fn a_customizer_that_panics_fails_the_request_instead_of_hanging_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let sock = serve(
+        dir.path(),
+        Arc::new(MockAnthropicClient::new()),
+        Arc::new(move |builder, _ctx| {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("the host's customizer fell over");
+            }
+            builder
+        }),
+    )
+    .await;
+
+    let failed = tokio::time::timeout(
+        Duration::from_secs(20),
+        respond(&sock, "session.create", serde_json::json!({})),
+    )
+    .await
+    .expect("session.create never answered");
+
+    assert_eq!(failed["error"]["code"], codes::INTERNAL_ERROR, "{failed}");
+    let created = call(&sock, "session.create", serde_json::json!({})).await;
+    assert!(created["session_id"].is_string(), "{created}");
 }
