@@ -8,7 +8,7 @@
 
 use base::event::AgentEvent;
 use base::id::Id;
-use base::interface::permission::PermissionSet;
+use base::interface::permission::{PermissionPolicy, PermissionSet};
 use base::interface::scene::SceneSpec;
 use base::settings::{LoadedSettings, Settings};
 use base::settings::{RecorderConfig, RecorderMode};

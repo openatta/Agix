@@ -300,8 +300,10 @@ Builder::new().permission(PermissionSet::without_grants(Arc::new(MyPolicy)));
 `BypassPermissions` 下 `Policy` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
 判定;凭据照样拒绝,部署方 managed 层的 deny / ask 照样生效;输入校验("改文件前先读过"、
 大小上限、会被读错的路径)照样拒绝,直接调用和程序里的调用一样(`ARCHITECTURE.md` §6.1)。
-`agixd` 的会话池对 `bypassPermissions` 会话也装这道 gate;宿主给了 `Assembly.permission`、
-且没有 managed 层时,这样的会话改用宿主的 handler。要规则仍然算数又不想被询问,用 `acceptEdits` 或
+`agixd` 的会话池对每个会话都装这道 gate;宿主给的 `Assembly.host_policy` 是其中一层规则:它的
+deny 在任何模式下都生效,它的 allow 只算一条 allow 规则。没调 `.permission(..)` 的 `Builder` 用的也是
+`Policy`,规则与模式取自它的设置;同时也没给 `elicitation` 时没人可问,要问的调用一律拒绝,并提示用
+`permission_rules` 或 `permission_mode` 放行。要规则仍然算数又不想被询问,用 `acceptEdits` 或
 `dontAsk` 加 allow 规则。
 
 ### 一个 agent 怎么呈现自己 — `scene`

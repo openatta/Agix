@@ -10,6 +10,7 @@
 //! answer it.
 
 use super::delegated::Delegated;
+use super::host::HostSays;
 use super::subject::{managed_ask_of, unclear_message, Named};
 use super::{Policy, Verdict};
 use crate::rule::format_rule_string;
@@ -28,20 +29,24 @@ pub(super) struct Call<'a> {
     pub(super) hook: &'a HookAnswer,
     pub(super) named: Named,
     pub(super) delegated: Delegated,
+    pub(super) host: HostSays,
 }
 
 struct Asked {
-    rule: PermissionRule,
-    message: String,
-    managed: bool,
+    reason: Reason,
+    answerable: Answerable,
 }
 
 impl Asked {
-    fn stage(&self) -> Stage {
-        if self.managed {
-            Stage::ManagedRule
+    fn by_rule(rule: PermissionRule, message: String, managed: bool) -> Self {
+        let (stage, answerable) = if managed {
+            (Stage::ManagedRule, Answerable::PersonOnly)
         } else {
-            Stage::Rule
+            (Stage::Rule, Answerable::HookOrPerson)
+        };
+        Self {
+            reason: Reason::new(stage, message).with_rule(rule),
+            answerable,
         }
     }
 }
@@ -85,20 +90,17 @@ impl Policy {
         if let Some(refused) = mode_refusal(call, rule_allow.is_some()) {
             return refused;
         }
-        if let Some(asked) = rule_ask {
+        if let Some(Asked {
+            mut reason,
+            answerable,
+        }) = rule_ask
+        {
             return match call.mode {
-                PermissionMode::DontAsk => Verdict::Deny(
-                    Reason::new(asked.stage(), format!("dontAsk mode: {}", asked.message))
-                        .with_rule(asked.rule),
-                ),
-                _ => Verdict::Ask {
-                    answerable: if asked.managed {
-                        Answerable::PersonOnly
-                    } else {
-                        Answerable::HookOrPerson
-                    },
-                    reason: Reason::new(asked.stage(), asked.message).with_rule(asked.rule),
-                },
+                PermissionMode::DontAsk => {
+                    reason.message = format!("dontAsk mode: {}", reason.message);
+                    Verdict::Deny(reason)
+                }
+                _ => Verdict::Ask { reason, answerable },
             };
         }
 
@@ -113,7 +115,8 @@ impl Policy {
         by_mode(call, writes_configuration)
     }
 
-    /// `bypassPermissions` answers to the managed layer alone.
+    /// `bypassPermissions` answers to the managed layer and the host's
+    /// refusal alone.
     fn under_bypass(&self, call: &Call<'_>) -> Verdict {
         let hit = if self.managed.rules.is_empty() {
             RuleHit::None
@@ -129,6 +132,9 @@ impl Policy {
                 .with_rule(rule),
             );
         }
+        if let Some(denied) = call.host.denial() {
+            return denied;
+        }
         match managed_ask_of(call.name, hit) {
             Some((rule, message)) => Verdict::Ask {
                 reason: Reason::new(Stage::ManagedRule, message).with_rule(rule),
@@ -138,16 +144,16 @@ impl Policy {
         }
     }
 
-    /// The rules' allow and ask for the call, or its denial.
+    /// The rules' allow and ask for the call — the host's among them — or
+    /// its denial.
     fn rule_hit(
         &self,
         call: &Call<'_>,
     ) -> Result<(Option<PermissionRule>, Option<Asked>), Verdict> {
         let hit = call.named.hit(&self.rules_now(), call.name, call.ctx);
-        let asked = |rule: PermissionRule, message: String| Asked {
-            managed: self.managed.rules.rules().contains(&rule),
-            rule,
-            message,
+        let asked = |rule: PermissionRule, message: String| {
+            let managed = self.managed.rules.rules().contains(&rule);
+            Asked::by_rule(rule, message, managed)
         };
         let (allow, ask) = match hit {
             RuleHit::Deny(rule) => {
@@ -191,15 +197,28 @@ impl Policy {
                 )
             };
             match managed {
-                Some((rule, message)) => Asked {
-                    rule,
-                    message,
-                    managed: true,
-                },
+                Some((rule, message)) => Asked::by_rule(rule, message, true),
                 None => ask,
             }
         });
-        Ok((allow, ask))
+        match &call.host {
+            HostSays::Nothing => Ok((allow, ask)),
+            HostSays::Deny(reason) => Err(Verdict::Deny(reason.clone())),
+            HostSays::Ask { reason, answerable } => Ok(match ask {
+                Some(ask) => (None, Some(ask)),
+                None => (
+                    None,
+                    Some(Asked {
+                        reason: reason.clone(),
+                        answerable: *answerable,
+                    }),
+                ),
+            }),
+            HostSays::Allow(rule) => Ok(match (allow, ask) {
+                (None, None) => (Some(rule.clone()), None),
+                kept => kept,
+            }),
+        }
     }
 }
 

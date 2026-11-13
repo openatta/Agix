@@ -493,7 +493,11 @@ async fn pre_tool_use_hook_blocks_call() {
         }],
     );
     let hooks_runner = Arc::new(hooks::HookRunner::new(settings));
-    let ctx = test_exec_ctx(tools, hooks_runner);
+    let ctx = test_exec_ctx_with_permission(
+        tools,
+        hooks_runner,
+        Arc::new(permissions::policy::Policy::empty()),
+    );
 
     let result = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({"x": 1})).await;
     assert!(result.is_err(), "expected the tool call to be blocked");

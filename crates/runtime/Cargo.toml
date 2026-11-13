@@ -17,6 +17,7 @@ hooks         = { workspace = true }
 compaction    = { workspace = true }
 session       = { workspace = true }
 scene         = { workspace = true }
+permissions   = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
 futures       = { workspace = true }
@@ -45,7 +46,6 @@ structured-output = ["tools/structured-output"]
 anyhow        = { workspace = true }
 uuid          = { workspace = true }
 url      = { workspace = true }
-permissions = { workspace = true }
 tempfile = { workspace = true }
 model    = { workspace = true }
 tokio    = { workspace = true, features = ["test-util"] }

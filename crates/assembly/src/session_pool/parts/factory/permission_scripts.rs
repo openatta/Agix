@@ -190,30 +190,18 @@ pub(in crate::session_pool) fn bind_scripts(
     (None, faults)
 }
 
-/// Which permission a new session gets: a `Policy` over every
-/// tier's rules plus `options.permission_rules`, keeping its own grants.
-///
-/// `bypassPermissions` with a host permission returns that very set, not an
-/// equivalent one: a host that sandboxes the daemon itself relies on it.
+/// Which permission a new session gets: a `Policy` over every tier's rules
+/// plus `options.permission_rules` and the host's policy, keeping its own
+/// grants.
 pub(in crate::session_pool) fn resolve_session_permission(
-    host: Option<&PermissionSet>,
+    host: Option<&Arc<dyn PermissionPolicy>>,
     settings: &base::settings::LoadedSettings,
-    mode: base::settings::PermissionMode,
     options: Option<&SessionOptions>,
 ) -> PermissionSet {
-    // A host's own permission never sees the managed layer, so it does not
-    // stand in for the gate while there is one.
-    if let (Some(host), base::settings::PermissionMode::BypassPermissions, None) =
-        (host, mode, &settings.managed)
-    {
-        return host.clone();
-    }
-
     let extra = options
         .map(|o| o.permission_rules.clone())
         .unwrap_or_default();
-
-    PermissionSet::of(Arc::new(permissions::policy::Policy::from_settings(
-        settings, extra,
-    )))
+    PermissionSet::of(Arc::new(
+        permissions::policy::Policy::from_settings(settings, extra).with_host(host.cloned()),
+    ))
 }

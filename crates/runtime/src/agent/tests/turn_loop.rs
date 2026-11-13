@@ -403,13 +403,11 @@ async fn a_host_result_for_no_waiting_call_is_refused_and_not_recorded() {
 }
 
 /// Calls `name` once with `input`, then answers "done".
-#[cfg(feature = "ptc")]
 pub(super) struct OneCallModel {
     pub(super) calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub(super) name: &'static str,
     pub(super) input: serde_json::Value,
 }
-#[cfg(feature = "ptc")]
 #[async_trait::async_trait]
 impl Model for OneCallModel {
     fn api_type(&self) -> base::provider::ApiType {
@@ -450,6 +448,82 @@ impl Model for OneCallModel {
         };
         Ok(Box::new(futures::stream::iter(events)))
     }
+}
+
+/// A session built with `elicitation` and no permission of its own runs
+/// one `touch` — a call the mode asks about — and reports what it was told
+/// and every permission prompt it raised.
+async fn touch_with_the_default_permission(
+    elicitation: Option<Arc<dyn base::interface::elicitation::Elicitation>>,
+) -> (String, usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut settings = test_settings();
+    settings.paths.workspace = base::settings::Workspace::Project(dir.path().to_path_buf());
+    let template = Arc::new(InMemoryToolRegistry::new());
+    tools::register_builtin_tools(&template);
+    let model: Arc<dyn Model> = Arc::new(OneCallModel {
+        calls: Default::default(),
+        name: "Bash",
+        input: serde_json::json!({"command": "touch built-without-a-host.txt"}),
+    });
+    let mut builder = Builder::new()
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
+        .model(model)
+        .settings(Arc::new(settings))
+        .tools(template)
+        .skip_warmup(true);
+    if let Some(elicitation) = elicitation {
+        builder = builder.elicitation(elicitation);
+    }
+    let (mut agent, mut event_rx, _input_tx) = builder.build().expect("build should succeed");
+    agent
+        .process_turn(
+            InputMessage::User {
+                content: "go".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the turn runs");
+    let (mut told, mut prompts) = (None, 0);
+    while let Ok(event) = event_rx.try_recv() {
+        match event {
+            AgentEvent::PermissionPrompt { .. } => prompts += 1,
+            AgentEvent::ToolResult { name, content, .. } if name == "Bash" => told = Some(content),
+            _ => {}
+        }
+    }
+    assert!(
+        !dir.path().join("built-without-a-host.txt").exists(),
+        "the command ran"
+    );
+    (told.expect("no Bash result"), prompts)
+}
+
+/// Given neither a permission nor anyone to ask, a session judges its calls
+/// by the engine's own policy and refuses what would be asked, saying how
+/// to allow it; it does not let it through.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_no_host_refuses_what_it_would_ask_and_says_how_to_allow_it() {
+    let (told, prompts) = touch_with_the_default_permission(None).await;
+    assert_eq!(prompts, 0, "{told}");
+    assert!(told.contains("no host to ask"), "{told}");
+    assert!(told.contains("permission_rules"), "{told}");
+}
+
+/// With an elicitation handler the same call is put to it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_with_an_elicitation_handler_asks_it() {
+    let asked = base::interface::elicitation::FixedElicitation::new(
+        base::interface::elicitation::ElicitOutcome::declined("the test host says no"),
+    );
+    let (told, _) = touch_with_the_default_permission(Some(asked.clone())).await;
+    assert_eq!(asked.asked().len(), 1, "{told}");
+    assert!(told.contains("the test host says no"), "{told}");
 }
 
 #[cfg(feature = "ptc")]

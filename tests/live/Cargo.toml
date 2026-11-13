@@ -19,7 +19,6 @@ tokio       = { workspace = true, features = ["full"] }
 tokio-util  = { workspace = true }
 serde_json  = { workspace = true }
 anyhow      = { workspace = true }
-async-trait = { workspace = true }
 url         = { workspace = true }
 tempfile    = { workspace = true }
 reqwest     = { workspace = true }
@@ -32,6 +31,7 @@ test-runner = { path = "../runner" }
 demo-rust-plugin = { workspace = true }
 # For reading what `session.export` wrote.
 zip = { workspace = true }
+async-trait = { workspace = true }
 
 [features]
 # The live tier: cases that talk to a real model, with the credentials in the

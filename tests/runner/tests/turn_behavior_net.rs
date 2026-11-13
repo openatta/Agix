@@ -135,11 +135,9 @@ async fn trace(case: Case) -> String {
     );
     let session_id = Id::new();
 
-    // Without this the Builder falls back to its `AllowAll` default, which
-    // permits everything regardless of the tool's own `check_permissions` and
-    // regardless of `settings.permission_mode` — so a case about approval
-    // would pass while proving nothing. The first draft of this file did
-    // exactly that: the approve and deny goldens came out byte-identical.
+    // Without this — and without an elicitation handler — the Builder's own
+    // policy has nobody to ask and refuses every call it would put to the
+    // prompt channel, so a case about approval would never see a prompt.
     let permission = base::interface::permission::PermissionSet::of(Arc::new(
         permissions::policy::Policy::from_settings(&settings, []),
     ));

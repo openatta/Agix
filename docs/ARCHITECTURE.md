@@ -934,8 +934,8 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 全部跳过,输入合法就放行——凭据除外,它在任何模式下都拒绝(本节开头)。仍然生效的是输入校验——读后再写的过期检查、大小上限、§6.2
 第 1 道的误读路径、`Bash` 的超时上限与长 `sleep` 拦截——和 OS 沙箱:`Bash` 照样被关在
 可写根之内(`dangerously_disable_sandbox` 除外),无人值守会话也一样。`agixd` 的
-`bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;只有宿主自己给了
-`Assembly.permission`、且没有 managed 层时,才换成宿主的那一个。要 deny 规则仍然算数,用 `acceptEdits`,
+`bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;宿主给的
+`Assembly.host_policy` 是规则里的一层,bypass 下只有它的 deny 还算数。要 deny 规则仍然算数,用 `acceptEdits`,
 或 `dontAsk` 加 allow 规则。
 
 这样设计是因为 bypass 是给"边界在引擎之外"的部署用的——一次性容器、VM、CI 机器,

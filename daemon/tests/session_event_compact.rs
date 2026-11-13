@@ -172,9 +172,7 @@ async fn a_compacted_turn_says_so_on_the_wire() {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(OneTurnClient)),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(PermitAll),
-            )),
+            host_policy: Some(Arc::new(PermitAll)),
             ..Default::default()
         },
     )

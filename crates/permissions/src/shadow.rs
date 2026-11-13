@@ -117,6 +117,7 @@ fn source_label(s: RuleSource) -> &'static str {
         RuleSource::PolicySettings => "managed policy",
         RuleSource::Command => "an active skill",
         RuleSource::Plugin => "a plugin",
+        RuleSource::Host => "the host",
     }
 }
 

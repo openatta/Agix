@@ -4,19 +4,31 @@ use super::*;
 use crate::session_pool::parts::factory::resolve_session_permission;
 use base::settings::Divergence;
 
-struct AllowAllTestPermission;
+/// A host policy that answers every call the same way.
+struct HostSays(fn() -> base::interface::permission::PermissionOutcome);
 #[async_trait::async_trait]
-impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
+impl base::interface::permission::PermissionPolicy for HostSays {
     async fn decide(
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Permit {
-            basis: base::interface::permission::Basis::Bypass,
-            profile: Default::default(),
-            obligations: Default::default(),
-        }
+        (self.0)()
     }
+}
+
+fn host_permits() -> base::interface::permission::PermissionOutcome {
+    base::interface::permission::PermissionOutcome::Permit {
+        basis: base::interface::permission::Basis::Bypass,
+        profile: Default::default(),
+        obligations: Default::default(),
+    }
+}
+
+fn host_denies() -> base::interface::permission::PermissionOutcome {
+    base::interface::permission::PermissionOutcome::deny(
+        base::interface::permission::Stage::Rule,
+        "not on this host",
+    )
 }
 
 fn defaults() -> base::settings::LoadedSettings {
@@ -26,98 +38,113 @@ fn defaults() -> base::settings::LoadedSettings {
     )
 }
 
-/// Everything the resolver needs beyond the settings/options under test,
-/// with the host having supplied its own permission.
-fn resolve(
-    settings: &base::settings::LoadedSettings,
-    options: Option<&SessionOptions>,
-) -> (
-    Arc<dyn base::interface::permission::PermissionPolicy>,
-    Arc<dyn base::interface::permission::PermissionPolicy>,
-) {
-    let host = PermissionSet::without_grants(Arc::new(AllowAllTestPermission));
-    let mode = effective_permission_mode(settings, options);
-    let resolved = resolve_session_permission(Some(&host), settings, mode, options);
-    (host.policy, resolved.policy)
-}
-
-/// With nothing configured, a session does not get the allow-all
-/// instance.
-#[test]
-fn nothing_configured_builds_a_real_asking_permission() {
-    let (bypass, resolved) = resolve(&defaults(), None);
-    assert!(
-        !Arc::ptr_eq(&bypass, &resolved),
-        "the daemon default is no longer allow-all — it must build a real asking permission"
-    );
-
-    let opts = SessionOptions::default();
-    let (bypass, resolved) = resolve(&defaults(), Some(&opts));
-    assert!(
-        !Arc::ptr_eq(&bypass, &resolved),
-        "an options object that simply omits permission_mode must not re-enable allow-all"
-    );
-}
-
-#[tokio::test]
-async fn a_bypass_session_gets_the_hosts_permission_or_else_a_policy_that_consults_no_rule() {
-    use base::interface::permission::PermissionOutcome;
-    let mut settings = defaults();
-    settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
-    settings.rules = vec![base::settings::LoadedRule::new(
+fn denying(tool: &str) -> base::settings::LoadedRule {
+    base::settings::LoadedRule::new(
         base::settings::PermissionRule {
-            tool: "Bash".into(),
+            tool: tool.into(),
             action: base::settings::PermissionAction::Deny,
         },
         base::interface::config_source::Tier::Project,
         false,
-    )];
+    )
+}
 
-    let (host, resolved) = resolve(&settings, None);
-    assert!(
-        Arc::ptr_eq(&host, &resolved),
-        "a host that supplied its own permission gets that very instance"
-    );
-
+/// What the session `settings` resolve to, with `host` as the host's policy,
+/// makes of a `Bash` call running `command`.
+async fn bash_says(
+    settings: &base::settings::LoadedSettings,
+    host: Option<fn() -> base::interface::permission::PermissionOutcome>,
+    command: &str,
+) -> base::interface::permission::PermissionOutcome {
+    let host = host.map(|answer| {
+        Arc::new(HostSays(answer)) as Arc<dyn base::interface::permission::PermissionPolicy>
+    });
+    let resolved = resolve_session_permission(host.as_ref(), settings, None);
     let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
     tools::register_builtin_tools(&tools);
     let bash = tools.get("Bash");
-    let mode = effective_permission_mode(&settings, None);
-    let gate = resolve_session_permission(None, &settings, mode, None);
     let cwd = std::env::temp_dir();
+    let mode = effective_permission_mode(settings, None);
     let session = Arc::new(
         base::context::SessionState::for_tests(cwd.clone()).with_permission_mode(mode.into()),
     );
-    let bash_says = |input: serde_json::Value| {
-        let (gate, bash, cwd, session) = (gate.clone(), bash.clone(), cwd.clone(), session.clone());
-        async move {
-            gate.policy
-                .decide(&base::interface::permission::PermissionRequest::new(
-                    "Bash",
-                    bash.as_ref(),
-                    &input,
-                    &cwd,
-                    "s",
-                    &session,
-                ))
-                .await
-        }
-    };
-    assert!(matches!(
-        bash_says(serde_json::json!({"command": "ls"})).await,
-        PermissionOutcome::Permit { .. }
-    ));
-    // Input validation is the runtime's, once, before the policy is asked;
-    // under bypass it still refuses what the tool rejects.
-    let blank = serde_json::json!({"command": "  "});
+    let input = serde_json::json!({ "command": command });
+    resolved
+        .policy
+        .decide(
+            &base::interface::permission::PermissionRequest::new(
+                "Bash",
+                bash.as_ref(),
+                &input,
+                &cwd,
+                "s",
+                &session,
+            )
+            .with_attendance(base::interface::permission::Attendance::Attended),
+        )
+        .await
+}
+
+/// The host's policy is one tier of the session's rules: its permit is an
+/// allow rule, which a deny rule of the settings still overrides.
+#[tokio::test]
+async fn a_hosts_permit_is_an_allow_rule_that_a_deny_rule_overrides() {
+    use base::interface::permission::{Basis, PermissionOutcome};
+    use base::permission::RuleSource;
+    let mut settings = defaults();
+    settings.rules = vec![denying("Bash(rm:*)")];
+
+    let touched = bash_says(&settings, Some(host_permits), "touch x").await;
+    assert!(
+        matches!(
+            &touched,
+            PermissionOutcome::Permit { basis: Basis::Rule(rule), .. } if rule.source == RuleSource::Host
+        ),
+        "{touched:?}"
+    );
+    let removed = bash_says(&settings, Some(host_permits), "rm -rf x").await;
+    assert!(
+        matches!(removed, PermissionOutcome::Deny { .. }),
+        "{removed:?}"
+    );
+    let asked = bash_says(&settings, None, "touch x").await;
+    assert!(
+        matches!(asked, PermissionOutcome::Prompt { .. }),
+        "without the host the call is asked about: {asked:?}"
+    );
+}
+
+/// The host's refusal stands in every mode, `bypassPermissions` included,
+/// which otherwise consults no rule of the settings.
+#[tokio::test]
+async fn a_hosts_deny_stands_even_under_bypass() {
+    use base::interface::permission::PermissionOutcome;
+    let mut settings = defaults();
+    settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
+    settings.rules = vec![denying("Bash")];
+
+    let bypassed = bash_says(&settings, None, "ls").await;
+    assert!(
+        matches!(bypassed, PermissionOutcome::Permit { .. }),
+        "{bypassed:?}"
+    );
+    let refused = bash_says(&settings, Some(host_denies), "ls").await;
+    assert!(
+        matches!(&refused, PermissionOutcome::Deny { reason } if reason.message.contains("not on this host")),
+        "{refused:?}"
+    );
     let ctx = base::tool::ToolContext::for_test_with(
-        cwd.clone(),
+        std::env::temp_dir(),
         base::interface::exec::ExecProviders::in_process(),
     );
-    assert!(bash
-        .as_ref()
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools::register_builtin_tools(&tools);
+    // Input validation is the runtime's, once, before the policy is asked;
+    // under bypass it still refuses what the tool rejects.
+    assert!(tools
+        .get("Bash")
         .unwrap()
-        .validate_input(&blank, &ctx)
+        .validate_input(&serde_json::json!({"command": "  "}), &ctx)
         .await
         .is_err());
 }
@@ -189,11 +216,6 @@ fn session_options_cannot_loosen_an_asking_settings_default() {
         permission_mode: Some(base::settings::PermissionMode::BypassPermissions),
         ..Default::default()
     };
-    let (bypass, resolved) = resolve(&defaults(), Some(&opts));
-    assert!(
-        !Arc::ptr_eq(&bypass, &resolved),
-        "a client must not be able to talk the daemon into allow-all"
-    );
     assert_eq!(
         effective_permission_mode(&defaults(), Some(&opts)),
         base::settings::PermissionMode::Default,
@@ -211,8 +233,10 @@ fn allow_client_permission_override_restores_client_wins() {
         permission_mode: Some(base::settings::PermissionMode::BypassPermissions),
         ..Default::default()
     };
-    let (bypass, resolved) = resolve(&settings, Some(&opts));
-    assert!(Arc::ptr_eq(&bypass, &resolved));
+    assert_eq!(
+        effective_permission_mode(&settings, Some(&opts)),
+        base::settings::PermissionMode::BypassPermissions
+    );
 }
 
 /// Tightening is always allowed, in both directions of the comparison:
@@ -257,13 +281,19 @@ fn auto_and_yolo_in_session_options_clamp_and_resolve_as_bypass() {
 
         let mut bypass = defaults();
         bypass.values.permission_mode = PermissionMode::BypassPermissions;
-        let (host, resolved) = resolve(&bypass, Some(&opts));
-        assert!(Arc::ptr_eq(&host, &resolved), "{spelling}");
+        assert_eq!(
+            effective_permission_mode(&bypass, Some(&opts)),
+            PermissionMode::BypassPermissions,
+            "{spelling}"
+        );
 
         let mut overridable = defaults();
         overridable.values.allow_client_permission_override = true;
-        let (host, resolved) = resolve(&overridable, Some(&opts));
-        assert!(Arc::ptr_eq(&host, &resolved), "{spelling}");
+        assert_eq!(
+            effective_permission_mode(&overridable, Some(&opts)),
+            PermissionMode::BypassPermissions,
+            "{spelling}"
+        );
     }
 }
 
@@ -273,8 +303,10 @@ fn settings_ask_default_is_overridable_per_session_without_becoming_allow_all() 
         permission_mode: Some(base::settings::PermissionMode::DontAsk),
         ..Default::default()
     };
-    let (bypass, resolved) = resolve(&defaults(), Some(&opts));
-    assert!(!Arc::ptr_eq(&bypass, &resolved));
+    assert_eq!(
+        effective_permission_mode(&defaults(), Some(&opts)),
+        base::settings::PermissionMode::DontAsk
+    );
 }
 
 #[test]

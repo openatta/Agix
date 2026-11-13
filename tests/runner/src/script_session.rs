@@ -327,9 +327,10 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         .scene
         .unwrap_or_else(|| Arc::new(scene::harnix::spec()));
 
-    // The gate the daemon builds for a session that is not bypassing, rather
-    // than the builder's own allow-everything default: a case about the
-    // ordering between a script and the gate needs a gate that really asks.
+    // The gate the daemon builds, handed over rather than left to the
+    // builder: with no elicitation handler the builder's own has nobody to
+    // ask, and a case about the ordering between a script and the gate needs
+    // one whose questions reach the prompt channel.
     let permission = session.asking.then(|| {
         base::interface::permission::PermissionSet::of(Arc::new(
             permissions::policy::Policy::from_settings(&settings, Vec::new()),

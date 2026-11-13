@@ -131,9 +131,7 @@ async fn start_server_serving(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(AllowAllPermission),
-            )),
+            host_policy: Some(Arc::new(AllowAllPermission)),
             ..Default::default()
         },
     )
@@ -1900,9 +1898,7 @@ async fn start_server_with_history(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(AllowAllPermission),
-            )),
+            host_policy: Some(Arc::new(AllowAllPermission)),
             ..Default::default()
         },
     )
@@ -1985,9 +1981,7 @@ async fn start_tcp_server(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(AllowAllPermission),
-            )),
+            host_policy: Some(Arc::new(AllowAllPermission)),
             ..Default::default()
         },
     )
@@ -2179,9 +2173,7 @@ async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(AllowAllPermission),
-            )),
+            host_policy: Some(Arc::new(AllowAllPermission)),
             ..Default::default()
         },
     )

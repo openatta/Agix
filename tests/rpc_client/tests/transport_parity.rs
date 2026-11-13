@@ -247,7 +247,7 @@ impl Harness {
                 cwd: Some(cwd.clone()),
                 model_client: Some(client),
                 transcripts: daemon::Transcripts::In(store),
-                permission: Some(base::interface::permission::PermissionSet::without_grants(
+                host_policy: Some(
                     // `allow_all` decides whether the daemon ever raises a prompt:
                     // the streaming tests want turns that just run, the prompt
                     // test wants one that stops and asks.
@@ -257,7 +257,7 @@ impl Harness {
                     } else {
                         Arc::new(AskEverythingPermission)
                     },
-                )),
+                ),
                 ..Default::default()
             },
         )

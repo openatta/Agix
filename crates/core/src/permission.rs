@@ -169,6 +169,8 @@ pub enum RuleSource {
     /// 由已安装插件贡献。卸载插件时用 `Policy::remove_rules_by_source`
     /// 整批撤销。
     Plugin,
+    /// 宿主自带的 `PermissionPolicy`：它的回答作为一层规则参与裁决。
+    Host,
 }
 
 impl RuleSource {
@@ -177,6 +179,7 @@ impl RuleSource {
     pub fn priority(self) -> u8 {
         match self {
             Self::PolicySettings => 70,
+            Self::Host => 65,
             Self::CliArg => 60,
             Self::Session => 50,
             Self::Command => 45,

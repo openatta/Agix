@@ -13,7 +13,7 @@ use crate::session_pool::parts::bindings::ProjectBinding;
 use crate::session_pool::parts::specs::SessionSpec;
 use crate::session_pool::pool_telemetry::{otel_sink, recordings_root, session_clock};
 use crate::session_pool::{CreateError, SessionCtx, SessionCustomizer};
-use base::interface::permission::PermissionSet;
+use base::interface::permission::PermissionPolicy;
 use base::interface::scene::SceneSpec;
 use base::settings::{Divergence, LoadedSettings, RecorderConfig, RecorderMode};
 use runtime::agent::{Agent, Builder, EventReceiver, InputSender};
@@ -30,12 +30,9 @@ pub(in crate::session_pool) struct EngineFactory {
     /// its own registers only Skill/TaskStop/TaskOutput/Import/Agent/MCP; see
     /// `tools::register_builtin_tools` for what's deliberately excluded.
     tools: Arc<base::tool::InMemoryToolRegistry>,
-    /// The host's own permission, handed to a session whose effective mode
-    /// is `bypassPermissions` in place of the rule gate (see
-    /// `resolve_session_permission`). `None` when the host supplied none:
-    /// such a session gets the gate too, which under bypass consults no rule
-    /// but still validates input and still follows a later `EnterPlanMode`.
-    permission: Option<PermissionSet>,
+    /// The host's own policy, one tier of every session's rules (see
+    /// `resolve_session_permission`).
+    host_policy: Option<Arc<dyn PermissionPolicy>>,
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
     /// How long a `kind:"prompt"` permission ask may sit unanswered before
@@ -82,7 +79,7 @@ pub(in crate::session_pool) struct BuiltEngine {
 impl EngineFactory {
     pub(in crate::session_pool) fn new(
         tools: Arc<base::tool::InMemoryToolRegistry>,
-        permission: Option<PermissionSet>,
+        host_policy: Option<Arc<dyn PermissionPolicy>>,
         rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
         customize: Option<SessionCustomizer>,
         permission_prompt_timeout: Duration,
@@ -90,7 +87,7 @@ impl EngineFactory {
     ) -> Self {
         Self {
             tools,
-            permission,
+            host_policy,
             rust_plugins,
             customize,
             permission_prompt_timeout,
@@ -110,7 +107,7 @@ impl EngineFactory {
         let options = spec.options.as_ref();
         let scene_id = scene.id.clone();
         let (model, task_router, model_name, clock) = models(session_id, binding, spec)?;
-        let (settings_snapshot, permission_mode) =
+        let settings_snapshot =
             self.snapshot(&binding.settings, options, model_name.as_ref(), session_id);
         let namer = SessionNamer::of(
             session_id,
@@ -118,12 +115,8 @@ impl EngineFactory {
             &model,
             &settings_snapshot.model.model_name,
         );
-        let permission = resolve_session_permission(
-            self.permission.as_ref(),
-            &settings_snapshot,
-            permission_mode,
-            options,
-        );
+        let permission =
+            resolve_session_permission(self.host_policy.as_ref(), &settings_snapshot, options);
 
         let mut builder = Builder::new()
             .scene(scene)
@@ -208,7 +201,7 @@ impl EngineFactory {
         options: Option<&SessionOptions>,
         model_name: Option<&String>,
         session_id: &str,
-    ) -> (Arc<LoadedSettings>, base::settings::PermissionMode) {
+    ) -> Arc<LoadedSettings> {
         // The prompt timeout is a daemon-level flag but the wait it bounds
         // lives in the engine, so it travels as a setting rather than as a
         // daemon-side wrapper around the permission. `Settings` is behind an
@@ -218,7 +211,7 @@ impl EngineFactory {
         // snapshot still holding the settings-file mode made every one of them
         // report a mode the session was not running in.
         let permission_mode = effective_permission_mode(base_settings, options);
-        let snapshot = {
+        {
             let mut snap = base_settings.clone();
             snap.values.execution.permission_prompt_timeout_secs =
                 self.permission_prompt_timeout.as_secs();
@@ -232,8 +225,7 @@ impl EngineFactory {
                 );
             }
             Arc::new(snap)
-        };
-        (snapshot, permission_mode)
+        }
     }
 }
 

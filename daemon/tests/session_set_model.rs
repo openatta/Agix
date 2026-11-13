@@ -163,9 +163,7 @@ async fn start_daemon(turns: usize) -> Daemon {
             cwd: Some(cwd.clone()),
             model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(PermitAll),
-            )),
+            host_policy: Some(Arc::new(PermitAll)),
             ..Default::default()
         },
     )

@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base::interface::elicitation::{ElicitOutcome, ElicitRequest, Elicitation};
-use base::interface::permission::{
-    PermissionOutcome, PermissionPolicy, PermissionRequest, PermissionSet,
-};
+use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
 use base::settings::PermissionMode;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
@@ -80,7 +78,7 @@ struct Setup {
     mode: PermissionMode,
     global: Value,
     project: Value,
-    permission: Option<PermissionSet>,
+    host_policy: Option<Arc<dyn PermissionPolicy>>,
     customize: Option<Customize>,
 }
 
@@ -90,7 +88,7 @@ impl Default for Setup {
             mode: PermissionMode::Default,
             global: json!({}),
             project: json!({}),
-            permission: None,
+            host_policy: None,
             customize: None,
         }
     }
@@ -134,7 +132,7 @@ impl Daemon {
                 cwd: Some(work.clone()),
                 model_client: Some(model.clone()),
                 transcripts: daemon::Transcripts::Nowhere,
-                permission: setup.permission,
+                host_policy: setup.host_policy,
                 customize_session: customize.map(customizer),
                 ..Default::default()
             },
@@ -336,7 +334,7 @@ async fn a_session_that_keeps_no_grants_does_not_offer_permit_always() {
     let daemon = Daemon::start(
         Setup {
             mode: PermissionMode::BypassPermissions,
-            permission: Some(PermissionSet::without_grants(Arc::new(AsksAboutEverything))),
+            host_policy: Some(Arc::new(AsksAboutEverything)),
             customize: Some(Arc::new(move |builder| {
                 builder.elicitation(Arc::new(Recorder(sink.clone())))
             })),
@@ -432,6 +430,94 @@ async fn a_linked_scenes_credentials_are_refused_under_their_real_path() {
         "a credential read is refused, not asked about: {prompts:?}"
     );
     assert_eq!(daemon.tool_result("toolu_real")["is_error"], true);
+}
+
+/// A host policy that refuses every `touch` and lets everything else through.
+struct HostRefusesTouch;
+
+#[async_trait::async_trait]
+impl PermissionPolicy for HostRefusesTouch {
+    async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome {
+        let command = req.input["command"].as_str().unwrap_or_default();
+        if command.starts_with("touch") {
+            return PermissionOutcome::deny(
+                base::interface::permission::Stage::Rule,
+                "this host keeps its files",
+            );
+        }
+        PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
+    }
+}
+
+/// The host's own policy is one tier of a session's rules: its refusal
+/// stands even under `bypassPermissions`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosts_refusal_stands_under_bypass() {
+    let daemon = Daemon::start(
+        Setup {
+            mode: PermissionMode::BypassPermissions,
+            host_policy: Some(Arc::new(HostRefusesTouch)),
+            ..Default::default()
+        },
+        |_, _| {},
+    )
+    .await;
+    daemon.model.push_turn(tool_round(
+        "toolu_touch",
+        "Bash",
+        json!({"command": "touch host-refused.txt"}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+
+    let prompts = daemon.turn(|_| deny()).await;
+    assert!(prompts.is_empty(), "{prompts:?}");
+    let result = daemon.tool_result("toolu_touch");
+    assert_eq!(result["is_error"], true, "{result}");
+    assert!(
+        result.to_string().contains("this host keeps its files"),
+        "{result}"
+    );
+    assert!(!daemon.work.join("host-refused.txt").exists());
+}
+
+/// The host's permit is one allow rule: what it lets through runs without a
+/// question, and a deny rule of the project's still refuses what it names.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosts_permit_is_an_allow_rule_a_deny_rule_still_overrides() {
+    let daemon = Daemon::start(
+        Setup {
+            project: json!({"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}),
+            host_policy: Some(Arc::new(HostRefusesTouch)),
+            ..Default::default()
+        },
+        |_, work| std::fs::write(work.join("kept.txt"), "kept").unwrap(),
+    )
+    .await;
+    daemon.model.push_turn(tool_round(
+        "toolu_mkdir",
+        "Bash",
+        json!({"command": "mkdir host-allowed"}),
+    ));
+    daemon.model.push_turn(tool_round(
+        "toolu_rm",
+        "Bash",
+        json!({"command": "rm kept.txt"}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+
+    let prompts = daemon.turn(|_| deny()).await;
+    assert!(prompts.is_empty(), "{prompts:?}");
+    assert!(
+        daemon.work.join("host-allowed").is_dir(),
+        "{}",
+        daemon.tool_result("toolu_mkdir")
+    );
+    assert_eq!(daemon.tool_result("toolu_rm")["is_error"], true);
+    assert!(daemon.work.join("kept.txt").exists());
 }
 
 /// An untrusted project's own settings take no key that loosens the

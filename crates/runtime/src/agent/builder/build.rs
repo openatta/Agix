@@ -2,6 +2,11 @@
 
 use super::*;
 
+const NO_HOST_TO_ASK: &str = "this session has no host to ask. Allow the call with a \
+                              `permission_rules` allow rule in the settings, or choose a \
+                              `permission_mode`; `bypassPermissions` lets every call through \
+                              and still guards credentials and the managed settings";
+
 impl Builder {
     pub fn build(self) -> Result<(Agent, EventReceiver, InputSender), EngineError> {
         let host_layers = self.host_layers();
@@ -72,20 +77,12 @@ impl Builder {
             settings.model.model_name.clone(),
         ));
         let permission = self.permission.unwrap_or_else(|| {
-            use base::interface::permission::{Basis, PermissionOutcome, PermissionRequest};
-            struct AllowAll;
-            #[async_trait::async_trait]
-            impl base::interface::permission::PermissionPolicy for AllowAll {
-                async fn decide(&self, _: &PermissionRequest<'_>) -> PermissionOutcome {
-                    let (profile, obligations) = Default::default();
-                    PermissionOutcome::Permit {
-                        basis: Basis::Bypass,
-                        profile,
-                        obligations,
-                    }
-                }
-            }
-            PermissionSet::without_grants(Arc::new(AllowAll))
+            let policy = permissions::policy::Policy::from_settings(&settings, Vec::new());
+            PermissionSet::of(Arc::new(if self.elicitation.is_some() {
+                policy
+            } else {
+                policy.with_no_one_to_ask(NO_HOST_TO_ASK)
+            }))
         });
         let instruction_file = self.instruction_file.or(settings.instruction_file.clone());
         // Pre-read AGENTS.md / CLAUDE.md content for userContext injection.

@@ -301,9 +301,7 @@ async fn start_daemon_with(
             cwd: Some(cwd.clone()),
             model_client: Some(model_client),
             transcripts: daemon::Transcripts::In(store),
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(PermitAll),
-            )),
+            host_policy: Some(Arc::new(PermitAll)),
             ..Default::default()
         },
     )

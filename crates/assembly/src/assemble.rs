@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base::interface::credentials::CredentialSource;
-use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionSet};
+use base::interface::permission::PermissionPolicy;
 use base::interface::scene::SceneSpec;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use tracing::{info, warn};
@@ -27,37 +27,6 @@ use tracing::{info, warn};
 use crate::config::DaemonConfig;
 pub use crate::session_pool::McpOptions;
 use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
-
-/// A policy that permits every call without looking at it — not even
-/// to validate its input.
-///
-/// Not the default for anything. A daemon session asks unless its settings
-/// say otherwise (`PermissionMode::Default`); one whose effective mode is
-/// `bypassPermissions` runs the rule gate, which in that mode consults no
-/// rule at all — no deny, no protected path, no ask, no tool's own verdict —
-/// but still rejects malformed input and follows a later `EnterPlanMode`.
-/// See `resolve_session_permission` (`session_pool::parts::factory`) and
-/// `docs/daemon_rpc_protocol.md`'s "权限默认值" section.
-///
-/// A host that wants its bypass sessions to skip even input validation
-/// passes this as [`Assembly::permission`]
-/// (`PermissionSet::without_grants(Arc::new(AllowAllPermission))`); what it
-/// supplies there replaces the gate for those sessions only.
-pub struct AllowAllPermission;
-
-#[async_trait::async_trait]
-impl PermissionPolicy for AllowAllPermission {
-    async fn decide(
-        &self,
-        _req: &base::interface::permission::PermissionRequest<'_>,
-    ) -> PermissionOutcome {
-        PermissionOutcome::Permit {
-            basis: base::interface::permission::Basis::Bypass,
-            profile: Default::default(),
-            obligations: Default::default(),
-        }
-    }
-}
 
 /// The parts of an assembly a caller may legitimately differ on.
 ///
@@ -91,9 +60,9 @@ pub struct Assembly {
     pub credentials: Option<Arc<dyn base::interface::credentials::CredentialSource>>,
     /// Where transcripts live.
     pub transcripts: Transcripts,
-    /// What a `bypassPermissions` session runs under in place of the rule
-    /// gate. `None` keeps the gate, which in that mode only validates input.
-    pub permission: Option<PermissionSet>,
+    /// The host's own say on every call, weighed as one more tier of rules:
+    /// its deny stands in every mode, its permit is one allow rule.
+    pub host_policy: Option<Arc<dyn PermissionPolicy>>,
     /// Rust plugins every session this pool builds is built with, in order.
     pub plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     /// The host's last word on every session engine — see
@@ -114,7 +83,7 @@ impl Default for Assembly {
             model_client: None,
             credentials: None,
             transcripts: Transcripts::default(),
-            permission: None,
+            host_policy: None,
             plugins: Vec::new(),
             customize_session: None,
             mcp: McpOptions::default(),
@@ -182,7 +151,6 @@ pub async fn pool(
         Some(client) => client,
         None => default_anthropic_client(assembly.credentials.as_deref())?,
     };
-    let permission = assembly.permission;
     if matches!(
         settings.permission_mode,
         base::settings::PermissionMode::BypassPermissions
@@ -211,7 +179,7 @@ pub async fn pool(
         client,
         settings,
         scene,
-        permission,
+        assembly.host_policy,
         cwd,
         history_store,
         config.paths.clone(),

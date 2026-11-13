@@ -7,12 +7,16 @@
 //! that holds an unattended command, a hook's approve — and refuses it where
 //! nobody can be asked. A question still open is the caller's to put.
 //!
+//! A host's own policy is one more tier of rules (`host`): asked about every
+//! call, its refusal stands, its permit is an allow rule and no more.
+//!
 //! The managed layer's rules are among `rules` like any other tier's, and held
 //! again in `ManagedLayer`: that copy is what a `bypassPermissions` session
 //! still answers to, and what marks a question only a person may answer.
 
 mod answer;
 mod delegated;
+mod host;
 mod judge;
 mod subject;
 #[cfg(test)]
@@ -21,14 +25,15 @@ mod tests;
 use crate::ruleset::RuleSet;
 use async_trait::async_trait;
 use base::interface::permission::{
-    Answerable, Basis, Grant, GrantError, GrantScope, HookAnswer, PermissionGrants,
+    Answerable, Attendance, Basis, Grant, GrantError, GrantScope, HookAnswer, PermissionGrants,
     PermissionOutcome, PermissionPolicy, PermissionRequest, Reason, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::tool::{SandboxSettings, ToolContext};
 use delegated::Delegated;
+use host::HostSays;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 pub struct Policy {
     rules: RwLock<RuleSet>,
@@ -41,6 +46,10 @@ pub struct Policy {
     /// `settings.local.json` is the global tier, and a rule written there would
     /// allow the call everywhere.
     local_settings_file: Option<PathBuf>,
+    host: Option<Arc<dyn PermissionPolicy>>,
+    /// Set when nothing can put a question to a person: an attended call's
+    /// question is refused for this reason instead.
+    no_one_to_ask: Option<&'static str>,
 }
 
 /// What the deployment's managed settings (`base::managed_settings`) hold
@@ -125,6 +134,8 @@ impl Policy {
             managed: ManagedLayer::default(),
             sandbox: SandboxSettings::default(),
             local_settings_file: None,
+            host: None,
+            no_one_to_ask: None,
         }
     }
 
@@ -137,8 +148,7 @@ impl Policy {
     /// a caller adds on top — with every call held to the managed layer.
     ///
     /// Every embedder that builds its own permission should come through
-    /// here: `runtime::agent::Builder` takes an injected `PermissionSet` and
-    /// reads no rules from `Settings`.
+    /// here; `runtime::agent::Builder` does when it is given none.
     pub fn from_settings(
         settings: &base::settings::LoadedSettings,
         extra_rules: impl IntoIterator<Item = PermissionRule>,
@@ -178,6 +188,25 @@ impl Policy {
     pub fn with_local_settings_file(mut self, file: Option<PathBuf>) -> Self {
         self.local_settings_file = file;
         self
+    }
+
+    pub fn with_host(mut self, host: Option<Arc<dyn PermissionPolicy>>) -> Self {
+        self.host = host;
+        self
+    }
+
+    pub fn with_no_one_to_ask(mut self, why: &'static str) -> Self {
+        self.no_one_to_ask = Some(why);
+        self
+    }
+
+    /// Who can be asked about the call: as the request says, unless nothing
+    /// reaches a person at all. A session nobody attends stays unattended.
+    fn attendance_for(&self, req: &PermissionRequest<'_>) -> Option<Attendance> {
+        match (req.attendance, self.no_one_to_ask) {
+            (None | Some(Attendance::Attended), Some(why)) => Some(Attendance::NoOneToAsk(why)),
+            (attendance, _) => attendance,
+        }
     }
 
     pub fn rules(&self) -> Vec<PermissionRule> {
@@ -226,7 +255,12 @@ impl Policy {
     /// session's, with this policy's sandbox settings. A session that never
     /// had providers bound is judged in-process, and no sandbox is known to
     /// hold its commands.
-    fn context_for(&self, req: &PermissionRequest<'_>, mode: PermissionMode) -> ToolContext {
+    fn context_for(
+        &self,
+        req: &PermissionRequest<'_>,
+        mode: PermissionMode,
+        attendance: Option<Attendance>,
+    ) -> ToolContext {
         let judged = req.judged();
         let exec = judged
             .exec()
@@ -243,7 +277,7 @@ impl Policy {
         let env = ctx.session.env();
         ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
         ctx.dangerously_disable_sandbox = env.sandbox_disabled;
-        if let Some(attendance) = req.attendance {
+        if let Some(attendance) = attendance {
             ctx.attendance = attendance;
         }
         ctx
@@ -306,6 +340,7 @@ impl PermissionPolicy for Policy {
             );
         }
         let hook = req.hook.unwrap_or(&HookAnswer::None);
+        let attendance = self.attendance_for(req);
         // Not a permit, even though dispatch's own "Tool not found" would
         // follow: a caller that asks before looking the tool up must not be
         // able to run it unchecked by naming it wrongly.
@@ -313,6 +348,9 @@ impl PermissionPolicy for Policy {
         let Some(tool) = req.tool else {
             if let Some(denied) = delegated.denial_by_name(req.tool_name) {
                 return PermissionOutcome::Deny { reason: denied };
+            }
+            if let HostSays::Deny(reason) = HostSays::of(self.host.as_ref(), req).await {
+                return PermissionOutcome::Deny { reason };
             }
             let unknown = ToolFacts::unknown_tool();
             let verdict = Verdict::Ask {
@@ -327,7 +365,7 @@ impl PermissionPolicy for Policy {
                 ),
                 answerable: Answerable::HookOrPerson,
             };
-            return self.conclude(verdict, &unknown, None, hook, req.attendance);
+            return self.conclude(verdict, &unknown, None, hook, attendance);
         };
 
         let mode = self.mode_for(req);
@@ -335,7 +373,7 @@ impl PermissionPolicy for Policy {
         let ctx = match req.ctx {
             Some(ctx) => ctx,
             None => {
-                own_ctx = self.context_for(req, mode);
+                own_ctx = self.context_for(req, mode, attendance);
                 &own_ctx
             }
         };
@@ -347,6 +385,9 @@ impl PermissionPolicy for Policy {
                 &own_facts
             }
         };
+        let mut weighed = req.with_ctx(ctx).with_facts(facts);
+        weighed.attendance = attendance;
+        let host = HostSays::of(self.host.as_ref(), &weighed).await;
         let call = judge::Call {
             name: req.tool_name,
             facts,
@@ -355,9 +396,10 @@ impl PermissionPolicy for Policy {
             hook,
             named: subject::Named::of(&facts.subject, ctx),
             delegated,
+            host,
         };
         let verdict = call.delegated.granting(self.judge(&call), &call);
-        self.conclude(verdict, facts, Some(ctx), hook, req.attendance)
+        self.conclude(verdict, facts, Some(ctx), hook, attendance)
     }
 }
 

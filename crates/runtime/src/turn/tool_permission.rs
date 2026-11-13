@@ -114,12 +114,7 @@ pub(super) async fn authorize(
     .with_ctx(tool_ctx)
     .with_hook(hook)
     .with_attendance(tool_ctx.attendance);
-    let decided = held_to_the_hook_and_attendance(
-        ctx.permission.policy.decide(&request).await,
-        hook,
-        tool_ctx.attendance,
-    );
-    let answer = match decided {
+    let answer = match ctx.permission.policy.decide(&request).await {
         PermissionOutcome::Prompt {
             prompt_id,
             message,
@@ -174,33 +169,6 @@ pub(super) async fn authorize(
     })
     .await;
     Err(refusal.error)
-}
-
-/// A policy a host supplies may not weigh the hook's block or who is
-/// attending; neither is its to waive. A blocked call is refused whatever it
-/// said, and a question nobody can be asked is refused rather than put.
-fn held_to_the_hook_and_attendance(
-    outcome: base::interface::permission::PermissionOutcome,
-    hook: &base::interface::permission::HookAnswer,
-    attendance: base::interface::permission::Attendance,
-) -> base::interface::permission::PermissionOutcome {
-    use base::interface::permission::{Attendance, HookAnswer, PermissionOutcome, Stage};
-    match (outcome, hook, attendance) {
-        (denied @ PermissionOutcome::Deny { .. }, _, _) => denied,
-        (_, HookAnswer::Block { reason, .. }, _) => {
-            PermissionOutcome::deny(Stage::Hook, format!("Blocked by PreToolUse hook: {reason}"))
-        }
-        (PermissionOutcome::Prompt { message, .. }, _, Attendance::Unattended) => {
-            PermissionOutcome::deny(
-                Stage::Attendance,
-                format!("{message} — and nobody is attending this session to approve it"),
-            )
-        }
-        (PermissionOutcome::Prompt { message, .. }, _, Attendance::NoOneToAsk(why)) => {
-            PermissionOutcome::deny(Stage::Attendance, format!("{message} — {why}"))
-        }
-        (outcome, _, _) => outcome,
-    }
 }
 
 /// Put the policy's question to the host and wait for it. Only the session

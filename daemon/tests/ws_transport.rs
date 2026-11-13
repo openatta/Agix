@@ -60,9 +60,7 @@ async fn start_ws_server(
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(AllowAllPermission),
-            )),
+            host_policy: Some(Arc::new(AllowAllPermission)),
             ..Default::default()
         },
     )
@@ -247,9 +245,7 @@ async fn serving_without_a_token_fails_instead_of_refusing_everyone_forever() {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
             transcripts: daemon::Transcripts::Nowhere,
-            permission: Some(base::interface::permission::PermissionSet::without_grants(
-                Arc::new(AllowAllPermission),
-            )),
+            host_policy: Some(Arc::new(AllowAllPermission)),
             ..Default::default()
         },
     )

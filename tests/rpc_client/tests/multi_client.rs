@@ -201,14 +201,12 @@ impl Harness {
                 cwd: Some(cwd.clone()),
                 model_client: Some(client),
                 transcripts: daemon::Transcripts::In(store),
-                permission: Some(base::interface::permission::PermissionSet::without_grants(
-                    if allow_all {
-                        Arc::new(AllowAllPermission)
-                            as Arc<dyn base::interface::permission::PermissionPolicy>
-                    } else {
-                        Arc::new(AskEverythingPermission)
-                    },
-                )),
+                host_policy: Some(if allow_all {
+                    Arc::new(AllowAllPermission)
+                        as Arc<dyn base::interface::permission::PermissionPolicy>
+                } else {
+                    Arc::new(AskEverythingPermission)
+                }),
                 ..Default::default()
             },
         )

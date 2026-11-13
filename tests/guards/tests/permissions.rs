@@ -46,18 +46,6 @@ const POLICIES: &[(&str, &str)] = &[
         "crates/agents/src/agent_tool/permission.rs::DelegateRelay",
         "a delegate's calls, handed to its parent's policy",
     ),
-    (
-        "crates/assembly/src/assemble.rs::AllowAllPermission",
-        "the host's allow-everything permission; D1-5a makes the host a layer of rules",
-    ),
-    (
-        "tests/live/src/handle.rs::AllowAll",
-        "the live tier's stand-in for the daemon's own allow-everything host permission",
-    ),
-    (
-        "crates/runtime/src/agent/builder/build.rs::AllowAll",
-        "the builder's allow-everything default; D1-5a makes the policy the default",
-    ),
 ];
 
 #[test]
@@ -123,18 +111,6 @@ const PERMITS: &[(&str, &str)] = &[
     (
         "crates/runtime/src/turn/tool_permission.rs::ask",
         "the answering step: the person the runtime asked approved the call",
-    ),
-    (
-        "crates/assembly/src/assemble.rs::AllowAllPermission::decide",
-        "the host's allow-everything permission; D1-5a makes the host a layer of rules",
-    ),
-    (
-        "tests/live/src/handle.rs::AllowAll::decide",
-        "the live tier's stand-in for the daemon's own allow-everything host permission",
-    ),
-    (
-        "crates/runtime/src/agent/builder/build.rs::Builder::build::AllowAll::decide",
-        "the builder's allow-everything default; D1-5a makes the policy the default",
     ),
 ];
 

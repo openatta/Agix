@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// A wired `AgentTool` in an attended scene whose parent asks about
-/// every call, with the events it sends up.
+/// A wired `AgentTool` in an attended scene whose parent's policy asks
+/// about every probe, with the events it sends up.
 pub(super) fn asking_agent_tool() -> (
     Arc<AgentTool>,
     Arc<std::sync::atomic::AtomicUsize>,
@@ -14,7 +14,17 @@ pub(super) fn asking_agent_tool() -> (
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let agent_tool = TestParent {
         events: Some(runtime::event_bus::EventBus::new(tx)),
-        ..wire_parent(parent, Arc::new(PromptsForEverything))
+        ..wire_parent(
+            parent,
+            Arc::new(permissions::policy::Policy::new(
+                permissions::ruleset::RuleSet::new(vec![base::permission::PermissionRule {
+                    source: base::permission::RuleSource::UserSettings,
+                    behavior: base::permission::RuleBehavior::Ask,
+                    tool_name: "Probe".into(),
+                    rule_content: None,
+                }]),
+            )),
+        )
     }
     .agent_tool();
     (Arc::new(agent_tool), runs, dir, rx)

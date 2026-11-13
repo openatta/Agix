@@ -35,8 +35,8 @@
 //!
 //! That boundary does not cover tool execution: `session.run_turn` defaults
 //! to `ask` and raises `session.event{kind:"prompt"}` frames that
-//! `session.respondToPrompt` answers. See `crate::assemble::AllowAllPermission`
-//! and `docs/daemon_rpc_protocol.md` for the opt-out.
+//! `session.respondToPrompt` answers. See `docs/daemon_rpc_protocol.md` for
+//! the opt-out.
 
 use crate::rpc::{codes, RpcRequest, RpcResponse};
 use crate::rpc::{send_frame, Client, FrameSink, Sink};

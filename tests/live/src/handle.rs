@@ -24,7 +24,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionSet};
 use daemon::config::{load_daemon_config, DaemonPaths, StaticDaemonPaths};
 use daemon::{DaemonServer, SessionPool};
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
@@ -227,7 +226,6 @@ impl Daemon {
                 cwd: Some(opts.project.clone()),
                 permission_prompt_timeout: opts.prompt_timeout,
                 model_client: Some(client),
-                permission: Some(PermissionSet::without_grants(Arc::new(AllowAll))),
                 extra_scenes: opts.host.scenes.iter().map(|s| s.id.clone()).collect(),
                 scenes: opts.host.scenes.clone(),
                 plugins: opts.host.plugins.clone(),
@@ -537,23 +535,4 @@ pub fn alternate_daemon_binary(var: &str, how_to_build: &str) -> anyhow::Result<
         path.display()
     );
     Ok(path)
-}
-
-/// The pool's permission of last resort, matching what `main.rs` hands it.
-/// A session only ever receives it in `bypassPermissions`; everything else
-/// builds a real `Policy` from its own settings.
-struct AllowAll;
-
-#[async_trait::async_trait]
-impl PermissionPolicy for AllowAll {
-    async fn decide(
-        &self,
-        _req: &base::interface::permission::PermissionRequest<'_>,
-    ) -> PermissionOutcome {
-        PermissionOutcome::Permit {
-            basis: base::interface::permission::Basis::Bypass,
-            profile: Default::default(),
-            obligations: Default::default(),
-        }
-    }
 }

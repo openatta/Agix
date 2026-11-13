@@ -8,7 +8,7 @@ use super::*;
 use base::interface::elicitation::{ElicitKind, ElicitOutcome, ElicitRequest, Elicitation};
 use base::interface::permission::{
     Attendance, Delegate, GrantError, GrantScope, PermissionGrants, PermissionOutcome,
-    PermissionPolicy, PermissionRequest, Stage,
+    PermissionPolicy, PermissionRequest,
 };
 
 /// What a delegate is built with to ask about its calls.
@@ -53,14 +53,7 @@ impl PermissionPolicy for DelegateRelay {
         if self.asks == AskRoute::Refuse && relayed.attendance != Some(Attendance::Unattended) {
             relayed.attendance = Some(Attendance::NoOneToAsk(NO_ONE_TO_ASK));
         }
-        match (self.parent.decide(&relayed).await, relayed.attendance) {
-            // A host's own policy may not weigh attendance; the engine's has
-            // refused this already.
-            (PermissionOutcome::Prompt { message, .. }, Some(Attendance::NoOneToAsk(why))) => {
-                PermissionOutcome::deny(Stage::Attendance, format!("{message} — {why}"))
-            }
-            (outcome, _) => outcome,
-        }
+        self.parent.decide(&relayed).await
     }
 }
 
