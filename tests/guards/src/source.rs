@@ -247,13 +247,23 @@ fn collect_mods(items: &[syn::Item], inline: &mut Vec<String>, test: bool, out: 
         let syn::Item::Mod(m) = item else { continue };
         let is_test = test || crate::cfg::implies_test(&m.attrs);
         match &m.content {
-            None => out.push(ModDecl {
-                name: m.ident.to_string(),
-                inline: inline.clone(),
-                path_attr: path_attr(&m.attrs),
-                test: is_test,
-                line: m.ident.span().start().line,
-            }),
+            None => {
+                let paths = path_attrs(&m.attrs);
+                let paths = if paths.is_empty() {
+                    vec![None]
+                } else {
+                    paths.into_iter().map(Some).collect()
+                };
+                for path_attr in paths {
+                    out.push(ModDecl {
+                        name: m.ident.to_string(),
+                        inline: inline.clone(),
+                        path_attr,
+                        test: is_test,
+                        line: m.ident.span().start().line,
+                    });
+                }
+            }
             Some((_, children)) => {
                 inline.push(m.ident.to_string());
                 collect_mods(children, inline, is_test, out);
@@ -263,14 +273,11 @@ fn collect_mods(items: &[syn::Item], inline: &mut Vec<String>, test: bool, out: 
     }
 }
 
-fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
-    attrs.iter().find_map(|attr| {
-        if !attr.path().is_ident("path") {
-            return None;
-        }
-        let syn::Meta::NameValue(nv) = &attr.meta else {
-            return None;
-        };
+/// The file a `mod` names: its `#[path]`, or — for a module whose file is
+/// chosen by a feature — every `#[cfg_attr(<cfg>, path = "..")]`, so each
+/// variant is walked.
+fn path_attrs(attrs: &[syn::Attribute]) -> Vec<String> {
+    fn literal(nv: &syn::MetaNameValue) -> Option<String> {
         let syn::Expr::Lit(syn::ExprLit {
             lit: syn::Lit::Str(s),
             ..
@@ -279,7 +286,29 @@ fn path_attr(attrs: &[syn::Attribute]) -> Option<String> {
             return None;
         };
         Some(s.value())
-    })
+    }
+    let mut out = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("path") {
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                out.extend(literal(nv));
+            }
+        } else if attr.path().is_ident("cfg_attr") {
+            let Ok(args) = attr.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                continue;
+            };
+            for meta in args.iter().skip(1) {
+                if let syn::Meta::NameValue(nv) = meta {
+                    if nv.path.is_ident("path") {
+                        out.extend(literal(nv));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 fn resolve(job: &Job, decl: &ModDecl) -> Result<(PathBuf, bool), String> {

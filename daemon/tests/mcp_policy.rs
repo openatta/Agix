@@ -124,7 +124,10 @@ impl Daemon {
                 cwd: Some(self.root().to_path_buf()),
                 model_client: Some(client),
                 transcripts: daemon::Transcripts::Nowhere,
-                mcp_policy: policy,
+                mcp: daemon::assemble::McpOptions {
+                    policy,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

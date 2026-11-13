@@ -25,6 +25,7 @@ use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use tracing::{info, warn};
 
 use crate::config::DaemonConfig;
+pub use crate::session_pool::McpOptions;
 use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
 
 /// A policy that permits every call without looking at it — not even
@@ -98,27 +99,9 @@ pub struct Assembly {
     /// The host's last word on every session engine — see
     /// [`SessionCustomizer`].
     pub customize_session: Option<SessionCustomizer>,
-    /// Where MCP servers' OAuth sign-ins are kept — a keychain, say. `None`:
-    /// 0600 files under the user data directory's `mcp/oauth/`.
-    #[cfg(feature = "mcp")]
-    pub mcp_credential_store: Option<Arc<dyn mcp::oauth::McpCredentialStore>>,
-    /// The client this host presents to MCP authorization servers it has no
-    /// registration with: the name shown on their consent page, and its
-    /// client metadata document URL if it publishes one. `None`: "Agix",
-    /// dynamic registration only.
-    #[cfg(feature = "mcp")]
-    pub mcp_oauth_client: Option<mcp::oauth::McpOAuthClient>,
-    /// The enterprise IdP whose users' identities `"grant": "enterprise"`
-    /// MCP servers are authorized from (the host then supplies an identity
-    /// with `mcp.auth.setIdentity`). `None`: the MCP policy's
-    /// `enterprise_idp`, if it names one.
-    #[cfg(feature = "mcp")]
-    pub mcp_enterprise_idp: Option<mcp::config::EnterpriseIdp>,
-    /// Which configured MCP servers may connect. `None` reads the policy file
-    /// (`DaemonConfig::mcp_policy_path`, else the platform's managed path);
-    /// a host that passes one is the only source, and no file is read.
-    #[cfg(feature = "mcp")]
-    pub mcp_policy: Option<mcp::policy::McpPolicy>,
+    /// MCP: where sign-ins are kept, the OAuth client, the enterprise IdP
+    /// and the policy. An empty struct in a build without the `mcp` module.
+    pub mcp: McpOptions,
 }
 
 impl Default for Assembly {
@@ -134,14 +117,7 @@ impl Default for Assembly {
             permission: None,
             plugins: Vec::new(),
             customize_session: None,
-            #[cfg(feature = "mcp")]
-            mcp_credential_store: None,
-            #[cfg(feature = "mcp")]
-            mcp_oauth_client: None,
-            #[cfg(feature = "mcp")]
-            mcp_enterprise_idp: None,
-            #[cfg(feature = "mcp")]
-            mcp_policy: None,
+            mcp: McpOptions::default(),
         }
     }
 }
@@ -247,41 +223,7 @@ pub async fn pool(
     if let Some(customize) = assembly.customize_session {
         pool = pool.session_customizer(customize);
     }
-    #[cfg(feature = "mcp")]
-    {
-        pool = pool.mcp_auth(assembly.mcp_credential_store, assembly.mcp_oauth_client);
-    }
-    #[cfg(feature = "mcp")]
-    {
-        let policy = mcp_policy(config, assembly.mcp_policy);
-        if let Some(error) = policy.error() {
-            warn!(
-                error,
-                "the MCP policy is unreadable; every MCP server is denied"
-            );
-        }
-        if let Some(Err(e)) = assembly
-            .mcp_enterprise_idp
-            .as_ref()
-            .map(mcp::config::EnterpriseIdp::validate)
-        {
-            anyhow::bail!("Assembly::mcp_enterprise_idp: {e}");
-        }
-        for name in [
-            assembly.mcp_enterprise_idp.as_ref(),
-            policy.enterprise_idp(),
-        ]
-        .into_iter()
-        .flatten()
-        .filter_map(|idp| idp.client_secret_env.as_deref())
-        {
-            base::interface::exec::env::hold_back_credential(name);
-        }
-        let idp = assembly
-            .mcp_enterprise_idp
-            .or_else(|| policy.enterprise_idp().cloned());
-        pool = pool.mcp_policy(policy).mcp_enterprise_idp(idp);
-    }
+    pool = pool.mcp(assembly.mcp.resolve(config.mcp_policy_path.as_deref())?);
     let pool = pool.build();
 
     for scene in assembly.scenes {
@@ -303,7 +245,6 @@ pub async fn pool(
 
     // Backgrounded: a slow or unreachable server can never delay startup, and
     // a failure warns and emits `mcp_connect_failed` rather than aborting.
-    #[cfg(feature = "mcp")]
     pool.connect_mcp_servers_in_background();
 
     pool.start_janitor();
@@ -328,19 +269,6 @@ fn managed_settings(
     let managed =
         ManagedSettings::read(&path, required).or_else(|| config.settings.managed.clone());
     (path, managed)
-}
-
-#[cfg(feature = "mcp")]
-fn mcp_policy(
-    config: &DaemonConfig,
-    host: Option<mcp::policy::McpPolicy>,
-) -> mcp::policy::McpPolicyGate {
-    use mcp::policy::{managed_policy_path, McpPolicyGate};
-    match (host, &config.mcp_policy_path) {
-        (Some(policy), _) => McpPolicyGate::from_host(policy),
-        (None, Some(path)) => McpPolicyGate::load(path, true),
-        (None, None) => McpPolicyGate::load(&managed_policy_path(), false),
-    }
 }
 
 /// Multi-provider routing, or `None` when the deployment configured none.

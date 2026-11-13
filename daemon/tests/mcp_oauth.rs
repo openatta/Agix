@@ -65,7 +65,10 @@ impl Daemon {
             daemon::Assembly {
                 cwd: Some(root.clone()),
                 model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
-                mcp_policy: policy.map(|p| serde_json::from_value(p).expect("a valid policy")),
+                mcp: daemon::assemble::McpOptions {
+                    policy: policy.map(|p| serde_json::from_value(p).expect("a valid policy")),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
         )

@@ -185,7 +185,7 @@ token exchange(RFC 8693),换一个发给 MCP server 的授权服务器、绑定�
 授权(ID-JAG),再到那个授权服务器以 JWT bearer 授权(RFC 7523)换访问令牌。用户不必为每个
 MCP server 各登录一次,企业 IdP 决定谁能用哪个 server。
 
-**企业 IdP** 由部署方给,不在用户的 settings 里——宿主经 `Assembly::mcp_enterprise_idp`,
+**企业 IdP** 由部署方给,不在用户的 settings 里——宿主经 `Assembly::mcp.enterprise_idp`,
 或 MCP 策略文件的 `enterprise_idp`(两者都有时以宿主的为准):
 
 ```jsonc
@@ -268,11 +268,14 @@ pub trait McpCredentialStore: Send + Sync {
 }
 
 let pool = assembly::assemble::pool(&config, scene, Assembly {
-    mcp_credential_store: Some(Arc::new(MyKeychain::new())),
-    mcp_oauth_client: Some(McpOAuthClient {
-        client_name: "My App".into(),
-        client_metadata_url: Some("https://myapp.example/oauth/client.json".into()),
-    }),
+    mcp: McpOptions {
+        credential_store: Some(Arc::new(MyKeychain::new())),
+        oauth_client: Some(McpOAuthClient {
+            client_name: "My App".into(),
+            client_metadata_url: Some("https://myapp.example/oauth/client.json".into()),
+        }),
+        ..Default::default()
+    },
     ..Default::default()
 }).await?;
 ```
@@ -283,7 +286,7 @@ let pool = assembly::assemble::pool(&config, scene, Assembly {
   `None` 的意思是"未登录",会让用户重新登录。
 - daemon 对同一条记录的读改写在进程内串行。刷新与登出还会先拿 `lock`:默认的文件存储
   对 `<哈希>.lock` 加 `flock`,自己的存储要跨进程协调就实现它,不实现就只有进程内的串行。
-- `mcp_oauth_client` 决定动态注册时报给授权服务器的名字(用户在同意页上看到),以及 CIMD
+- `oauth_client` 决定动态注册时报给授权服务器的名字(用户在同意页上看到),以及 CIMD
   用的元数据文档 URL;省略时名字是 `Agix`,只用动态注册。
 
 ## 7. 安全

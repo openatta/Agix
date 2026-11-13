@@ -1,10 +1,13 @@
 //! `mcp.status` 的条目与 mcp crate 状态到领域类型的转换。
 
 use super::*;
+use crate::session_pool::*;
 
 /// `mcp.status` entries for the project's own servers that are not started
 /// because the project is not trusted.
-pub(super) fn untrusted_mcp_entries(settings: &LoadedSettings) -> Vec<api::McpServerStatus> {
+pub(in crate::session_pool) fn untrusted_mcp_entries(
+    settings: &LoadedSettings,
+) -> Vec<api::McpServerStatus> {
     if !settings.trust().is_untrusted() {
         return Vec::new();
     }
@@ -63,7 +66,9 @@ impl From<mcp::oauth::AuthStatus> for api::McpAuthStatus {
 
 /// `mcp.status`'s entries: the connected servers, those waiting for a
 /// sign-in, then the denied ones. Each carries its authorization state.
-pub(super) fn mcp_status_entries(manager: &McpManager) -> Vec<api::McpServerStatus> {
+pub(in crate::session_pool) fn mcp_status_entries(
+    manager: &McpManager,
+) -> Vec<api::McpServerStatus> {
     use api::McpServerState as State;
     let auth = |name: &str| {
         manager

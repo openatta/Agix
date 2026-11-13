@@ -2,50 +2,37 @@
 //! `data.module`。
 
 use super::*;
-#[cfg(feature = "mcp")]
-use crate::rpc::methods::mcp::McpRedirectKind;
 use crate::rpc::methods::mcp::{
     McpAuthCancelParams, McpAuthCompleteParams, McpAuthLogoutParams, McpAuthStartParams,
-    McpPutServerParams, McpSetIdentityParams, McpStatusList,
+    McpPutServerParams, McpRedirectKind, McpSetIdentityParams, McpStatusList,
 };
 use crate::session_pool::api::{
-    McpAuthDone, McpAuthStarted, McpReconnected, McpServerRef, McpServerWritten,
+    McpAuthDone, McpAuthStarted, McpIdentity, McpReconnected, McpRedirect, McpServerRef,
+    McpServerWritten,
 };
-#[cfg(feature = "mcp")]
-use crate::session_pool::api::{McpIdentity, McpRedirect};
+use crate::session_pool::MCP_COMPILED;
 
 rpc_methods! {
-    #[cfg(feature = "mcp")]
-    "mcp.status" => status(NoParams) -> McpStatusList ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.addServer" => add_server(McpPutServerParams) -> McpServerWritten ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.updateServer" => update_server(McpPutServerParams) -> McpServerWritten ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.auth.start" => auth_start(McpAuthStartParams) -> McpAuthStarted ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.auth.complete" => auth_complete(McpAuthCompleteParams) -> McpAuthDone ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.auth.cancel" => auth_cancel(McpAuthCancelParams) -> McpServerRef ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.auth.logout" => auth_logout(McpAuthLogoutParams) -> McpServerRef ["mcp", cfg!(feature = "mcp")];
-    #[cfg(feature = "mcp")]
-    "mcp.auth.setIdentity" => auth_set_identity(McpSetIdentityParams) -> McpReconnected ["mcp", cfg!(feature = "mcp")];
+    "mcp.status" => status(NoParams) -> McpStatusList ["mcp", MCP_COMPILED];
+    "mcp.addServer" => add_server(McpPutServerParams) -> McpServerWritten ["mcp", MCP_COMPILED];
+    "mcp.updateServer" => update_server(McpPutServerParams) -> McpServerWritten ["mcp", MCP_COMPILED];
+    "mcp.auth.start" => auth_start(McpAuthStartParams) -> McpAuthStarted ["mcp", MCP_COMPILED];
+    "mcp.auth.complete" => auth_complete(McpAuthCompleteParams) -> McpAuthDone ["mcp", MCP_COMPILED];
+    "mcp.auth.cancel" => auth_cancel(McpAuthCancelParams) -> McpServerRef ["mcp", MCP_COMPILED];
+    "mcp.auth.logout" => auth_logout(McpAuthLogoutParams) -> McpServerRef ["mcp", MCP_COMPILED];
+    "mcp.auth.setIdentity" => auth_set_identity(McpSetIdentityParams) -> McpReconnected ["mcp", MCP_COMPILED];
 }
 
-#[cfg(feature = "mcp")]
 fn invalid(message: impl Into<String>) -> PoolError {
     PoolError::InvalidRequest(message.into())
 }
 
-#[cfg(feature = "mcp")]
 async fn status(s: &DaemonServer, _: &Call, _: NoParams) -> Result<McpStatusList, PoolError> {
     Ok(McpStatusList {
         servers: s.pool.mcp_status().await,
     })
 }
 
-#[cfg(feature = "mcp")]
 async fn add_server(
     s: &DaemonServer,
     _: &Call,
@@ -57,7 +44,6 @@ async fn add_server(
         .await
 }
 
-#[cfg(feature = "mcp")]
 async fn update_server(
     s: &DaemonServer,
     _: &Call,
@@ -69,7 +55,6 @@ async fn update_server(
         .await
 }
 
-#[cfg(feature = "mcp")]
 async fn auth_start(
     s: &DaemonServer,
     _: &Call,
@@ -99,7 +84,6 @@ async fn auth_start(
         .await
 }
 
-#[cfg(feature = "mcp")]
 async fn auth_complete(
     s: &DaemonServer,
     _: &Call,
@@ -110,7 +94,6 @@ async fn auth_complete(
         .await
 }
 
-#[cfg(feature = "mcp")]
 async fn auth_cancel(
     s: &DaemonServer,
     _: &Call,
@@ -119,7 +102,6 @@ async fn auth_cancel(
     s.pool.mcp_auth_cancel(&params.flow_id).await
 }
 
-#[cfg(feature = "mcp")]
 async fn auth_logout(
     s: &DaemonServer,
     _: &Call,
@@ -131,7 +113,6 @@ async fn auth_logout(
         .await
 }
 
-#[cfg(feature = "mcp")]
 async fn auth_set_identity(
     s: &DaemonServer,
     _: &Call,

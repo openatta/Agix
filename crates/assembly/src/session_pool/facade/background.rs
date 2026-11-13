@@ -7,12 +7,9 @@ impl SessionPool {
     /// reload this pool's own pair, and drop every other pair's MCP
     /// connections so none outlives the settings it was built from.
     pub(in crate::session_pool) async fn reload_after_lost_changes(&self) {
-        #[cfg(feature = "mcp")]
-        {
-            let own = (Some(self.cwd().to_path_buf()), self.scene_id().to_string());
-            self.forget_mcp_built_from(&crate::watch_hub::Tier::Global, Some(&own))
-                .await;
-        }
+        let own = (Some(self.cwd().to_path_buf()), self.scene_id().to_string());
+        self.forget_mcp_built_from(&crate::watch_hub::Tier::Global, Some(&own))
+            .await;
         self.reload_settings(None, self.scene_id()).await;
     }
 
@@ -67,16 +64,13 @@ impl SessionPool {
                         Tier::Scene(scene) => scene.clone(),
                         _ => pool.scene_id().to_string(),
                     };
-                    #[cfg(feature = "mcp")]
                     let reconciled = (Some(pool.cwd().to_path_buf()), scene.clone());
-                    #[cfg(feature = "mcp")]
                     pool.forget_mcp_built_from(&key.tier, Some(&reconciled))
                         .await;
                     pool.reload_settings_from(None, &scene, Some(&key.tier))
                         .await;
                 } else {
                     info!(tier = ?key.tier, "settings changed on disk");
-                    #[cfg(feature = "mcp")]
                     pool.forget_mcp_built_from(&key.tier, None).await;
                     pool.invalidate_bindings(Some(&key.tier)).await;
                 }

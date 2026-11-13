@@ -13,8 +13,6 @@ use base::interface::permission::PermissionSet;
 use base::interface::scene::SceneSpec;
 use base::settings::{Divergence, RecorderConfig, RecorderMode};
 use base::settings::{LoadedSettings, Settings};
-#[cfg(feature = "mcp")]
-use mcp::manager::McpManager;
 use model::client::AnthropicClient;
 use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage, InputSender};
 use std::collections::HashMap;
@@ -30,11 +28,9 @@ use tracing::{debug, error, info, warn};
 pub mod api;
 mod builder;
 mod facade;
-#[cfg(feature = "mcp")]
-mod mcp_cache;
-mod mcp_conn;
-#[cfg(feature = "mcp")]
-mod mcp_status;
+#[cfg_attr(feature = "mcp", path = "parts/mcp_hub/live.rs")]
+#[cfg_attr(not(feature = "mcp"), path = "parts/mcp_hub/off.rs")]
+mod mcp_hub;
 mod parts;
 mod permission_scripts;
 mod pool_telemetry;
@@ -48,11 +44,10 @@ use api::{
 use facade::helpers::*;
 use facade::history_rpc::*;
 use facade::settings_reload::*;
-#[cfg(feature = "mcp")]
-use mcp_status::*;
-#[cfg(feature = "mcp")]
-use parts::bindings::{tier_covers, ProjectSceneKey};
-use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding};
+use mcp_hub::McpHub;
+pub(crate) use mcp_hub::McpSetup;
+pub use mcp_hub::{McpOptions, COMPILED as MCP_COMPILED};
+use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding, ProjectSceneKey};
 use parts::directory::SessionDirectory;
 use parts::events::DaemonEvents;
 use parts::hub::SessionHub;
@@ -358,29 +353,9 @@ pub struct SessionPool {
     /// The sessions on disk: what their logs record, and the projects this
     /// pool has served.
     directory: SessionDirectory,
-    /// Centrally-connected MCP servers, partitioned by project — keyed the
-    /// same way `settings_for_project`/`ProjectSelector` are (`None` = the
-    /// no-project tier, `Some(root)` = that project). The pool's default
-    /// project (this daemon's `--cwd`) connects eagerly at startup (see
-    /// `connect_mcp_servers_in_background`); every other project connects
-    /// lazily on its first session (see `mcp_for_project`). Each new session
-    /// still gets its own owned `McpManager` built from the cached entry's
-    /// `McpClientHandle`s (cheap `Arc` clones, no new connection) — see
-    /// `create()`.
-    /// Keyed by `(project, scene)` for the same reason `projects` is: a
-    /// scene tier can declare its own `mcp_servers`, so two scenes on one
-    /// project are not interchangeable.
-    #[cfg(feature = "mcp")]
-    mcp_by_project: mcp_cache::McpCache,
-    /// This pool's MCP authorization: sign-in state per server, the flows in
-    /// progress, and the credential store (files under its own user data
-    /// root unless the host gave one).
-    #[cfg(feature = "mcp")]
-    mcp_auth: Arc<mcp::oauth::McpAuth>,
-    /// What every MCP server this pool connects is admitted by — see
-    /// `admit_mcp`.
-    #[cfg(feature = "mcp")]
-    mcp_policy: Arc<mcp::policy::McpPolicyGate>,
+    /// MCP: the connections per `(project, scene)`, sign-ins and the policy
+    /// servers are admitted by. A stub in a build without the `mcp` module.
+    mcp: McpHub,
     /// Every session's scheduled jobs, fired as turns of their sessions
     /// whether or not the session is in memory.
     scheduler: Scheduler,
@@ -475,25 +450,6 @@ pub enum SessionStatus {
     Inactive,
 }
 
-/// What `SessionPool::admit_mcp_servers` lets through, and what it does not:
-/// `refused` names every entry not connected (invalid or denied), `denied`
-/// the policy's share of them, kept for `mcp.status`.
-#[cfg(feature = "mcp")]
-#[derive(Default)]
-struct AdmittedMcp {
-    servers: HashMap<String, mcp::config::McpServerConfig>,
-    denied: Vec<mcp::manager::DeniedServer>,
-    refused: Vec<String>,
-}
-
-/// The `mcp_servers` keys the project tier's own files (`settings.json`,
-/// `settings.local.json`) declare. A key a project sets at all, even one
-/// field of a global server's, makes that server the project's.
-#[cfg(feature = "mcp")]
-fn project_tier_mcp_servers(settings: &LoadedSettings) -> std::collections::HashSet<String> {
-    settings.project_mcp_servers().keys().cloned().collect()
-}
-
 /// What `project.status` answers for `root`, from the settings its sessions
 /// are built with.
 fn project_trust_report(
@@ -521,42 +477,7 @@ fn project_trust_report(
     }
 }
 
-/// How long a session's creation waits for its project's MCP servers to
-/// connect. One still connecting then goes on in the background and joins
-/// the project's sessions at their next turn.
-#[cfg(feature = "mcp")]
-const MCP_SESSION_CONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-#[cfg(feature = "mcp")]
-fn mcp_connect_failed_event(manager: &McpManager, name: &str) -> api::DaemonEvent {
-    let error = manager
-        .failed()
-        .iter()
-        .find(|f| f.name == name)
-        .map(|f| f.error.clone())
-        .unwrap_or_else(|| "connect failed — see daemon log for the specific reason".into());
-    api::DaemonEvent::McpConnectFailed {
-        server: name.to_string(),
-        error,
-    }
-}
-
-#[cfg(feature = "mcp")]
-fn mcp_connected_event(status: &mcp::manager::ServerStatus) -> api::DaemonEvent {
-    api::DaemonEvent::McpConnected {
-        server: status.name.clone(),
-        transport: status.transport.to_string(),
-        tool_count: status.tool_count,
-    }
-}
-
 impl SessionPool {
-    /// This pool's MCP authorization state.
-    #[cfg(feature = "mcp")]
-    pub fn mcp_auth(&self) -> Arc<mcp::oauth::McpAuth> {
-        self.mcp_auth.clone()
-    }
-
     /// Subscribe to daemon-level async notifications (MCP connect
     /// outcomes, import auto-detection, ...) — see `daemon.subscribeEvents`.
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<api::DaemonEvent> {

@@ -280,29 +280,12 @@ impl SessionPool {
             None
         };
 
-        // Give this session its own owned `McpManager` built from this
-        // project's centrally-connected client handles (cheap `Arc` clones
-        // — not a reconnect) — see `SessionPool.mcp_by_project`'s doc
-        // comment for why this isn't shared as a single `Arc<McpManager>`
-        // directly (`McpManager` needs `&mut self` for `refresh_tools()`,
-        // which a shared `Agent` field can't give it). Skipped entirely
-        // when nothing's connected, so the common "no MCP servers
-        // configured" case pays zero cost.
-        #[cfg(not(feature = "mcp"))]
-        let mcp_server_count = 0;
-        #[cfg(feature = "mcp")]
-        let mcp_server_count = {
-            let central = self
-                .mcp_for_project(project_root_for_meta.as_deref(), &scene_id)
-                .await;
-            let count = central.server_count();
-            if count > 0 || !central.pending().is_empty() {
-                let mut per_session = central.share();
-                per_session.refresh_tools().await;
-                builder = builder.module(Arc::new(mcp::McpModule::new(per_session)));
-            }
-            count
-        };
+        let (mcp_server_count, mcp_module) = self
+            .mcp_session_module(project_root_for_meta.as_deref(), &scene_id)
+            .await;
+        if let Some(module) = mcp_module {
+            builder = builder.module(module);
+        }
         // After MCP, so the `Agent` tool sees the servers it may grant a
         // delegate; skills after agents, so forked skills can fork.
         builder = builder.modules(binding.modules.session_modules());

@@ -1,7 +1,7 @@
 //! 企业 MCP 策略：一个进程能连哪些 MCP server、它们的 OAuth 能用哪些授权服务器、
 //! 企业身份从哪个 IdP 换。
 //!
-//! 策略来自宿主（`Assembly::mcp_policy`）或系统管理路径上的
+//! 策略来自宿主（`Assembly::mcp.policy`）或系统管理路径上的
 //! `mcp-policy.json`（[`managed_policy_path`]），从不来自用户可写的数据目录。
 //! [`McpPolicyGate`] 是会话池实际执行的那一份：每个要连的 server 先过
 //! [`McpPolicyGate::admit`]，被拒的不会起进程、不会发请求；授权服务器在任何

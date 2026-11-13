@@ -110,8 +110,7 @@ impl SessionPool {
             self.bindings.managed_settings_path().to_path_buf(),
             &settings,
         )));
-        #[cfg(feature = "mcp")]
-        checks.push(self.mcp_policy.clone());
+        checks.extend(self.mcp.health_check());
         checks.push(Arc::new(crate::doctor::ProjectTrustCheck::new(
             serde_json::to_value(project_trust_report(
                 self.cwd(),
@@ -438,7 +437,6 @@ impl SessionPool {
         .map_err(PoolError::Internal)?;
 
         let tier = Tier::Project(root.clone());
-        #[cfg(feature = "mcp")]
         self.forget_mcp_built_from(&tier, None).await;
         let startup_scene = self.bindings.startup_scene().await;
         if root == self.cwd() {
@@ -529,26 +527,19 @@ impl SessionPool {
 
         let binding = self.binding_for(Some(project_root), scene_id).await;
         let routing = &binding.routing;
-        #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
-        let mut status = api::RoutingStatus {
+        let (mcp_connected, mcp_failed, mcp_connecting) = self
+            .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings)
+            .await;
+        let status = api::RoutingStatus {
             ok: routing.error.is_none(),
             warnings: routing.warnings.clone(),
             error: routing.error.clone(),
             router_rebuilt: routing.router_rebuilt,
             router_error: routing.router_error.clone(),
-            mcp_connected: Vec::new(),
-            mcp_failed: Vec::new(),
-            mcp_connecting: Vec::new(),
+            mcp_connected,
+            mcp_failed,
+            mcp_connecting,
         };
-        #[cfg(feature = "mcp")]
-        {
-            let (mcp_connected, mcp_failed, mcp_connecting) = self
-                .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings)
-                .await;
-            status.mcp_connected = mcp_connected;
-            status.mcp_failed = mcp_failed;
-            status.mcp_connecting = mcp_connecting;
-        }
 
         (binding.settings.clone(), status)
     }
@@ -578,42 +569,6 @@ pub(in crate::session_pool) fn take_provider_secrets(
         .iter()
         .filter_map(|key| fields.remove(*key).map(|value| (key.to_string(), value)))
         .collect()
-}
-
-/// The MCP server fields that carry credentials — request headers, the
-/// process environment — which `mcp.addServer` / `mcp.updateServer` keep out
-/// of the committed `settings.json`.
-#[cfg(feature = "mcp")]
-pub(in crate::session_pool) const MCP_SERVER_SECRET_KEYS: &[&str] = &["headers", "env"];
-
-#[cfg(feature = "mcp")]
-pub(in crate::session_pool) fn take_mcp_server_secrets(
-    server: &mut serde_json::Value,
-) -> Vec<(String, serde_json::Value)> {
-    let Some(fields) = server.as_object_mut() else {
-        return Vec::new();
-    };
-    MCP_SERVER_SECRET_KEYS
-        .iter()
-        .filter_map(|key| fields.remove(*key).map(|value| (key.to_string(), value)))
-        .collect()
-}
-
-/// `mcp_servers` of a settings object, created as `{}` when it is missing or
-/// not an object.
-#[cfg(feature = "mcp")]
-pub(in crate::session_pool) fn mcp_servers_of(
-    settings: &mut serde_json::Map<String, serde_json::Value>,
-) -> &mut serde_json::Map<String, serde_json::Value> {
-    let servers = settings
-        .entry("mcp_servers")
-        .or_insert_with(|| serde_json::json!({}));
-    if !servers.is_object() {
-        *servers = serde_json::json!({});
-    }
-    servers
-        .as_object_mut()
-        .expect("just normalized to an object")
 }
 
 /// `providers.<id>` of a settings object, created as `{}` when it is missing

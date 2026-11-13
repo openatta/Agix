@@ -35,7 +35,7 @@ mod audit3;
 mod auto_name;
 mod eviction;
 mod goal_record;
-mod mcp_for_project;
+pub(in crate::session_pool) mod mcp_for_project;
 /// Multiple scenes coexisting in one daemon process.
 mod multi_scene;
 mod pool_telemetry;

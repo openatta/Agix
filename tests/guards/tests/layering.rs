@@ -1,9 +1,14 @@
-//! The session pool does not know the wire (D4 G1, G2a).
+//! The session pool does not know the wire (D4 G1, G2a), and the `mcp`
+//! feature is decided in a handful of places (G4).
 //!
 //! `session_pool` is a domain layer: it takes and returns the types in
 //! `session_pool::api`, and `rpc` and `server` translate to and from JSON-RPC.
 //! Rust cannot make a sibling module invisible while keeping it public for the
 //! daemon's tests, so the direction is held by reading the source.
+//!
+//! Whether MCP is compiled in is decided by which file `session_pool::mcp_hub`
+//! is (the module and its stub have one signature) and by the module list in
+//! `modules.rs`; everything else, `server` included, is written once.
 
 use std::collections::BTreeMap;
 
@@ -20,7 +25,9 @@ const WIRE_IDENTS: &[&str] = &[
     "ConnectionId",
     "FrameSink",
 ];
-const JSON_DATA: &str = "ratchet/layering.txt";
+const DATA: &str = "ratchet/layering.txt";
+const ASSEMBLY_SRC: &str = "crates/assembly/src/";
+const MCP_CFG_MAX: usize = 6;
 
 fn pool_files() -> impl Iterator<Item = &'static SourceFile> {
     ws().files()
@@ -71,9 +78,11 @@ fn the_session_pool_does_not_reach_into_rpc_or_server() {
     );
 }
 
-#[test]
-fn json_values_in_the_pool_are_only_where_settings_are_edited() {
-    let measured: BTreeMap<String, usize> = par_flat_map(
+/// `json!` in session_pool production code, per file: the pool takes and
+/// returns typed values, a JSON literal belongs only where settings files
+/// are edited.
+fn pool_json() -> BTreeMap<String, usize> {
+    par_flat_map(
         pool_files().filter(|f| !f.test_only),
         |f| match scan::macro_calls(f, View::Prod, "json").len() {
             0 => Vec::new(),
@@ -81,7 +90,48 @@ fn json_values_in_the_pool_are_only_where_settings_are_edited() {
         },
     )
     .into_iter()
-    .collect();
-    allow::non_vacuous("layering::pool_json", measured.len(), 1);
-    ratchet::check(JSON_DATA, measured, 0);
+    .collect()
+}
+
+/// Every `feature = "mcp"` in a `cfg`, `cfg_attr` or `cfg!` in the assembly,
+/// tests included.
+fn mcp_cfg_uses() -> Vec<Finding> {
+    par_flat_map(
+        ws().files()
+            .filter(|f| f.package == "assembly" && f.rel.starts_with(ASSEMBLY_SRC)),
+        |f| {
+            scan::cfg_feature_uses(f, View::Full, "mcp")
+                .into_iter()
+                .map(|hit| Finding {
+                    key: f.rel.clone(),
+                    hit,
+                })
+                .collect()
+        },
+    )
+}
+
+#[test]
+fn the_mcp_feature_is_decided_in_at_most_six_places() {
+    let uses = mcp_cfg_uses();
+    allow::non_vacuous("layering::mcp_cfg", uses.len(), 2);
+    assert!(
+        uses.len() <= MCP_CFG_MAX,
+        "`feature = \"mcp\"` appears {} times in {ASSEMBLY_SRC}, more than {MCP_CFG_MAX}; put \
+         the MCP side in `session_pool::mcp_hub` (live.rs and its stub off.rs) instead:\n{}",
+        uses.len(),
+        uses.iter()
+            .map(|u| format!("  {}", u.hit))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
+fn layering_ceilings_only_go_down() {
+    let json = pool_json();
+    allow::non_vacuous("layering::pool_json", json.len(), 1);
+    let mut measured = json;
+    measured.insert(format!("cfg-mcp {ASSEMBLY_SRC}"), mcp_cfg_uses().len());
+    ratchet::check(DATA, measured, 0);
 }

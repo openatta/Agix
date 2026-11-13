@@ -18,40 +18,7 @@ pub(crate) struct SessionPoolBuilder {
     permission_prompt_timeout: Duration,
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
-    #[cfg(feature = "mcp")]
-    mcp: McpParts,
-}
-
-#[cfg(feature = "mcp")]
-#[derive(Default)]
-struct McpParts {
-    credential_store: Option<Arc<dyn mcp::oauth::McpCredentialStore>>,
-    oauth_client: Option<mcp::oauth::McpOAuthClient>,
-    policy: Option<mcp::policy::McpPolicyGate>,
-    enterprise_idp: Option<mcp::config::EnterpriseIdp>,
-}
-
-#[cfg(feature = "mcp")]
-impl McpParts {
-    fn into_auth(
-        self,
-        settings: &LoadedSettings,
-    ) -> (Arc<mcp::oauth::McpAuth>, Arc<mcp::policy::McpPolicyGate>) {
-        let auth = match self.credential_store {
-            Some(store) => mcp::oauth::McpAuth::new(store),
-            None => mcp::oauth::McpAuth::with_file_store(
-                settings.paths.user_data_dir.join("mcp").join("oauth"),
-            ),
-        };
-        let auth = match self.oauth_client {
-            Some(client) => auth.with_client(client),
-            None => auth,
-        };
-        let policy = Arc::new(self.policy.unwrap_or_else(mcp::policy::McpPolicyGate::open));
-        auth.set_policy(policy.clone());
-        auth.set_enterprise_idp(self.enterprise_idp);
-        (Arc::new(auth), policy)
-    }
+    mcp: Option<McpSetup>,
 }
 
 impl SessionPool {
@@ -82,8 +49,7 @@ impl SessionPool {
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             rust_plugins: Vec::new(),
             customize: None,
-            #[cfg(feature = "mcp")]
-            mcp: McpParts::default(),
+            mcp: None,
         }
     }
 }
@@ -130,30 +96,10 @@ impl SessionPoolBuilder {
         self
     }
 
-    /// Keep MCP sign-ins in `store` instead of files under the user data
-    /// root, and present `client` to authorization servers.
-    #[cfg(feature = "mcp")]
-    pub(crate) fn mcp_auth(
-        mut self,
-        store: Option<Arc<dyn mcp::oauth::McpCredentialStore>>,
-        client: Option<mcp::oauth::McpOAuthClient>,
-    ) -> Self {
-        self.mcp.credential_store = store;
-        self.mcp.oauth_client = client;
-        self
-    }
-
-    #[cfg(feature = "mcp")]
-    pub(crate) fn mcp_policy(mut self, policy: mcp::policy::McpPolicyGate) -> Self {
-        self.mcp.policy = Some(policy);
-        self
-    }
-
-    /// The enterprise IdP `"grant": "enterprise"` MCP servers exchange the
-    /// user's identity at.
-    #[cfg(feature = "mcp")]
-    pub(crate) fn mcp_enterprise_idp(mut self, idp: Option<mcp::config::EnterpriseIdp>) -> Self {
-        self.mcp.enterprise_idp = idp;
+    /// What the host decided about MCP; without it sign-ins are kept under
+    /// the user data directory and every server is admitted.
+    pub(crate) fn mcp(mut self, setup: McpSetup) -> Self {
+        self.mcp = Some(setup);
         self
     }
 
@@ -169,8 +115,7 @@ impl SessionPoolBuilder {
                 self.settings,
             ),
         };
-        #[cfg(feature = "mcp")]
-        let (mcp_auth, mcp_policy) = self.mcp.into_auth(&settings);
+        let mcp = McpHub::new(self.mcp, &settings.paths.user_data_dir);
         let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
         let scheduler = Scheduler::load(settings.paths.user_data_dir.join("scheduled_tasks.json"));
 
@@ -216,12 +161,7 @@ impl SessionPoolBuilder {
             permission: self.permission,
             tools,
             directory: SessionDirectory::new(self.history_store),
-            #[cfg(feature = "mcp")]
-            mcp_by_project: mcp_cache::McpCache::default(),
-            #[cfg(feature = "mcp")]
-            mcp_auth,
-            #[cfg(feature = "mcp")]
-            mcp_policy,
+            mcp,
             scheduler,
             this: this.clone(),
             events,

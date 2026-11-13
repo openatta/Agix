@@ -72,46 +72,4 @@ impl SessionPool {
         let scene = self.bindings.startup_scene().await;
         self.binding_for(Some(self.cwd()), &scene).await
     }
-
-    /// Drop the cached connections whose `mcp_servers` came from `tier`, so the
-    /// next session or rebuild on those keys connects with the changed config
-    /// (a new `Authorization`, say) instead of reusing the old connection.
-    /// `keep` is a key the caller reconnects itself.
-    #[cfg(feature = "mcp")]
-    pub(in crate::session_pool) async fn forget_mcp_built_from(
-        &self,
-        tier: &crate::watch_hub::Tier,
-        keep: Option<&ProjectSceneKey>,
-    ) {
-        self.mcp_by_project
-            .retain(|key| !tier_covers(tier, key) || keep == Some(key));
-    }
-
-    /// This project's centrally-connected `McpManager` — the MCP
-    /// counterpart to `settings_for_project`, same `None`/`Some(root)` key
-    /// convention. Connects lazily and caches the result on first use
-    /// rather than eagerly for every project this pool has ever seen a
-    /// session for: most daemons only ever serve their own default project,
-    /// and eagerly connecting every project mentioned in a `session.create`
-    /// call would pay for MCP servers nobody's session ever actually needs.
-    /// The default project is the one exception — it's still connected
-    /// eagerly at startup by `connect_mcp_servers_in_background`, so by the
-    /// time this is first called for it the cache is typically already warm.
-    ///
-    /// Not deduplicated across projects with an identical `mcp_servers`
-    /// config — two projects that happen to declare the same server each
-    /// get their own connection.
-    #[cfg(feature = "mcp")]
-    pub(in crate::session_pool) async fn mcp_for_project(
-        &self,
-        project_root: Option<&Path>,
-        scene_id: &str,
-    ) -> Arc<McpManager> {
-        let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        if let Some(existing) = self.mcp_by_project.current(&key) {
-            return existing;
-        }
-        let settings = self.settings_for_project(project_root, scene_id).await;
-        self.first_mcp_connect(key, &settings).await
-    }
 }

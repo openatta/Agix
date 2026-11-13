@@ -199,7 +199,7 @@ impl McpAuth {
         let failed = Unattended::Failed;
         let idp = self.enterprise_idp().ok_or_else(|| {
             failed(
-                "no enterprise IdP is configured (Assembly::mcp_enterprise_idp or the MCP \
+                "no enterprise IdP is configured (Assembly::mcp.enterprise_idp or the MCP \
                  policy's enterprise_idp)"
                     .into(),
             )

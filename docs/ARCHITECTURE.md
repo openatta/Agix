@@ -729,7 +729,7 @@ Agent 的上下文,本来就该在一处。
    | 全局层、场景层设置的 `mcp_servers` | `oauth.client_secret_env`、`oauth.private_key_jwt.key_env`,以及 `command` / `args` / `env` / `url` / `headers` 里的每个 `$VAR` | `LoadedSettings::load` |
    | 插件包的 `[[mcp]]` | 同上 | 插件启用时(`active_plugins`) |
    | 任何连上的 MCP server(经 `mcp.addServer`、嵌入方直接交给 `McpManager` 的也算) | 同上 | 连接之前(`spawn_service`) |
-   | MCP 策略文件的 `enterprise_idp`、`Assembly::mcp_enterprise_idp` | `client_secret_env` | 装配时 |
+   | MCP 策略文件的 `enterprise_idp`、`Assembly::mcp.enterprise_idp` | `client_secret_env` | 装配时 |
    | 嵌入方的 `EnvCredentials` | 它读的每个名字 | 构造时 |
    | 带 `otel` feature 的构建 | `OTEL_EXPORTER_OTLP_HEADERS` 与按信号分的三个 `*_HEADERS` | 建池时 |
 
@@ -1227,7 +1227,7 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 
 **来源**,只取一个,先到先得:
 
-1. 宿主传入 `Assembly { mcp_policy: Some(policy), .. }`(`mcp::policy::McpPolicy`)。
+1. 宿主传入 `Assembly { mcp: McpOptions { policy: Some(policy), .. }, .. }`(`mcp::policy::McpPolicy`)。
    这时不读任何文件。
 2. `agixd --mcp-policy <路径>`(嵌入方:`DaemonConfig::mcp_policy_path`)指定的文件。
    这个文件**必须存在**:写了路径而文件不在,按读不了处理。
@@ -1269,7 +1269,7 @@ rust / go / java / ruby / dotnet / swift 的常见位置,开箱即用。设置�
 `allowed_authorization_servers` 管 OAuth(§6.5):远端 server 的授权服务器 issuer 规整成
 `scheme://host[:port][/path]`(末尾不带 `/`)后按 §6.1 第 5 条的 URL 模式拆开匹配,不匹配的在任何跳转、注册、令牌
 请求之前被拒绝,`mcp.auth.start` 报 `MCP_SERVER_DENIED`。`enterprise_idp` 给出
-`"grant": "enterprise"` 的 server 用来交换用户身份的 IdP;宿主经 `Assembly::mcp_enterprise_idp`
+`"grant": "enterprise"` 的 server 用来交换用户身份的 IdP;宿主经 `Assembly::mcp.enterprise_idp`
 给了的话以宿主的为准。策略读不了时两者都不生效:没有授权服务器被允许,也没有 IdP。
 issuer 的 glob 不要通配托管 IdP 的域名:`https://*.okta.com/**`、`https://login.microsoftonline.com/**`
 放进的是这家服务上**任何**租户,攻击者自己开一个就能当上"允许的"授权服务器;写到具体租户
@@ -1345,7 +1345,7 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 
 - **每个会话池一个 `mcp::oauth::McpAuth`**:各 server 的授权状态、进行中的登录、凭据存储
   (默认 `scenes/<id>/mcp/oauth/`,一个 server 一个 0600 文件;宿主可经
-  `Assembly::mcp_credential_store` 换成自己的)。同一进程里的两个池互不相见。
+  `Assembly::mcp.credential_store` 换成自己的)。同一进程里的两个池互不相见。
 - **连接时**,能用 OAuth 的 server(`streamable_http` / `sse`,没配固定 `Authorization` 头)
   经 rmcp 的 `AuthClient` 发请求:有令牌就带上,快到期先刷新,被 401 拒了先刷新再重试一次;
   没有令牌就裸发——不要求授权的 server 照旧能用。

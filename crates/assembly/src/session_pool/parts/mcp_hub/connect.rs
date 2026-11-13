@@ -1,12 +1,81 @@
-//! MCP 连接：准入、后台首连与重连、按项目共享的 manager、server 增改、OAuth 授权相关 RPC。
+//! MCP 连接：准入、后台首连与迟到的连接、按 `(project, scene)` 共享的 manager、会话
+//! 拿到的那一份、配置变化后的对账，以及 `mcp.addServer` / `mcp.updateServer`。
 
 use super::*;
+use crate::session_pool::parts::bindings::tier_covers;
+use crate::session_pool::*;
 
 impl SessionPool {
+    /// This pool's MCP authorization state.
+    pub fn mcp_auth(&self) -> Arc<mcp::oauth::McpAuth> {
+        self.mcp.auth.clone()
+    }
+
+    /// Drop the cached connections whose `mcp_servers` came from `tier`, so the
+    /// next session or rebuild on those keys connects with the changed config
+    /// (a new `Authorization`, say) instead of reusing the old connection.
+    /// `keep` is a key the caller reconnects itself.
+    pub(in crate::session_pool) async fn forget_mcp_built_from(
+        &self,
+        tier: &crate::watch_hub::Tier,
+        keep: Option<&ProjectSceneKey>,
+    ) {
+        self.mcp
+            .cache
+            .retain(|key| !tier_covers(tier, key) || keep == Some(key));
+    }
+
+    /// This project's centrally-connected `McpManager` — the MCP
+    /// counterpart to `settings_for_project`, same `None`/`Some(root)` key
+    /// convention. Connects lazily and caches the result on first use
+    /// rather than eagerly for every project this pool has ever seen a
+    /// session for: most daemons only ever serve their own default project,
+    /// and eagerly connecting every project mentioned in a `session.create`
+    /// call would pay for MCP servers nobody's session ever actually needs.
+    /// The default project is the one exception — it's still connected
+    /// eagerly at startup by `connect_mcp_servers_in_background`, so by the
+    /// time this is first called for it the cache is typically already warm.
+    ///
+    /// Not deduplicated across projects with an identical `mcp_servers`
+    /// config — two projects that happen to declare the same server each
+    /// get their own connection.
+    pub(in crate::session_pool) async fn mcp_for_project(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+    ) -> Arc<McpManager> {
+        let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
+        if let Some(existing) = self.mcp.cache.current(&key) {
+            return existing;
+        }
+        let settings = self.settings_for_project(project_root, scene_id).await;
+        self.first_mcp_connect(key, &settings).await
+    }
+
+    /// What a session's engine gets of its pair's MCP servers: its own
+    /// `McpManager` built from the pair's connected client handles (cheap
+    /// `Arc` clones — not a reconnect), since a manager needs `&mut self` to
+    /// refresh its tools, which a shared one cannot give it. `None` when
+    /// nothing is connected or connecting, so the common "no MCP servers"
+    /// case pays nothing. The count is the pair's connected servers.
+    pub(in crate::session_pool) async fn mcp_session_module(
+        &self,
+        project_root: Option<&Path>,
+        scene_id: &str,
+    ) -> (usize, Option<Arc<dyn runtime::module::Module>>) {
+        let central = self.mcp_for_project(project_root, scene_id).await;
+        let count = central.server_count();
+        if count == 0 && central.pending().is_empty() {
+            return (count, None);
+        }
+        let mut per_session = central.share();
+        per_session.refresh_tools().await;
+        (count, Some(Arc::new(mcp::McpModule::new(per_session))))
+    }
+
     /// The MCP servers a `(project, scene)` with these settings connects:
     /// its `mcp_servers` and every active plugin's `[[mcp]]` declarations.
-    #[cfg(feature = "mcp")]
-    pub(super) fn configured_mcp_servers(
+    pub(in crate::session_pool) fn configured_mcp_servers(
         &self,
         settings: &Settings,
     ) -> HashMap<String, serde_json::Value> {
@@ -16,13 +85,12 @@ impl SessionPool {
     }
 
     /// The one gate every MCP server passes before this pool connects it.
-    #[cfg(feature = "mcp")]
-    pub(super) fn admit_mcp(
+    pub(in crate::session_pool) fn admit_mcp(
         &self,
         name: &str,
         cfg: &mcp::config::McpServerConfig,
     ) -> Result<(), String> {
-        self.mcp_policy.admit(name, cfg).inspect_err(|reason| {
+        self.mcp.policy.admit(name, cfg).inspect_err(|reason| {
             tracing::warn!(server = %name, %reason, "MCP server not connected");
         })
     }
@@ -32,8 +100,7 @@ impl SessionPool {
     /// project root for the project's own, the scene's or the global
     /// configuration directory otherwise. Never the daemon's working
     /// directory, which may be some other project.
-    #[cfg(feature = "mcp")]
-    pub(super) fn placed_mcp_server(
+    pub(in crate::session_pool) fn placed_mcp_server(
         &self,
         settings: &base::settings::LoadedSettings,
         name: &str,
@@ -51,8 +118,7 @@ impl SessionPool {
     /// Parse the servers `settings` configure and pass each through
     /// `admit_mcp`, a project's own after `confined_to_own_env`. Every entry
     /// that will not be connected gets a `mcp_connect_failed` event here.
-    #[cfg(feature = "mcp")]
-    pub(super) fn admit_mcp_servers(
+    pub(in crate::session_pool) fn admit_mcp_servers(
         &self,
         settings: &base::settings::LoadedSettings,
     ) -> AdmittedMcp {
@@ -110,11 +176,11 @@ impl SessionPool {
     /// unlike `mcp_for_project`, this never triggers a connect, so an
     /// unconnected (or not-yet-connected) project just reports no servers
     /// rather than paying for a connect attempt on a status query.
-    #[cfg(feature = "mcp")]
     pub async fn mcp_status(&self) -> Vec<api::McpServerStatus> {
         let startup_scene = self.bindings.startup_scene().await;
         let manager = self
-            .mcp_by_project
+            .mcp
+            .cache
             .current(&(Some(self.cwd().to_path_buf()), startup_scene))
             .unwrap_or_else(|| Arc::new(McpManager::empty()));
         let mut entries = mcp_status_entries(&manager);
@@ -129,7 +195,6 @@ impl SessionPool {
     /// not be reached, with the reason. This is the default project's first
     /// connect (see `first_mcp_connect`), so a session created meanwhile
     /// waits for it rather than connecting again.
-    #[cfg(feature = "mcp")]
     pub fn connect_mcp_servers_in_background(self: &Arc<Self>) {
         self.watch_mcp_auth();
         let pool = self.clone();
@@ -156,13 +221,12 @@ impl SessionPool {
     /// finished by [`Self::finish_mcp_connects`]. A caller that arrives while
     /// the pair's first connect runs waits for it rather than starting every
     /// server a second time; other pairs do not wait.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn first_mcp_connect(
+    pub(in crate::session_pool) async fn first_mcp_connect(
         &self,
         key: ProjectSceneKey,
         settings: &base::settings::LoadedSettings,
     ) -> Arc<McpManager> {
-        let slot = self.mcp_by_project.slot(&key);
+        let slot = self.mcp.cache.slot(&key);
         let update = slot.update().await;
         if let Some(existing) = update.current() {
             return existing;
@@ -177,7 +241,7 @@ impl SessionPool {
         let (mut manager, late) = McpManager::connect_all_within(
             admitted,
             settings.sandbox.subprocess_env.clone(),
-            Some(self.mcp_auth.clone()),
+            Some(self.mcp.auth.clone()),
             wait,
         )
         .await;
@@ -197,8 +261,7 @@ impl SessionPool {
     /// out into that manager, announce it, and have the pair's sessions
     /// rebuilt on it before their next turn. Stops when the pair's manager
     /// has been replaced or dropped since — a reload connects anew.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn finish_mcp_connects(
+    pub(in crate::session_pool) async fn finish_mcp_connects(
         pool: std::sync::Weak<Self>,
         key: ProjectSceneKey,
         mut late: mcp::manager::LateConnects,
@@ -209,7 +272,7 @@ impl SessionPool {
             };
             let server = outcome.server().to_string();
             let connected = outcome.connected();
-            let Some(slot) = pool.mcp_by_project.existing(&key) else {
+            let Some(slot) = pool.mcp.cache.existing(&key) else {
                 return;
             };
             let updated = {
@@ -236,7 +299,7 @@ impl SessionPool {
     /// Reconnect MCP servers to match `mcp_servers` (from freshly-reloaded
     /// `Settings`) — the `config.reload`/`config.setProvider` counterpart to
     /// `connect_mcp_servers_in_background`, which runs once at daemon
-    /// startup. `create()` sources MCP from the `mcp_by_project` cache, not
+    /// startup. `create()` sources MCP from the MCP cache, not
     /// from `Settings`, so a reloaded `mcp_servers` reaches sessions only
     /// through this.
     ///
@@ -249,20 +312,19 @@ impl SessionPool {
     /// reported as connecting and finished in the background like a
     /// session's (`finish_mcp_connects`).
     ///
-    /// Only replaces `mcp_by_project`'s entry for `(project_root, scene_id)`;
+    /// Only replaces the cache entry for `(project_root, scene_id)`;
     /// every other pair's cached connections are left untouched.
     ///
     /// Returns `(connected, failed, connecting)` server names for
     /// the reload's `RoutingStatus`.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn reconcile_mcp_servers(
+    pub(in crate::session_pool) async fn reconcile_mcp_servers(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
         settings: &base::settings::LoadedSettings,
     ) -> (Vec<String>, Vec<String>, Vec<String>) {
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        let slot = self.mcp_by_project.slot(&key);
+        let slot = self.mcp.cache.slot(&key);
         let update = slot.update().await;
         let AdmittedMcp {
             servers: admitted,
@@ -275,7 +337,7 @@ impl SessionPool {
         let (manager, late) = McpManager::connect_all_within(
             admitted,
             settings.sandbox.subprocess_env.clone(),
-            Some(self.mcp_auth.clone()),
+            Some(self.mcp.auth.clone()),
             wait,
         )
         .await;
@@ -317,7 +379,6 @@ impl SessionPool {
     /// `headers` and `env` into the uncommitted `settings.local.json`, the
     /// rest into settings.json — then connect it live so it's usable
     /// immediately without a daemon restart.
-    #[cfg(feature = "mcp")]
     pub async fn add_mcp_server(
         &self,
         project_root: Option<&Path>,
@@ -333,7 +394,6 @@ impl SessionPool {
     /// project's settings already declare (a rotated token, a new header) and
     /// reconnect it. Sessions on the project pick the new connection up at
     /// their next turn.
-    #[cfg(feature = "mcp")]
     pub async fn update_mcp_server(
         &self,
         project_root: Option<&Path>,
@@ -347,8 +407,7 @@ impl SessionPool {
 
     /// Refused before anything is written when the MCP policy denies it:
     /// a settings entry the pool would only ever deny is no use to anyone.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn put_mcp_server(
+    pub(in crate::session_pool) async fn put_mcp_server(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
@@ -383,8 +442,7 @@ impl SessionPool {
             .map_err(invalid)
     }
 
-    #[cfg(feature = "mcp")]
-    pub(super) async fn write_mcp_server(
+    pub(in crate::session_pool) async fn write_mcp_server(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
@@ -451,7 +509,7 @@ impl SessionPool {
         let cfg = &cfg
             .clone()
             .run_in(target.0.as_deref().unwrap_or(self.cwd()));
-        let slot = self.mcp_by_project.slot(&target);
+        let slot = self.mcp.cache.slot(&target);
         let (statuses, entries, failure) = {
             let update = slot.update().await;
             let current = update
@@ -466,7 +524,7 @@ impl SessionPool {
             let mut updated = current
                 .share()
                 .with_subprocess_env(env.clone())
-                .with_auth(Some(self.mcp_auth.clone()))
+                .with_auth(Some(self.mcp.auth.clone()))
                 .with_denied(still_denied);
             updated.refresh_tools().await;
             updated.add_server(name, cfg).await;
@@ -495,332 +553,6 @@ impl SessionPool {
             written_to: settings_path.display().to_string(),
             secrets_written_to,
             servers: entries,
-        })
-    }
-
-    /// Report this pool's MCP authorization transitions as `daemon.event`s,
-    /// and take a server whose tokens stopped working off every connection
-    /// that has it.
-    #[cfg(feature = "mcp")]
-    pub(super) fn watch_mcp_auth(self: &Arc<Self>) {
-        use mcp::oauth::AuthEvent;
-        let pool = Arc::downgrade(self);
-        self.mcp_auth.set_listener(Arc::new(move |event| {
-            let Some(pool) = pool.upgrade() else {
-                return;
-            };
-            pool.emit_event(match &event {
-                AuthEvent::Required { server, scopes, .. }
-                | AuthEvent::StepUp { server, scopes, .. } => api::DaemonEvent::McpAuthRequired {
-                    server: server.clone(),
-                    scopes: scopes.clone(),
-                },
-                AuthEvent::Completed { server, .. } => api::DaemonEvent::McpAuthCompleted {
-                    server: server.clone(),
-                },
-                AuthEvent::Failed { server, error, .. } => api::DaemonEvent::McpAuthFailed {
-                    server: server.clone(),
-                    error: error.clone(),
-                },
-            });
-            if let AuthEvent::Required { url, .. } = event {
-                tokio::spawn(async move { pool.demote_mcp_servers(&url).await });
-            }
-        }));
-    }
-
-    #[cfg(feature = "mcp")]
-    pub(super) async fn invalidate_mcp_keys(&self, keys: &[ProjectSceneKey]) {
-        use crate::watch_hub::Tier;
-        for (root, scene) in keys {
-            let tier = match root {
-                Some(root) => Tier::Project(root.clone()),
-                None => Tier::Scene(scene.clone()),
-            };
-            self.invalidate_bindings(Some(&tier)).await;
-        }
-    }
-
-    /// Disconnect every server at `url` until someone signs in again.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn demote_mcp_servers(&self, url: &str) {
-        let mut touched = Vec::new();
-        for (key, slot) in self.mcp_by_project.slots() {
-            let update = slot.update().await;
-            let Some(manager) = update.current() else {
-                continue;
-            };
-            let names: Vec<String> = manager
-                .servers_at(url)
-                .into_iter()
-                .filter(|n| manager.clients().iter().any(|c| c.server_name() == n))
-                .collect();
-            if names.is_empty() {
-                continue;
-            }
-            let mut updated = manager.share();
-            for name in &names {
-                updated.demote(name);
-            }
-            updated.refresh_tools().await;
-            update.set(Arc::new(updated));
-            touched.push(key);
-        }
-        self.invalidate_mcp_keys(&touched).await;
-    }
-
-    /// Connect again every server at `url` — and only those — wherever this
-    /// pool has it, connected or waiting for a sign-in. Each outcome is a
-    /// `mcp_connected` / `mcp_connect_failed` event.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn reconnect_mcp_servers(&self, url: &str) -> Vec<String> {
-        self.reconnect_mcp_where(|manager| manager.servers_at(url))
-            .await
-    }
-
-    /// [`Self::reconnect_mcp_servers`] for the servers `pick` names in each
-    /// cached manager.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn reconnect_mcp_where(
-        &self,
-        pick: impl Fn(&McpManager) -> Vec<String>,
-    ) -> Vec<String> {
-        let mut touched = Vec::new();
-        let mut outcomes: HashMap<String, Result<mcp::manager::ServerStatus, Option<String>>> =
-            HashMap::new();
-        for (key, slot) in self.mcp_by_project.slots() {
-            let update = slot.update().await;
-            let Some(manager) = update.current() else {
-                continue;
-            };
-            let names = pick(&manager);
-            if names.is_empty() {
-                continue;
-            }
-            let mut updated = manager.share();
-            for name in &names {
-                if let Some(cfg) = updated.config_of(name).cloned() {
-                    updated.add_server(name, &cfg).await;
-                }
-            }
-            updated.refresh_tools().await;
-            let statuses = updated.server_statuses();
-            for name in names {
-                let outcome = match statuses.iter().find(|s| s.name == name) {
-                    Some(status) => Ok(status.clone()),
-                    None => Err(updated
-                        .failed()
-                        .iter()
-                        .find(|f| f.name == name)
-                        .map(|f| f.error.clone())),
-                };
-                let telling = |o: &Result<_, Option<String>>| match o {
-                    Ok(_) => 2,
-                    Err(Some(_)) => 1,
-                    Err(None) => 0,
-                };
-                let seen = outcomes.entry(name).or_insert(Err(None));
-                if telling(&outcome) > telling(seen) {
-                    *seen = outcome;
-                }
-            }
-            update.set(Arc::new(updated));
-            touched.push(key);
-        }
-        self.invalidate_mcp_keys(&touched).await;
-        let mut names: Vec<String> = outcomes.keys().cloned().collect();
-        names.sort();
-        for (name, outcome) in outcomes {
-            self.emit_event(match outcome {
-                Ok(s) => mcp_connected_event(&s),
-                Err(error) => api::DaemonEvent::McpConnectFailed {
-                    server: name,
-                    error: match error {
-                        Some(error) => format!("connect failed after authorizing: {error}"),
-                        None => {
-                            "connect failed after authorizing — see mcp.status and the daemon log"
-                                .into()
-                        }
-                    },
-                },
-            });
-        }
-        names
-    }
-
-    /// `mcp.auth.setIdentity` — the user's enterprise identity, which every
-    /// `"grant": "enterprise"` server waiting for one is then connected with.
-    #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_set_identity(
-        &self,
-        identity: api::McpIdentity,
-    ) -> Result<api::McpReconnected, PoolError> {
-        if self.mcp_auth.enterprise_idp().is_none() {
-            return Err(PoolError::InvalidRequest(
-                "no enterprise IdP is configured: the host's Assembly::mcp_enterprise_idp or \
-                 the MCP policy's enterprise_idp names one"
-                    .into(),
-            ));
-        }
-        self.mcp_auth.set_identity(Some(match identity {
-            api::McpIdentity::IdToken(token) => mcp::oauth::EnterpriseIdentity::IdToken(token),
-            api::McpIdentity::RefreshToken(token) => {
-                mcp::oauth::EnterpriseIdentity::RefreshToken(token)
-            }
-        }));
-        let reconnected = self
-            .reconnect_mcp_where(|manager| {
-                manager
-                    .pending()
-                    .iter()
-                    .filter(|p| {
-                        manager
-                            .config_of(&p.name)
-                            .and_then(|c| c.oauth())
-                            .is_some_and(|o| o.grant == mcp::config::OAuthGrant::Enterprise)
-                    })
-                    .map(|p| p.name.clone())
-                    .collect()
-            })
-            .await;
-        Ok(api::McpReconnected { reconnected })
-    }
-
-    /// The configuration of the MCP server `name` on a project, for a
-    /// sign-in. A server the policy denies never gets one.
-    #[cfg(feature = "mcp")]
-    pub(super) async fn mcp_server_to_authorize(
-        &self,
-        project_root: Option<&Path>,
-        scene_id: &str,
-        name: &str,
-    ) -> Result<mcp::config::McpServerConfig, PoolError> {
-        let root = project_root.unwrap_or(self.cwd());
-        let manager = self.mcp_for_project(Some(root), scene_id).await;
-        if let Some(cfg) = manager.config_of(name) {
-            return Ok(cfg.clone());
-        }
-        if let Some(denied) = manager.denied().iter().find(|d| d.name == name) {
-            return Err(PoolError::McpServerDenied(denied.reason.clone()));
-        }
-        Err(PoolError::InvalidRequest(format!(
-            "no MCP server `{name}` is configured for this project"
-        )))
-    }
-
-    /// `mcp.auth.start` — begin a sign-in to an MCP server. A loopback flow
-    /// completes itself when the browser comes back; an external one waits
-    /// for `mcp.auth.complete`.
-    #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_start(
-        self: &Arc<Self>,
-        project_root: Option<&Path>,
-        scene_id: &str,
-        name: &str,
-        redirect: api::McpRedirect,
-        scopes: Option<Vec<String>>,
-    ) -> Result<api::McpAuthStarted, PoolError> {
-        let redirect = match redirect {
-            api::McpRedirect::Loopback => mcp::oauth::Redirect::Loopback,
-            api::McpRedirect::External(uri) => mcp::oauth::Redirect::External(uri),
-        };
-        let cfg = self
-            .mcp_server_to_authorize(project_root, scene_id, name)
-            .await?;
-        let mut start = self
-            .mcp_auth
-            .start(name, &cfg, redirect, scopes)
-            .await
-            .map_err(PoolError::from)?;
-        if let Some(mut callbacks) = start.callbacks.take() {
-            let pool = Arc::downgrade(self);
-            let flow_id = start.flow_id.clone();
-            tokio::spawn(async move {
-                while let Some(callback) = callbacks.recv().await {
-                    let Some(pool) = pool.upgrade() else {
-                        return;
-                    };
-                    let outcome = pool.finish_mcp_auth(&flow_id, &callback.url).await;
-                    let open = pool.mcp_auth.flow_server(&flow_id).await.is_some();
-                    let _ = callback
-                        .reply
-                        .send(outcome.map(|done| done.server).map_err(|e| e.to_string()));
-                    if !open {
-                        return;
-                    }
-                }
-            });
-        }
-        Ok(api::McpAuthStarted {
-            flow_id: start.flow_id,
-            authorize_url: start.authorize_url,
-            redirect_uri: start.redirect_uri,
-            expires_in: start.expires_in,
-        })
-    }
-
-    #[cfg(feature = "mcp")]
-    pub(super) async fn finish_mcp_auth(
-        &self,
-        flow_id: &str,
-        callback_url: &str,
-    ) -> Result<mcp::oauth::FlowDone, mcp::oauth::AuthFlowError> {
-        let done = self.mcp_auth.complete(flow_id, callback_url).await?;
-        self.reconnect_mcp_servers(&done.url).await;
-        Ok(done)
-    }
-
-    /// `mcp.auth.complete` — finish a sign-in with the URL the browser was
-    /// sent back to, then reconnect that server.
-    #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_complete(
-        &self,
-        flow_id: &str,
-        callback_url: &str,
-    ) -> Result<api::McpAuthDone, PoolError> {
-        let done = self
-            .finish_mcp_auth(flow_id, callback_url)
-            .await
-            .map_err(PoolError::from)?;
-        Ok(api::McpAuthDone {
-            server: done.server,
-            scopes: done.scopes,
-        })
-    }
-
-    #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_cancel(&self, flow_id: &str) -> Result<api::McpServerRef, PoolError> {
-        let server = self
-            .mcp_auth
-            .cancel(flow_id)
-            .await
-            .map_err(PoolError::from)?;
-        Ok(api::McpServerRef { server })
-    }
-
-    /// `mcp.auth.logout` — revoke and forget a server's tokens, and
-    /// disconnect it.
-    #[cfg(feature = "mcp")]
-    pub async fn mcp_auth_logout(
-        &self,
-        project_root: Option<&Path>,
-        scene_id: &str,
-        name: &str,
-    ) -> Result<api::McpServerRef, PoolError> {
-        let cfg = self
-            .mcp_server_to_authorize(project_root, scene_id, name)
-            .await?;
-        self.mcp_auth
-            .logout(name, &cfg)
-            .await
-            .map_err(PoolError::from)?;
-        if let Some(url) =
-            mcp::oauth::server_url(&cfg).and_then(|u| mcp::oauth::canonical_server_url(&u).ok())
-        {
-            self.demote_mcp_servers(&url).await;
-        }
-        Ok(api::McpServerRef {
-            server: name.to_string(),
         })
     }
 }

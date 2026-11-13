@@ -178,7 +178,7 @@ pub struct DaemonConfig {
     pub session_idle_timeout_secs: u64,
     /// Where to read the MCP policy instead of the platform's managed path
     /// (`mcp::policy::managed_policy_path`). A file named here must exist.
-    /// Ignored when the host passes `Assembly::mcp_policy`.
+    /// Ignored when the host passes `Assembly::mcp`'s `policy`.
     pub mcp_policy_path: Option<PathBuf>,
     /// Where to read the deployment's managed settings instead of the
     /// platform's path (`base::managed_settings::managed_settings_path`). A

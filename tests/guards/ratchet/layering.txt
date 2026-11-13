@@ -1,9 +1,12 @@
 # kind  path  ceiling
 # `json!` in session_pool production code, per file. The pool takes and returns typed values;
-# a JSON literal belongs only where settings files are edited. A ceiling only goes down:
-# AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration layering::
+# a JSON literal belongs only where settings files are edited.
+# `cfg-mcp`: every `feature = "mcp"` under crates/assembly/src (hard cap 6, G4).
+# A ceiling only goes down: AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration layering::
 json!  crates/assembly/src/session_pool/facade/goal.rs             1
 json!  crates/assembly/src/session_pool/facade/history_rpc.rs      1
 json!  crates/assembly/src/session_pool/facade/listing.rs          2
-json!  crates/assembly/src/session_pool/facade/settings_reload.rs  12
+json!  crates/assembly/src/session_pool/facade/settings_reload.rs  10
 json!  crates/assembly/src/session_pool/facade/tasks.rs            4
+cfg-mcp  crates/assembly/src/  5
+json!  crates/assembly/src/session_pool/parts/mcp_hub/live.rs  2
