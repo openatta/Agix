@@ -1,5 +1,6 @@
 //! 会话内后台任务与子 Agent：事件转发、任务查询与停止、`start_agent`、上下文请求。
 
+use crate::session_pool::parts::phase::SessionOp;
 use crate::session_pool::*;
 
 fn delegate_error(e: base::interface::delegate::DelegateError) -> PoolError {
@@ -308,10 +309,12 @@ impl SessionPool {
 
     /// Ask a session's engine about, or change, its context
     /// (`session.inspectContext`, `session.dropMessages`,
-    /// `session.editMessage`). A session not in memory is resumed for it; one
-    /// running a turn answers `SESSION_BUSY` — its context is moving under
-    /// the question. A change is applied to the engine first and then written
-    /// to the log as an `agix.context` entry, so a resume reproduces it.
+    /// `session.editMessage`). A session not in memory is resumed for it.
+    /// The session is held in `Exclusive(Context)` from the check to the
+    /// answer, so no turn, rebuild or other context request starts in
+    /// between; one that is doing any of those answers `SESSION_BUSY` — its
+    /// context is moving under the question. The engine writes a change to
+    /// the log itself, so a resume reproduces it.
     async fn context_request(
         &self,
         session_id: &str,
@@ -321,57 +324,66 @@ impl SessionPool {
             return Err(PoolError::no_session(session_id));
         }
         self.ensure_live(session_id, None).await?;
-        let input_tx = self
+        let (input_tx, core, generation) = self
             .live
-            .with_live(session_id, |live| match live.turn.busy(session_id) {
-                Some(busy) => Err(PoolError::SessionBusy(busy)),
-                None => Ok(live.engine.input_tx.clone()),
+            .with_live_mut(session_id, |live| {
+                if let Some(busy) = live.turn.busy(session_id) {
+                    return Err(PoolError::SessionBusy(busy));
+                }
+                live.turn
+                    .begin_exclusive(SessionOp::Context)
+                    .map_err(|_| PoolError::Internal("an idle slot refused".into()))?;
+                Ok((
+                    live.engine.input_tx.clone(),
+                    live.core.clone(),
+                    live.engine.generation,
+                ))
             })
             .await
             .ok_or_else(|| PoolError::no_session(session_id))??;
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        input_tx
-            .send(InputMessage::Context {
-                request: request.clone(),
-                reply,
-            })
-            .map_err(|_| PoolError::engine_unreachable("the session's engine has stopped"))?;
-        let result = tokio::time::timeout(Duration::from_secs(30), answer)
-            .await
-            .map_err(|_| PoolError::engine_unreachable("the engine did not answer"))?
-            .map_err(|_| PoolError::engine_unreachable("the engine went away"))?
-            .map_err(PoolError::InvalidRequest)?;
-
-        let edits: Vec<(&str, serde_json::Value)> = match &request {
-            runtime::agent::ContextRequest::Inspect => Vec::new(),
-            runtime::agent::ContextRequest::Drop { at, .. } => at
-                .iter()
-                .map(|i| ("drop", serde_json::json!({"at": i})))
-                .collect(),
-            runtime::agent::ContextRequest::Edit { at, text, .. } => {
-                vec![("edit", serde_json::json!({"at": at, "text": text}))]
-            }
+        let Some(pool) = self.this.upgrade() else {
+            self.end_context_operation(&core, generation).await;
+            return Err(PoolError::Internal("the pool is going away".into()));
         };
-        if let (false, Some(store)) = (edits.is_empty(), self.directory.store()) {
-            let sid = base::session::SessionId::parse(session_id)
-                .map_err(|e| PoolError::InvalidRequest(e.to_string()))?;
-            for (event, mut payload) in edits {
-                payload["at_ms"] = serde_json::json!(std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0));
-                let entry = history::entry::LogEntry::Extension {
-                    ns: history::transcript::CONTEXT_NS.to_string(),
-                    event: event.to_string(),
-                    payload,
-                };
-                store.append(sid, entry).await.map_err(|e| {
-                    PoolError::Internal(format!("the change was made but not logged: {e}"))
-                })?;
-            }
-        }
-        Ok(result)
+        let operation = tokio::spawn(async move {
+            let answer = ask_engine(input_tx, request).await;
+            pool.end_context_operation(&core, generation).await;
+            answer
+        });
+        operation.await.unwrap_or_else(|e| {
+            Err(PoolError::Internal(format!(
+                "the context request failed: {e}"
+            )))
+        })
     }
+
+    async fn end_context_operation(&self, core: &Arc<SessionCore>, generation: Generation) {
+        self.live
+            .with_live_mut(core.id(), |live| {
+                if live.runs(core, generation) {
+                    live.turn.end_exclusive(SessionOp::Context);
+                }
+            })
+            .await;
+    }
+}
+
+async fn ask_engine(
+    input_tx: InputSender,
+    request: runtime::agent::ContextRequest,
+) -> Result<runtime::agent::ContextAnswer, PoolError> {
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    input_tx
+        .send(InputMessage::Context { request, reply })
+        .map_err(|_| PoolError::engine_unreachable("the session's engine has stopped"))?;
+    tokio::time::timeout(Duration::from_secs(30), answer)
+        .await
+        .map_err(|_| PoolError::engine_unreachable("the engine did not answer"))?
+        .map_err(|_| PoolError::engine_unreachable("the engine went away"))?
+        .map_err(|e| match e {
+            runtime::agent::ContextError::Refused(why) => PoolError::InvalidRequest(why),
+            not_recorded => PoolError::Internal(not_recorded.to_string()),
+        })
 }
 
 fn unexpected_answer(answer: runtime::agent::ContextAnswer) -> PoolError {

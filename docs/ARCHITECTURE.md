@@ -430,7 +430,10 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 命名器、绑定是否过期、委派器、脚本记录、健康检查);`TurnSlot` 是回合状态,不再由几个互相对得上的
 字段隐式表示:
 
-- **阶段** `SessionPhase`:`Idle`、`Running`(带回合 id、发起方、发起的订阅者)、`Rebuilding`。
+- **阶段** `SessionPhase`:`Idle`、`Running`(带回合 id、发起方、发起的订阅者)、`Rebuilding`、
+  `Exclusive(SessionOp)`(目前只有 `Context`:`inspectContext` / `dropMessages` / `editMessage`
+  在一次锁里检查并占槽,答完才放;期间的 `run_turn` 报 `context_operation` 或排队,改动由引擎在
+  `handle_context` 里写 `agix.context`)。
   所有转换在池的 `sessions` 锁里同步完成;`is_busy`、`interrupt`、`setModel` / `setPrompt` 的预检查、
   `inspectContext` 一类的上下文请求、目标的换轮,读的都是阶段,不去 `try_lock` 别的东西。
 - **占槽与命名是一次转换。** `run_turn` 在一次锁里判定目标轮、占槽,`Idle` 直接进 `Running`,

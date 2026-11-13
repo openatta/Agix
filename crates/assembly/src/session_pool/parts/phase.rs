@@ -1,5 +1,5 @@
 //! 会话的回合槽 `TurnSlot`：正处在哪个阶段（`SessionPhase`：空闲 / 回合中 /
-//! 重建中），以及当前这一代引擎事件接收端的存放处；`Generation` 给会话的每一代
+//! 重建中 / 独占操作中），以及当前这一代引擎事件接收端的存放处；`Generation` 给会话的每一代
 //! 引擎编号。阶段说了算，接收端只是放在这里；所有转换都在池的 `sessions` 锁里
 //! 同步完成，代际的比对由持有槽的 `LiveSession` 做。
 
@@ -33,6 +33,15 @@ pub(in crate::session_pool) enum SessionPhase {
     Idle,
     Running(RunningTurn),
     Rebuilding,
+    /// Something other than a turn has the session to itself.
+    Exclusive(SessionOp),
+}
+
+/// What holds a session in [`SessionPhase::Exclusive`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::session_pool) enum SessionOp {
+    /// `session.inspectContext`, `session.dropMessages`, `session.editMessage`.
+    Context,
 }
 
 #[derive(Debug)]
@@ -208,6 +217,26 @@ impl TurnSlot {
         true
     }
 
+    pub(in crate::session_pool) fn begin_exclusive(
+        &mut self,
+        op: SessionOp,
+    ) -> Result<(), &SessionPhase> {
+        if !self.is_idle() {
+            return Err(&self.phase);
+        }
+        self.phase = SessionPhase::Exclusive(op);
+        Ok(())
+    }
+
+    pub(in crate::session_pool) fn end_exclusive(&mut self, op: SessionOp) -> bool {
+        if !matches!(self.phase, SessionPhase::Exclusive(held) if held == op) {
+            return false;
+        }
+        self.phase = SessionPhase::Idle;
+        self.idle.notify_waiters();
+        true
+    }
+
     /// Out of `Rebuilding` onto the next engine, whose events arrive on `rx`.
     pub(in crate::session_pool) fn finish_rebuild(&mut self, rx: EventReceiver) -> bool {
         if !matches!(self.phase, SessionPhase::Rebuilding) {
@@ -224,6 +253,9 @@ impl TurnSlot {
             SessionPhase::Idle => None,
             SessionPhase::Running(turn) => Some(Busy::turn_running(session_id, &turn.turn_id)),
             SessionPhase::Rebuilding => Some(Busy::rebuilding(session_id)),
+            SessionPhase::Exclusive(SessionOp::Context) => {
+                Some(Busy::context_operation(session_id))
+            }
         }
     }
 }
@@ -305,6 +337,24 @@ mod tests {
     }
 
     #[test]
+    fn an_exclusive_operation_holds_the_slot_until_it_ends() {
+        let mut slot = slot();
+        slot.begin_exclusive(SessionOp::Context).expect("idle");
+        assert!(matches!(
+            slot.claim(turn("t1")),
+            Err(SessionPhase::Exclusive(SessionOp::Context))
+        ));
+        assert!(slot.begin_rebuild().is_err());
+        assert!(slot.begin_exclusive(SessionOp::Context).is_err());
+        assert!(slot.end_exclusive(SessionOp::Context));
+        assert!(slot.is_idle());
+        assert!(!slot.end_exclusive(SessionOp::Context));
+        slot.claim(turn("t1")).unwrap();
+        assert!(slot.begin_exclusive(SessionOp::Context).is_err());
+        assert!(!slot.end_exclusive(SessionOp::Context));
+    }
+
+    #[test]
     fn busy_says_what_the_session_is_doing() {
         use crate::session_pool::api::BusyReason;
         let mut slot = slot();
@@ -317,6 +367,11 @@ mod tests {
         slot.begin_rebuild().unwrap();
         let busy = slot.busy("S1").expect("busy");
         assert_eq!(busy.reason, BusyReason::Rebuilding);
+        assert_eq!(busy.current_turn_id, None);
+        slot.abort_rebuild();
+        slot.begin_exclusive(SessionOp::Context).unwrap();
+        let busy = slot.busy("S1").expect("busy");
+        assert_eq!(busy.reason, BusyReason::ContextOperation);
         assert_eq!(busy.current_turn_id, None);
     }
 }

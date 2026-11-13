@@ -539,44 +539,75 @@ impl Agent {
         (prompt_blocks, tool_defs, messages)
     }
 
+    /// Answer a host's look at, or change to, the context. A change is made
+    /// here and written to the log as an `agix.context` entry, so a resume
+    /// reproduces it — by this engine, the session log's one writer.
     pub(super) async fn handle_context(
         &mut self,
         request: crate::agent::ContextRequest,
-    ) -> Result<crate::agent::ContextAnswer, String> {
-        use crate::agent::{ContextAnswer, ContextRequest};
+    ) -> Result<crate::agent::ContextAnswer, crate::agent::ContextError> {
+        use crate::agent::{ContextAnswer, ContextError, ContextRequest};
         let count = self.session.messages().len();
         let unchanged = |total: Option<usize>| match total {
-            Some(total) if total != count => Err(format!(
+            Some(total) if total != count => Err(ContextError::Refused(format!(
                 "the context has {count} messages, not {total}: it changed since it was read"
-            )),
+            ))),
             _ => Ok(()),
         };
-        match request {
-            ContextRequest::Inspect => Ok(ContextAnswer::Inspected(self.inspect_context().await)),
+        let (answer, edits) = match request {
+            ContextRequest::Inspect => {
+                return Ok(ContextAnswer::Inspected(self.inspect_context().await))
+            }
             ContextRequest::Drop { at, total } => {
                 unchanged(total)?;
                 for &i in &at {
                     match self.session.messages().get(i) {
-                        None => return Err(format!("there is no message {i}; the context has {count}")),
+                        None => {
+                            return Err(ContextError::Refused(format!(
+                                "there is no message {i}; the context has {count}"
+                            )))
+                        }
                         Some(m) if m.role != base::interface::model::MessageRole::User => {
-                            return Err(format!(
+                            return Err(ContextError::Refused(format!(
                                 "message {i} is the model's; only user messages and tool results can be dropped"
-                            ))
+                            )))
                         }
                         Some(_) => {}
                     }
                 }
                 for &i in &at {
-                    self.session.drop_message(i)?;
+                    self.session
+                        .drop_message(i)
+                        .map_err(ContextError::Refused)?;
                 }
-                Ok(ContextAnswer::Dropped(at))
+                let edits = at
+                    .iter()
+                    .map(|i| ("drop", serde_json::json!({ "at": i })))
+                    .collect::<Vec<_>>();
+                (ContextAnswer::Dropped(at), edits)
             }
             ContextRequest::Edit { at, text, total } => {
                 unchanged(total)?;
-                self.session.edit_message(at, text)?;
-                Ok(ContextAnswer::Edited(at))
+                self.session
+                    .edit_message(at, text.clone())
+                    .map_err(ContextError::Refused)?;
+                (
+                    ContextAnswer::Edited(at),
+                    vec![("edit", serde_json::json!({ "at": at, "text": text }))],
+                )
             }
+        };
+        let at_ms =
+            u64::try_from(self.policies.environment.now().unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(0);
+        for (event, mut payload) in edits {
+            payload["at_ms"] = serde_json::json!(at_ms);
+            self.session
+                .record_extension(history::transcript::CONTEXT_NS, event, payload)
+                .await
+                .map_err(|e| ContextError::NotRecorded(e.to_string()))?;
         }
+        Ok(answer)
     }
 
     /// What the next model call would carry if a step started now with no new

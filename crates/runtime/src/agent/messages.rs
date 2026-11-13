@@ -39,8 +39,27 @@ pub enum InputMessage {
     /// turns. The answer — or why not — goes back on `reply`.
     Context {
         request: ContextRequest,
-        reply: tokio::sync::oneshot::Sender<Result<ContextAnswer, String>>,
+        reply: tokio::sync::oneshot::Sender<Result<ContextAnswer, ContextError>>,
     },
+}
+
+/// Why a [`ContextRequest`] was not answered as asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextError {
+    /// The request does not fit the context as it is; nothing changed.
+    Refused(String),
+    /// The change was made, but the session's log does not have it, so a
+    /// resume will not reproduce it.
+    NotRecorded(String),
+}
+
+impl std::fmt::Display for ContextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(why) => f.write_str(why),
+            Self::NotRecorded(why) => write!(f, "the change was made but not logged: {why}"),
+        }
+    }
 }
 
 /// What a host asks of a session's context (`InputMessage::Context`).

@@ -121,6 +121,8 @@ pub enum BusyReason {
     Rebuilding,
     BackgroundTasks,
     PreviousEngine,
+    /// A look at or a change to the session's context is under way.
+    ContextOperation,
 }
 
 /// Why a session cannot take what was asked of it right now.
@@ -156,6 +158,14 @@ impl Busy {
 
     pub(crate) fn rebuilding(session_id: &str) -> Self {
         Self::new(session_id, BusyReason::Rebuilding, Self::MESSAGE.into())
+    }
+
+    pub(crate) fn context_operation(session_id: &str) -> Self {
+        Self::new(
+            session_id,
+            BusyReason::ContextOperation,
+            Self::MESSAGE.into(),
+        )
     }
 
     pub(crate) fn previous_engine(session_id: &str, message: impl Into<String>) -> Self {

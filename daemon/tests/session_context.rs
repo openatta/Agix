@@ -342,21 +342,28 @@ async fn a_session_mid_turn_is_too_busy_to_change() {
         tokio::spawn(async move { daemon.turn(&session, "wait").await })
     };
 
-    let mut busy = None;
+    // Asked before the turn has the session, a look at the context would
+    // hold the session itself and the turn would be the one refused.
+    let mut running = false;
     for _ in 0..200 {
-        let response = daemon
-            .call(
-                "session.inspectContext",
-                serde_json::json!({"session_id": session}),
-            )
+        let got = daemon
+            .ok("session.get", serde_json::json!({"session_id": session}))
             .await;
-        if response["error"]["code"] == SESSION_BUSY {
-            busy = Some(response);
+        if got["turn_state"] == "running" {
+            running = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert!(busy.is_some(), "never refused while the turn ran");
+    assert!(running, "the turn never started");
+    let busy = daemon
+        .call(
+            "session.inspectContext",
+            serde_json::json!({"session_id": session}),
+        )
+        .await;
+    assert_eq!(busy["error"]["code"], SESSION_BUSY, "{busy}");
+    assert_eq!(busy["error"]["data"]["reason"], "turn_running", "{busy}");
 
     daemon
         .ok(

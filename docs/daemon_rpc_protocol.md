@@ -1848,8 +1848,11 @@ recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
 
 #### `session.inspectContext`
 
-这个会话**下一次**调模型会带什么,但不真的调。会话不在内存里就先恢复它;正在跑一轮时
-返回 `SESSION_BUSY`。
+这个会话**下一次**调模型会带什么,但不真的调。会话不在内存里就先恢复它;正在跑一轮、
+正在重建、或另一个上下文请求还没答完时返回 `SESSION_BUSY`。从受理到答复,会话归这次请求
+独占:期间到达的 `run_turn` 按 `on_busy` 处理 —— `reject` 得到 `SESSION_BUSY`(`reason` 为
+`"context_operation"`),`queue` 等它答完再跑。`session.dropMessages`、`session.editMessage`
+相同。
 
 ```jsonc
 // → params
@@ -1886,10 +1889,11 @@ recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
 { "dropped": [2, 5] }
 ```
 
-改动先作用到引擎内存里的上下文,再以 `agix.context` 扩展条目写进 transcript,所以恢复
-之后照样生效;`session.history` 看到的是改过之后的内容。会改动前缀,模型服务的提示缓存
-从这一点往后失效。位置不对、是模型的消息、`total` 对不上 → `INVALID_PARAMS`;正在跑一轮
-→ `SESSION_BUSY`。
+改动先作用到引擎内存里的上下文,再由引擎以 `agix.context` 扩展条目写进 transcript(和它
+写这个会话其余日志的是同一个写者),所以恢复之后照样生效;`session.history` 看到的是改过
+之后的内容。会改动前缀,模型服务的提示缓存从这一点往后失效。位置不对、是模型的消息、
+`total` 对不上 → `INVALID_PARAMS`;会话正忙 → `SESSION_BUSY`(见 `session.inspectContext`)。
+改了却没写进日志 → `INTERNAL_ERROR`。
 
 #### `session.editMessage`
 
@@ -2958,8 +2962,9 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | `rebuilding` | 正在原地重建(`setPrompt`、换厂商的 `setModel`、配置变更后下一轮开始前) | `null` |
 | `background_tasks` | 空闲,但有后台任务在跑,挡住了需要重建的调用;另带 `running_task_ids` | `null` |
 | `previous_engine` | 刚被关闭、驱逐或重建,上一个引擎在宽限期内还没停下 | `null` |
+| `context_operation` | 一个 `inspectContext` / `dropMessages` / `editMessage` 还没答完,会话归它独占 | `null` |
 
-`rebuilding` 和 `previous_engine` 的 `data` 形状与第一行相同。以后可能增加取值,不认识的
+`rebuilding`、`previous_engine` 和 `context_operation` 的 `data` 形状与第一行相同。以后可能增加取值,不认识的
 `reason` 按"稍后再试"处理。
 
 其余错误码**没有 `data`**,信息全在 `message` 里 —— 包括
