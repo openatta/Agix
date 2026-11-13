@@ -17,10 +17,7 @@ mod options;
 pub use client::{send_frame, Client, ConnectionId, FrameSink, Sink};
 pub use codes::ErrorCode;
 pub use method::{schema_of, MethodInfo, NoParams, StartAgentParams, Untyped};
-pub use options::{
-    read_options, ClockOptions, IgnoredOption, RawOptions, RecorderOptions, SessionOptions,
-    TelemetryOptions, PROMPT_TYPE_PERMISSION, PROMPT_TYPE_QUESTION,
-};
+pub use options::{read_options, IgnoredOption, RawOptions};
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct RpcRequest {

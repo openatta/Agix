@@ -7,6 +7,7 @@ mod error;
 mod events;
 mod history;
 mod mcp;
+mod options;
 mod plugin;
 mod scene;
 mod session;
@@ -29,6 +30,7 @@ pub use mcp::{
     McpAuthDone, McpAuthStarted, McpAuthState, McpAuthStatus, McpIdentity, McpReconnected,
     McpRedirect, McpServerRef, McpServerState, McpServerStatus, McpServerWritten,
 };
+pub use options::{ClockOptions, RecorderOptions, SessionOptions, TelemetryOptions};
 pub use plugin::{
     PluginDisclosure, PluginInfo, PluginInstalled, PluginRemoved, PluginScope, PluginToggled,
     SkillConflict, SkillOrigin, VisibleText,

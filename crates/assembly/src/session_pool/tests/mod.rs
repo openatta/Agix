@@ -39,6 +39,7 @@ mod mcp_for_project;
 mod multi_scene;
 mod pool_telemetry;
 mod rebuild;
+mod recorded_spec;
 mod redact;
 mod resolve_session_permission;
 mod script_binding;

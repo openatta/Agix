@@ -7,7 +7,6 @@
 //! - 空闲超时回收
 //! - session.list 合并活跃 + 历史
 
-use crate::rpc::SessionOptions;
 use base::event::AgentEvent;
 use base::id::Id;
 use base::interface::permission::PermissionSet;
@@ -61,7 +60,7 @@ mod turn;
 
 use api::{
     emitted_outside_turns, AskKind, Busy, EngineFailure, Initiator, PoolError, SessionEvent,
-    SessionFrame, SessionWatcher, Subscribed, TurnOutcome, TurnRequest, WatcherId,
+    SessionFrame, SessionOptions, SessionWatcher, Subscribed, TurnOutcome, TurnRequest, WatcherId,
 };
 use helpers::*;
 use history_rpc::*;

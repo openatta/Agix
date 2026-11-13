@@ -1,0 +1,17 @@
+{
+  "options": {
+    "recorder": {"mode": "record", "name": "r", "dir": "/tmp/rec", "strict": true},
+    "clock": {"start": "2026-10-28T09:00:00Z"},
+    "telemetry": {"output": "/tmp/t.jsonl"},
+    "permission_mode": "plan",
+    "permission_rules": [{"source": "session", "behavior": "allow", "tool_name": "Read"}],
+    "output_schema": {"type": "object"},
+    "provider": "p-options",
+    "model": "m-options",
+    "prompt": {"append": "be brief", "override": null},
+    "prompt_types": ["question"]
+  },
+  "prompt": {"append": "spec prompt", "override": null},
+  "model": "m-spec",
+  "provider": "p-spec"
+}

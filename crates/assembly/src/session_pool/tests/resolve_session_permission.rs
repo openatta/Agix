@@ -115,7 +115,7 @@ fn a_session_clock_is_the_hosts_start_else_the_recordings_else_the_machines() {
         env.map(|e| e.now().date().to_string())
     };
     let asked = SessionOptions {
-        clock: Some(crate::rpc::ClockOptions {
+        clock: Some(crate::session_pool::api::ClockOptions {
             start: "2026-10-28T09:00:00Z".into(),
         }),
         ..Default::default()
@@ -160,7 +160,7 @@ fn a_session_clock_is_the_hosts_start_else_the_recordings_else_the_machines() {
         "no recording, no shift"
     );
     let garbled = SessionOptions {
-        clock: Some(crate::rpc::ClockOptions {
+        clock: Some(crate::session_pool::api::ClockOptions {
             start: "yesterday".into(),
         }),
         ..Default::default()

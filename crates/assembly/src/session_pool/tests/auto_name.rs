@@ -125,8 +125,8 @@ async fn bind(
     );
 }
 
-fn recorder(mode: &str, root: &Path) -> Option<crate::rpc::RecorderOptions> {
-    Some(crate::rpc::RecorderOptions {
+fn recorder(mode: &str, root: &Path) -> Option<crate::session_pool::api::RecorderOptions> {
+    Some(crate::session_pool::api::RecorderOptions {
         mode: mode.into(),
         name: Some("naming".into()),
         dir: Some(root.display().to_string()),
@@ -137,7 +137,7 @@ fn recorder(mode: &str, root: &Path) -> Option<crate::rpc::RecorderOptions> {
 async fn harnix_session(
     pool: &SessionPool,
     project: &Path,
-    recorder: Option<crate::rpc::RecorderOptions>,
+    recorder: Option<crate::session_pool::api::RecorderOptions>,
 ) -> String {
     pool.activate_scene("harnix")
         .await

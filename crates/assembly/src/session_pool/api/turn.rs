@@ -1,7 +1,7 @@
 //! 跑一轮的请求与结局：谁发起、发给哪个会话、忙时怎么办，以及这一轮是跑完了、
 //! 交给了正在跑的那一轮，还是被跳过。
 
-use crate::rpc::SessionOptions;
+use super::options::SessionOptions;
 use crate::session_pool::OnBusy;
 
 #[derive(Debug, Clone)]
