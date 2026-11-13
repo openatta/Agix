@@ -562,17 +562,20 @@ fn context_like_the_runtime(session: &Arc<SessionState>, cwd: &Path) -> ToolCont
     );
     ctx.session_id = "matrix".into();
     ctx.sandbox = SandboxSettings {
-        allow_read: settings.sandbox.allow_read.clone(),
-        deny_read: settings.sandbox.deny_read.clone(),
-        allowed_domains: settings.sandbox.allowed_domains.clone(),
-        network_mode: settings.sandbox.network_mode,
-        deny_write: settings.sandbox.deny_write.clone(),
-        allow_write: settings.sandbox.allow_write.clone(),
+        allow_read: settings.values.sandbox.allow_read.clone(),
+        deny_read: settings.values.sandbox.deny_read.clone(),
+        allowed_domains: settings.values.sandbox.allowed_domains.clone(),
+        network_mode: settings.values.sandbox.network_mode,
+        deny_write: settings.values.sandbox.deny_write.clone(),
+        allow_write: settings.values.sandbox.allow_write.clone(),
         paths: Arc::new(base::paths::SensitivePaths::for_paths(
             &base::paths::ConfigPaths::from_settings(&settings.paths),
         )),
-        require_enforcement: settings.sandbox.require_enforcement,
-        unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
+        require_enforcement: settings.values.sandbox.require_enforcement,
+        unattended_requires_network_policy: settings
+            .values
+            .sandbox
+            .unattended_requires_network_policy,
     };
     ctx.session = session.clone();
     ctx.permission_mode = session.permission_mode();

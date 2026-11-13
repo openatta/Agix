@@ -189,7 +189,7 @@ pub fn assemble_prompt(
     assemble_prompt_with(&AssemblyRequest {
         registry: &crate::interface::prompt_registry::NoRegistrations,
         scene,
-        settings,
+        settings: &settings.values,
         memory_store,
         ctx,
         rules: &crate::rules::RuleTiers::for_paths(&settings.paths).rules(),

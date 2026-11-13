@@ -778,7 +778,7 @@ async fn disabling_bypass_judges_a_bypass_session_as_default() {
         json!({"disable_bypass_permissions_mode": true}),
     );
     assert_eq!(
-        settings.permission_mode,
+        settings.values.permission_mode,
         base::settings::PermissionMode::Default
     );
     let outcome = verdict(&settings, PermissionMode::BypassPermissions, "touch x").await;

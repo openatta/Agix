@@ -1333,9 +1333,12 @@ mod tests {
                 "code",
                 "m",
             );
-            assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
             assert_eq!(
-                serde_json::to_value(settings.permission_mode).unwrap(),
+                settings.values.permission_mode,
+                PermissionMode::BypassPermissions
+            );
+            assert_eq!(
+                serde_json::to_value(settings.values.permission_mode).unwrap(),
                 serde_json::json!("bypassPermissions")
             );
         }
@@ -1424,7 +1427,7 @@ mod tests {
             "code",
             "m",
         );
-        assert_eq!(settings.model.model_name, "machine-local");
+        assert_eq!(settings.values.model.model_name, "machine-local");
     }
 
     /// The local overlay's rules must *add to* the committed tier's, not
@@ -1581,7 +1584,7 @@ mod tests {
         write_settings(&project, r#"{}"#);
 
         let settings = LoadedSettings::load(global, scene, project, "code", "cli-default");
-        assert_eq!(settings.model.model_name, "scene-model");
+        assert_eq!(settings.values.model.model_name, "scene-model");
     }
 
     #[test]
@@ -1613,7 +1616,7 @@ mod tests {
             "m",
         );
 
-        assert_eq!(settings.permission_mode, PermissionMode::Default);
+        assert_eq!(settings.values.permission_mode, PermissionMode::Default);
         assert!(settings.bypass_disabled());
         assert_eq!(shared_rules(&settings).len(), 1);
         let managed = settings.managed.expect("the managed layer");
@@ -1641,7 +1644,7 @@ mod tests {
             "m",
         );
 
-        assert_eq!(settings.model.model_name, "m");
+        assert_eq!(settings.values.model.model_name, "m");
         let error = settings.managed.and_then(|m| m.error).expect("an error");
         assert!(error.contains("model"), "{error}");
     }
@@ -1699,9 +1702,15 @@ mod tests {
             "cli-default",
         );
 
-        assert_eq!(from_memory.model.model_name, from_files.model.model_name);
-        assert_eq!(from_memory.model.model_name, "scene-model");
-        assert_eq!(from_memory.model.max_tokens, from_files.model.max_tokens);
+        assert_eq!(
+            from_memory.values.model.model_name,
+            from_files.values.model.model_name
+        );
+        assert_eq!(from_memory.values.model.model_name, "scene-model");
+        assert_eq!(
+            from_memory.values.model.max_tokens,
+            from_files.values.model.max_tokens
+        );
         assert_eq!(
             shared_rules(&from_memory)
                 .into_iter()
@@ -1730,7 +1739,7 @@ mod tests {
             "code",
             "cli-default-model",
         );
-        assert_eq!(settings.model.model_name, "cli-default-model");
+        assert_eq!(settings.values.model.model_name, "cli-default-model");
     }
 
     #[test]
@@ -1749,7 +1758,7 @@ mod tests {
 
         let settings =
             LoadedSettings::load(global, root.path().join("scene"), project, "code", "m");
-        let deepseek = &settings.providers["deepseek"];
+        let deepseek = &settings.values.providers["deepseek"];
         assert_eq!(deepseek.api_key.as_deref(), Some("project-key"));
         assert_eq!(deepseek.default_model.as_deref(), Some("deepseek-pro"));
     }
@@ -1834,7 +1843,7 @@ mod tests {
             "code",
             "fallback-model",
         );
-        assert_eq!(settings.model.model_name, "fallback-model");
+        assert_eq!(settings.values.model.model_name, "fallback-model");
     }
 
     #[test]
@@ -1896,7 +1905,7 @@ mod tests {
             "code",
             "m",
         );
-        assert_eq!(settings.language.as_deref(), Some("en"));
+        assert_eq!(settings.values.language.as_deref(), Some("en"));
         assert!(settings.ignored.is_empty());
     }
 
@@ -2031,8 +2040,8 @@ mod tests {
             "code",
             "fallback-model",
         );
-        assert_eq!(settings.model.model_name, "fallback-model");
-        assert!(settings.providers.is_empty());
+        assert_eq!(settings.values.model.model_name, "fallback-model");
+        assert!(settings.values.providers.is_empty());
     }
 
     mod project_trust {
@@ -2142,16 +2151,16 @@ mod tests {
             let settings = tiers.load();
 
             assert_eq!(settings.trust(), ProjectTrust::Untrusted);
-            assert_eq!(settings.permission_mode, PermissionMode::Default);
+            assert_eq!(settings.values.permission_mode, PermissionMode::Default);
             assert!(shared_rules(&settings)
                 .into_iter()
                 .all(|r| r.rule.action == PermissionAction::Deny));
             assert_eq!(shared_rules(&settings).len(), 1);
             assert!(local_rules(&settings).is_empty());
-            assert!(settings.hooks_config.is_none());
-            assert!(settings.mcp_servers.is_empty());
-            assert!(!settings.sandbox.read_anywhere);
-            assert_eq!(settings.language.as_deref(), Some("fr"));
+            assert!(settings.values.hooks_config.is_none());
+            assert!(settings.values.mcp_servers.is_empty());
+            assert!(!settings.values.sandbox.read_anywhere);
+            assert_eq!(settings.values.language.as_deref(), Some("fr"));
             assert_eq!(
                 settings.requires_trust(),
                 [
@@ -2179,9 +2188,9 @@ mod tests {
 
             let settings = tiers.load();
 
-            assert_eq!(settings.permission_mode, PermissionMode::Plan);
+            assert_eq!(settings.values.permission_mode, PermissionMode::Plan);
             assert_eq!(
-                settings.sandbox.network_mode,
+                settings.values.sandbox.network_mode,
                 crate::context::config::NetworkModeConfig::DenyAll
             );
             assert!(settings.requires_trust().is_empty());
@@ -2196,11 +2205,14 @@ mod tests {
 
             assert_eq!(settings.trust(), ProjectTrust::Trusted);
             assert_eq!(settings.trust_pattern(), None);
-            assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
+            assert_eq!(
+                settings.values.permission_mode,
+                PermissionMode::BypassPermissions
+            );
             assert_eq!(shared_rules(&settings).len(), 2);
-            assert!(settings.hooks_config.is_some());
-            assert!(settings.mcp_servers.contains_key("fs"));
-            assert!(settings.sandbox.read_anywhere);
+            assert!(settings.values.hooks_config.is_some());
+            assert!(settings.values.mcp_servers.contains_key("fs"));
+            assert!(settings.values.sandbox.read_anywhere);
             assert!(
                 settings
                     .requires_trust()
@@ -2229,9 +2241,12 @@ mod tests {
                 settings.trust_pattern(),
                 Some(tiers.project.to_str().unwrap())
             );
-            assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
             assert_eq!(
-                settings.project_trust.default,
+                settings.values.permission_mode,
+                PermissionMode::BypassPermissions
+            );
+            assert_eq!(
+                settings.values.project_trust.default,
                 crate::project_trust::TrustLevel::Untrusted
             );
         }
@@ -2253,9 +2268,9 @@ mod tests {
             let settings = tiers.load();
 
             assert_eq!(settings.trust(), ProjectTrust::Untrusted);
-            assert!(settings.hooks_config.is_none());
+            assert!(settings.values.hooks_config.is_none());
             assert_eq!(
-                settings.project_trust,
+                settings.values.project_trust,
                 crate::project_trust::ProjectTrustSettings {
                     default: crate::project_trust::TrustLevel::Untrusted,
                     trusted: Vec::new(),
@@ -2287,18 +2302,25 @@ mod tests {
 
                 let settings = tiers.load();
 
-                assert!(settings.hooks_config.is_some(), "{trust}");
+                assert!(settings.values.hooks_config.is_some(), "{trust}");
                 assert_eq!(
-                    settings.sandbox.network_mode,
+                    settings.values.sandbox.network_mode,
                     crate::context::config::NetworkModeConfig::DenyAll,
                     "{trust}"
                 );
-                assert!(settings.sandbox.require_enforcement, "{trust}");
-                assert!(!settings.sandbox.dangerously_disable_sandbox, "{trust}");
-                assert_eq!(settings.sandbox.deny_write, ["build/"], "{trust}");
-                assert_eq!(settings.permission_mode, PermissionMode::Plan, "{trust}");
-                assert!(!settings.memory_enabled, "{trust}");
-                assert_eq!(settings.language, None, "{trust}");
+                assert!(settings.values.sandbox.require_enforcement, "{trust}");
+                assert!(
+                    !settings.values.sandbox.dangerously_disable_sandbox,
+                    "{trust}"
+                );
+                assert_eq!(settings.values.sandbox.deny_write, ["build/"], "{trust}");
+                assert_eq!(
+                    settings.values.permission_mode,
+                    PermissionMode::Plan,
+                    "{trust}"
+                );
+                assert!(!settings.values.memory_enabled, "{trust}");
+                assert_eq!(settings.values.language, None, "{trust}");
                 let ignored: Vec<(&str, &str)> = settings
                     .ignored
                     .iter()
@@ -2347,19 +2369,22 @@ mod tests {
 
             let settings = tiers.load();
 
-            let anthropic = &settings.providers["anthropic"];
+            let anthropic = &settings.values.providers["anthropic"];
             assert_eq!(anthropic.base_url, None);
             assert_eq!(anthropic.api_key.as_deref(), Some("sk-user"));
-            assert!(!settings.providers.contains_key("x"));
-            assert_eq!(settings.default_provider.as_deref(), Some("anthropic"));
-            assert!(!settings.task_models.contains_key("compact"));
-            assert!(settings.task_models.contains_key("title"));
-            assert_eq!(settings.model.base_url, "");
-            assert_eq!(settings.model.auth_token, "");
-            assert_eq!(settings.telemetry_url, None);
-            assert!(settings.recorder.is_none());
-            assert_eq!(settings.instruction_file, None);
-            assert_eq!(settings.language.as_deref(), Some("fr"));
+            assert!(!settings.values.providers.contains_key("x"));
+            assert_eq!(
+                settings.values.default_provider.as_deref(),
+                Some("anthropic")
+            );
+            assert!(!settings.values.task_models.contains_key("compact"));
+            assert!(settings.values.task_models.contains_key("title"));
+            assert_eq!(settings.values.model.base_url, "");
+            assert_eq!(settings.values.model.auth_token, "");
+            assert_eq!(settings.values.telemetry_url, None);
+            assert!(settings.values.recorder.is_none());
+            assert_eq!(settings.values.instruction_file, None);
+            assert_eq!(settings.values.language.as_deref(), Some("fr"));
             assert_eq!(
                 settings.requires_trust(),
                 [
@@ -2385,7 +2410,7 @@ mod tests {
             );
             tiers.project_writes(r#"{"plugins": {"enabled": true, "allow": ["a"]}}"#);
             let settings = tiers.load();
-            assert!(!settings.plugins.enabled);
+            assert!(!settings.values.plugins.enabled);
             assert_eq!(settings.requires_trust(), ["plugins.enabled"]);
 
             let tiers = Tiers::new();
@@ -2394,11 +2419,11 @@ mod tests {
                 r#"{"project_trust": {"default": "untrusted"}, "plugins": {"allow": ["a", "b"]}}"#,
             );
             tiers.project_writes(r#"{"plugins": {"allow": ["a"]}}"#);
-            assert_eq!(tiers.load().plugins.allow, ["a"]);
+            assert_eq!(tiers.load().values.plugins.allow, ["a"]);
 
             tiers.project_writes(r#"{"plugins": {"allow": []}}"#);
             let settings = tiers.load();
-            assert_eq!(settings.plugins.allow, ["a", "b"]);
+            assert_eq!(settings.values.plugins.allow, ["a", "b"]);
             assert_eq!(settings.requires_trust(), ["plugins.allow"]);
         }
 
@@ -2419,9 +2444,9 @@ mod tests {
             );
 
             assert_eq!(settings.trust(), ProjectTrust::NoProject);
-            assert!(settings.hooks_config.is_some());
+            assert!(settings.values.hooks_config.is_some());
             assert_eq!(
-                settings.project_trust.default,
+                settings.values.project_trust.default,
                 crate::project_trust::TrustLevel::Untrusted
             );
         }
