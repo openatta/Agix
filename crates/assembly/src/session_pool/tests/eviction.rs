@@ -32,7 +32,10 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
             ))) as Arc<dyn base::interface::model::Model>),
             "claude-sonnet-4-6",
         ),
-        binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        binding: crate::session_pool::parts::bindings::BindingStamp {
+            key: (None, String::new()),
+            epoch: 0,
+        },
         state: None,
         delegator: None,
         scripts: None,

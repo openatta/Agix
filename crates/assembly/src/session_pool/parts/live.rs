@@ -52,10 +52,11 @@ pub(in crate::session_pool) struct LiveSession {
     /// and the guess arrives later.
     pub(in crate::session_pool) named_by_user: bool,
     pub(in crate::session_pool) namer: SessionNamer,
-    /// The `stale` flag of the binding this Agent was built from. `run_turn`
-    /// rebuilds the session before its next turn once it is set — lazily,
-    /// so an invalidation never has to walk the sessions.
-    pub(in crate::session_pool) binding_stale: Arc<std::sync::atomic::AtomicBool>,
+    /// The stamp of the binding this Agent was built from. `run_turn`
+    /// rebuilds the session before its next turn once the cache no longer
+    /// considers it current — lazily, so an invalidation never has to walk
+    /// the sessions.
+    pub(in crate::session_pool) binding: super::bindings::BindingStamp,
     /// The engine's own session state: the tasks `session.tasks` lists.
     pub(in crate::session_pool) state: Option<Arc<base::context::SessionState>>,
     /// How the engine delegates, for `session.startAgent`.

@@ -70,14 +70,13 @@ impl SessionPool {
                 // Agent, and replacing one mid-turn would cut that turn off,
                 // as it would the background tasks running under it; a busy
                 // session is served on the old configuration this once and
-                // checked again next time — the flag stays set, so nothing
-                // is missed.
+                // checked again next time — its stamp stays behind, so
+                // nothing is missed.
                 let stale = {
                     let sessions = self.live.lock().await;
-                    sessions.get(sid).map(|live| {
-                        live.binding_stale
-                            .load(std::sync::atomic::Ordering::Relaxed)
-                    })
+                    sessions
+                        .get(sid)
+                        .map(|live| !self.bindings.is_current(&live.binding))
                 };
                 let resolved = match stale {
                     None => self.ensure_live(sid, options.as_ref()).await,

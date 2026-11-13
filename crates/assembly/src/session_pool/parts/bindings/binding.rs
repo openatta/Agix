@@ -17,6 +17,16 @@ use tracing::warn;
 /// resolutions, not one.
 pub(in crate::session_pool) type ProjectSceneKey = (Option<PathBuf>, String);
 
+/// Which pair a binding was built for, and that pair's epoch in the
+/// [`super::BindingCache`] when the build began. The cache bumps a pair's
+/// epoch on every invalidation, so a binding — and every session built on
+/// it — is current exactly while the two still agree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::session_pool) struct BindingStamp {
+    pub(in crate::session_pool) key: ProjectSceneKey,
+    pub(in crate::session_pool) epoch: u64,
+}
+
 /// Whether what `key` resolves to was merged from `tier`. The global tier is
 /// under every pair; a scene or project tier only under its own.
 pub(in crate::session_pool) fn tier_covers(
@@ -60,13 +70,14 @@ pub(in crate::session_pool) struct ProjectBinding {
     /// binding's tiers that did not exist when it was built, so are not
     /// watched — see [`ProjectBinding::appeared`].
     pub(super) unwatched_settings: Vec<(crate::watch_hub::Tier, PathBuf)>,
-    /// Set once a tier this binding was merged from changed. Every session
-    /// built on it holds the same flag and rebuilds before its next turn.
-    pub(in crate::session_pool) stale: Arc<std::sync::atomic::AtomicBool>,
+    /// Every session built on this binding keeps a copy, and rebuilds before
+    /// its next turn once the cache no longer considers it current.
+    pub(in crate::session_pool) stamp: BindingStamp,
 }
 
 impl ProjectBinding {
     pub(in crate::session_pool) fn build(
+        stamp: BindingStamp,
         settings: Arc<LoadedSettings>,
         plugins: &crate::plugins::Contributions,
         watch: Vec<crate::watch_hub::WatchToken>,
@@ -93,12 +104,8 @@ impl ProjectBinding {
             commands,
             _watch: watch,
             unwatched_settings: Vec::new(),
-            stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stamp,
         }
-    }
-
-    pub(in crate::session_pool) fn mark_stale(&self) {
-        self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// The tier of a settings file, skill or agent-type directory that has

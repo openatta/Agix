@@ -387,7 +387,7 @@ impl SessionPool {
             created_at: Instant::now(),
             is_first_turn: !has_user_turn,
             namer,
-            binding_stale: binding.stale.clone(),
+            binding: binding.stamp.clone(),
             state: Some(state.clone()),
             delegator: Some(delegator),
             scripts: script_ledger,

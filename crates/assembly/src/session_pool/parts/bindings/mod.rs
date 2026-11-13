@@ -3,12 +3,14 @@
 //! 托管设置层只在这里叠加。
 //!
 //! 锁序：`bindings` 在前，`last_good_routers` 在后（都是 tokio `Mutex`）；`settings`
-//! 是 tokio `RwLock`，只在取值或替换的那一下持有；`pool_watch` 是 std 叶子锁。持着
-//! `bindings` 时不读盘，也不调别的协作者。
+//! 是 tokio `RwLock`，只在取值或替换的那一下持有；`epochs` 和 `pool_watch` 是 std 叶子
+//! 锁。持着 `bindings` 时不读盘，也不调别的协作者。
 
 mod binding;
 
-pub(in crate::session_pool) use binding::{tier_covers, ProjectBinding, ProjectSceneKey};
+pub(in crate::session_pool) use binding::{
+    tier_covers, BindingStamp, ProjectBinding, ProjectSceneKey,
+};
 
 use crate::session_pool::off_the_runtime;
 use crate::watch_hub::{Tier, WatchHub, WatchKey, WatchTarget, WatchToken};
@@ -39,20 +41,33 @@ pub(in crate::session_pool) enum Cached {
     Missing,
 }
 
+/// The bindings built so far, and every pair's epoch.
+struct Cache {
+    /// One binding per pair this pool has built a session for, built on
+    /// demand and dropped by [`BindingCache::invalidate`]. The pool's own pair
+    /// is in here like any other; `settings` stays the separate hot-swappable
+    /// copy.
+    ///
+    /// Scene is part of the key because the scene tier is a real layer.
+    /// Keying by project alone gave every session whichever scene happened to
+    /// be built first.
+    ///
+    /// Holds only current bindings: `invalidate` bumps the epochs and drops
+    /// the entries under this lock, and a build is inserted under it only if
+    /// its epoch is still the pair's.
+    bindings: AsyncMutex<HashMap<ProjectSceneKey, Arc<ProjectBinding>>>,
+    /// Every pair a build has begun for, and how many times it has been
+    /// invalidated since. Bumped only while `bindings` is held.
+    epochs: std::sync::Mutex<HashMap<ProjectSceneKey, u64>>,
+}
+
 pub(in crate::session_pool) struct BindingCache {
     /// This daemon's own pair's settings, hot-swapped by `config.reload` and
     /// `config.setProvider`. Sessions already running keep the snapshot they
     /// were built with; everything not tied to a session reads this one.
     settings: AsyncRwLock<Arc<LoadedSettings>>,
     managed: ManagedLayer,
-    /// One binding per pair this pool has built a session for, built on
-    /// demand and dropped by [`Self::invalidate`]. The pool's own pair is in
-    /// here like any other; `settings` stays the separate hot-swappable copy.
-    ///
-    /// Scene is part of the key because the scene tier is a real layer.
-    /// Keying by project alone gave every session whichever scene happened to
-    /// be built first.
-    bindings: AsyncMutex<HashMap<ProjectSceneKey, Arc<ProjectBinding>>>,
+    cache: Cache,
     /// The last router each pair was successfully served by, kept across
     /// invalidation so a provider config that stops resolving — or stops
     /// producing a buildable client — leaves working routing in place.
@@ -89,7 +104,10 @@ impl BindingCache {
         Self {
             settings: AsyncRwLock::new(settings),
             managed,
-            bindings: AsyncMutex::new(HashMap::new()),
+            cache: Cache {
+                bindings: AsyncMutex::new(HashMap::new()),
+                epochs: std::sync::Mutex::new(HashMap::new()),
+            },
             last_good_routers: AsyncMutex::new(HashMap::new()),
             watch,
             pool_watch: std::sync::Mutex::new(Vec::new()),
@@ -147,7 +165,7 @@ impl BindingCache {
         scene_id: &str,
     ) -> Cached {
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        let Some(existing) = self.bindings.lock().await.get(&key).cloned() else {
+        let Some(existing) = self.cache.bindings.lock().await.get(&key).cloned() else {
             return Cached::Missing;
         };
         match existing.appeared().cloned() {
@@ -167,9 +185,10 @@ impl BindingCache {
         scene_id: &str,
     ) -> Arc<ProjectBinding> {
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
-        if let Some(existing) = self.bindings.lock().await.get(&key) {
+        if let Some(existing) = self.cache.bindings.lock().await.get(&key) {
             return existing.clone();
         }
+        let stamp = self.begin_build(&key);
         let startup_scene = self.startup_scene().await;
         let settings = if self.is_own_pair(project_root, scene_id).await {
             self.pool_settings().await
@@ -211,6 +230,7 @@ impl BindingCache {
             off_the_runtime(move || ProjectBinding {
                 unwatched_settings,
                 ..ProjectBinding::build(
+                    stamp,
                     settings,
                     &contributions,
                     watch,
@@ -230,10 +250,56 @@ impl BindingCache {
         // Built outside the lock — scanning skill and agent directories is
         // disk work, and holding the map across it would serialize the first
         // session of every project behind the first session of any of them.
-        // Whoever got there first wins; a duplicate build is wasted work, not
-        // a second live catalog.
-        let mut bindings = self.bindings.lock().await;
-        bindings.entry(key).or_insert(built).clone()
+        self.finish_build(built).await
+    }
+
+    /// The stamp a build of `key` that starts now will carry. Taken before
+    /// anything is read, so an invalidation landing anywhere during the
+    /// build leaves it stale.
+    pub(in crate::session_pool) fn begin_build(&self, key: &ProjectSceneKey) -> BindingStamp {
+        let epoch = *self
+            .cache
+            .epochs
+            .lock()
+            .expect("epochs is never held across a panic")
+            .entry(key.clone())
+            .or_insert(0);
+        BindingStamp {
+            key: key.clone(),
+            epoch,
+        }
+    }
+
+    /// Cache `built` unless its pair was invalidated since its build began.
+    /// Whoever got there first wins; a duplicate build is wasted work, not a
+    /// second live catalog. A stale build is still handed back — the session
+    /// asking for it is served on it and rebuilds before its next turn — but
+    /// it is not cached, so the next session reads what is on disk now.
+    pub(in crate::session_pool) async fn finish_build(
+        &self,
+        built: Arc<ProjectBinding>,
+    ) -> Arc<ProjectBinding> {
+        let mut bindings = self.cache.bindings.lock().await;
+        if let Some(existing) = bindings.get(&built.stamp.key) {
+            return existing.clone();
+        }
+        if self.is_current(&built.stamp) {
+            bindings.insert(built.stamp.key.clone(), built.clone());
+        }
+        built
+    }
+
+    /// Whether no tier the binding stamped `stamp` was merged from has been
+    /// invalidated since its build began.
+    pub(in crate::session_pool) fn is_current(&self, stamp: &BindingStamp) -> bool {
+        self.cache
+            .epochs
+            .lock()
+            .expect("epochs is never held across a panic")
+            .get(&stamp.key)
+            .copied()
+            .unwrap_or(0)
+            == stamp.epoch
     }
 
     /// Watch everything a binding was built from — its settings files, and
@@ -328,20 +394,29 @@ impl BindingCache {
         Some(changes)
     }
 
-    /// Drop the cached bindings merged from `changed` — every binding when
-    /// `None` — and mark them stale, so the next session on those pairs is
-    /// built from what is on disk now and the running ones rebuild before
-    /// their next turn. A project tier sits under only its own pairs; the
-    /// scene and global tiers under more. Returns the pairs dropped.
+    /// Bump the epoch of every pair merged from `changed` — every pair when
+    /// `None` — and drop their cached bindings, so the next session on those
+    /// pairs is built from what is on disk now, the running ones rebuild
+    /// before their next turn, and a build still in flight is not cached. A
+    /// project tier sits under only its own pairs; the scene and global
+    /// tiers under more. Returns the cached pairs dropped.
     pub(in crate::session_pool) async fn invalidate(
         &self,
         changed: Option<&Tier>,
     ) -> Vec<ProjectSceneKey> {
+        let hit = |key: &ProjectSceneKey| changed.is_none_or(|tier| tier_covers(tier, key));
+        let mut bindings = self.cache.bindings.lock().await;
+        self.cache
+            .epochs
+            .lock()
+            .expect("epochs is never held across a panic")
+            .iter_mut()
+            .filter(|(key, _)| hit(key))
+            .for_each(|(_, epoch)| *epoch += 1);
         let mut dropped = Vec::new();
-        self.bindings.lock().await.retain(|key, binding| {
-            let hit = changed.is_none_or(|tier| tier_covers(tier, key));
+        bindings.retain(|key, _| {
+            let hit = hit(key);
             if hit {
-                binding.mark_stale();
                 dropped.push(key.clone());
             }
             !hit
@@ -354,7 +429,7 @@ impl BindingCache {
     /// so they see the change at once and nothing is rebuilt.
     pub(in crate::session_pool) async fn refresh_catalogs(&self, tier: &Tier, target: WatchTarget) {
         let plugin_agent_types = self.plugins.agent_types();
-        for (key, binding) in self.bindings.lock().await.iter() {
+        for (key, binding) in self.cache.bindings.lock().await.iter() {
             if !tier_covers(tier, key) {
                 continue;
             }
@@ -370,7 +445,7 @@ impl BindingCache {
     /// catalogs, in place.
     pub(in crate::session_pool) async fn refresh_plugins(&self) {
         let contributions = self.plugins.contributions();
-        for binding in self.bindings.lock().await.values() {
+        for binding in self.cache.bindings.lock().await.values() {
             binding.refresh_plugins(&contributions);
         }
     }
@@ -425,6 +500,10 @@ impl BindingCache {
     #[cfg(test)]
     pub(in crate::session_pool) fn binding_from(&self, settings: LoadedSettings) -> ProjectBinding {
         ProjectBinding::build(
+            BindingStamp {
+                key: (None, String::new()),
+                epoch: 0,
+            },
             Arc::new(settings),
             &Default::default(),
             vec![],
@@ -438,14 +517,19 @@ impl BindingCache {
     pub(in crate::session_pool) async fn insert(
         &self,
         key: ProjectSceneKey,
-        binding: ProjectBinding,
+        mut binding: ProjectBinding,
     ) {
-        self.bindings.lock().await.insert(key, Arc::new(binding));
+        binding.stamp = self.begin_build(&key);
+        self.cache
+            .bindings
+            .lock()
+            .await
+            .insert(key, Arc::new(binding));
     }
 
     #[cfg(test)]
     pub(in crate::session_pool) async fn is_empty(&self) -> bool {
-        self.bindings.lock().await.is_empty()
+        self.cache.bindings.lock().await.is_empty()
     }
 
     #[cfg(test)]

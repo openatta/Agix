@@ -110,8 +110,33 @@ async fn bindings_do_not_multiply_watchers() {
     );
 }
 
-fn is_stale(binding: &ProjectBinding) -> bool {
-    binding.stale.load(std::sync::atomic::Ordering::Relaxed)
+fn is_stale(pool: &SessionPool, binding: &ProjectBinding) -> bool {
+    !pool.bindings.is_current(&binding.stamp)
+}
+
+/// A tier change that lands while a binding is being built — after the
+/// build read the disk, before it reached the cache — leaves that build
+/// stale and out of the cache, so the next session on the pair reads the
+/// disk again.
+#[tokio::test]
+async fn an_invalidation_during_a_build_leaves_that_build_stale_and_uncached() {
+    use crate::watch_hub::Tier;
+    let (pool, _dir) = test_pool().await;
+    let key = (Some(pool.cwd().to_path_buf()), "mini".to_string());
+
+    let stamp = pool.bindings.begin_build(&key);
+    let mut binding = pool
+        .bindings
+        .binding_from((*pool.bindings.pool_settings().await).clone());
+    pool.invalidate_bindings(Some(&Tier::Project(pool.cwd().to_path_buf())))
+        .await;
+    binding.stamp = stamp;
+    let built = pool.bindings.finish_build(Arc::new(binding)).await;
+
+    assert!(is_stale(&pool, &built));
+    let next = pool.binding_for(Some(pool.cwd()), "mini").await;
+    assert!(!Arc::ptr_eq(&built, &next));
+    assert!(!is_stale(&pool, &next));
 }
 
 /// A project's settings changing is that project's business: the other
@@ -128,8 +153,8 @@ async fn a_tier_change_invalidates_only_the_bindings_merged_from_it() {
 
     pool.invalidate_bindings(Some(&Tier::Project(other.clone())))
         .await;
-    assert!(is_stale(&other_coding));
-    assert!(!is_stale(&own_coding) && !is_stale(&own_harnix));
+    assert!(is_stale(&pool, &other_coding));
+    assert!(!is_stale(&pool, &own_coding) && !is_stale(&pool, &own_harnix));
     assert!(Arc::ptr_eq(
         &own_coding,
         &pool.binding_for(Some(pool.cwd()), "code").await
@@ -137,11 +162,11 @@ async fn a_tier_change_invalidates_only_the_bindings_merged_from_it() {
 
     pool.invalidate_bindings(Some(&Tier::Scene("harnix".into())))
         .await;
-    assert!(is_stale(&own_harnix));
-    assert!(!is_stale(&own_coding));
+    assert!(is_stale(&pool, &own_harnix));
+    assert!(!is_stale(&pool, &own_coding));
 
     pool.invalidate_bindings(Some(&Tier::Global)).await;
-    assert!(is_stale(&own_coding));
+    assert!(is_stale(&pool, &own_coding));
     assert!(pool.bindings.is_empty().await);
 }
 
@@ -174,7 +199,7 @@ async fn a_skill_change_reloads_the_shared_catalog_in_place() {
         .await;
 
     assert!(binding.modules.skills().get("late").is_some());
-    assert!(!is_stale(&binding));
+    assert!(!is_stale(&pool, &binding));
     assert!(Arc::ptr_eq(
         &binding,
         &pool.binding_for(Some(pool.cwd()), "mini").await
@@ -200,7 +225,7 @@ async fn a_skills_directory_created_later_is_picked_up_and_watched() {
     .unwrap();
 
     let after = pool.binding_for(Some(pool.cwd()), "mini").await;
-    assert!(is_stale(&before));
+    assert!(is_stale(&pool, &before));
     assert!(after.modules.skills().get("first").is_some());
     assert!(after.appeared().is_none());
     assert!(Arc::ptr_eq(
@@ -229,7 +254,7 @@ async fn an_agents_directory_created_later_is_picked_up_and_watched() {
     .unwrap();
 
     let after = pool.binding_for(Some(pool.cwd()), "mini").await;
-    assert!(is_stale(&before));
+    assert!(is_stale(&pool, &before));
     assert!(after.modules.has_agent_type("late-reviewer"));
     assert!(after.appeared().is_none());
     assert!(Arc::ptr_eq(
