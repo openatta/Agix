@@ -1,0 +1,20 @@
+== events ==
+SystemInit
+TurnStart
+StepStart step=0
+TextDelta "done, I think"
+StepEnd step=0 stop_reason=end_turn tool_calls=0
+TurnComplete stop_reason=stopped_by_hook
+
+== session log ==
+User blocks=1
+User blocks=1
+Assistant
+
+== model calls ==
+golden-model max_tokens=1024 messages=3 content_bytes=608 truncated_results=0
+unconsumed_replies=0
+== telemetry ==
+turn_start turn_no=0
+user_prompt_submit turn_no=0
+turn_complete turn_no=0 stop_reason=stopped_by_hook api_calls=1 tool_calls=0

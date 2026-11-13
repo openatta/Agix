@@ -1,0 +1,15 @@
+== events ==
+SystemInit
+TurnStart
+TurnComplete stop_reason=context_exceeded
+
+== session log ==
+User blocks=1
+User blocks=1
+
+== model calls ==
+unconsumed_replies=1
+== telemetry ==
+turn_start turn_no=0
+user_prompt_submit turn_no=0
+turn_complete turn_no=0 stop_reason=context_exceeded api_calls=0 tool_calls=0

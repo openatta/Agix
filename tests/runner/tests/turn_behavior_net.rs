@@ -23,9 +23,12 @@
 
 use base::event::AgentEvent;
 use base::id::Id;
+use base::interface::budget_policy::BudgetPolicy;
 use base::interface::model::Model;
+use base::interface::recovery_policy::RecoveryPolicy;
 use base::interface::scene::SceneSpec;
 use base::interface::tool::{InMemoryToolRegistry, Tool};
+use base::interface::turn_policy::TurnPolicy;
 use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use history::store::HistoryStore as _;
 use runtime::agent::{Builder, InputMessage};
@@ -63,6 +66,11 @@ struct Case {
     extra_tools: Vec<Arc<dyn Tool>>,
     /// Whether anyone answers permission prompts.
     interactive: bool,
+    /// `(input, output)` tokens the model reports on successive calls.
+    usage: Vec<(u32, u32)>,
+    budget_policy: Option<Arc<dyn BudgetPolicy>>,
+    turn_policy: Option<Arc<dyn TurnPolicy>>,
+    recovery_policy: Option<Arc<dyn RecoveryPolicy>>,
 }
 
 impl Case {
@@ -80,8 +88,40 @@ impl Case {
             reactive_compact: false,
             extra_tools: Vec::new(),
             interactive: true,
+            usage: Vec::new(),
+            budget_policy: None,
+            turn_policy: None,
+            recovery_policy: None,
         }
     }
+}
+
+/// The telemetry kinds whose fields record a decision the turn made. Kinds
+/// that fire per tool or per model call are left out: their relative order
+/// under parallel tools is not something the engine decides.
+fn describe_telemetry(event: &telemetry::TelemetryEvent) -> Option<String> {
+    use telemetry::EventPayload as P;
+    let detail = match &event.payload {
+        P::UserPromptSubmit(_) | P::TurnStart(_) => String::new(),
+        P::TurnComplete(p) => format!(
+            " stop_reason={} api_calls={} tool_calls={}",
+            p.stop_reason, p.api_calls, p.tool_calls
+        ),
+        P::BudgetEnforced(p) => format!(
+            " action={}",
+            serde_json::to_value(p.action)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default()
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "{} turn_no={}{}",
+        event.payload.kind(),
+        event.turn_no,
+        detail
+    ))
 }
 
 /// Run one case and return its normalized trace.
@@ -91,6 +131,11 @@ async fn trace(case: Case) -> String {
     std::fs::create_dir_all(root.join("workdir")).expect("workdir");
 
     let model_arc = ScriptedModel::new(case.replies);
+    let model_arc = if case.usage.is_empty() {
+        model_arc
+    } else {
+        model_arc.reporting_usage(&case.usage)
+    };
     let model: Arc<dyn Model> = model_arc.clone();
 
     let mut settings = base::settings::LoadedSettings::new(
@@ -153,7 +198,19 @@ async fn trace(case: Case) -> String {
             .spec(),
         )
     };
-    let (mut agent, mut event_rx, input_tx) = Builder::new()
+    let (telemetry_tx, mut telemetry_rx) = tokio::sync::mpsc::channel(1024);
+    let mut builder =
+        Builder::new().telemetry_handle(telemetry::TelemetryHandle::new(telemetry_tx));
+    if let Some(p) = case.budget_policy.clone() {
+        builder = builder.budget_policy(p);
+    }
+    if let Some(p) = case.turn_policy.clone() {
+        builder = builder.turn_policy(p);
+    }
+    if let Some(p) = case.recovery_policy.clone() {
+        builder = builder.recovery_policy(p);
+    }
+    let (mut agent, mut event_rx, input_tx) = builder
         .scene(scene)
         .module(Arc::new(agents::AgentsModule::new()))
         .module(Arc::new(skills::SkillsModule::new()))
@@ -258,6 +315,13 @@ async fn trace(case: Case) -> String {
         ));
     }
     out.push_str(&format!("unconsumed_replies={leftover}\n"));
+    out.push_str("== telemetry ==\n");
+    while let Ok(event) = telemetry_rx.try_recv() {
+        if let Some(line) = describe_telemetry(&event) {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
     out
 }
 
@@ -755,5 +819,192 @@ async fn reactive_compaction_clears_old_tool_results() {
     case.reactive_compact = true;
     case.compact_threshold = 20_000;
     case.extra_tools = vec![compactable_tool()];
+    check(case).await;
+}
+
+fn echo_call(id: &'static str) -> Reply {
+    Reply::Tool {
+        id,
+        name: "GoldenEcho",
+        input: serde_json::json!({"say": "go"}),
+    }
+}
+
+/// **A Stop hook that always sends the model back.**
+///
+/// Nothing but the per-turn call ceiling can end this turn, so the case pins
+/// that the ceiling still applies to the extra rounds a Stop hook asks for,
+/// and the reason it ends with.
+#[tokio::test]
+async fn a_stop_hook_that_always_blocks_is_cut_off_by_the_call_ceiling() {
+    let mut case = Case::new(
+        "stop_hook_always_blocks",
+        vec!["finish up"],
+        vec![
+            Reply::Text("first attempt"),
+            Reply::Text("second attempt"),
+            Reply::Text("never reached"),
+        ],
+    );
+    case.hooks_config = Some(serde_json::json!({
+        "Stop": [{
+            "type": "command",
+            "command": "printf '{\"decision\":\"block\",\"message\":\"not done yet\"}'"
+        }]
+    }));
+    case.max_api_calls = Some(2);
+    check(case).await;
+}
+
+/// **A Stop hook with `continue: false`.** The turn ends as `stopped_by_hook`
+/// and carries the hook's message.
+#[tokio::test]
+async fn a_stop_hook_can_discontinue_the_turn() {
+    let mut case = Case::new(
+        "stop_hook_discontinues",
+        vec!["finish up"],
+        vec![Reply::Text("done, I think")],
+    );
+    case.hooks_config = Some(serde_json::json!({
+        "Stop": [{
+            "type": "command",
+            "command": "printf '{\"continue\":false,\"message\":\"stopped by the behavior net\"}'"
+        }]
+    }));
+    check(case).await;
+}
+
+/// **A PostToolUse hook with `continue: false`.** The tool has run; the turn
+/// must end after the batch rather than ask the model again.
+#[tokio::test]
+async fn a_post_tool_use_hook_can_discontinue_the_turn() {
+    let mut case = Case::new(
+        "post_tool_use_discontinues",
+        vec!["run the tool"],
+        vec![echo_call("c1"), Reply::Text("never reached")],
+    );
+    case.hooks_config = Some(serde_json::json!({
+        "PostToolUse": [{
+            "type": "command",
+            "command": "printf '{\"continue\":false,\"message\":\"enough tools\"}'"
+        }]
+    }));
+    check(case).await;
+}
+
+/// **A UserPromptSubmit hook that blocks.** The model is never called and the
+/// turn ends before it starts.
+#[tokio::test]
+async fn a_user_prompt_submit_hook_can_block_the_turn() {
+    let mut case = Case::new(
+        "user_prompt_blocked",
+        vec!["something not allowed"],
+        vec![Reply::Text("never reached")],
+    );
+    case.hooks_config = Some(serde_json::json!({
+        "UserPromptSubmit": [{
+            "type": "command",
+            "command": "printf '{\"decision\":\"block\",\"message\":\"prompt refused\"}'"
+        }]
+    }));
+    check(case).await;
+}
+
+/// **The token budget warns at 90% and stops at 100%.** Two calls: the first
+/// lands at 900 of 1000 and injects the reminder, the second crosses the cap.
+#[tokio::test]
+async fn the_token_budget_warns_then_stops_the_turn() {
+    let mut case = Case::new(
+        "budget_warn_then_exhausted",
+        vec!["spend it"],
+        vec![
+            echo_call("c1"),
+            echo_call("c2"),
+            Reply::Text("never reached"),
+        ],
+    );
+    case.usage = vec![(500, 400), (100, 100)];
+    case.budget_policy = Some(Arc::new(base::interface::budget_policy::EngineBudget::new(
+        Some(1000),
+    )));
+    check(case).await;
+}
+
+/// **The context hard cap.** A cap of zero is below the system prompt alone,
+/// so the first request is one the deployment said must never go out.
+#[tokio::test]
+async fn the_context_hard_cap_ends_the_turn_before_any_call() {
+    let mut case = Case::new(
+        "context_hard_cap",
+        vec!["anything"],
+        vec![Reply::Text("never reached")],
+    );
+    case.budget_policy = Some(Arc::new(base::interface::budget_policy::Capped {
+        inner: base::interface::budget_policy::EngineBudget::new(None),
+        context_hard_cap: 0,
+    }));
+    check(case).await;
+}
+
+struct StopAfterFirstCall;
+
+impl TurnPolicy for StopAfterFirstCall {
+    fn after_model_call(
+        &self,
+        _progress: &base::interface::turn_policy::TurnProgress<'_>,
+    ) -> base::interface::turn_policy::TurnStep {
+        base::interface::turn_policy::TurnStep::stop("host_said_enough")
+    }
+}
+
+/// **A host turn policy stopping the turn after a model call.** The tool the
+/// reply asked for has already run; the policy's reason is the turn's.
+#[tokio::test]
+async fn a_turn_policy_can_stop_the_turn_after_a_model_call() {
+    let mut case = Case::new(
+        "after_model_call_stop",
+        vec!["go"],
+        vec![echo_call("c1"), Reply::Text("never reached")],
+    );
+    case.turn_policy = Some(Arc::new(StopAfterFirstCall));
+    check(case).await;
+}
+
+struct NeverRecover;
+
+impl RecoveryPolicy for NeverRecover {
+    fn on_failure(
+        &self,
+        _failure: &base::interface::recovery_policy::ModelFailure<'_>,
+        _so_far: &base::interface::recovery_policy::CallRecovery,
+    ) -> base::interface::recovery_policy::Recovery {
+        base::interface::recovery_policy::Recovery::Fail
+    }
+
+    fn on_early_stop(
+        &self,
+        _reason: &str,
+        _attempt: &base::interface::recovery_policy::RecoveryAttempt,
+    ) -> base::interface::recovery_policy::StopRecovery {
+        base::interface::recovery_policy::StopRecovery::Accept
+    }
+}
+
+/// **A recovery policy that refuses.** The turn ends as an error, with no
+/// `turn_complete` event and no telemetry for one.
+#[tokio::test]
+async fn a_refusing_recovery_policy_ends_the_turn_in_error() {
+    let mut case = Case::new(
+        "recovery_refused",
+        vec!["overflow"],
+        vec![
+            Reply::Fail(base::interface::model::ModelError::new(
+                base::interface::model::ModelErrorKind::ContextTooLong,
+                "prompt too long",
+            )),
+            Reply::Text("never reached"),
+        ],
+    );
+    case.recovery_policy = Some(Arc::new(NeverRecover));
     check(case).await;
 }

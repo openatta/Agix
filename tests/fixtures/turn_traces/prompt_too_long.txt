@@ -26,3 +26,10 @@ golden-model max_tokens=1024 messages=3 content_bytes=620 truncated_results=0
 golden-model max_tokens=1024 messages=5 content_bytes=685 truncated_results=0
 golden-model max_tokens=1024 messages=6 content_bytes=669 truncated_results=0
 unconsumed_replies=0
+== telemetry ==
+turn_start turn_no=0
+user_prompt_submit turn_no=0
+turn_complete turn_no=0 stop_reason=end_turn api_calls=1 tool_calls=0
+turn_start turn_no=1
+user_prompt_submit turn_no=1
+turn_complete turn_no=1 stop_reason=end_turn api_calls=1 tool_calls=0

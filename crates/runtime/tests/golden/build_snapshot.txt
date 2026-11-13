@@ -1,0 +1,77 @@
+## minimal
+tools: ["Early", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList", "RunCode"]
+path_style: Absolute
+deferred_tools: ["Later", "StructuredOutput"]
+env.cwd: /
+env.additional_writable_dirs: ["/extra", "/tmp/scratchpad", "/tmp/memory"]
+env.read_directories: ["/docs", "/tmp"]
+env.flags: read_anywhere=false unattended=false base_mode=Default
+prompt_registry_blocks: []
+probe: tools=["Early", "StructuredOutput", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList"] agent_types=[] depth=0
+
+## rust plugin with prompt block
+tools: ["Early", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList", "PluginTool", "RunCode"]
+path_style: Absolute
+deferred_tools: []
+env.cwd: /
+env.additional_writable_dirs: ["/tmp/scratchpad", "/tmp/memory"]
+env.read_directories: ["/tmp"]
+env.flags: read_anywhere=false unattended=false base_mode=Default
+prompt_registry_blocks: ["snapshot_block"]
+probe: tools=["Early", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList"] agent_types=["snapshot-type"] depth=0
+
+## output schema
+tools: ["Early", "StructuredOutput", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList", "RunCode"]
+path_style: Absolute
+deferred_tools: ["Later"]
+env.cwd: /
+env.additional_writable_dirs: ["/tmp/scratchpad", "/tmp/memory"]
+env.read_directories: ["/tmp"]
+env.flags: read_anywhere=false unattended=false base_mode=Default
+prompt_registry_blocks: []
+probe: tools=["Early", "StructuredOutput", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList"] agent_types=[] depth=0
+
+## unattended scene
+tools: ["Early", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList", "RunCode"]
+path_style: Absolute
+deferred_tools: []
+env.cwd: /
+env.additional_writable_dirs: ["/tmp/scratchpad", "/tmp/memory"]
+env.read_directories: ["/tmp"]
+env.flags: read_anywhere=false unattended=true base_mode=Default
+prompt_registry_blocks: []
+probe: tools=["Early", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList"] agent_types=[] depth=0
+
+## depth 1 with hooks from outside
+tools: ["Early", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree"]
+path_style: Absolute
+deferred_tools: []
+env.cwd: /
+env.additional_writable_dirs: ["/tmp/scratchpad", "/tmp/memory"]
+env.read_directories: ["/tmp"]
+env.flags: read_anywhere=false unattended=false base_mode=Default
+prompt_registry_blocks: []
+probe: tools=["Early", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree"] agent_types=[] depth=1
+hooks_are_the_callers: true
+
+## template with ToolSearch
+tools: ["Alpha", "Beta", "ToolSearch", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList", "RunCode"]
+path_style: Absolute
+deferred_tools: ["Beta"]
+env.cwd: /
+env.additional_writable_dirs: ["/tmp/scratchpad", "/tmp/memory"]
+env.read_directories: ["/tmp"]
+env.flags: read_anywhere=false unattended=false base_mode=Default
+prompt_registry_blocks: []
+probe: tools=["Alpha", "Beta", "ToolSearch", "TaskStop", "TaskOutput", "TaskWait", "TaskMessage", "WebSearch", "WebFetch", "EnterWorktree", "ExitWorktree", "CronCreate", "CronDelete", "CronList"] agent_types=[] depth=0
+
+## refused: exec and process_groups
+Builder::exec and Builder::process_groups are both set; record groups in the providers you pass (platform::local_providers_with_ledger)
+## refused: unparseable session_id
+session_id "not-a-session-id" is not a valid SessionId (base58 decode: provided string contained invalid character '-' at byte 3); a history_store requires a parseable id — use `SessionId::new().to_string()` or omit `Builder::session_id`
+## refused: scene tool name taken
+scene "refused" contributes a tool named "Taken", which is already registered; rename the scene's tool
+## refused: plugin tool name taken
+a plugin contributes a tool named "Taken", which is already registered by something else
+## refused: module order
+module `needs-missing`: requires `never-assembled`, which is not assembled before it

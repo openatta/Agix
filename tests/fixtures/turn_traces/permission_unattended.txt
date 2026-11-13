@@ -21,3 +21,7 @@ Assistant
 golden-model max_tokens=1024 messages=3 content_bytes=619 truncated_results=0
 golden-model max_tokens=1024 messages=5 content_bytes=916 truncated_results=0
 unconsumed_replies=0
+== telemetry ==
+turn_start turn_no=0
+user_prompt_submit turn_no=0
+turn_complete turn_no=0 stop_reason=end_turn api_calls=2 tool_calls=1

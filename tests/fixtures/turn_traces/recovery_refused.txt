@@ -1,0 +1,16 @@
+== events ==
+SystemInit
+TurnStart
+StepStart step=0
+Error code=context_too_long
+
+== session log ==
+User blocks=1
+User blocks=1
+
+== model calls ==
+golden-model max_tokens=1024 messages=3 content_bytes=607 truncated_results=0
+unconsumed_replies=1
+== telemetry ==
+turn_start turn_no=0
+user_prompt_submit turn_no=0

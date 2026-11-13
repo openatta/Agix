@@ -59,6 +59,7 @@ use turn_loop::*;
 mod events_and_steering;
 mod policies;
 use events_and_steering::*;
+mod build_snapshot;
 mod compacting;
 mod exec_providers;
 mod prompt_middleware;
