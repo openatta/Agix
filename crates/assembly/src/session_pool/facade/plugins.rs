@@ -1,6 +1,6 @@
 //! 插件：加载、安装卸载、启停，以及变更后的刷新。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// Take up the scenes installed packages own.
@@ -25,7 +25,7 @@ impl SessionPool {
     /// from entering it. Sessions already inside keep the `Arc` they were
     /// built with and run to completion — the alternative would be pulling a
     /// session's system prompt out from under it mid-turn.
-    pub(super) async fn adopt_plugin_scenes(&self) {
+    pub(in crate::session_pool) async fn adopt_plugin_scenes(&self) {
         let plugin_scenes = self.plugins.scenes();
 
         let (registry, _) = self.scene_registry_now(&plugin_scenes);
@@ -162,7 +162,7 @@ impl SessionPool {
     /// what is left is the state this pool derives from it. The catalogs are
     /// swapped in place, so a running session's next turn sees a package's
     /// skills come or go.
-    pub(super) async fn refresh_after_plugin_change(&self) {
+    pub(in crate::session_pool) async fn refresh_after_plugin_change(&self) {
         self.adopt_plugin_scenes().await;
         let contributions = self.plugins.contributions();
         for binding in self.bindings.lock().await.values() {

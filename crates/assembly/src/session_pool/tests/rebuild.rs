@@ -1,12 +1,13 @@
 //! `rebuild_tests` 原样搬来的用例。
 
-use super::mcp_for_project::test_pool_with_store;
+use super::mcp_for_project::test_pool_builder;
 use super::*;
 use crate::session_pool::api::BusyReason;
 use base::context::goal::TurnOrigin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-async fn pool_with_history() -> (SessionPool, tempfile::TempDir, tempfile::TempDir) {
+pub(super) async fn builder_with_history(
+) -> (SessionPoolBuilder, tempfile::TempDir, tempfile::TempDir) {
     let store_dir = tempfile::tempdir().unwrap();
     let store: Arc<dyn history::store::HistoryStore> = Arc::new(
         history::store::JsonlHistoryStore::with_roots(
@@ -16,8 +17,13 @@ async fn pool_with_history() -> (SessionPool, tempfile::TempDir, tempfile::TempD
         .await
         .unwrap(),
     );
-    let (pool, dir) = test_pool_with_store(Some(store)).await;
-    (pool, dir, store_dir)
+    let (builder, dir) = test_pool_builder(Some(store));
+    (builder, dir, store_dir)
+}
+
+async fn pool_with_history() -> (Arc<SessionPool>, tempfile::TempDir, tempfile::TempDir) {
+    let (builder, dir, store_dir) = builder_with_history().await;
+    (builder.build(), dir, store_dir)
 }
 
 async fn new_session(pool: &SessionPool) -> String {
@@ -196,13 +202,15 @@ async fn eviction_keeps_only_the_specs_a_log_cannot_give_back() {
 
 #[tokio::test]
 async fn two_callers_reviving_one_cold_session_build_one_engine() {
-    let (pool, _dir, _store) = pool_with_history().await;
+    let (pool, _dir, _store) = builder_with_history().await;
     let builds = Arc::new(AtomicUsize::new(0));
     let counted = builds.clone();
-    let pool = pool.with_session_customizer(Arc::new(move |builder, _| {
-        counted.fetch_add(1, Ordering::SeqCst);
-        builder
-    }));
+    let pool = pool
+        .session_customizer(Arc::new(move |builder, _| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            builder
+        }))
+        .build();
     let sid = new_session(&pool).await;
     pool.shutdown_session(&sid).await.unwrap();
     assert!(!pool.sessions.lock().await.contains_key(&sid));
@@ -248,7 +256,6 @@ async fn a_late_turn_complete_of_a_closed_session_leaves_the_resumed_one_alone()
         let engine_events = live.turn.rx.lock().await.replace(late_rx);
         (live.turn.generation, engine_events)
     };
-    let pool = Arc::new(pool);
     let old_turn = {
         let pool = pool.clone();
         let request = TurnRequest {

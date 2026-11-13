@@ -1,6 +1,6 @@
 //! 对已有会话的元数据操作：重命名、追加与列出扩展条目、换模型、换提示词。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// `session.rename` — what the person looking at this session calls it.

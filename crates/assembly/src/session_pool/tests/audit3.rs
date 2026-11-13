@@ -1,23 +1,9 @@
 //! 0.3.12 发布前对抗式审查（第三路：会话池、失败与取消路径）核实为真的缺陷。
 
-use super::mcp_for_project::test_pool_with_store;
+use super::rebuild::builder_with_history;
 use super::*;
 use std::sync::mpsc;
 use std::sync::Mutex as StdMutex;
-
-async fn pool_with_history() -> (SessionPool, tempfile::TempDir, tempfile::TempDir) {
-    let store_dir = tempfile::tempdir().unwrap();
-    let store: Arc<dyn history::store::HistoryStore> = Arc::new(
-        history::store::JsonlHistoryStore::with_roots(
-            store_dir.path(),
-            history::path::HistoryRoots::under(store_dir.path()),
-        )
-        .await
-        .unwrap(),
-    );
-    let (pool, dir) = test_pool_with_store(Some(store)).await;
-    (pool, dir, store_dir)
-}
 
 async fn new_session(pool: &SessionPool) -> String {
     pool.create_session(None, ProjectSelector::Default, None)
@@ -47,7 +33,7 @@ struct HoldSecondBuild {
 /// engine must still leave the session closed once both are done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn audit3_close_during_a_rebuild_is_not_undone_by_the_rebuild() {
-    let (pool, _dir, _store) = pool_with_history().await;
+    let (pool, _dir, _store) = builder_with_history().await;
     let (entered_tx, entered_rx) = mpsc::channel();
     let (go_tx, go_rx) = mpsc::channel();
     let hold = Arc::new(HoldSecondBuild {
@@ -56,17 +42,19 @@ async fn audit3_close_during_a_rebuild_is_not_undone_by_the_rebuild() {
         go: StdMutex::new(go_rx),
     });
     let held = hold.clone();
-    let pool = Arc::new(pool.with_session_customizer(Arc::new(move |builder, _| {
-        if held
-            .builds
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
-            let _ = held.entered.lock().unwrap().send(());
-            let _ = held.go.lock().unwrap().recv();
-        }
-        builder
-    })));
+    let pool = pool
+        .session_customizer(Arc::new(move |builder, _| {
+            if held
+                .builds
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+            {
+                let _ = held.entered.lock().unwrap().send(());
+                let _ = held.go.lock().unwrap().recv();
+            }
+            builder
+        }))
+        .build();
     let sid = new_session(&pool).await;
 
     let rebuild = {

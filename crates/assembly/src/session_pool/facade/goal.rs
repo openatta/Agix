@@ -1,13 +1,13 @@
 //! 会话目标：目标轮次的续跑、目标变更与目标事件转发。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// The goal round to start once a turn that ended with `stop_reason`
     /// gives its slot back, if it leaves `state`'s goal active and armed.
     /// Asked before the slot is given back, so a rebuild that takes the slot
     /// next carries the round over.
-    pub(super) async fn goal_round_after(
+    pub(in crate::session_pool) async fn goal_round_after(
         &self,
         sid: &str,
         state: &base::context::SessionState,
@@ -21,14 +21,18 @@ impl SessionPool {
         round
     }
 
-    pub(super) fn start_goal_round(&self, sid: &str, round: base::context::goal::GoalRound) {
-        if let Some(pool) = self.this.get().and_then(|p| p.upgrade()) {
+    pub(in crate::session_pool) fn start_goal_round(
+        &self,
+        sid: &str,
+        round: base::context::goal::GoalRound,
+    ) {
+        if let Some(pool) = self.this.upgrade() {
             tokio::spawn(goal_round_task(pool, sid.to_string(), round));
         }
     }
 
     /// Start the next goal round of an idle session, if its goal wants one.
-    pub(super) async fn continue_goal(&self, sid: &str) {
+    pub(in crate::session_pool) async fn continue_goal(&self, sid: &str) {
         let Some(state) = self.live_state(sid).await else {
             return;
         };
@@ -37,7 +41,11 @@ impl SessionPool {
         }
     }
 
-    pub(super) async fn run_goal_round(&self, sid: String, round: base::context::goal::GoalRound) {
+    pub(in crate::session_pool) async fn run_goal_round(
+        &self,
+        sid: String,
+        round: base::context::goal::GoalRound,
+    ) {
         info!(%sid, turn_id = %round.turn_id, "goal round started");
         let request = TurnRequest {
             session_id: Some(sid.clone()),
@@ -57,7 +65,10 @@ impl SessionPool {
         }
     }
 
-    pub(super) async fn live_state(&self, sid: &str) -> Option<Arc<base::context::SessionState>> {
+    pub(in crate::session_pool) async fn live_state(
+        &self,
+        sid: &str,
+    ) -> Option<Arc<base::context::SessionState>> {
         self.sessions
             .lock()
             .await
@@ -66,7 +77,11 @@ impl SessionPool {
     }
 
     /// Write the goal changes `sid`'s log does not have yet.
-    pub(super) async fn record_goal_changes(&self, sid: &str, state: &base::context::SessionState) {
+    pub(in crate::session_pool) async fn record_goal_changes(
+        &self,
+        sid: &str,
+        state: &base::context::SessionState,
+    ) {
         let unrecorded = state.unrecorded_goal_changes().await;
         let (Some(store), Ok(parsed)) = (
             self.history_store.as_ref(),
@@ -196,7 +211,7 @@ impl SessionPool {
     }
 
     /// Push `session_id`'s goal changes to whoever watches the session.
-    pub(super) fn forward_goal_events(
+    pub(in crate::session_pool) fn forward_goal_events(
         session_id: &str,
         hub: &Arc<SessionHub>,
         state: &Arc<base::context::SessionState>,

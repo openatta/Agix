@@ -56,7 +56,7 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
   子 Agent 要的执行层是父会话的那一套,经 `AgentTool::with_exec` 传下去,自己不碰本机。
 - 内核与模块不能带模块命名的 feature,也不转发模块 feature;模块开关只在 `assembly`
   里以 `dep:<模块>` 的形式出现。`wasmtime` 一类的运行时任何成员都不依赖。
-- 唯一装配点由可见性保证:`SessionPool::new` 是 `pub(crate)`,`assembly` 之外建不出第二个池,
+- 唯一装配点由可见性保证:`SessionPool::builder` 是 `pub(crate)`,`assembly` 之外建不出第二个池,
   要池只能走 `assembly::assemble::pool`。
 - 进程级状态(`static`、`thread_local!`)由 `tests/guards/tests/process_state.rs` 按语法树
   扫生产代码:类型不是朴素数据的 `static` 必须登记名字、种类与理由,`static mut` 不允许,

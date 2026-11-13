@@ -229,7 +229,7 @@ pub async fn pool(
         Transcripts::Nowhere => None,
     };
 
-    let mut pool = SessionPool::new(
+    let mut pool = SessionPool::builder(
         config.session_cap,
         config.session_idle_timeout_secs,
         client,
@@ -240,16 +240,16 @@ pub async fn pool(
         history_store,
         config.paths.clone(),
     )
-    .with_permission_prompt_timeout(assembly.permission_prompt_timeout)
-    .with_credentials(credentials)
-    .with_managed_settings(managed_path, managed);
-    pool = pool.with_plugins(assembly.plugins);
+    .permission_prompt_timeout(assembly.permission_prompt_timeout)
+    .credentials(credentials)
+    .managed_settings(managed_path, managed)
+    .plugins(assembly.plugins);
     if let Some(customize) = assembly.customize_session {
-        pool = pool.with_session_customizer(customize);
+        pool = pool.session_customizer(customize);
     }
     #[cfg(feature = "mcp")]
-    if assembly.mcp_credential_store.is_some() || assembly.mcp_oauth_client.is_some() {
-        pool = pool.with_mcp_auth(assembly.mcp_credential_store, assembly.mcp_oauth_client);
+    {
+        pool = pool.mcp_auth(assembly.mcp_credential_store, assembly.mcp_oauth_client);
     }
     #[cfg(feature = "mcp")]
     {
@@ -280,9 +280,9 @@ pub async fn pool(
         let idp = assembly
             .mcp_enterprise_idp
             .or_else(|| policy.enterprise_idp().cloned());
-        pool = pool.with_mcp_policy(policy).with_mcp_enterprise_idp(idp);
+        pool = pool.mcp_policy(policy).mcp_enterprise_idp(idp);
     }
-    let pool = Arc::new(pool);
+    let pool = pool.build();
 
     for scene in assembly.scenes {
         pool.register_scene(scene);

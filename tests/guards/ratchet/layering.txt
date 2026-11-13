@@ -2,8 +2,8 @@
 # `json!` in session_pool production code, per file. The pool takes and returns typed values;
 # a JSON literal belongs only where settings files are edited. A ceiling only goes down:
 # AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration layering::
-json!  crates/assembly/src/session_pool/goal.rs             1
-json!  crates/assembly/src/session_pool/history_rpc.rs      1
-json!  crates/assembly/src/session_pool/listing.rs          2
-json!  crates/assembly/src/session_pool/settings_reload.rs  12
-json!  crates/assembly/src/session_pool/tasks.rs            4
+json!  crates/assembly/src/session_pool/facade/goal.rs             1
+json!  crates/assembly/src/session_pool/facade/history_rpc.rs      1
+json!  crates/assembly/src/session_pool/facade/listing.rs          2
+json!  crates/assembly/src/session_pool/facade/settings_reload.rs  12
+json!  crates/assembly/src/session_pool/facade/tasks.rs            4

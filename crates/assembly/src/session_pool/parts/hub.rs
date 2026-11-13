@@ -4,13 +4,13 @@
 //! 锁序里它是叶子：持着它不 `.await`、不去拿别的锁；`SessionWatcher::deliver`
 //! 只做非阻塞的入队。
 
-use super::api::{AskKind, PendingAsk, SessionFrame, SessionWatcher, WatcherId};
+use crate::session_pool::api::{AskKind, PendingAsk, SessionFrame, SessionWatcher, WatcherId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-pub(super) struct SessionHub {
+pub(in crate::session_pool) struct SessionHub {
     inner: Mutex<Inner>,
     epoch: Instant,
     active_ms: AtomicU64,
@@ -23,11 +23,11 @@ struct Inner {
 }
 
 impl SessionHub {
-    pub(super) fn new() -> Self {
+    pub(in crate::session_pool) fn new() -> Self {
         Self::active_at(Instant::now())
     }
 
-    pub(super) fn active_at(at: Instant) -> Self {
+    pub(in crate::session_pool) fn active_at(at: Instant) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
             epoch: at,
@@ -39,7 +39,7 @@ impl SessionHub {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub(super) fn touch(&self) {
+    pub(in crate::session_pool) fn touch(&self) {
         let ms = Instant::now()
             .saturating_duration_since(self.epoch)
             .as_millis();
@@ -47,24 +47,28 @@ impl SessionHub {
             .fetch_max(u64::try_from(ms).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
-    pub(super) fn last_active(&self) -> Instant {
+    pub(in crate::session_pool) fn last_active(&self) -> Instant {
         self.epoch + Duration::from_millis(self.active_ms.load(Ordering::Relaxed))
     }
 
-    pub(super) fn publish(&self, frame: &SessionFrame) {
+    pub(in crate::session_pool) fn publish(&self, frame: &SessionFrame) {
         self.publish_except(frame, None);
     }
 
     /// To every watcher but `except` — the one that hears the same thing
     /// from its own call. A watcher that cannot take the frame is dropped.
-    pub(super) fn publish_except(&self, frame: &SessionFrame, except: Option<WatcherId>) {
+    pub(in crate::session_pool) fn publish_except(
+        &self,
+        frame: &SessionFrame,
+        except: Option<WatcherId>,
+    ) {
         self.touch();
         deliver(&mut self.lock(), frame, except);
     }
 
     /// Recorded before it goes out, under the same lock: a watcher that
     /// subscribes meanwhile is handed it either way.
-    pub(super) fn publish_ask(
+    pub(in crate::session_pool) fn publish_ask(
         &self,
         frame: Arc<SessionFrame>,
         prompt_id: String,
@@ -86,7 +90,10 @@ impl SessionHub {
     }
 
     /// Start watching, and what is still being asked as of that moment.
-    pub(super) fn subscribe(&self, watcher: Arc<dyn SessionWatcher>) -> Vec<PendingAsk> {
+    pub(in crate::session_pool) fn subscribe(
+        &self,
+        watcher: Arc<dyn SessionWatcher>,
+    ) -> Vec<PendingAsk> {
         let mut inner = self.lock();
         let id = watcher.id();
         inner.watchers.retain(|w| w.id() != id);
@@ -94,42 +101,42 @@ impl SessionHub {
         inner.pending.values().cloned().collect()
     }
 
-    pub(super) fn unsubscribe(&self, id: WatcherId) {
+    pub(in crate::session_pool) fn unsubscribe(&self, id: WatcherId) {
         self.lock().watchers.retain(|w| w.id() != id);
     }
 
     #[cfg(test)]
-    pub(super) fn is_watched_by(&self, id: WatcherId) -> bool {
+    pub(in crate::session_pool) fn is_watched_by(&self, id: WatcherId) -> bool {
         self.lock().watchers.iter().any(|w| w.id() == id)
     }
 
-    pub(super) fn ask_kind(&self, prompt_id: &str) -> Option<AskKind> {
+    pub(in crate::session_pool) fn ask_kind(&self, prompt_id: &str) -> Option<AskKind> {
         self.lock().pending.get(prompt_id).map(|ask| ask.kind)
     }
 
-    pub(super) fn forget_ask(&self, prompt_id: &str) {
+    pub(in crate::session_pool) fn forget_ask(&self, prompt_id: &str) {
         self.lock().pending.remove(prompt_id);
     }
 
-    pub(super) fn forget_asks_of_task(&self, task_id: &str) {
+    pub(in crate::session_pool) fn forget_asks_of_task(&self, task_id: &str) {
         self.lock()
             .pending
             .retain(|_, ask| ask.task_id.as_deref() != Some(task_id));
     }
 
     /// Forget the asks a turn's own engine raised; a background task's stay.
-    pub(super) fn retain_task_asks(&self) {
+    pub(in crate::session_pool) fn retain_task_asks(&self) {
         self.lock().pending.retain(|_, ask| ask.task_id.is_some());
     }
 
     #[cfg(test)]
-    pub(super) fn pending_prompt_ids(&self) -> Vec<String> {
+    pub(in crate::session_pool) fn pending_prompt_ids(&self) -> Vec<String> {
         self.lock().pending.keys().cloned().collect()
     }
 
     /// Take over `other`'s watchers and open asks — a session rebuilt under
     /// a hub of its own while the old one was still in place.
-    pub(super) fn absorb(&self, other: &SessionHub) {
+    pub(in crate::session_pool) fn absorb(&self, other: &SessionHub) {
         let taken = std::mem::take(&mut *other.lock());
         let mut inner = self.lock();
         for watcher in taken.watchers {
@@ -144,7 +151,7 @@ impl SessionHub {
     }
 
     /// Back to watching nothing and asking nothing.
-    pub(super) fn clear(&self) {
+    pub(in crate::session_pool) fn clear(&self) {
         *self.lock() = Inner::default();
     }
 }

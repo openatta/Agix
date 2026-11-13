@@ -1,12 +1,12 @@
 //! 后台任务：配置监视、定时任务调度、空闲回收（janitor）。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// Some change notifications were lost, so any tier may have changed:
     /// reload this pool's own pair, and drop every other pair's MCP
     /// connections so none outlives the settings it was built from.
-    pub(super) async fn reload_after_lost_changes(&self) {
+    pub(in crate::session_pool) async fn reload_after_lost_changes(&self) {
         #[cfg(feature = "mcp")]
         {
             let own = (Some(self.cwd.clone()), self.scene_id().to_string());
@@ -103,7 +103,6 @@ impl SessionPool {
     /// whoever watches the session. A session that is not in memory is
     /// resumed for it. Jobs missed while the daemon was down are not caught up.
     pub fn start_scheduler(self: &Arc<Self>) {
-        let _ = self.this.set(Arc::downgrade(self));
         let pool = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
@@ -135,7 +134,7 @@ impl SessionPool {
     }
 
     /// Run one scheduled job as a turn of its session.
-    pub(super) async fn fire_scheduled(&self, job: tools::cron::CronJob) {
+    pub(in crate::session_pool) async fn fire_scheduled(&self, job: tools::cron::CronJob) {
         let Some(session_id) = job.session_id.clone() else {
             warn!(job_id = %job.id, "scheduled job belongs to no session; dropping it");
             self.schedule.remove(&job.id);

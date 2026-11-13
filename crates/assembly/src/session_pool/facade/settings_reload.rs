@@ -1,6 +1,6 @@
 //! 设置：provider 与项目信任的读写、`reload_settings`，以及设置里密钥的拆出与脱敏。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// Read back the current effective provider/task_models configuration —
@@ -174,7 +174,7 @@ impl SessionPool {
     /// When it does and that project is not trusted, the write is refused
     /// with `PROJECT_UNTRUSTED`: `what` would not take effect, and `instead`
     /// is where it would.
-    pub(super) async fn trusted_project_tier(
+    pub(in crate::session_pool) async fn trusted_project_tier(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
@@ -205,7 +205,7 @@ impl SessionPool {
 
     /// The project-tier `settings.json` of `project_root`, or of this
     /// daemon's own project when none is named.
-    pub(super) fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {
+    pub(in crate::session_pool) fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {
         project_root
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.paths.project_root())
@@ -482,7 +482,7 @@ impl SessionPool {
             .await
     }
 
-    pub(super) async fn reload_settings_from(
+    pub(in crate::session_pool) async fn reload_settings_from(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
@@ -506,7 +506,7 @@ impl SessionPool {
     /// Never fails outright — misconfiguration degrades to "keep the
     /// previous `task_router`, report why in the returned `ReloadReport`";
     /// `resolve_task_models` is advisory.
-    pub(super) async fn apply_reloaded_settings(
+    pub(in crate::session_pool) async fn apply_reloaded_settings(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
@@ -569,10 +569,10 @@ fn settings_reloaded(settings: &Settings, report: &ReloadReport) -> api::Setting
 
 /// The provider fields that are credentials, which `config.setProvider` keeps
 /// out of the committed `settings.json`.
-pub(super) const PROVIDER_SECRET_KEYS: &[&str] = &["api_key"];
+pub(in crate::session_pool) const PROVIDER_SECRET_KEYS: &[&str] = &["api_key"];
 
 /// Remove the credential fields from one provider's JSON, returning them.
-pub(super) fn take_provider_secrets(
+pub(in crate::session_pool) fn take_provider_secrets(
     provider: &mut serde_json::Value,
 ) -> Vec<(String, serde_json::Value)> {
     let Some(fields) = provider.as_object_mut() else {
@@ -588,10 +588,10 @@ pub(super) fn take_provider_secrets(
 /// process environment — which `mcp.addServer` / `mcp.updateServer` keep out
 /// of the committed `settings.json`.
 #[cfg(feature = "mcp")]
-pub(super) const MCP_SERVER_SECRET_KEYS: &[&str] = &["headers", "env"];
+pub(in crate::session_pool) const MCP_SERVER_SECRET_KEYS: &[&str] = &["headers", "env"];
 
 #[cfg(feature = "mcp")]
-pub(super) fn take_mcp_server_secrets(
+pub(in crate::session_pool) fn take_mcp_server_secrets(
     server: &mut serde_json::Value,
 ) -> Vec<(String, serde_json::Value)> {
     let Some(fields) = server.as_object_mut() else {
@@ -606,7 +606,7 @@ pub(super) fn take_mcp_server_secrets(
 /// `mcp_servers` of a settings object, created as `{}` when it is missing or
 /// not an object.
 #[cfg(feature = "mcp")]
-pub(super) fn mcp_servers_of(
+pub(in crate::session_pool) fn mcp_servers_of(
     settings: &mut serde_json::Map<String, serde_json::Value>,
 ) -> &mut serde_json::Map<String, serde_json::Value> {
     let servers = settings
@@ -622,7 +622,7 @@ pub(super) fn mcp_servers_of(
 
 /// `providers.<id>` of a settings object, created as `{}` when it is missing
 /// or not an object.
-pub(super) fn provider_entry<'a>(
+pub(in crate::session_pool) fn provider_entry<'a>(
     settings: &'a mut serde_json::Map<String, serde_json::Value>,
     provider_id: &str,
 ) -> &'a mut serde_json::Value {
@@ -646,7 +646,7 @@ pub(super) fn provider_entry<'a>(
 /// Run `edit` holding the settings directory `settings_file` is in — see
 /// `base::settings_file` — on a blocking thread, since the lock can wait on
 /// another process.
-pub(super) async fn edit_settings_dir<R: Send + 'static>(
+pub(in crate::session_pool) async fn edit_settings_dir<R: Send + 'static>(
     settings_file: &Path,
     edit: impl FnOnce(&base::settings_file::SettingsDir) -> Result<R, String> + Send + 'static,
 ) -> Result<R, String> {
@@ -671,7 +671,7 @@ pub(super) async fn edit_settings_dir<R: Send + 'static>(
 /// string under a `headers` or `env` object is redacted whatever its key: an
 /// MCP server's `Authorization` header and the variables a stdio server is
 /// started with are credentials as often as not, under names nobody can list.
-pub(super) fn redact_settings_secrets(value: &mut serde_json::Value) {
+pub(in crate::session_pool) fn redact_settings_secrets(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
@@ -699,7 +699,7 @@ pub(super) fn redact_settings_secrets(value: &mut serde_json::Value) {
     }
 }
 
-pub(super) fn is_secret_key(lowercase_key: &str) -> bool {
+pub(in crate::session_pool) fn is_secret_key(lowercase_key: &str) -> bool {
     const SECRET_KEYS: &[&str] = &[
         "api_key",
         "auth_token",
@@ -714,7 +714,7 @@ pub(super) fn is_secret_key(lowercase_key: &str) -> bool {
             .any(|suffix| lowercase_key.ends_with(suffix))
 }
 
-pub(super) fn redact_every_string(value: &mut serde_json::Value) {
+pub(in crate::session_pool) fn redact_every_string(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::String(s) if !s.is_empty() => {
             *value = serde_json::Value::String(redact_secret(s));
@@ -729,7 +729,7 @@ pub(super) fn redact_every_string(value: &mut serde_json::Value) {
 /// `char`, not byte, so this never panics on non-ASCII input); too-short
 /// secrets (≤4 chars) redact to a bare `***` rather than revealing the
 /// whole thing.
-pub(super) fn redact_secret(s: &str) -> String {
+pub(in crate::session_pool) fn redact_secret(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= 4 {
         return "***".to_string();

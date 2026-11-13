@@ -1,6 +1,6 @@
 //! 会话查询：详情、列表、冷会话信息、场景与配置层说明、已服务项目的记录。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// A session's recorded `session_kind`/`parent_session_id`/`resumable`,
@@ -16,7 +16,10 @@ impl SessionPool {
     /// The empty set when there is no store, the id does not parse, or the
     /// log has no `Meta` line: none of those is a reason to fail a listing,
     /// and "we do not know" is the honest entry for a session that cannot say.
-    pub(super) async fn facts_of(&self, session_id: &str) -> history::store::SessionFacts {
+    pub(in crate::session_pool) async fn facts_of(
+        &self,
+        session_id: &str,
+    ) -> history::store::SessionFacts {
         let Some(ref store) = self.history_store else {
             return history::store::SessionFacts::default();
         };
@@ -30,7 +33,10 @@ impl SessionPool {
     /// counters. The empty record when there is no store or the id does not
     /// parse, for the same reason `facts_of` answers that way: neither is a
     /// reason to fail a listing.
-    pub(super) async fn stats_of(&self, session_id: &str) -> history::store::SessionStats {
+    pub(in crate::session_pool) async fn stats_of(
+        &self,
+        session_id: &str,
+    ) -> history::store::SessionStats {
         let Some(ref store) = self.history_store else {
             return history::store::SessionStats::default();
         };
@@ -40,7 +46,7 @@ impl SessionPool {
         store.session_stats(sid).await.unwrap_or_default()
     }
 
-    pub(super) async fn session_facts_and_resumable(
+    pub(in crate::session_pool) async fn session_facts_and_resumable(
         &self,
         session_id: &str,
     ) -> (history::store::SessionFacts, bool) {
@@ -236,7 +242,10 @@ impl SessionPool {
     /// not". A failed call carries its reason, because "the script threw",
     /// "it ran out of time" and "it answered in a shape this point cannot use"
     /// send a reader to three different places.
-    pub(super) async fn script_report(&self, session_id: &str) -> Option<api::ScriptReport> {
+    pub(in crate::session_pool) async fn script_report(
+        &self,
+        session_id: &str,
+    ) -> Option<api::ScriptReport> {
         use api::ScriptCallOutcome;
         use base::interface::script::ScriptOutcome;
 
@@ -467,7 +476,7 @@ impl SessionPool {
     /// A session that is not in memory and not under any project `session.list`
     /// enumerates — one whose project no session in this process has touched
     /// yet. `session.resume` finds those by id, so `session.get` must too.
-    pub(super) async fn cold_session_info(
+    pub(in crate::session_pool) async fn cold_session_info(
         &self,
         session_id: &str,
     ) -> Result<SessionInfo, PoolError> {
@@ -517,7 +526,7 @@ impl SessionPool {
     /// Compared resolved, as the store resolves a project before reading it:
     /// one folder named two ways (`/var/…` and `/private/var/…` on macOS) is
     /// one project.
-    pub(super) async fn served_projects(&self) -> Vec<Option<PathBuf>> {
+    pub(in crate::session_pool) async fn served_projects(&self) -> Vec<Option<PathBuf>> {
         let noted: Vec<Option<PathBuf>> = self.lock_served().clone();
         let mut out = Vec::with_capacity(noted.len() + 1);
         for project in std::iter::once(Some(self.cwd.clone())).chain(noted) {
@@ -532,13 +541,15 @@ impl SessionPool {
         out
     }
 
-    pub(super) fn lock_served(&self) -> std::sync::MutexGuard<'_, Vec<Option<PathBuf>>> {
+    pub(in crate::session_pool) fn lock_served(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<Option<PathBuf>>> {
         self.served
             .lock()
             .expect("served mutex is never held across a panic")
     }
 
-    pub(super) fn note_served(&self, project: Option<&Path>) {
+    pub(in crate::session_pool) fn note_served(&self, project: Option<&Path>) {
         let project = project.map(Path::to_path_buf);
         let mut served = self.lock_served();
         if !served.contains(&project) {

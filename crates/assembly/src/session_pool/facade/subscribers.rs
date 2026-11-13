@@ -1,10 +1,13 @@
 //! 会话的订阅者与待答提示：订阅/退订、本轮终止帧、中断、`respond_to_prompt`。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// The hub of live `session_id`.
-    pub(super) async fn hub_of(&self, session_id: &str) -> Option<Arc<SessionHub>> {
+    pub(in crate::session_pool) async fn hub_of(
+        &self,
+        session_id: &str,
+    ) -> Option<Arc<SessionHub>> {
         self.sessions
             .lock()
             .await
@@ -14,7 +17,11 @@ impl SessionPool {
 
     /// Hand `event`, which belongs to no turn, to whoever watches
     /// `session_id`.
-    pub(super) async fn publish_between_turns(&self, session_id: &str, event: SessionEvent) {
+    pub(in crate::session_pool) async fn publish_between_turns(
+        &self,
+        session_id: &str,
+        event: SessionEvent,
+    ) {
         if let Some(hub) = self.hub_of(session_id).await {
             hub.publish(&frame_between_turns(session_id, event));
         }
@@ -94,7 +101,7 @@ impl SessionPool {
     /// How many messages this session's transcript holds — its watermark, in
     /// the same positions `session.history` pages by and `step_end` /
     /// `turn_complete` report as `seq`.
-    pub(super) async fn transcript_len(&self, session_id: &str) -> usize {
+    pub(in crate::session_pool) async fn transcript_len(&self, session_id: &str) -> usize {
         let Ok(store) = self.require_history_store() else {
             return 0;
         };
@@ -114,7 +121,7 @@ impl SessionPool {
     /// session out with, so every watcher gets exactly one: this one, or the
     /// one the close sends ([`Self::end_cut_off_turn`]). Returns whether the
     /// session was still there to send it to.
-    pub(super) async fn publish_terminal(
+    pub(in crate::session_pool) async fn publish_terminal(
         &self,
         ticket: &TurnTicket,
         frame: &SessionFrame,
@@ -135,7 +142,7 @@ impl SessionPool {
     /// `live`, just taken out of the map, was running a turn whose last
     /// frame has not gone out: send its watchers an `error` frame in its
     /// place. Its initiator learns the same from its `run_turn` result.
-    pub(super) fn end_cut_off_turn(&self, session_id: &str, live: &LiveSession) {
+    pub(in crate::session_pool) fn end_cut_off_turn(&self, session_id: &str, live: &LiveSession) {
         let Some(turn) = live.turn.running().filter(|turn| !turn.terminated) else {
             return;
         };
@@ -173,7 +180,10 @@ impl SessionPool {
         self.interrupt_turn(session_id).await
     }
 
-    pub(super) async fn interrupt_turn(&self, session_id: &str) -> Result<bool, PoolError> {
+    pub(in crate::session_pool) async fn interrupt_turn(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, PoolError> {
         let (input_tx, running, state) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {

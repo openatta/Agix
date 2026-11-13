@@ -37,7 +37,7 @@ async fn test_pool() -> (Arc<SessionPool>, tempfile::TempDir) {
     settings.paths.user_data_dir = dir.path().join("user");
     settings.paths.global_data_dir = dir.path().join("global");
 
-    let pool = Arc::new(SessionPool::new(
+    let pool = SessionPool::builder(
         8,
         3600,
         client,
@@ -47,7 +47,8 @@ async fn test_pool() -> (Arc<SessionPool>, tempfile::TempDir) {
         cwd,
         None,
         paths,
-    ));
+    )
+    .build();
     (pool, dir)
 }
 

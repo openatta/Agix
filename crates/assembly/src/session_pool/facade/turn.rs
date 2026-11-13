@@ -1,6 +1,6 @@
 //! 回合执行：`run_turn` 及其回合槽位、自动命名的采纳。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// Give the receiver back and mark the session idle again, if the
@@ -10,7 +10,7 @@ impl SessionPool {
     /// reads as running. Whatever the turn's own engine was asking died with
     /// the turn; a background task's asks stay. Returns whether the entry was
     /// still the session's.
-    pub(super) async fn release_turn_slot(
+    pub(in crate::session_pool) async fn release_turn_slot(
         &self,
         ticket: &TurnTicket,
         event_rx: EventReceiver,
@@ -388,7 +388,7 @@ impl SessionPool {
     /// guess; otherwise the guess is stored like any other name, so a resume
     /// or a daemon restart finds it. A guess made for the entry of
     /// `generation` is dropped once another entry has the id.
-    pub(super) async fn adopt_generated_name(
+    pub(in crate::session_pool) async fn adopt_generated_name(
         &self,
         sid: &str,
         generation: Generation,

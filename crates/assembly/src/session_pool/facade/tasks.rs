@@ -1,6 +1,6 @@
 //! 会话内后台任务与子 Agent：事件转发、任务查询与停止、`start_agent`、上下文请求。
 
-use super::*;
+use crate::session_pool::*;
 
 fn delegate_error(e: base::interface::delegate::DelegateError) -> PoolError {
     use base::interface::delegate::DelegateError;
@@ -19,7 +19,7 @@ impl SessionPool {
     /// receiver, waits for `idle` and looks again, since what arrived as the
     /// turn ended is still there. A turn that starts takes the receiver as
     /// before; this only ever tries the lock, so it never makes a turn wait.
-    pub(super) fn forward_events_between_turns(
+    pub(in crate::session_pool) fn forward_events_between_turns(
         session_id: &str,
         hub: &Arc<SessionHub>,
         event_rx: &Arc<AsyncMutex<Option<EventReceiver>>>,
@@ -70,7 +70,7 @@ impl SessionPool {
 
     /// Push `session_id`'s task events to whoever watches the session, for as
     /// long as its engine lives. Outside any turn, so `turn_id` is `null`.
-    pub(super) fn forward_task_events(
+    pub(in crate::session_pool) fn forward_task_events(
         session_id: &str,
         hub: &Arc<SessionHub>,
         state: &Arc<base::context::SessionState>,

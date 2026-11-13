@@ -131,7 +131,6 @@ impl SessionPool {
     /// waits for it rather than connecting again.
     #[cfg(feature = "mcp")]
     pub fn connect_mcp_servers_in_background(self: &Arc<Self>) {
-        let _ = self.this.set(Arc::downgrade(self));
         self.watch_mcp_auth();
         let pool = self.clone();
         tokio::spawn(async move {
@@ -173,7 +172,7 @@ impl SessionPool {
             denied,
             ..
         } = self.admit_mcp_servers(settings);
-        let pool = self.this.get().and_then(std::sync::Weak::upgrade);
+        let pool = self.this.upgrade();
         let wait = pool.as_ref().map(|_| MCP_SESSION_CONNECT_WAIT);
         let (mut manager, late) = McpManager::connect_all_within(
             admitted,
@@ -271,7 +270,7 @@ impl SessionPool {
             refused,
         } = self.admit_mcp_servers(settings);
         let requested: std::collections::HashSet<String> = admitted.keys().cloned().collect();
-        let pool = self.this.get().and_then(std::sync::Weak::upgrade);
+        let pool = self.this.upgrade();
         let wait = pool.as_ref().map(|_| MCP_SESSION_CONNECT_WAIT);
         let (manager, late) = McpManager::connect_all_within(
             admitted,

@@ -1,6 +1,6 @@
 //! 会话创建：`create_session`、`create` 的装配，以及会话规格（`SessionSpec`）的读写。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// `session.create` — the explicit multi-project entry point, with an
@@ -102,7 +102,7 @@ impl SessionPool {
     /// (`None` = no-project session) — callers that just want "this pool's
     /// default project" pass `self.settings.read().await.clone()` /
     /// `Some(self.cwd.clone())`.
-    pub(super) async fn create(
+    pub(in crate::session_pool) async fn create(
         &self,
         session_id: String,
         scene: Arc<SceneSpec>,
@@ -676,7 +676,7 @@ impl SessionPool {
 
     /// This session's spec: the one this process already holds, else the one
     /// its log recorded (for a resume), else a new one from `options`.
-    pub(super) async fn spec_for(
+    pub(in crate::session_pool) async fn spec_for(
         &self,
         session_id: &str,
         resume: bool,
@@ -716,13 +716,15 @@ impl SessionPool {
         spec
     }
 
-    pub(super) fn lock_specs(&self) -> std::sync::MutexGuard<'_, HashMap<String, SessionSpec>> {
+    pub(in crate::session_pool) fn lock_specs(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, SessionSpec>> {
         self.specs
             .lock()
             .expect("specs mutex is never held across a panic")
     }
 
-    pub(super) async fn recorded_spec(&self, session_id: &str) -> SessionSpec {
+    pub(in crate::session_pool) async fn recorded_spec(&self, session_id: &str) -> SessionSpec {
         let entries = self.load_entries(session_id).await.unwrap_or_default();
         let recorded = entries
             .iter()
@@ -745,7 +747,7 @@ impl SessionPool {
         }
     }
 
-    pub(super) async fn persist_spec(&self, session_id: &str, spec: &SessionSpec) {
+    pub(in crate::session_pool) async fn persist_spec(&self, session_id: &str, spec: &SessionSpec) {
         let Some(store) = self.history_store.as_ref() else {
             return;
         };
@@ -776,7 +778,7 @@ impl SessionPool {
 
     /// Change this session's spec in memory only, returning it as it was and
     /// as it is now.
-    pub(super) fn change_spec(
+    pub(in crate::session_pool) fn change_spec(
         &self,
         session_id: &str,
         change: impl FnOnce(&mut SessionSpec),
@@ -793,5 +795,5 @@ impl SessionPool {
     /// A name is a label in somebody's session list, not a description. The
     /// cap is here rather than at the wire layer because it is the engine's
     /// answer, and a host that embeds the engine gets the same one.
-    pub(super) const MAX_SESSION_NAME: usize = 200;
+    pub(in crate::session_pool) const MAX_SESSION_NAME: usize = 200;
 }

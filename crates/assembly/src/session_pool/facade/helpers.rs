@@ -1,13 +1,13 @@
 //! 池内通用的自由函数：scene 注册表、事件中继与发布、LRU 驱逐、空闲判定等。
 
-use super::*;
+use crate::session_pool::*;
 
 /// The scenes a pool can serve: built-ins, then the host's, then the
 /// declarative scenes under `user_scenes` (`<state root>/scenes/<id>/`), then
 /// those `scene.register` added, then the plugins'. A declarative or
 /// registered scene cannot take an id already there; one that does not load
 /// is left out, named in the returned list, and the rest load.
-pub(super) fn registry_of(
+pub(in crate::session_pool) fn registry_of(
     host_scenes: &[Arc<SceneSpec>],
     plugin_scenes: &[Arc<SceneSpec>],
     user_scenes: &std::path::Path,
@@ -43,7 +43,7 @@ pub(super) fn registry_of(
 
 /// A goal round as its own boxed future: `run_turn` starts rounds and rounds
 /// run `run_turn`, so the `Send` of one cannot be inferred from the other.
-pub(super) fn goal_round_task(
+pub(in crate::session_pool) fn goal_round_task(
     pool: Arc<SessionPool>,
     sid: String,
     round: base::context::goal::GoalRound,
@@ -53,7 +53,7 @@ pub(super) fn goal_round_task(
 
 /// Whether `live` is doing anything eviction would cut off: running a turn,
 /// being rebuilt, or running background tasks.
-pub(super) fn is_busy(live: &LiveSession) -> bool {
+pub(in crate::session_pool) fn is_busy(live: &LiveSession) -> bool {
     !live.turn.is_idle()
         || live.state.as_ref().is_some_and(|state| {
             state
@@ -65,7 +65,7 @@ pub(super) fn is_busy(live: &LiveSession) -> bool {
 
 /// Run `work` — disk reads and directory scans — on the blocking pool rather
 /// than on a runtime worker.
-pub(super) async fn off_the_runtime<T: Send + 'static>(
+pub(in crate::session_pool) async fn off_the_runtime<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> T {
     match tokio::task::spawn_blocking(work).await {
@@ -78,7 +78,7 @@ pub(super) async fn off_the_runtime<T: Send + 'static>(
 /// The engine's events passed through to a receiver of their own, with a
 /// notice each time one arrives — what lets the forwarder between turns sleep
 /// until there is something to forward.
-pub(super) fn relay_events(
+pub(in crate::session_pool) fn relay_events(
     mut from_engine: EventReceiver,
 ) -> (EventReceiver, Arc<tokio::sync::Notify>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -98,7 +98,7 @@ pub(super) fn relay_events(
 /// Take the least recently active idle session out of `sessions`, or `None`
 /// when every session is busy — the pool then runs over its cap rather than
 /// cut one off.
-pub(super) fn evict_lru(
+pub(in crate::session_pool) fn evict_lru(
     sessions: &mut HashMap<String, LiveSession>,
 ) -> Option<(String, LiveSession)> {
     let sid = sessions
@@ -111,7 +111,7 @@ pub(super) fn evict_lru(
 
 /// The ask `event` raises — its `prompt_id`, the background task asking it
 /// when one does, and what kind of answer it wants.
-pub(super) fn ask_of(event: &AgentEvent) -> Option<(String, Option<String>, AskKind)> {
+pub(in crate::session_pool) fn ask_of(event: &AgentEvent) -> Option<(String, Option<String>, AskKind)> {
     match event {
         AgentEvent::PermissionPrompt {
             prompt_id, task_id, ..
@@ -125,7 +125,7 @@ pub(super) fn ask_of(event: &AgentEvent) -> Option<(String, Option<String>, AskK
 
 /// Hand `event` to whoever watches the session, recording it first when it
 /// is an ask.
-pub(super) fn publish_agent_event(
+pub(in crate::session_pool) fn publish_agent_event(
     hub: &SessionHub,
     session_id: &Arc<str>,
     turn_id: Option<&Arc<str>>,
@@ -146,7 +146,7 @@ pub(super) fn publish_agent_event(
 }
 
 /// A frame of `session_id` that belongs to no turn.
-pub(super) fn frame_between_turns(session_id: &str, event: SessionEvent) -> SessionFrame {
+pub(in crate::session_pool) fn frame_between_turns(session_id: &str, event: SessionEvent) -> SessionFrame {
     SessionFrame {
         session_id: Arc::from(session_id),
         turn_id: None,
@@ -154,7 +154,7 @@ pub(super) fn frame_between_turns(session_id: &str, event: SessionEvent) -> Sess
     }
 }
 
-pub(super) fn reap_process_groups_later(live: &LiveSession) {
+pub(in crate::session_pool) fn reap_process_groups_later(live: &LiveSession) {
     if let Some(ledger) = live.process_groups.clone() {
         tokio::spawn(async move { ledger.reap(PROCESS_GROUP_GRACE).await });
     }
@@ -164,7 +164,7 @@ pub(super) fn reap_process_groups_later(live: &LiveSession) {
 /// （不做任何驱逐动作，只挑出 id）——原逻辑内嵌在 `start_janitor` 真实跑
 /// 300 秒一次的循环体里，没法在测试里等 5 分钟去验证；抽出来之后可以直接用
 /// 人为构造的" last_active 已经很旧"的 session 测，不用真的睡觉。
-pub(super) fn idle_session_ids(
+pub(in crate::session_pool) fn idle_session_ids(
     sessions: &HashMap<String, LiveSession>,
     now: Instant,
     timeout: Duration,
@@ -178,7 +178,7 @@ pub(super) fn idle_session_ids(
         .collect()
 }
 
-pub(super) fn format_instant(t: Instant) -> String {
+pub(in crate::session_pool) fn format_instant(t: Instant) -> String {
     let ago = Instant::now().duration_since(t);
     let secs_ago = ago.as_secs();
     let now = time::OffsetDateTime::now_utc();

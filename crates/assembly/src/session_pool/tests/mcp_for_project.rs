@@ -22,13 +22,20 @@ impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
 /// `McpManager` immediately (no subprocess, no network), which is all
 /// these tests need: they're about the *cache* around the connect, not
 /// the connect itself (that's `mcp_toy_server_smoke.rs`'s job).
-pub(super) async fn test_pool() -> (SessionPool, tempfile::TempDir) {
+pub(super) async fn test_pool() -> (Arc<SessionPool>, tempfile::TempDir) {
     test_pool_with_store(None).await
 }
 
 pub(super) async fn test_pool_with_store(
     history_store: Option<Arc<dyn history::store::HistoryStore>>,
-) -> (SessionPool, tempfile::TempDir) {
+) -> (Arc<SessionPool>, tempfile::TempDir) {
+    let (builder, dir) = test_pool_builder(history_store);
+    (builder.build(), dir)
+}
+
+pub(super) fn test_pool_builder(
+    history_store: Option<Arc<dyn history::store::HistoryStore>>,
+) -> (SessionPoolBuilder, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
@@ -47,7 +54,7 @@ pub(super) async fn test_pool_with_store(
     settings.paths.user_data_dir = dir.path().join("user");
     settings.paths.global_data_dir = dir.path().join("global");
 
-    let pool = SessionPool::new(
+    let builder = SessionPool::builder(
         8,
         3600,
         client,
@@ -58,7 +65,7 @@ pub(super) async fn test_pool_with_store(
         history_store,
         paths,
     );
-    (pool, dir)
+    (builder, dir)
 }
 
 /// The watcher budget `crate::watch_hub` states: watched paths are
@@ -348,7 +355,6 @@ async fn an_agents_directory_created_later_is_picked_up_and_watched() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pair_stuck_connecting_holds_up_no_other_pairs_connect() {
     let (pool, dir) = test_pool().await;
-    let pool = Arc::new(pool);
     let stuck = dir.path().join("stuck");
     let asked = dir.path().join("asked");
     std::fs::create_dir_all(stuck.join(".agix")).unwrap();

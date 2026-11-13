@@ -45,7 +45,8 @@ impl HistoryStore for GatedGoalWrites {
     }
 }
 
-async fn pool_with_gated_goal_writes() -> (SessionPool, Arc<GatedGoalWrites>, tempfile::TempDir) {
+async fn pool_with_gated_goal_writes() -> (Arc<SessionPool>, Arc<GatedGoalWrites>, tempfile::TempDir)
+{
     let store = Arc::new(GatedGoalWrites {
         inner: InMemoryHistoryStore::new(),
         gate: Arc::default(),
@@ -216,7 +217,6 @@ async fn audit2_an_interrupt_while_a_goal_round_records_its_claim_stops_that_rou
     let writing = store.writing.notified();
     tokio::pin!(writing);
     writing.as_mut().enable();
-    let pool = Arc::new(pool);
     let running = {
         let pool = pool.clone();
         let sid = sid.clone();
@@ -272,7 +272,6 @@ async fn an_interrupt_before_a_claimed_turn_s_message_reaches_the_engine_cancels
     let writing = store.writing.notified();
     tokio::pin!(writing);
     writing.as_mut().enable();
-    let pool = Arc::new(pool);
     let ends = Arc::new(EndsOfTurns::default());
     let running = {
         let pool = pool.clone();
@@ -413,8 +412,6 @@ async fn an_interrupt_while_an_answered_goal_round_records_the_goal_stops_the_ne
     let writing = store.writing.notified();
     tokio::pin!(writing);
     writing.as_mut().enable();
-    let pool = Arc::new(pool);
-    let _ = pool.this.set(Arc::downgrade(&pool));
     let running = {
         let pool = pool.clone();
         let sid = sid.clone();

@@ -1,11 +1,11 @@
 //! 会话收尾：按会话加锁、驱逐、停止、删除、带子会话的关闭，以及整池 `shutdown_all`。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// Forget a session's `session.setModel` choice — it is deleted or
     /// closed, and an id is never reused.
-    pub(super) fn forget_spec(&self, session_id: &str) {
+    pub(in crate::session_pool) fn forget_spec(&self, session_id: &str) {
         self.lock_specs().remove(session_id);
     }
 
@@ -13,7 +13,7 @@ impl SessionPool {
     /// waiting for it: whoever brings `sid` back waits instead
     /// ([`Self::wait_until_stopped`]). Nothing it still produces reaches its
     /// watchers.
-    pub(super) fn stop_removed(&self, sid: &str, live: &LiveSession) {
+    pub(in crate::session_pool) fn stop_removed(&self, sid: &str, live: &LiveSession) {
         live.cancel.cancel();
         live.hub.clear();
         let mut stopping = self
@@ -26,7 +26,10 @@ impl SessionPool {
 
     /// Wait, within [`AGENT_EXIT_GRACE`], for the engine `sid` last ran on
     /// to stop, if it has not.
-    pub(super) async fn wait_until_stopped(&self, sid: &str) -> Result<(), CreateError> {
+    pub(in crate::session_pool) async fn wait_until_stopped(
+        &self,
+        sid: &str,
+    ) -> Result<(), CreateError> {
         let exited = self
             .stopping
             .lock()
@@ -48,7 +51,7 @@ impl SessionPool {
 
     /// Take `live` out of memory as [`Self::stop_removed`] does, for a
     /// session that may be brought back.
-    pub(super) fn evict(&self, sid: &str, live: &LiveSession) {
+    pub(in crate::session_pool) fn evict(&self, sid: &str, live: &LiveSession) {
         self.stop_removed(sid, live);
         reap_process_groups_later(live);
         self.release_spec(sid);
@@ -57,7 +60,7 @@ impl SessionPool {
     /// Drop the spec of `sid`, now out of memory, when its log gives it
     /// back; one the log cannot — a recorder's progress, a session with no
     /// log — is kept, for at most `cap` sessions.
-    pub(super) fn release_spec(&self, sid: &str) {
+    pub(in crate::session_pool) fn release_spec(&self, sid: &str) {
         let logged = self.history_store.is_some() && base::session::SessionId::parse(sid).is_ok();
         let records = self
             .lock_specs()
@@ -82,7 +85,7 @@ impl SessionPool {
         }
     }
 
-    pub(super) fn lock_kept_specs(
+    pub(in crate::session_pool) fn lock_kept_specs(
         &self,
     ) -> std::sync::MutexGuard<'_, std::collections::VecDeque<String>> {
         self.kept_specs
@@ -101,7 +104,7 @@ impl SessionPool {
     /// id from being reused afterward — recreating a just-deleted sidechain
     /// as a fresh orphan session is still possible; the two operations
     /// serialize instead of interleaving.
-    pub(super) async fn with_session_lock<T>(
+    pub(in crate::session_pool) async fn with_session_lock<T>(
         &self,
         session_id: &str,
         fut: impl std::future::Future<Output = T>,
@@ -140,7 +143,7 @@ impl SessionPool {
     /// which merely records where it was copied from. Cascading over the raw
     /// child list deletes the forks too, which is the opposite of what a fork
     /// is for.
-    pub(super) async fn fetch_child_sidechains(
+    pub(in crate::session_pool) async fn fetch_child_sidechains(
         &self,
         parent_session_id: &str,
     ) -> Vec<base::session::SessionId> {
@@ -179,7 +182,7 @@ impl SessionPool {
     /// Cancel (if live) and delete each of `children`, one `with_session_lock`
     /// critical section per child. Best-effort throughout — see
     /// `shutdown_session`'s doc comment.
-    pub(super) async fn delete_sidechain_list(
+    pub(in crate::session_pool) async fn delete_sidechain_list(
         &self,
         parent_session_id: &str,
         children: Vec<base::session::SessionId>,
@@ -232,7 +235,7 @@ impl SessionPool {
     /// `children` — the shared body of `shutdown_session` (which scans for
     /// its own children) and `delete_session` (which reuses a scan it
     /// already did for its response body).
-    pub(super) async fn shutdown_session_with_children(
+    pub(in crate::session_pool) async fn shutdown_session_with_children(
         &self,
         session_id: &str,
         children: Vec<base::session::SessionId>,
@@ -394,7 +397,7 @@ impl SessionPool {
         .await;
     }
 
-    pub(super) fn refuse_while_shutting_down(&self) -> Result<(), String> {
+    pub(in crate::session_pool) fn refuse_while_shutting_down(&self) -> Result<(), String> {
         if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("the daemon is shutting down".to_string());
         }
@@ -408,7 +411,10 @@ impl SessionPool {
     /// entry is taken out of memory with it: left in the map, it would take
     /// the next turn into an engine that is no longer reading. Whoever brings
     /// the session back waits for that engine instead.
-    pub(super) async fn stop_live_agent(&self, session_id: &str) -> Result<(), CreateError> {
+    pub(in crate::session_pool) async fn stop_live_agent(
+        &self,
+        session_id: &str,
+    ) -> Result<(), CreateError> {
         let (exited, generation) = {
             let sessions = self.sessions.lock().await;
             let Some(live) = sessions.get(session_id) else {

@@ -2,44 +2,48 @@
 //! 阶段（`SessionPhase`：空闲 / 回合中 / 重建中），以及引擎事件接收端的存放处。
 //! 阶段说了算，接收端只是放在这里；所有转换都在池的 `sessions` 锁里同步完成。
 
-use super::api::{Busy, Initiator, WatcherId};
+use crate::session_pool::api::{Busy, Initiator, WatcherId};
 use runtime::agent::EventReceiver;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) struct Generation(u64);
+pub(in crate::session_pool) struct Generation(u64);
 
 #[derive(Default)]
-pub(super) struct Generations(AtomicU64);
+pub(in crate::session_pool) struct Generations(AtomicU64);
 
 impl Generations {
-    pub(super) fn next(&self) -> Generation {
+    pub(in crate::session_pool) fn next(&self) -> Generation {
         Generation(self.0.fetch_add(1, Ordering::Relaxed) + 1)
     }
 }
 
 #[derive(Debug)]
-pub(super) enum SessionPhase {
+pub(in crate::session_pool) enum SessionPhase {
     Idle,
     Running(RunningTurn),
     Rebuilding,
 }
 
 #[derive(Debug)]
-pub(super) struct RunningTurn {
-    pub(super) turn_id: String,
-    pub(super) initiator: Initiator,
+pub(in crate::session_pool) struct RunningTurn {
+    pub(in crate::session_pool) turn_id: String,
+    pub(in crate::session_pool) initiator: Initiator,
     /// Hears how the turn ended from its own `run_turn` result rather than
     /// from an `error` frame.
-    pub(super) origin: Option<WatcherId>,
+    pub(in crate::session_pool) origin: Option<WatcherId>,
     /// The turn's `turn_complete` or `error` frame has gone out.
-    pub(super) terminated: bool,
+    pub(in crate::session_pool) terminated: bool,
 }
 
 impl RunningTurn {
-    pub(super) fn new(turn_id: String, initiator: Initiator, origin: Option<WatcherId>) -> Self {
+    pub(in crate::session_pool) fn new(
+        turn_id: String,
+        initiator: Initiator,
+        origin: Option<WatcherId>,
+    ) -> Self {
         Self {
             turn_id,
             initiator,
@@ -52,24 +56,24 @@ impl RunningTurn {
 /// What a running turn holds: the entry it started on and the receiver it
 /// took. Everything it writes back to the session is checked against
 /// `generation`, so an entry brought up later under the same id is left alone.
-pub(super) struct TurnTicket {
-    pub(super) sid: String,
-    pub(super) generation: Generation,
-    pub(super) turn_id: String,
-    pub(super) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
+pub(in crate::session_pool) struct TurnTicket {
+    pub(in crate::session_pool) sid: String,
+    pub(in crate::session_pool) generation: Generation,
+    pub(in crate::session_pool) turn_id: String,
+    pub(in crate::session_pool) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
 }
 
-pub(super) struct TurnSlot {
-    pub(super) generation: Generation,
-    pub(super) phase: SessionPhase,
-    pub(super) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
+pub(in crate::session_pool) struct TurnSlot {
+    pub(in crate::session_pool) generation: Generation,
+    pub(in crate::session_pool) phase: SessionPhase,
+    pub(in crate::session_pool) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
     /// Woken whenever the session stops running a turn — a `run_turn` with
     /// `on_busy: queue` waits on it.
-    pub(super) idle: Arc<tokio::sync::Notify>,
+    pub(in crate::session_pool) idle: Arc<tokio::sync::Notify>,
 }
 
 impl TurnSlot {
-    pub(super) fn new(generation: Generation, rx: EventReceiver) -> Self {
+    pub(in crate::session_pool) fn new(generation: Generation, rx: EventReceiver) -> Self {
         Self {
             generation,
             phase: SessionPhase::Idle,
@@ -78,22 +82,25 @@ impl TurnSlot {
         }
     }
 
-    pub(super) fn is_idle(&self) -> bool {
+    pub(in crate::session_pool) fn is_idle(&self) -> bool {
         matches!(self.phase, SessionPhase::Idle)
     }
 
-    pub(super) fn running(&self) -> Option<&RunningTurn> {
+    pub(in crate::session_pool) fn running(&self) -> Option<&RunningTurn> {
         match &self.phase {
             SessionPhase::Running(turn) => Some(turn),
             _ => None,
         }
     }
 
-    pub(super) fn current_turn_id(&self) -> Option<String> {
+    pub(in crate::session_pool) fn current_turn_id(&self) -> Option<String> {
         self.running().map(|turn| turn.turn_id.clone())
     }
 
-    pub(super) fn claim(&mut self, turn: RunningTurn) -> Result<Generation, &SessionPhase> {
+    pub(in crate::session_pool) fn claim(
+        &mut self,
+        turn: RunningTurn,
+    ) -> Result<Generation, &SessionPhase> {
         if !self.is_idle() {
             return Err(&self.phase);
         }
@@ -101,7 +108,7 @@ impl TurnSlot {
         Ok(self.generation)
     }
 
-    pub(super) fn mark_terminated(&mut self, g: Generation) -> bool {
+    pub(in crate::session_pool) fn mark_terminated(&mut self, g: Generation) -> bool {
         match &mut self.phase {
             SessionPhase::Running(turn) if g == self.generation => {
                 turn.terminated = true;
@@ -113,7 +120,11 @@ impl TurnSlot {
 
     /// Back to `Idle` from the turn `turn_id` of generation `g`, handing back
     /// what that turn was.
-    pub(super) fn release(&mut self, g: Generation, turn_id: &str) -> Option<RunningTurn> {
+    pub(in crate::session_pool) fn release(
+        &mut self,
+        g: Generation,
+        turn_id: &str,
+    ) -> Option<RunningTurn> {
         match &self.phase {
             SessionPhase::Running(turn) if g == self.generation && turn.turn_id == turn_id => {}
             _ => return None,
@@ -126,7 +137,7 @@ impl TurnSlot {
         Some(turn)
     }
 
-    pub(super) fn begin_rebuild(&mut self) -> Result<Generation, &SessionPhase> {
+    pub(in crate::session_pool) fn begin_rebuild(&mut self) -> Result<Generation, &SessionPhase> {
         if !self.is_idle() {
             return Err(&self.phase);
         }
@@ -134,7 +145,7 @@ impl TurnSlot {
         Ok(self.generation)
     }
 
-    pub(super) fn abort_rebuild(&mut self, g: Generation) -> bool {
+    pub(in crate::session_pool) fn abort_rebuild(&mut self, g: Generation) -> bool {
         if g != self.generation || !matches!(self.phase, SessionPhase::Rebuilding) {
             return false;
         }
@@ -143,7 +154,7 @@ impl TurnSlot {
         true
     }
 
-    pub(super) fn busy(&self, session_id: &str) -> Option<Busy> {
+    pub(in crate::session_pool) fn busy(&self, session_id: &str) -> Option<Busy> {
         match &self.phase {
             SessionPhase::Idle => None,
             SessionPhase::Running(turn) => Some(Busy::turn_running(session_id, &turn.turn_id)),
@@ -224,7 +235,7 @@ mod tests {
 
     #[test]
     fn busy_says_what_the_session_is_doing() {
-        use super::super::api::BusyReason;
+        use crate::session_pool::api::BusyReason;
         let mut slot = slot();
         assert!(slot.busy("S1").is_none());
         let g = slot.claim(turn("t1")).unwrap();

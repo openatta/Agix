@@ -1,5 +1,6 @@
 //! `SessionPool` 的单元测试，按主题分文件。
 
+use super::builder::SessionPoolBuilder;
 use super::*;
 
 /// A watcher that takes every frame and keeps none.

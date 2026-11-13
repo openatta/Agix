@@ -1,6 +1,6 @@
 //! 历史相关 RPC：读取历史、导出会话、分叉会话，以及条目的视图转换。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// The `HistoryStore` these three methods read and write, or a ready-made
@@ -8,7 +8,7 @@ impl SessionPool {
     /// all (`JsonlHistoryStore::with_root` failed at startup — see
     /// `daemon/src/main.rs`; `daemon.doctor`'s
     /// `session_persistence.history_store_wired` reports the same fact).
-    pub(super) fn require_history_store(
+    pub(in crate::session_pool) fn require_history_store(
         &self,
     ) -> Result<&Arc<dyn history::store::HistoryStore>, PoolError> {
         self.history_store.as_ref().ok_or_else(|| {
@@ -22,7 +22,7 @@ impl SessionPool {
 
     /// Parse + load one session's raw log, mapping both failure kinds onto
     /// the error codes `docs/daemon_rpc_protocol.md` documents.
-    pub(super) async fn load_entries(
+    pub(in crate::session_pool) async fn load_entries(
         &self,
         session_id: &str,
     ) -> Result<Vec<history::entry::EnvelopedEntry>, PoolError> {
@@ -223,7 +223,7 @@ impl SessionPool {
     /// the daemon's own. `recorder` is never written to the log, so for a
     /// session this process did not build only the daemon's root and the
     /// session ids are known.
-    pub(super) async fn measure_recordings(
+    pub(in crate::session_pool) async fn measure_recordings(
         &self,
         settings: &base::settings::LoadedSettings,
         root_session: &str,
@@ -439,7 +439,7 @@ impl SessionPool {
 /// One extension entry as `session.entries` and the `extension_entry` frame
 /// show it. `at` counts the messages before it, in `session.history`'s
 /// coordinates.
-pub(super) fn entry_view(
+pub(in crate::session_pool) fn entry_view(
     index: usize,
     env: &history::entry::EnvelopedEntry,
     lengths: &[usize],
@@ -469,7 +469,7 @@ pub(super) fn entry_view(
 
 /// A whole transcript as `session.history` pages it and the rows
 /// `session.entries` lists, for an export to carry beside the raw log.
-pub(super) fn export_views(
+pub(in crate::session_pool) fn export_views(
     entries: &[history::entry::EnvelopedEntry],
     projection: &dyn history::transcript::TranscriptProjection,
 ) -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), serde_json::Error> {
@@ -494,7 +494,7 @@ pub(super) fn export_views(
 
 /// One `session.history` item: the projected message as it always was
 /// (`role`, `content`, …) plus where it sits and where it came from.
-pub(super) fn history_item(
+pub(in crate::session_pool) fn history_item(
     seq: usize,
     sourced: &history::transcript::SourcedMessage<'_>,
 ) -> api::HistoryItem {

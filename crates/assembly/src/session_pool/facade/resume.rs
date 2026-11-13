@@ -1,6 +1,6 @@
 //! 会话恢复与重建：恢复、场景校验、空闲会话的重建与 `resume_or_create`。
 
-use super::*;
+use crate::session_pool::*;
 
 impl SessionPool {
     /// See [`SceneCheck`]. Safe to call unconditionally, including for a
@@ -12,7 +12,7 @@ impl SessionPool {
     /// "harnix"}` is exactly as resumable/closeable/forkable as one under the
     /// default scene; only a scene this daemon isn't currently serving at
     /// all counts as a mismatch.
-    pub(super) async fn check_scene(&self, session_id: &str) -> SceneCheck {
+    pub(in crate::session_pool) async fn check_scene(&self, session_id: &str) -> SceneCheck {
         match self.facts_of(session_id).await.scene {
             None => SceneCheck::Inferred,
             Some(s) if self.active_scenes.read().await.contains_key(&s) => SceneCheck::Matches,
@@ -24,7 +24,10 @@ impl SessionPool {
     /// recorded under a scene this daemon does not serve is not reattached,
     /// closed, forked or written to here. `Ok(true)` when its scene could
     /// only be inferred.
-    pub(super) async fn refuse_scene_mismatch(&self, session_id: &str) -> Result<bool, PoolError> {
+    pub(in crate::session_pool) async fn refuse_scene_mismatch(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, PoolError> {
         match self.check_scene(session_id).await {
             SceneCheck::Inferred => Ok(true),
             SceneCheck::Matches => Ok(false),
@@ -113,7 +116,7 @@ impl SessionPool {
         })
     }
 
-    pub(super) async fn resume_unchecked(
+    pub(in crate::session_pool) async fn resume_unchecked(
         &self,
         session_id: &str,
         create_if_missing: bool,
@@ -286,7 +289,7 @@ impl SessionPool {
     /// none, as is one for an id no store could hold; a log that is there but
     /// does not load is an error, never a session to start over under the
     /// same id.
-    pub(super) async fn has_history(&self, sid: &str) -> Result<bool, String> {
+    pub(in crate::session_pool) async fn has_history(&self, sid: &str) -> Result<bool, String> {
         let (Some(store), Ok(parsed)) = (
             self.history_store.as_ref(),
             base::session::SessionId::parse(sid),
@@ -306,7 +309,7 @@ impl SessionPool {
     /// `(0, 0)` when there's no store, the id doesn't parse, or nothing is
     /// on disk — all three mean the same thing to `session.resume`'s caller
     /// ("no prior conversation"), so they don't need distinguishing here.
-    pub(super) async fn history_counts(&self, session_id: &str) -> (usize, usize) {
+    pub(in crate::session_pool) async fn history_counts(&self, session_id: &str) -> (usize, usize) {
         match (
             self.load_entries(session_id).await,
             self.history_store.as_ref(),
@@ -322,7 +325,7 @@ impl SessionPool {
     /// `mode` is what the session was created under; a live session reports
     /// the mode it is in now, which `EnterPlanMode` / `ExitPlanMode` move.
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn resume_report(
+    pub(in crate::session_pool) async fn resume_report(
         &self,
         session_id: &str,
         status: api::ResumeStatus,
@@ -380,7 +383,7 @@ impl SessionPool {
     /// Hold `session_id`'s log against other processes for as long as the
     /// returned claim lives — `Err` when another daemon has it open. An id
     /// that is not a session id has no log to hold.
-    pub(super) async fn claim_log(
+    pub(in crate::session_pool) async fn claim_log(
         &self,
         session_id: &str,
     ) -> Result<Option<history::store::SessionClaim>, String> {
@@ -404,7 +407,7 @@ impl SessionPool {
     /// has one, created empty otherwise. A failure is the caller's error —
     /// never a different session under a fresh id, which would carry the
     /// conversation on somewhere the host is not looking.
-    pub(super) async fn resume_or_create(
+    pub(in crate::session_pool) async fn resume_or_create(
         &self,
         sid: String,
         options: Option<&SessionOptions>,
@@ -471,7 +474,7 @@ impl SessionPool {
     /// `sid` in memory: resumed from its log, or created, unless it already
     /// is. Serialized per id, so two callers racing on one cold session get
     /// one engine rather than the second replacing the first's.
-    pub(super) async fn ensure_live(
+    pub(in crate::session_pool) async fn ensure_live(
         &self,
         sid: &str,
         options: Option<&SessionOptions>,
@@ -489,7 +492,7 @@ impl SessionPool {
     /// turn slot is held from before the old engine stops until the new one
     /// is in the map, so no turn can start on, or be cut off by, the
     /// replacement; a session running a turn or background tasks is refused.
-    pub(super) async fn rebuild_idle(
+    pub(in crate::session_pool) async fn rebuild_idle(
         &self,
         sid: &str,
         options: Option<&SessionOptions>,
@@ -505,7 +508,10 @@ impl SessionPool {
     /// rebuild is aborted or the rebuilt entry replaces it. A session whose
     /// background tasks still run is not idle: they run under its engine and
     /// would be stopped with it. Callers hold `sid`'s session lock.
-    pub(super) async fn take_idle_slot(&self, sid: &str) -> Result<HeldSlot, Rebuild> {
+    pub(in crate::session_pool) async fn take_idle_slot(
+        &self,
+        sid: &str,
+    ) -> Result<HeldSlot, Rebuild> {
         let mut sessions = self.sessions.lock().await;
         let live = sessions.get_mut(sid).ok_or(Rebuild::NotLive)?;
         if let Some(busy) = live.turn.busy(sid) {
@@ -529,7 +535,7 @@ impl SessionPool {
     /// in its log once the rebuild has taken it. A failed rebuild leaves the
     /// spec as it was, so the session, wherever it is now, is not left
     /// running on one spec while its log says another.
-    pub(super) async fn rebuild_on_changed_spec(
+    pub(in crate::session_pool) async fn rebuild_on_changed_spec(
         &self,
         sid: &str,
         held: HeldSlot,
@@ -555,7 +561,7 @@ impl SessionPool {
 
     /// Rebuild `sid` while `held` keeps turns off it. A failed rebuild puts
     /// the session that is still there back to `Idle`.
-    pub(super) async fn rebuild_holding(
+    pub(in crate::session_pool) async fn rebuild_holding(
         &self,
         sid: &str,
         held: HeldSlot,

@@ -344,7 +344,7 @@ target 从根文件出发沿 `mod` 声明走模块树，只有编译器会读的
 
 | 编号 | 内容 | 机制 | 位置 | 状态 |
 |---|---|---|---|---|
-| CT-1 | 只有 assembly 能构造 `SessionPool` | 编译期：`SessionPool::new` 是 `pub(crate)` | `crates/assembly/src/session_pool/mod.rs` | 已落地 |
+| CT-1 | 只有 assembly 能构造 `SessionPool` | 编译期：`SessionPool::builder` 是 `pub(crate)` | `crates/assembly/src/session_pool/builder.rs` | 已落地 |
 | CT-2 | base 不起进程、不读环境变量 | clippy `disallowed-*` | `crates/core/clippy.toml` | 未落地，归 base 瘦身（D7 S5a） |
 | CT-3 | 方法表只有一份 | 宏生成 | `crates/assembly/src/server/table.rs` | 未落地，归 RPC 层（D4 S8） |
 | DEP-1..7 | 分级、边的方向、platform、没有 wasm 运行时、脚本载体可选、内核不带模块 feature | `cargo metadata` | `tests/guards/tests/deps.rs` | 已落地 |
