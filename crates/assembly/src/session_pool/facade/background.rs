@@ -24,58 +24,69 @@ impl SessionPool {
     /// needs rebuilding.
     ///
     /// The pool's own tiers are watched for as long as the pool lives, not
-    /// only while some binding on them happens to exist.
-    pub fn start_config_watcher(self: &Arc<Self>) {
-        let pool = self.clone();
+    /// only while some binding on them happens to exist; the watcher ends at
+    /// the first change after the pool is gone.
+    pub fn start_config_watcher(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let this = self.this.clone();
         tokio::spawn(async move {
-            use crate::watch_hub::{Tier, WatchTarget};
-            let Some(mut changes) = pool.bindings.watch_own_tiers().await else {
+            let changes = match this.upgrade() {
+                Some(pool) => pool.bindings.watch_own_tiers().await,
+                None => None,
+            };
+            let Some(mut changes) = changes else {
                 return;
             };
             loop {
-                let key = match changes.recv().await {
-                    Ok(key) => key,
+                let change = changes.recv().await;
+                let Some(pool) = this.upgrade() else {
+                    break;
+                };
+                match change {
+                    Ok(key) => pool.on_config_change(key).await,
                     // Lagged: some notifications were dropped, which means
                     // something changed — reload rather than skip it.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         pool.reload_after_lost_changes().await;
-                        continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                };
-                match key.target {
-                    WatchTarget::Settings => {}
-                    WatchTarget::Skills | WatchTarget::Agents => {
-                        info!(tier = ?key.tier, target = ?key.target, "a catalog changed on disk");
-                        pool.bindings.refresh_catalogs(&key.tier, key.target).await;
-                        continue;
-                    }
-                    // Plugins are a global/scene concern with a refresh of
-                    // their own (`plugin.reload`).
-                    _ => continue,
-                }
-                let ours = match &key.tier {
-                    Tier::Project(root) => root == pool.cwd(),
-                    Tier::Global | Tier::Scene(_) => true,
-                };
-                if ours {
-                    info!(tier = ?key.tier, "settings changed on disk; reloading");
-                    let scene = match &key.tier {
-                        Tier::Scene(scene) => scene.clone(),
-                        _ => pool.scene_id().to_string(),
-                    };
-                    let reconciled = (Some(pool.cwd().to_path_buf()), scene.clone());
-                    pool.forget_mcp_built_from(&key.tier, Some(&reconciled))
-                        .await;
-                    pool.reload_settings_from(None, &scene, Some(&key.tier))
-                        .await;
-                } else {
-                    info!(tier = ?key.tier, "settings changed on disk");
-                    pool.forget_mcp_built_from(&key.tier, None).await;
-                    pool.invalidate_bindings(Some(&key.tier)).await;
                 }
             }
-        });
+        })
+    }
+
+    async fn on_config_change(&self, key: crate::watch_hub::WatchKey) {
+        use crate::watch_hub::{Tier, WatchTarget};
+        match key.target {
+            WatchTarget::Settings => {}
+            WatchTarget::Skills | WatchTarget::Agents => {
+                info!(tier = ?key.tier, target = ?key.target, "a catalog changed on disk");
+                self.bindings.refresh_catalogs(&key.tier, key.target).await;
+                return;
+            }
+            // Plugins are a global/scene concern with a refresh of their own
+            // (`plugin.reload`).
+            _ => return,
+        }
+        let ours = match &key.tier {
+            Tier::Project(root) => root == self.cwd(),
+            Tier::Global | Tier::Scene(_) => true,
+        };
+        if ours {
+            info!(tier = ?key.tier, "settings changed on disk; reloading");
+            let scene = match &key.tier {
+                Tier::Scene(scene) => scene.clone(),
+                _ => self.scene_id().to_string(),
+            };
+            let reconciled = (Some(self.cwd().to_path_buf()), scene.clone());
+            self.forget_mcp_built_from(&key.tier, Some(&reconciled))
+                .await;
+            self.reload_settings_from(None, &scene, Some(&key.tier))
+                .await;
+        } else {
+            info!(tier = ?key.tier, "settings changed on disk");
+            self.forget_mcp_built_from(&key.tier, None).await;
+            self.invalidate_bindings(Some(&key.tier)).await;
+        }
     }
 
     /// Fire scheduled jobs as they come due, for as long as the pool lives.
@@ -119,31 +130,40 @@ impl SessionPool {
         self.scheduler.remove(id)
     }
 
-    pub fn start_janitor(self: &Arc<Self>) {
-        let pool = self.clone();
+    /// Evict sessions idle past `idle_timeout`, for as long as the pool
+    /// lives; the janitor ends at the first sweep after the pool is gone.
+    pub fn start_janitor(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let this = self.this.clone();
         // Sweep interval scales with `idle_timeout` so a short configured
         // timeout is actually honored. Clamped to [30s, 300s] so a very short
         // timeout doesn't spin the loop and a very long one doesn't sweep
         // needlessly often.
         let sweep_interval =
-            (pool.live.idle_timeout() / 4).clamp(Duration::from_secs(30), Duration::from_secs(300));
+            (self.live.idle_timeout() / 4).clamp(Duration::from_secs(30), Duration::from_secs(300));
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(sweep_interval).await;
-                let (evicted, remaining) = pool.live.take_idle(Instant::now()).await;
-                for (sid, live) in &evicted {
-                    pool.evict(sid, live);
-                    info!(%sid, "session evicted (idle timeout)");
-                    pool.emit_event(api::DaemonEvent::SessionEvicted {
-                        session_id: sid.to_string(),
-                        reason: api::EvictReason::Idle,
-                    });
-                }
-                if !evicted.is_empty() {
-                    debug!(evicted = evicted.len(), remaining, "janitor run");
-                }
+                let Some(pool) = this.upgrade() else {
+                    break;
+                };
+                pool.evict_idle().await;
             }
-        });
+        })
+    }
+
+    async fn evict_idle(&self) {
+        let (evicted, remaining) = self.live.take_idle(Instant::now()).await;
+        for (sid, live) in &evicted {
+            self.evict(sid, live);
+            info!(%sid, "session evicted (idle timeout)");
+            self.emit_event(api::DaemonEvent::SessionEvicted {
+                session_id: sid.to_string(),
+                reason: api::EvictReason::Idle,
+            });
+        }
+        if !evicted.is_empty() {
+            debug!(evicted = evicted.len(), remaining, "janitor run");
+        }
     }
 }
 

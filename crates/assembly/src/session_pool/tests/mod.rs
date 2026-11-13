@@ -142,6 +142,7 @@ pub(super) async fn answered_by(pool: &SessionPool, model: Arc<dyn base::interfa
 
 mod audit3;
 mod auto_name;
+mod background;
 mod context_op;
 mod eviction;
 mod goal_record;

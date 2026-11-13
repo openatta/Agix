@@ -448,16 +448,6 @@ fn a_model_error_is_classified_in_one_place() {
 /// runs as long as the pool does keeps it alive for ever.
 const HOLDS_THE_POOL: &[(&str, &str)] = &[
     (
-        "crates/assembly/src/session_pool/facade/background.rs::SessionPool::start_config_watcher",
-        "open: the watcher loops holding the pool, so the pool is not dropped while it runs; \
-         it should hold a `Weak` and upgrade it per change",
-    ),
-    (
-        "crates/assembly/src/session_pool/facade/background.rs::SessionPool::start_janitor",
-        "open: the janitor loops holding the pool, so the pool is not dropped while it runs; \
-         it should hold a `Weak` and upgrade it per sweep",
-    ),
-    (
         "crates/assembly/src/session_pool/facade/goal.rs::SessionPool::start_goal_round",
         "a goal round is a `run_turn`, which needs the pool for as long as the \
          round runs; it ends with the round",
