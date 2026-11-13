@@ -1,6 +1,6 @@
 //! 会话的有效权限模式、权限对象的解析，以及脚本绑定。
 
-use super::*;
+use crate::session_pool::*;
 
 /// The permission mode a session will actually run under.
 ///
@@ -16,7 +16,7 @@ use super::*;
 /// With nothing configured anywhere the result is `PermissionMode::Default`
 /// — i.e. *ask*. Managed settings that disable bypass turn a
 /// `bypassPermissions` result, however it was reached, into `Default`.
-pub(super) fn effective_permission_mode(
+pub(in crate::session_pool) fn effective_permission_mode(
     settings: &base::settings::LoadedSettings,
     options: Option<&SessionOptions>,
 ) -> base::settings::PermissionMode {
@@ -62,7 +62,7 @@ fn requested_permission_mode(
 /// purpose: a script that silently never runs sends its author looking for a
 /// bug in their JavaScript.
 #[cfg(feature = "scripts")]
-pub(super) fn bind_scripts(
+pub(in crate::session_pool) fn bind_scripts(
     settings: &Arc<base::settings::LoadedSettings>,
     project_root: &std::path::Path,
     packages: &[crate::plugins::PackageScripts],
@@ -131,7 +131,7 @@ pub(super) fn bind_scripts(
 /// load whatever file the repository puts at it, with the authority of a
 /// script inside the project.
 #[cfg_attr(not(feature = "scripts"), allow(dead_code))]
-pub(super) fn operator_script_bindings(
+pub(in crate::session_pool) fn operator_script_bindings(
     settings: &base::settings::LoadedSettings,
 ) -> Vec<base::settings::ScriptBinding> {
     if !settings.trust().is_untrusted() {
@@ -159,7 +159,7 @@ pub(super) fn operator_script_bindings(
 /// Without the script carrier compiled in, a `scripts` section is refused
 /// loudly rather than ignored — and so is a package that ships one.
 #[cfg(not(feature = "scripts"))]
-pub(super) fn bind_scripts(
+pub(in crate::session_pool) fn bind_scripts(
     settings: &Arc<base::settings::LoadedSettings>,
     _project_root: &std::path::Path,
     packages: &[crate::plugins::PackageScripts],
@@ -195,7 +195,7 @@ pub(super) fn bind_scripts(
 ///
 /// `bypassPermissions` with a host permission returns that very set, not an
 /// equivalent one: a host that sandboxes the daemon itself relies on it.
-pub(super) fn resolve_session_permission(
+pub(in crate::session_pool) fn resolve_session_permission(
     host: Option<&PermissionSet>,
     settings: &base::settings::LoadedSettings,
     mode: base::settings::PermissionMode,

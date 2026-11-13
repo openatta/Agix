@@ -1,6 +1,7 @@
 //! `script_binding_tests` 原样搬来的用例。
 
 use super::*;
+use crate::session_pool::parts::factory::operator_script_bindings;
 use base::project_trust::ProjectTrust;
 use base::settings::ScriptBinding;
 

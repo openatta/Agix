@@ -11,16 +11,14 @@ use base::event::AgentEvent;
 use base::id::Id;
 use base::interface::permission::PermissionSet;
 use base::interface::scene::SceneSpec;
-use base::settings::{Divergence, RecorderConfig, RecorderMode};
 use base::settings::{LoadedSettings, Settings};
+use base::settings::{RecorderConfig, RecorderMode};
 use model::client::AnthropicClient;
 use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use telemetry::file_recorder::FileRecorder;
-use telemetry::recorder::RecorderModel;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -32,7 +30,6 @@ mod facade;
 #[cfg_attr(not(feature = "mcp"), path = "parts/mcp_hub/off.rs")]
 mod mcp_hub;
 mod parts;
-mod permission_scripts;
 mod pool_telemetry;
 #[cfg(test)]
 mod tests;
@@ -50,13 +47,15 @@ pub use mcp_hub::{McpOptions, COMPILED as MCP_COMPILED};
 use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding, ProjectSceneKey};
 use parts::directory::SessionDirectory;
 use parts::events::DaemonEvents;
+use parts::factory::{
+    effective_permission_mode, BuildRequest, BuiltEngine, EngineFactory, SessionNamer,
+};
 use parts::hub::SessionHub;
 use parts::live::{idle_session_ids, reap_process_groups_later, LiveSession, LiveSessions};
 use parts::phase::{Generation, RunningTurn, TurnSlot, TurnTicket};
 use parts::scenes::SceneCatalog;
 use parts::scheduler::{Scheduler, TurnLauncher};
 use parts::specs::{SessionSpec, SpecStore};
-use permission_scripts::*;
 use pool_telemetry::*;
 
 /// Outcome of comparing a session's recorded `Meta.scene` (if any) against
@@ -148,110 +147,6 @@ pub enum TaskOutputRead {
 
 const ENGINE_NS_PREFIX: &str = "agix.";
 
-/// Where a session's first-turn naming call goes: the session's own `title`
-/// route when its project has one, else its conversation model.
-///
-/// Taken from the clients the session was built with, so a recorded session
-/// records the call and a replayed one is answered from the recording.
-#[derive(Clone)]
-struct SessionNamer {
-    session_id: String,
-    model: Arc<dyn base::interface::model::Model>,
-    model_name: String,
-}
-
-impl SessionNamer {
-    fn of(
-        session_id: &str,
-        task_router: Option<&base::provider::TaskRouter>,
-        model: &Arc<dyn base::interface::model::Model>,
-        model_name: &str,
-    ) -> Self {
-        let title = base::interface::model::call_purpose::TITLE;
-        let routed = task_router.and_then(|router| {
-            Some((
-                router.model_for(title),
-                router.model_name_for(title)?.to_string(),
-            ))
-        });
-        let (model, model_name) = routed.unwrap_or_else(|| (model.clone(), model_name.to_string()));
-        Self {
-            session_id: session_id.to_string(),
-            model,
-            model_name,
-        }
-    }
-
-    /// `Ok(None)` when a replay holds no naming call: the session stays
-    /// unnamed rather than the call going anywhere else.
-    async fn name(&self, prompt: &str) -> Result<Option<String>, String> {
-        use base::interface::model::{
-            CallOrigin, MessageRole, ModelContentBlock, ModelErrorKind, ModelEvent, ModelMessage,
-            StreamParams,
-        };
-        use base::prompt::PromptBlock;
-        use futures::StreamExt;
-
-        let system = PromptBlock::system(
-            "你是一个简洁的标题生成器。只输出 3-5 个词的中文标题，不要任何解释。",
-        );
-        let messages = vec![ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-        }];
-        let params = StreamParams {
-            model: self.model_name.clone(),
-            max_tokens: 50,
-            thinking_mode: base::settings::ThinkingMode::Off,
-            effort: None,
-            fallback_model: None,
-            cache_edits: vec![],
-            origin: Some(CallOrigin::auxiliary(
-                self.session_id.clone(),
-                base::interface::model::call_purpose::TITLE,
-            )),
-            input_map: None,
-            provider_search: None,
-        };
-
-        let stream = match self
-            .model
-            .stream(
-                vec![system],
-                vec![],
-                messages,
-                params,
-                CancellationToken::new(),
-            )
-            .await
-        {
-            Ok(stream) => stream,
-            Err(e) if e.kind == ModelErrorKind::NotRecorded => return Ok(None),
-            Err(e) => return Err(format!("LLM name error: {e}")),
-        };
-
-        tokio::pin!(stream);
-        let mut name = String::new();
-        while let Some(event) = stream.next().await {
-            match event {
-                Ok(ModelEvent::TextDelta { text }) => name.push_str(&text),
-                Ok(ModelEvent::EndTurn { .. }) => break,
-                Err(e) => return Err(format!("LLM name stream error: {e}")),
-                _ => {}
-            }
-        }
-
-        let name = name.trim().trim_matches('"').trim().to_string();
-        if name.is_empty() {
-            Err("empty name generated".into())
-        } else {
-            Ok(Some(name))
-        }
-    }
-}
-
 /// What `session.respondToPrompt` delivers, by `prompt_type`.
 #[derive(Debug, Clone)]
 pub enum PromptAnswer {
@@ -274,19 +169,6 @@ pub struct SessionPool {
     /// The default scene, the scenes served now, and every scene this pool
     /// can serve.
     scenes: SceneCatalog,
-    /// The host's own permission, handed to a session whose effective mode
-    /// is `bypassPermissions` in place of the rule gate (see
-    /// `resolve_session_permission`). `None` when the host supplied none:
-    /// such a session gets the gate too, which under bypass consults no rule
-    /// but still validates input and still follows a later `EnterPlanMode`.
-    permission: Option<PermissionSet>,
-    /// Built-in tool registry (Bash/Read/Write/Edit/Grep/Glob/...), shared
-    /// (cheap `Arc` clone) by every session `Builder`. Built once here via
-    /// `tools::register_builtin_tools`; `Builder::build()` on its own registers
-    /// only Skill/TaskStop/TaskOutput/Import/Agent/MCP. See
-    /// `tools::register_builtin_tools`'s doc comment for what's deliberately
-    /// excluded.
-    tools: Arc<base::tool::InMemoryToolRegistry>,
     /// The sessions on disk: what their logs record, and the projects this
     /// pool has served.
     directory: SessionDirectory,
@@ -317,19 +199,8 @@ pub struct SessionPool {
     health: std::sync::RwLock<base::interface::health::HealthChecks>,
     /// Each session's [`SessionSpec`]: what every rebuild of it applies.
     specs: SpecStore,
-    /// How long a `kind:"prompt"` permission ask may sit unanswered before
-    /// the daemon answers it with a `Deny` on the client's behalf.
-    /// `Duration::ZERO` disables the timer entirely (wait forever — the
-    /// engine's own semantics, appropriate for a host that really does keep
-    /// a human in the loop indefinitely).
-    ///
-    /// Defaults to [`DEFAULT_PERMISSION_PROMPT_TIMEOUT`]; `daemon/src/main.rs`
-    /// overrides it from `--permission-prompt-timeout`. See
-    /// `LiveSession.hub` for why this lives here rather than in
-    /// the engine.
-    permission_prompt_timeout: Duration,
-    rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
-    customize: Option<SessionCustomizer>,
+    /// Builds each session's engine.
+    factory: EngineFactory,
 }
 
 /// Default ceiling on an unanswered `kind:"prompt"` permission ask.

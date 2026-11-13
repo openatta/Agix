@@ -1,6 +1,8 @@
 //! `resolve_session_permission_tests` 原样搬来的用例。
 
 use super::*;
+use crate::session_pool::parts::factory::resolve_session_permission;
+use base::settings::Divergence;
 
 struct AllowAllTestPermission;
 #[async_trait::async_trait]

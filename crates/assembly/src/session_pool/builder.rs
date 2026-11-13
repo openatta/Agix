@@ -138,6 +138,14 @@ impl SessionPoolBuilder {
             }
         };
         let specs = SpecStore::new(self.history_store.clone(), self.cap);
+        let factory = EngineFactory::new(
+            tools,
+            self.permission,
+            self.rust_plugins,
+            self.customize,
+            self.permission_prompt_timeout,
+            self.history_store.clone(),
+        );
         let bindings = BindingCache::new(
             settings,
             ManagedLayer {
@@ -155,8 +163,6 @@ impl SessionPoolBuilder {
         Arc::new_cyclic(|this| SessionPool {
             live: LiveSessions::new(self.cap, self.idle_timeout),
             scenes,
-            permission: self.permission,
-            tools,
             directory: SessionDirectory::new(self.history_store),
             mcp,
             scheduler,
@@ -166,9 +172,7 @@ impl SessionPoolBuilder {
             plugins,
             bindings,
             specs,
-            permission_prompt_timeout: self.permission_prompt_timeout,
-            rust_plugins: self.rust_plugins,
-            customize: self.customize,
+            factory,
         })
     }
 }
