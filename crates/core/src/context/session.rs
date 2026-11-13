@@ -59,6 +59,9 @@ pub struct SessionState {
     /// 最近一次读取的文件路径，用于连续重复读取检测。
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
     ledger: std::sync::Mutex<SessionLedger>,
+    /// The model a host chose for this session since it was built, read by
+    /// whichever engine runs the next turn.
+    model_choice: std::sync::Mutex<Option<String>>,
 }
 
 /// What the engine running a session derives from its settings and scene.
@@ -227,6 +230,7 @@ impl SessionState {
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
             ledger: Default::default(),
+            model_choice: std::sync::Mutex::new(None),
         }
     }
 
@@ -422,6 +426,16 @@ impl SessionState {
 
     pub fn ledger(&self) -> std::sync::MutexGuard<'_, SessionLedger> {
         lock(&self.ledger)
+    }
+
+    /// The model the next turn asks for, when a host chose one; `None` leaves
+    /// the engine on the model it was built with.
+    pub fn model_choice(&self) -> Option<String> {
+        lock(&self.model_choice).clone()
+    }
+
+    pub fn set_model_choice(&self, model: Option<String>) {
+        *lock(&self.model_choice) = model;
     }
 
     /// Put back what the session log recorded: the goal, disarmed, and the

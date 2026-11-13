@@ -81,6 +81,10 @@ const FIELDS: &[(&str, &str)] = &[
         "SessionState::ledger",
         "Session: spend, output target and invoked skills",
     ),
+    (
+        "SessionState::model_choice",
+        "Session: the model a host chose, read by whichever engine runs the next turn",
+    ),
     ("SessionEnv::cwd", "Engine: from the engine's settings"),
     (
         "SessionEnv::additional_writable_dirs",
@@ -173,12 +177,8 @@ const CREATED_AT: &[(&str, &str)] = &[
     ),
 ];
 
-/// Ways production code may not move state between engines. The entries are
-/// what is still to go.
-const CARRIES: &[(&str, &str)] = &[(
-    "crates/assembly/src/session_pool/facade/session_ops.rs: EngineCommand::UpdateModel",
-    "`setModel` still tells the engine; to become the state's model choice",
-)];
+/// Ways production code may not move state between engines.
+const CARRIES: &[(&str, &str)] = &[];
 
 /// `file::function` around `hit`, or `file` at its top level.
 fn place(f: &SourceFile, hit: &Hit) -> String {

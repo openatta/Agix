@@ -177,10 +177,12 @@ impl SessionPool {
     /// `session.setModel` — what the next API call this session makes should
     /// ask for.
     ///
-    /// The engine has been able to do this all along (`EngineCommand::
-    /// UpdateModel`); what it had no way to hear was a client asking. The
-    /// transcript is not touched: this is a change to what answers the next
-    /// message, not a rewrite of the conversation that led to it.
+    /// The choice is written into the session's spec and onto its state,
+    /// which every engine the session runs on reads as a turn starts — so it
+    /// holds whichever engine runs the next turn, a rebuild in between
+    /// included. The transcript is not touched: this is a change to what
+    /// answers the next message, not a rewrite of the conversation that led to
+    /// it.
     ///
     /// Refused while a turn is running, rather than queued behind it. The
     /// engine's main loop is inside `process_turn` for the duration and is
@@ -201,7 +203,7 @@ impl SessionPool {
         provider: Option<&str>,
     ) -> Result<api::ModelChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
-        let (input_tx, project, scene) = self
+        let (project, scene) = self
             .live
             .with_live(session_id, |live| {
                 if let Some(busy) = live.turn.busy(session_id) {
@@ -209,7 +211,6 @@ impl SessionPool {
                 }
                 live.core.hub().touch();
                 Ok((
-                    live.engine.input_tx.clone(),
                     live.core.project().map(Path::to_path_buf),
                     live.core.scene().id.clone(),
                 ))
@@ -252,22 +253,8 @@ impl SessionPool {
                 .await
                 .map_err(|e| e.into_error(session_id))?;
         } else {
-            let spec = self.specs.update(session_id, change).1;
+            let spec = self.update_spec(session_id, change).await;
             self.specs.persist(session_id, &spec).await;
-        }
-        if let (false, Some(m)) = (switching_provider, model) {
-            if input_tx
-                .send(InputMessage::System {
-                    kind: EngineCommand::UpdateModel,
-                    content: m.to_string(),
-                })
-                .is_err()
-            {
-                return Err(PoolError::session_gone(
-                    session_id,
-                    format!("session is no longer running: {session_id}"),
-                ));
-            }
         }
 
         let spec = self.specs.get(session_id).unwrap_or_default();
@@ -277,6 +264,25 @@ impl SessionPool {
             provider: spec.provider(),
             applies: api::Applies::NextTurn,
         })
+    }
+
+    /// Change `sid`'s spec, and put the model it now names onto the session's
+    /// state when the session is in memory.
+    pub(in crate::session_pool) async fn update_spec(
+        &self,
+        sid: &str,
+        change: impl FnOnce(&mut SessionSpec),
+    ) -> SessionSpec {
+        let spec = self.specs.update(sid, change).1;
+        self.project_model_choice(sid).await;
+        spec
+    }
+
+    pub(in crate::session_pool) async fn project_model_choice(&self, sid: &str) {
+        let model = self.specs.get(sid).and_then(|spec| spec.model());
+        if let Some(core) = self.live.core_of(sid).await {
+            core.state().set_model_choice(model);
+        }
     }
 
     /// `session.setPrompt` — this session's own system-prompt append and

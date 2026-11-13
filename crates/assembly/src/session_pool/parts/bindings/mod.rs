@@ -546,6 +546,14 @@ impl BindingCache {
             .insert(key, Arc::new(binding));
     }
 
+    /// Hold the bindings' lock, so whoever asks for a binding waits.
+    #[cfg(test)]
+    pub(in crate::session_pool) async fn hold(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, HashMap<ProjectSceneKey, Arc<ProjectBinding>>> {
+        self.cache.bindings.lock().await
+    }
+
     #[cfg(test)]
     pub(in crate::session_pool) async fn is_empty(&self) -> bool {
         self.cache.bindings.lock().await.is_empty()

@@ -1,8 +1,6 @@
 //! `session.setModel` changes what the next turn asks for, and keeps it.
 //!
-//! The engine could always switch models mid-session — `EngineCommand::
-//! UpdateModel` is implemented and tested in `crates/runtime`. Nothing could
-//! ask it to: the only way to change a running session's model was to change
+//! Without it the only way to change a running session's model was to change
 //! the configuration and start a new session, which costs the conversation.
 //!
 //! What the client asked for has to outlive the `Agent` it was asked of. A

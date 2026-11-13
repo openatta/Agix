@@ -473,8 +473,10 @@ impl SessionPool {
         change: impl FnOnce(&mut SessionSpec),
     ) -> Result<SessionSpec, Rebuild> {
         let (previous, spec) = self.specs.update(sid, change);
+        self.project_model_choice(sid).await;
         if let Err(e) = self.rebuild_holding(sid, held, None).await {
             self.specs.restore(sid, previous);
+            self.project_model_choice(sid).await;
             if !self.live.contains(sid).await {
                 self.specs.release(sid);
             }

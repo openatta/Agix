@@ -431,33 +431,39 @@ async fn a_failed_turn_still_persists_the_users_message() {
     );
 }
 
-/// `/model` has to reach the engine. `process_turn`'s command match is
-/// exhaustive, so a new `EngineCommand` fails the build instead of being
-/// swallowed.
+/// A model chosen on the session's state is what the next turn asks for,
+/// whichever engine runs it.
 #[tokio::test]
-async fn update_model_command_changes_the_model_the_next_turn_uses() {
+async fn the_model_chosen_on_the_sessions_state_is_the_one_the_next_turn_uses() {
     let (mut agent, _event_rx, _input_tx) = Builder::new()
         .scene(Arc::new(scene::code::spec(
             scene::code::Interaction::Interactive,
         )))
-        .model(Arc::new(DummyModel) as Arc<dyn Model>)
+        .model(Arc::new(FailingModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
 
     assert_eq!(agent.settings.model.model_name, "test");
-
     agent
+        .session_state()
+        .set_model_choice(Some("claude-opus-5".into()));
+    assert_eq!(
+        agent.settings.model.model_name, "test",
+        "a turn already running keeps its model"
+    );
+
+    let _ = agent
         .process_turn(
-            InputMessage::System {
-                kind: EngineCommand::UpdateModel,
-                content: "claude-opus-5".into(),
+            InputMessage::User {
+                content: "hello".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
             },
             CancellationToken::new(),
         )
-        .await
-        .expect("UpdateModel should be handled");
+        .await;
 
     assert_eq!(agent.settings.model.model_name, "claude-opus-5");
 }

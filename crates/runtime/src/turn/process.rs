@@ -76,6 +76,20 @@ impl Agent {
         }
     }
 
+    /// Ask the next turn's model calls for the model the session's state
+    /// holds, when a host chose one: the choice outlives this engine, and
+    /// every engine the session runs on reads it here.
+    fn adopt_model_choice(&mut self) {
+        let Some(model) = self.session_state.model_choice() else {
+            return;
+        };
+        if self.settings.model.model_name != model {
+            let mut settings = (*self.settings).clone();
+            settings.values.model.model_name = model;
+            self.settings = Arc::new(settings);
+        }
+    }
+
     /// Process one input message — the core turn loop.
     /// Internal turn processing. Consumers should use [`Agent::run`] or [`Agent::run_turn`].
     pub(crate) async fn process_turn(
@@ -89,6 +103,7 @@ impl Agent {
                 attachments,
                 turn_id,
             } => {
+                self.adopt_model_choice();
                 self.current_turn_id = turn_id;
                 self.session.set_turn_id(Some(self.current_turn_id.clone()));
                 let _ = self.channels.event_tx.send(AgentEvent::TurnStart {
@@ -301,15 +316,6 @@ impl Agent {
                     // `settings.model.model_name` into its `effective_model`,
                     // so swapping it here is what makes a host's `/model`
                     // change the model the next turn calls.
-                    EngineCommand::UpdateModel => {
-                        let mut settings = (*self.settings).clone();
-                        settings.values.model.model_name = content.clone();
-                        self.settings = Arc::new(settings);
-                        let _ = self.channels.event_tx.send(AgentEvent::System {
-                            message: format!("model set to {content}"),
-                        });
-                        Ok(TurnOutcome::default())
-                    }
                     EngineCommand::RefreshMcp => {
                         self.tooling.mcp.refresh_tools().await;
                         sync_mcp_adapters(

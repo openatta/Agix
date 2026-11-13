@@ -196,7 +196,6 @@ pub enum EngineCommand {
     SetSessionId,
     CompactNow,
     RefreshMcp,
-    UpdateModel,
     /// Interrupt the turn in flight and keep the session alive — what a host
     /// binds to Esc. Distinct from cancelling the token passed to
     /// [`Agent::run`], which ends the whole session.

@@ -1541,9 +1541,9 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 白名单里 → `INVALID_PARAMS`,而不是把一个对端不认识的模型名静默发过去。子 Agent、
 压缩等其他路由任务仍按设置走。
 
-**有 turn 在跑时返回 `SESSION_BUSY`**(`reason: "turn_running"`),不排队。引擎跑 turn 的时候
-不读输入通道,排进去的命令会在某个没人宣布的时刻生效 —— 调用方被告知模型换了,却看着旧模型
-答完这一轮。要换就先 `session.interrupt`,或者等这一轮结束。会话正在原地重建时同样
+**有 turn 在跑时返回 `SESSION_BUSY`**(`reason: "turn_running"`),不排队。选择记在会话上,
+哪一代引擎跑下一轮都在那一轮开始时读它;正在跑的这一轮不会换,这时受理下来,调用方被告知模型
+换了,却看着旧模型答完这一轮。要换就先 `session.interrupt`,或者等这一轮结束。会话正在原地重建时同样
 `SESSION_BUSY`,`reason` 为 `"rebuilding"`。换厂商要重建会话,会话还有后台任务在跑(子 Agent、
 团队成员、后台程序、Monitor)时同样 `SESSION_BUSY`,`reason` 为 `"background_tasks"`,`data` 多一个
 `running_task_ids` 列出它们 —— 重建会停掉它们;等它们结束,或先 `session.stopTask`。
