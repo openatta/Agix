@@ -48,4 +48,5 @@ mod script_binding;
 /// pool does itself.
 mod session_listing;
 mod set_model;
+mod steer;
 mod with_session_lock;

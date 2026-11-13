@@ -194,7 +194,6 @@ impl Agent {
                         InputMessage::Steer {
                             content,
                             message_id,
-                            ack,
                         } => {
                             let offered = crate::steering::lock(&steering).offer(
                                 base::event::QueuedUserMessage {
@@ -202,28 +201,15 @@ impl Agent {
                                     content,
                                 },
                             );
-                            match (offered, ack) {
-                                (Ok(()), Some(ack)) => {
-                                    let _ = ack.send(crate::steering::SteerAck::Accepted);
-                                }
-                                (Ok(()), None) => {}
-                                (Err(_), Some(ack)) => {
-                                    let _ = ack.send(crate::steering::SteerAck::NotRunning);
-                                }
-                                (Err(m), None) => {
-                                    let turn = InputMessage::User {
-                                        content: m.content,
-                                        attachments: vec![],
-                                        turn_id: m.message_id,
-                                    };
-                                    if !hand_to_turn_loop(
-                                        &fwd_tx,
-                                        &turn_cancel,
-                                        &session_cancel,
-                                        turn,
-                                    ) {
-                                        break;
-                                    }
+                            if let Err(m) = offered {
+                                let turn = InputMessage::User {
+                                    content: m.content,
+                                    attachments: vec![],
+                                    turn_id: m.message_id,
+                                };
+                                if !hand_to_turn_loop(&fwd_tx, &turn_cancel, &session_cancel, turn)
+                                {
+                                    break;
                                 }
                             }
                         }

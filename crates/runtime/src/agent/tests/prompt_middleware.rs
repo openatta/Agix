@@ -360,6 +360,7 @@ async fn a_message_sent_during_a_tool_step_reaches_the_next_model_call() {
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
+    let steering = agent.steer_handle();
     let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
 
     input_tx
@@ -377,7 +378,7 @@ async fn a_message_sent_during_a_tool_step_reaches_the_next_model_call() {
     .await;
 
     assert_eq!(
-        steer(&input_tx, "m1", "also check the tests").await,
+        steer(&steering, "m1", "also check the tests"),
         crate::steering::SteerAck::Accepted
     );
     gate.notify_one();
@@ -446,6 +447,7 @@ async fn a_message_sent_while_the_model_answers_is_answered_in_the_same_turn() {
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
+    let steering = agent.steer_handle();
     let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
 
     input_tx
@@ -464,7 +466,7 @@ async fn a_message_sent_while_the_model_answers_is_answered_in_the_same_turn() {
     .expect("the first call should start");
 
     assert_eq!(
-        steer(&input_tx, "m1", "and one more thing").await,
+        steer(&steering, "m1", "and one more thing"),
         crate::steering::SteerAck::Accepted
     );
     hold.notify_one();
@@ -484,7 +486,7 @@ async fn a_message_sent_while_the_model_answers_is_answered_in_the_same_turn() {
     assert_eq!(text_of(sent[1].last().unwrap()), "and one more thing");
 
     assert_eq!(
-        steer(&input_tx, "m2", "too late").await,
+        steer(&steering, "m2", "too late"),
         crate::steering::SteerAck::NotRunning,
         "an idle session takes no steering; the sender keeps the message"
     );
@@ -514,6 +516,7 @@ async fn an_interrupted_turn_hands_back_what_it_never_delivered() {
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
+    let steering = agent.steer_handle();
     let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
 
     input_tx
@@ -530,7 +533,7 @@ async fn an_interrupted_turn_hands_back_what_it_never_delivered() {
     )
     .await;
     assert_eq!(
-        steer(&input_tx, "m1", "never mind").await,
+        steer(&steering, "m1", "never mind"),
         crate::steering::SteerAck::Accepted
     );
     input_tx

@@ -60,6 +60,8 @@ tokio-tungstenite = { workspace = true, optional = true }
 [dev-dependencies]
 session       = { workspace = true }
 tempfile = { workspace = true }
+# Paused-clock tests: a steer that the engine reads late.
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 # ── The script carrier and the package layer ────────────────────────────

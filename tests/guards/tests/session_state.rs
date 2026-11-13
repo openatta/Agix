@@ -175,16 +175,10 @@ const CREATED_AT: &[(&str, &str)] = &[
 
 /// Ways production code may not move state between engines. The entries are
 /// what is still to go.
-const CARRIES: &[(&str, &str)] = &[
-    (
-        "crates/assembly/src/session_pool/facade/session_ops.rs: EngineCommand::UpdateModel",
-        "`setModel` still tells the engine; to become the state's model choice",
-    ),
-    (
-        "crates/assembly/src/session_pool/facade/turn.rs: InputMessage::Steer",
-        "steer still goes through the engine with an ack; to go through the session's queue",
-    ),
-];
+const CARRIES: &[(&str, &str)] = &[(
+    "crates/assembly/src/session_pool/facade/session_ops.rs: EngineCommand::UpdateModel",
+    "`setModel` still tells the engine; to become the state's model choice",
+)];
 
 /// `file::function` around `hit`, or `file` at its top level.
 fn place(f: &SourceFile, hit: &Hit) -> String {

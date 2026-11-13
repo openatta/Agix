@@ -29,16 +29,12 @@ pub enum InputMessage {
         content: String,
     },
     /// A user message meant for the turn that is running, read by the model
-    /// at the turn's next step boundary. Only [`Agent::run`] routes these.
-    ///
-    /// With `ack`, the sender learns whether a turn took it, and keeps the
-    /// message when none did. Without `ack`, a message that finds no turn
-    /// running starts one, as an ordinary `User` message would.
-    Steer {
-        content: String,
-        message_id: String,
-        ack: Option<tokio::sync::oneshot::Sender<crate::steering::SteerAck>>,
-    },
+    /// at the turn's next step boundary. Only [`Agent::run`] routes these. A
+    /// message that finds no turn running starts one, as an ordinary `User`
+    /// message would. A sender that needs to know whether a turn took it, and
+    /// to keep it when none did, offers it on the session's
+    /// [`SteerHandle`](crate::steering::SteerHandle) instead.
+    Steer { content: String, message_id: String },
     /// A look at, or a change to, this session's context, handled between
     /// turns. The answer — or why not — goes back on `reply`.
     Context {

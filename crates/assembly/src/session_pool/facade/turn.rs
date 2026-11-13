@@ -6,7 +6,7 @@ use crate::session_pool::*;
 /// What one attempt at the turn slot came to.
 enum Claim {
     Taken(TurnTicket, InputSender),
-    Busy(Busy, InputSender),
+    Busy(Busy, Arc<SessionCore>),
     Skipped,
 }
 
@@ -145,10 +145,10 @@ impl SessionPool {
                     {
                         return Claim::Skipped;
                     }
-                    let input_tx = live.engine.input_tx.clone();
                     if let Some(busy) = live.turn.busy(&sid) {
-                        return Claim::Busy(busy, input_tx);
+                        return Claim::Busy(busy, live.core.clone());
                     }
+                    let input_tx = live.engine.input_tx.clone();
                     let running = RunningTurn::new(turn_id.clone(), initiator, initiator_id);
                     if live.turn.claim(running).is_err() {
                         unreachable!("a slot that is not busy is idle");
@@ -174,7 +174,7 @@ impl SessionPool {
                 })
                 .await
                 .ok_or_else(|| PoolError::session_not_found(&sid))?;
-            let (busy, input_tx) = match claim {
+            let (busy, core) = match claim {
                 Claim::Taken(ticket, input_tx) => break (ticket, input_tx),
                 Claim::Skipped => {
                     return Ok(TurnOutcome::Skipped {
@@ -182,7 +182,7 @@ impl SessionPool {
                         turn_id,
                     })
                 }
-                Claim::Busy(busy, input_tx) => (busy, input_tx),
+                Claim::Busy(busy, core) => (busy, core),
             };
             match on_busy {
                 OnBusy::Reject => return Err(PoolError::SessionBusy(busy)),
@@ -190,17 +190,10 @@ impl SessionPool {
                     if !steer_tried && attachments.is_empty() && busy.current_turn_id.is_some() =>
                 {
                     steer_tried = true;
-                    let (ack, acked) = tokio::sync::oneshot::channel();
-                    let _ = input_tx.send(InputMessage::Steer {
-                        content: message.clone(),
-                        message_id: turn_id.clone(),
-                        ack: Some(ack),
-                    });
-                    if let Ok(Ok(runtime::steering::SteerAck::Accepted)) =
-                        tokio::time::timeout(Duration::from_secs(5), acked).await
-                    {
-                        if let (Some(hub), Some(watcher)) = (self.hub_of(&sid).await, &watcher) {
-                            hub.subscribe(watcher.clone());
+                    let offered = core.steer().offer(turn_id.clone(), message.clone());
+                    if offered == runtime::steering::SteerAck::Accepted {
+                        if let Some(watcher) = &watcher {
+                            core.hub().subscribe(watcher.clone());
                         }
                         return Ok(TurnOutcome::Steered {
                             session_id: sid,

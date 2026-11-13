@@ -344,20 +344,12 @@ pub(super) async fn next_event(
     .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
-pub(super) async fn steer(
-    input_tx: &InputSender,
+pub(super) fn steer(
+    steering: &crate::steering::SteerHandle,
     id: &str,
     text: &str,
 ) -> crate::steering::SteerAck {
-    let (ack, acked) = tokio::sync::oneshot::channel();
-    input_tx
-        .send(InputMessage::Steer {
-            content: text.into(),
-            message_id: id.into(),
-            ack: Some(ack),
-        })
-        .unwrap();
-    acked.await.expect("the demultiplexer always answers")
+    steering.offer(id, text)
 }
 
 #[tokio::test]
@@ -517,6 +509,7 @@ pub(super) async fn steer_during_a_tool_step(
     )
     .build()
     .expect("build should succeed");
+    let steering = agent.steer_handle();
     let engine = tokio::spawn(async move { agent.run(CancellationToken::new()).await });
 
     input_tx
@@ -537,7 +530,7 @@ pub(super) async fn steer_during_a_tool_step(
     }
     for (id, text) in steered {
         assert_eq!(
-            steer(&input_tx, id, text).await,
+            steer(&steering, id, text),
             crate::steering::SteerAck::Accepted
         );
     }

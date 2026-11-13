@@ -278,12 +278,7 @@ impl Agent {
                 );
                 Ok(TurnOutcome::default())
             }
-            InputMessage::Steer { ack, .. } => {
-                if let Some(ack) = ack {
-                    let _ = ack.send(crate::steering::SteerAck::NotRunning);
-                }
-                Ok(TurnOutcome::default())
-            }
+            InputMessage::Steer { .. } => Ok(TurnOutcome::default()),
             InputMessage::Context { request, reply } => {
                 let _ = reply.send(self.handle_context(request).await);
                 Ok(TurnOutcome::default())
