@@ -35,7 +35,7 @@ impl SessionPool {
     #[cfg(feature = "mcp")]
     pub(super) fn placed_mcp_server(
         &self,
-        settings: &Settings,
+        settings: &base::settings::LoadedSettings,
         name: &str,
         cfg: mcp::config::McpServerConfig,
     ) -> mcp::config::McpServerConfig {
@@ -52,7 +52,10 @@ impl SessionPool {
     /// `admit_mcp`, a project's own after `confined_to_own_env`. Every entry
     /// that will not be connected gets a `mcp_connect_failed` event here.
     #[cfg(feature = "mcp")]
-    pub(super) fn admit_mcp_servers(&self, settings: &Settings) -> AdmittedMcp {
+    pub(super) fn admit_mcp_servers(
+        &self,
+        settings: &base::settings::LoadedSettings,
+    ) -> AdmittedMcp {
         let plugin_servers = self.plugins.mcp_servers();
         let projects_own: std::collections::HashSet<String> = project_tier_mcp_servers(settings)
             .into_iter()
@@ -158,7 +161,7 @@ impl SessionPool {
     pub(super) async fn first_mcp_connect(
         &self,
         key: ProjectSceneKey,
-        settings: &Settings,
+        settings: &base::settings::LoadedSettings,
     ) -> Arc<McpManager> {
         let slot = self.mcp_by_project.slot(&key);
         let update = slot.update().await;
@@ -257,7 +260,7 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
-        settings: &Settings,
+        settings: &base::settings::LoadedSettings,
     ) -> (Vec<String>, Vec<String>, Vec<String>) {
         let key = (project_root.map(Path::to_path_buf), scene_id.to_string());
         let slot = self.mcp_by_project.slot(&key);

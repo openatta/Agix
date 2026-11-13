@@ -22,7 +22,7 @@ use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
 use base::interface::scene::Scene;
 use base::interface::skill_catalog::{NoSkills, SkillCatalog};
-use base::settings::Settings;
+use base::settings::LoadedSettings;
 use base::tool::InMemoryToolRegistry;
 use tokio_util::sync::CancellationToken;
 
@@ -63,7 +63,7 @@ pub struct SessionContext<'a> {
     /// the modules, the scene and the plugins registered theirs: the tools a
     /// delegate may inherit.
     pub template_tools: &'a Arc<dyn base::tool::ToolRegistry>,
-    pub settings: &'a Arc<Settings>,
+    pub settings: &'a Arc<LoadedSettings>,
     pub config: &'a Arc<EngineConfig>,
     pub scene: &'a Arc<dyn Scene>,
     /// Already wrapped for telemetry: what a module calls through it is

@@ -593,7 +593,7 @@ fn run_sub_applies_permission_mode_and_max_turns_override_end_to_end() {
 
     let def = agent_tool.inner.agent_type_def("cautious").unwrap();
     let mut settings = agent_tool.sub_settings(None, std::path::PathBuf::from("/tmp/cwd"));
-    apply_agent_type_overrides(&mut settings, &def);
+    apply_agent_type_overrides(&mut settings.values, &def);
     assert_eq!(
         settings.permission_mode,
         base::settings::PermissionMode::Plan

@@ -4,13 +4,12 @@ use super::*;
 
 /// `mcp.status` entries for the project's own servers that are not started
 /// because the project is not trusted.
-pub(super) fn untrusted_mcp_entries(settings: &Settings) -> Vec<api::McpServerStatus> {
-    if !settings.project_layer.trust.is_untrusted() {
+pub(super) fn untrusted_mcp_entries(settings: &LoadedSettings) -> Vec<api::McpServerStatus> {
+    if !settings.trust().is_untrusted() {
         return Vec::new();
     }
     settings
-        .project_layer
-        .mcp_servers
+        .project_mcp_servers()
         .iter()
         .filter(|(name, _)| !settings.mcp_servers.contains_key(*name))
         .map(|(name, cfg)| {

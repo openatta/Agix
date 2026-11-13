@@ -562,7 +562,7 @@ async fn task_created_fires_when_a_running_task_starts() {
     let dir = tempfile::tempdir().unwrap();
     let seen = dir.path().join("task_created.json");
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "TaskCreated": [
             { "type": "command", "command": format!("cat > '{}'", seen.display()) }
         ]
@@ -603,7 +603,7 @@ async fn task_completed_fires_when_a_running_task_ends_however_it_ends() {
     let dir = tempfile::tempdir().unwrap();
     let seen = dir.path().join("task_completed.jsonl");
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "TaskCompleted": [
             { "type": "command", "command": format!("cat >> '{}'", seen.display()) }
         ]
@@ -684,7 +684,7 @@ async fn an_async_rewake_hook_runs_again_once_a_running_task_ends() {
     let dir = tempfile::tempdir().unwrap();
     let woken = dir.path().join("woken");
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "SessionStart": [{
             "type": "command",
             "async_rewake": true,
@@ -762,7 +762,7 @@ async fn a_tool_hook_is_told_which_tool_use_it_is_about_and_the_live_mode() {
     let dir = tempfile::tempdir().unwrap();
     let seen = dir.path().join("pre_tool_use.json");
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "PreToolUse": [
             { "type": "command", "command": format!("cat > '{}'", seen.display()) }
         ]
@@ -812,7 +812,7 @@ async fn post_tool_use_hook_discontinue_ends_the_turn_early() {
     // once (a working-but-broken discontinue would still call it a 2nd
     // time to hand back the tool result).
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "PostToolUse": [
             { "type": "command", "command": "echo '{\"continue\":false}'" }
         ]
@@ -914,7 +914,7 @@ impl Model for AnswersDirectlySlowPrefetchModel {
 #[tokio::test]
 async fn turn_without_tool_use_does_not_wait_on_a_slow_memory_prefetch() {
     let mut settings = test_settings();
-    settings.memory_enabled = true;
+    settings.values.memory_enabled = true;
     let model: Arc<dyn Model> = Arc::new(AnswersDirectlySlowPrefetchModel);
     let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
 
@@ -1317,7 +1317,7 @@ async fn cancelling_the_session_still_stops_the_turn_in_flight() {
 #[tokio::test]
 async fn user_prompt_submit_hook_block_ends_the_turn_before_any_model_call() {
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "UserPromptSubmit": [
             { "type": "command", "command": "echo '{\"decision\":\"block\",\"message\":\"not now\"}'" }
         ]
@@ -1363,7 +1363,7 @@ async fn user_prompt_submit_hook_block_ends_the_turn_before_any_model_call() {
 #[tokio::test]
 async fn user_prompt_submit_hook_rewrites_the_message_content() {
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "UserPromptSubmit": [
             { "type": "command", "command": "echo '{\"updated_input\":\"REWRITTEN\"}'" }
         ]

@@ -90,8 +90,8 @@ impl Daemon {
             "code",
             &StaticDaemonPaths::new(dir.path().to_path_buf()),
         );
-        config.settings.memory_enabled = false;
-        config.settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
+        config.settings.values.memory_enabled = false;
+        config.settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
         let pool = daemon::assemble::pool(
             &config,
             Arc::new(scene::code::CodeScene::default()),

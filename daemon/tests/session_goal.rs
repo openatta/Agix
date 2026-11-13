@@ -126,7 +126,7 @@ impl Daemon {
             "code",
             &StaticDaemonPaths::new(dir.path().to_path_buf()),
         );
-        config.settings.memory_enabled = false;
+        config.settings.values.memory_enabled = false;
         let pool = daemon::assemble::pool(
             &config,
             Arc::new(scene::code::CodeScene::default()),

@@ -1,6 +1,6 @@
 //! `ConfigSource` — where the settings layers come from.
 //!
-//! `Settings::load` merges three tiers, each with a gitignored overlay beside
+//! `LoadedSettings::load` merges three tiers, each with a gitignored overlay beside
 //! it, and it read all six with `std::fs::read_to_string`. That made the file
 //! system part of the definition of "configuration": a deployment that keeps
 //! its settings in a config service, a Kubernetes ConfigMap, or a database had
@@ -10,14 +10,14 @@
 //! What moves is only *where the layers come from*. The merge — six layers
 //! low-to-high, generic recursive JSON merge, `paths` stripped from every
 //! layer, `permission_rules` from an overlay held apart — stays exactly where
-//! it was, in [`crate::settings::Settings::load_from`]. A source hands over
+//! it was, in [`crate::settings::LoadedSettings::load_from`]. A source hands over
 //! JSON values in priority order and has no say in what happens to them,
 //! which is what keeps "settings come from somewhere else" from turning into
 //! "settings mean something else".
 //!
 //! # A source reports its own failures and yields nothing
 //!
-//! `Settings::load` never fails: a layer that is absent is skipped, and one
+//! `LoadedSettings::load` never fails: a layer that is absent is skipped, and one
 //! that will not parse is skipped with a warning rather than taking startup
 //! down with it. That property belongs to the loader and cannot be delegated,
 //! so [`ConfigSource::layers`] returns layers rather than a `Result` — a
@@ -28,7 +28,7 @@
 //! # Synchronous, and a remote source is still a fit
 //!
 //! Configuration is read once, before anything is built, and every caller of
-//! `Settings::load` today is synchronous. A source that has to go over a
+//! `LoadedSettings::load` today is synchronous. A source that has to go over a
 //! network fetches in [`ConfigSource::layers`] — it is called once per process
 //! and is allowed to be slow — or fetches ahead of time and hands the result
 //! over as [`InMemoryLayers`]. [`Chain`] is for the common shape of the second
@@ -72,8 +72,8 @@ pub struct ConfigLayer {
     /// shared settings.
     ///
     /// The merge treats the two identically but for one rule: a
-    /// `permission_rules` array in an overlay is held apart as
-    /// `local_permission_rules` instead of being merged into the shared
+    /// `permission_rules` array in an overlay is marked
+    /// `LoadedRule::machine_local`, apart from the shared
     /// rules, because a rule nobody else on the team can see is not the same
     /// kind of statement as one committed alongside the code.
     pub machine_local: bool,

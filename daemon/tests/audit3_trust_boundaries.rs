@@ -151,7 +151,7 @@ async fn audit3_a_skills_inline_command_does_not_run_in_a_scene_without_bash() {
     let paths =
         StaticDaemonPaths::with_project(scene_root, work.clone()).with_global(global.clone());
     let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
-    config.settings.memory_enabled = false;
+    config.settings.values.memory_enabled = false;
     let model = Arc::new(MockAnthropicClient::new());
     let pool = daemon::assemble::pool(
         &config,

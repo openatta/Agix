@@ -62,8 +62,8 @@ async fn start(
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.session_cap = session_cap;
-    config.settings.memory_enabled = false;
-    configure(&mut config.settings);
+    config.settings.values.memory_enabled = false;
+    configure(&mut config.settings.values);
 
     let store: Arc<dyn history::store::HistoryStore> = Arc::new(
         history::store::JsonlHistoryStore::with_roots(

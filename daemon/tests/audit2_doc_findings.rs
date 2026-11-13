@@ -101,8 +101,8 @@ impl Daemon {
         let paths =
             StaticDaemonPaths::with_project(home.clone(), work.clone()).with_global(home.clone());
         let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
-        config.settings.memory_enabled = false;
-        config.settings.permission_mode = setup.mode;
+        config.settings.values.memory_enabled = false;
+        config.settings.values.permission_mode = setup.mode;
         config.managed_settings_path = setup.managed.map(|content| {
             let path = dir.path().join("it").join("managed-settings.json");
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -463,7 +463,7 @@ fn audit2_a_skill_url_grant_on_a_public_suffix_is_unscoped() {
     }
 }
 
-/// `settings_json_schema` 的注释说这份 schema "can never drift from what `Settings::load()`
+/// `settings_json_schema` 的注释说这份 schema "can never drift from what `LoadedSettings::load()`
 /// actually accepts",README 让用户拿它做编辑器校验。可它要求顶层的 `model`、`paths`,
 /// `sandbox` 要求 `deny_read`、`allowed_domains`:空文件、README 的路由示例、迁移指南让写的
 /// `{"sandbox": {"unattended_requires_network_policy": true}}` 都过不了校验。`bubble` 则反过来:

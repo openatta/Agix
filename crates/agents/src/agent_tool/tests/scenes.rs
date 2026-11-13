@@ -27,7 +27,10 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
     let agent_tool = test_agent_tool();
     let harnix: Arc<dyn Scene> = Arc::new(scene::harnix::HarnixScene);
     agent_tool.set_scene(harnix);
-    let settings = Settings::defaults_for("test-model");
+    let settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("test-model"),
+        base::settings::PathSettings::default(),
+    );
 
     assert_eq!(
         agent_tool.inner.scene_for_subagent(None, &settings).id(),
@@ -95,7 +98,10 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
 #[test]
 fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
     let agent_tool = test_agent_tool();
-    let settings = Settings::defaults_for("test-model");
+    let settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("test-model"),
+        base::settings::PathSettings::default(),
+    );
     let named = AgentTypeDefinition {
         name: "specialist".into(),
         description: "d".into(),
@@ -178,7 +184,10 @@ impl Scene for AliasScene {
 #[test]
 fn subagent_scene_falls_back_to_settings_scope_then_code() {
     let agent_tool = test_agent_tool();
-    let mut settings = Settings::defaults_for("test-model");
+    let mut settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("test-model"),
+        base::settings::PathSettings::default(),
+    );
 
     settings.paths.scope = "mini".into();
     assert_eq!(
@@ -202,8 +211,11 @@ fn subagent_inherits_the_parent_instruction_file() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("test-model"));
 
-    let mut parent = Settings::defaults_for("test-model");
-    parent.instruction_file = Some(std::path::PathBuf::from("/proj/AGENTS.md"));
+    let mut parent = base::settings::LoadedSettings::new(
+        Settings::defaults_for("test-model"),
+        base::settings::PathSettings::default(),
+    );
+    parent.values.instruction_file = Some(std::path::PathBuf::from("/proj/AGENTS.md"));
     let agent_tool = AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
         .with_settings(Arc::new(parent));
     assert_eq!(

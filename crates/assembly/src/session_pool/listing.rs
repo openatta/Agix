@@ -83,8 +83,7 @@ impl SessionPool {
             });
         };
         let settings = self.settings_for_project(project_root, scene_id).await;
-        let mut settings_json =
-            serde_json::to_value(settings.as_ref()).unwrap_or_else(|_| serde_json::json!({}));
+        let mut settings_json = effective_settings_json(&settings);
         if !include_secrets {
             redact_settings_secrets(&mut settings_json);
         }
@@ -148,7 +147,7 @@ impl SessionPool {
             Tier::Effective => {
                 let settings = self.settings_for_project(project_root, scene_id).await;
                 managed = serde_json::to_value(&settings.managed).unwrap_or_default();
-                serde_json::to_value(settings.as_ref()).unwrap_or_else(|_| serde_json::json!({}))
+                effective_settings_json(&settings)
             }
             _ => match path {
                 Some(p) => tokio::fs::read_to_string(&p)
@@ -556,4 +555,31 @@ impl SessionPool {
         }
         self.load_entries(session_id).await.is_ok()
     }
+}
+
+/// What `scene.describe` and `config.get {tier: "effective"}` report as the
+/// merged settings: the values, where the scene's data lives, and the rules
+/// the shared settings files contribute.
+fn effective_settings_json(settings: &LoadedSettings) -> serde_json::Value {
+    let mut value =
+        serde_json::to_value(&settings.values).unwrap_or_else(|_| serde_json::json!({}));
+    let rules: Vec<_> = settings
+        .rules
+        .iter()
+        .filter(|r| !r.machine_local)
+        .map(|r| &r.rule)
+        .collect();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "paths".into(),
+            serde_json::to_value(&settings.paths).unwrap_or_default(),
+        );
+        if !rules.is_empty() {
+            object.insert(
+                "permission_rules".into(),
+                serde_json::to_value(rules).unwrap_or_default(),
+            );
+        }
+    }
+    value
 }

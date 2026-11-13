@@ -5,7 +5,7 @@ use crate::interface::prompt_assembler::AssemblyRequest;
 use crate::interface::scene::{Scene, ScenePromptContext};
 use crate::memory::{memory_prompt, MemoryStore};
 use crate::rules::render_rules_prompt;
-use crate::settings::Settings;
+use crate::settings::LoadedSettings;
 use serde::{Deserialize, Serialize};
 
 /// Protocol-agnostic prompt block.
@@ -180,7 +180,7 @@ impl PromptBlock {
 /// as a synthetic `<system-reminder>` user message.
 pub fn assemble_prompt(
     scene: &dyn Scene,
-    settings: &Settings,
+    settings: &LoadedSettings,
     memory_store: &MemoryStore,
     ctx: &ScenePromptContext,
     skills_text: Option<&str>,
@@ -420,7 +420,21 @@ mod tests {
         }
     }
 
-    #[allow(deprecated)]
+    fn test_loaded(settings: Settings) -> LoadedSettings {
+        LoadedSettings::new(
+            settings,
+            PathSettings {
+                user_data_dir: "/tmp/agix/scenes/code".into(),
+                global_data_dir: "/tmp/agix".into(),
+                workspace: crate::settings::Workspace::project_of(std::path::Path::new(
+                    "/tmp/agix/local",
+                )),
+                local_data_dir: "/tmp/agix/local".into(),
+                scope: "code".into(),
+            },
+        )
+    }
+
     fn test_settings() -> Settings {
         Settings {
             model: ModelSettings {
@@ -432,15 +446,6 @@ mod tests {
                 thinking_mode: ThinkingMode::Auto,
                 effort: None,
                 fallback_model: None,
-            },
-            paths: PathSettings {
-                user_data_dir: "/tmp/agix/scenes/code".into(),
-                global_data_dir: "/tmp/agix".into(),
-                workspace: crate::settings::Workspace::project_of(std::path::Path::new(
-                    "/tmp/agix/local",
-                )),
-                local_data_dir: "/tmp/agix/local".into(),
-                scope: "code".into(),
             },
             execution: ExecutionSettings::default(),
             compaction: Default::default(),
@@ -456,22 +461,15 @@ mod tests {
             disable_skill_shell_execution: false,
             path_style: Default::default(),
             permission_mode: PermissionMode::default(),
-            permission_rules: Vec::new(),
-            local_permission_rules: Vec::new(),
             allow_client_permission_override: false,
             telemetry_enabled: false,
             hooks_config: None,
             project_trust: Default::default(),
-            project_layer: Default::default(),
-            ignored_values: Vec::new(),
-            managed: None,
             mcp_servers: Default::default(),
-            mcp_server_dirs: Default::default(),
             providers: Default::default(),
             default_provider: None,
             task_models: Default::default(),
             language: None,
-            session_dir: None,
         }
     }
 
@@ -503,7 +501,7 @@ mod tests {
             tool_results_ever_cleared: false,
         };
 
-        let blocks = assemble_prompt(&scene, &settings, &store, &ctx, None, None);
+        let blocks = assemble_prompt(&scene, &test_loaded(settings), &store, &ctx, None, None);
         assert!(!blocks.is_empty());
         assert_eq!(blocks[0].role, BlockRole::System);
     }
@@ -537,7 +535,7 @@ mod tests {
             tool_results_ever_cleared: false,
         };
 
-        let blocks = assemble_prompt(&scene, &settings, &store, &ctx, None, None);
+        let blocks = assemble_prompt(&scene, &test_loaded(settings), &store, &ctx, None, None);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].content, "OVERRIDE");
     }
@@ -571,7 +569,7 @@ mod tests {
 
         let blocks = assemble_prompt(
             &scene,
-            &settings,
+            &test_loaded(settings),
             &store,
             &ctx,
             Some("skills inventory"),
@@ -644,7 +642,14 @@ mod tests {
         let settings = test_settings();
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
-        let blocks = assemble_prompt(&ThreeSections, &settings, &store, &test_ctx(), None, None);
+        let blocks = assemble_prompt(
+            &ThreeSections,
+            &test_loaded(settings),
+            &store,
+            &test_ctx(),
+            None,
+            None,
+        );
 
         let scene_names: Vec<&str> = blocks
             .iter()
@@ -692,7 +697,14 @@ mod tests {
         let settings = test_settings();
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
-        let blocks = assemble_prompt(&SectionedScene, &settings, &store, &test_ctx(), None, None);
+        let blocks = assemble_prompt(
+            &SectionedScene,
+            &test_loaded(settings),
+            &store,
+            &test_ctx(),
+            None,
+            None,
+        );
 
         assert_eq!(blocks[0].name.as_deref(), Some("scene.identity"));
         assert_eq!(blocks[1].name.as_deref(), Some("scene.tools"));
@@ -712,7 +724,14 @@ mod tests {
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let ctx = test_ctx();
 
-        let direct = assemble_prompt(&scene, &settings, &store, &ctx, Some("skills"), Some("mcp"));
+        let direct = assemble_prompt(
+            &scene,
+            &test_loaded(settings.clone()),
+            &store,
+            &ctx,
+            Some("skills"),
+            Some("mcp"),
+        );
         let through_registry = assemble_prompt_with(&AssemblyRequest {
             registry: &NoRegistrations,
             scene: &scene,

@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 /// with the same empty-means-defaults convention that
 /// `tools::bash::to_sandbox_policy` reads on the other side. So `None` and
 /// `Some(vec![])` both flatten to an empty vec here, and the distinction is
-/// preserved where it is actually decided (`EngineConfig::from_settings`).
+/// preserved where it is actually decided (`EngineConfig::from_loaded`).
 pub(super) fn sandbox_settings_from(
     config: &base::context::EngineConfig,
 ) -> base::tool::SandboxSettings {

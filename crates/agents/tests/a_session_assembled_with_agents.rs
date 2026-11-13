@@ -35,61 +35,55 @@ impl Model for DummyModel {
     }
 }
 
-#[allow(deprecated)]
-fn settings() -> Settings {
+fn settings() -> base::settings::LoadedSettings {
     let dir = std::env::temp_dir().join("agix-agents-module-tests");
-    Settings {
-        model: ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: String::new(),
-            auth_token: String::new(),
-            model_name: "test".into(),
-            max_tokens: 2000,
-            thinking_mode: ThinkingMode::Auto,
-            effort: None,
-            fallback_model: None,
+    base::settings::LoadedSettings::new(
+        Settings {
+            model: ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: String::new(),
+                auth_token: String::new(),
+                model_name: "test".into(),
+                max_tokens: 2000,
+                thinking_mode: ThinkingMode::Auto,
+                effort: None,
+                fallback_model: None,
+            },
+            execution: ExecutionSettings::default(),
+            compaction: CompactionConfig::default(),
+            sandbox: SandboxConfig::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: false,
+            disable_skill_shell_execution: true,
+            path_style: Default::default(),
+            permission_mode: PermissionMode::default(),
+            allow_client_permission_override: false,
+            telemetry_enabled: false,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            scripts: Vec::new(),
         },
-        paths: PathSettings {
+        PathSettings {
             user_data_dir: dir.clone(),
             global_data_dir: dir.clone(),
             workspace: base::settings::Workspace::project_of(&dir),
             local_data_dir: dir,
             scope: "code".into(),
         },
-        execution: ExecutionSettings::default(),
-        compaction: CompactionConfig::default(),
-        sandbox: SandboxConfig::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        session_dir: None,
-        memory_enabled: false,
-        disable_skill_shell_execution: true,
-        path_style: Default::default(),
-        permission_mode: PermissionMode::default(),
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: false,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        scripts: Vec::new(),
-    }
+    )
 }
 
-fn build(settings: Settings, depth: u32, with_agents: bool) -> Agent {
+fn build(settings: base::settings::LoadedSettings, depth: u32, with_agents: bool) -> Agent {
     let mut builder = Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
         .model(Arc::new(DummyModel))
@@ -147,7 +141,7 @@ async fn the_agent_tool_is_withheld_at_the_delegation_depth_limit() {
 #[tokio::test]
 async fn team_tools_are_registered_only_when_the_operator_turns_them_on() {
     let mut on = settings();
-    on.execution.team_enabled = true;
+    on.values.execution.team_enabled = true;
     let agent = build(on, 0, true);
     for name in ["TeamCreate", "TeamList", "TeamDelete"] {
         assert!(
@@ -170,8 +164,8 @@ async fn team_tools_are_registered_only_when_the_operator_turns_them_on() {
 #[tokio::test]
 async fn the_agent_tool_goes_when_its_session_does() {
     let mut with_teams = settings();
-    with_teams.execution.team_enabled = true;
-    with_teams.hooks_config = Some(serde_json::json!({
+    with_teams.values.execution.team_enabled = true;
+    with_teams.values.hooks_config = Some(serde_json::json!({
         "Stop": [{ "type": "agent", "prompt": "check" }]
     }));
     let agent = build(with_teams, 0, true);
@@ -320,7 +314,7 @@ async fn delegate_once(
             ),
     );
     let mut s = settings();
-    s.memory_enabled = false;
+    s.values.memory_enabled = false;
     let builder = Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
         .model(model.clone())

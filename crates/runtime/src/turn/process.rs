@@ -313,7 +313,7 @@ impl Agent {
                     // change the model the next turn calls.
                     EngineCommand::UpdateModel => {
                         let mut settings = (*self.settings).clone();
-                        settings.model.model_name = content.clone();
+                        settings.values.model.model_name = content.clone();
                         self.settings = Arc::new(settings);
                         let _ = self.channels.event_tx.send(AgentEvent::System {
                             message: format!("model set to {content}"),

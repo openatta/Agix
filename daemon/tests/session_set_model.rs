@@ -141,7 +141,7 @@ async fn start_daemon(turns: usize) -> Daemon {
     );
     // Memory extraction would spend a canned turn of its own, off by one from
     // what every assertion below counts.
-    config.settings.memory_enabled = false;
+    config.settings.values.memory_enabled = false;
 
     let store: Arc<dyn history::store::HistoryStore> = Arc::new(
         history::store::JsonlHistoryStore::with_roots(

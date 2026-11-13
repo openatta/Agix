@@ -56,57 +56,51 @@ impl Model for CapturingModel {
     }
 }
 
-#[allow(deprecated)]
-fn settings(dir: &Path) -> Settings {
-    Settings {
-        model: ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: String::new(),
-            auth_token: String::new(),
-            model_name: "test-model".into(),
-            max_tokens: 2000,
-            thinking_mode: ThinkingMode::Auto,
-            effort: None,
-            fallback_model: None,
+fn settings(dir: &Path) -> base::settings::LoadedSettings {
+    base::settings::LoadedSettings::new(
+        Settings {
+            model: ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: String::new(),
+                auth_token: String::new(),
+                model_name: "test-model".into(),
+                max_tokens: 2000,
+                thinking_mode: ThinkingMode::Auto,
+                effort: None,
+                fallback_model: None,
+            },
+            execution: ExecutionSettings::default(),
+            compaction: CompactionConfig::default(),
+            sandbox: SandboxConfig::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: false,
+            disable_skill_shell_execution: true,
+            path_style: Default::default(),
+            permission_mode: PermissionMode::default(),
+            allow_client_permission_override: false,
+            telemetry_enabled: false,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            scripts: Vec::new(),
         },
-        paths: PathSettings {
+        PathSettings {
             user_data_dir: dir.to_path_buf(),
             global_data_dir: dir.to_path_buf(),
             workspace: base::settings::Workspace::project_of(dir),
             local_data_dir: dir.to_path_buf(),
             scope: "review".into(),
         },
-        execution: ExecutionSettings::default(),
-        compaction: CompactionConfig::default(),
-        sandbox: SandboxConfig::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        session_dir: None,
-        memory_enabled: false,
-        disable_skill_shell_execution: true,
-        path_style: Default::default(),
-        permission_mode: PermissionMode::default(),
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: false,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        scripts: Vec::new(),
-    }
+    )
 }
 
 fn write_scene(root: &Path, id: &str, scene_json: &str, prompt_md: &str) {
@@ -124,14 +118,18 @@ fn registry_with(root: &Path) -> scene::SceneRegistry {
     registry
 }
 
-fn build(scene: Arc<dyn Scene>, settings: Settings, model: Arc<dyn Model>) -> Agent {
+fn build(
+    scene: Arc<dyn Scene>,
+    settings: base::settings::LoadedSettings,
+    model: Arc<dyn Model>,
+) -> Agent {
     build_with(Builder::new(), scene, settings, model)
 }
 
 fn build_with(
     builder: Builder,
     scene: Arc<dyn Scene>,
-    settings: Settings,
+    settings: base::settings::LoadedSettings,
     model: Arc<dyn Model>,
 ) -> Agent {
     builder

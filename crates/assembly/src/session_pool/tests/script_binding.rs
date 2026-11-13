@@ -13,19 +13,28 @@ fn a_relative_binding_does_not_reach_into_an_untrusted_project() {
         timeout_ms: None,
         calls_per_turn: None,
     };
-    let mut settings = Settings::defaults_for("m");
-    settings.scripts = vec![binding("scripts/x.js"), binding("/opt/agix/y.js")];
-    let paths = |settings: &Settings| {
-        operator_script_bindings(settings)
+    let mut values = Settings::defaults_for("m");
+    values.scripts = vec![binding("scripts/x.js"), binding("/opt/agix/y.js")];
+    let paths = |trust: ProjectTrust| {
+        let settings = base::settings::LoadedSettings::new(
+            values.clone(),
+            base::settings::PathSettings::default(),
+        )
+        .with_project_layer(base::project_trust::ProjectLayer {
+            trust,
+            ..Default::default()
+        });
+        operator_script_bindings(&settings)
             .into_iter()
             .map(|b| b.path)
             .collect::<Vec<_>>()
     };
 
-    settings.project_layer.trust = ProjectTrust::Untrusted;
-    assert_eq!(paths(&settings), [PathBuf::from("/opt/agix/y.js")]);
+    assert_eq!(
+        paths(ProjectTrust::Untrusted),
+        [PathBuf::from("/opt/agix/y.js")]
+    );
     for trust in [ProjectTrust::Trusted, ProjectTrust::NoProject] {
-        settings.project_layer.trust = trust;
-        assert_eq!(paths(&settings).len(), 2);
+        assert_eq!(paths(trust).len(), 2);
     }
 }

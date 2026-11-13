@@ -115,7 +115,10 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
     registry.register(Arc::new(tools::file_read::FileReadTool));
     registry.register(Arc::new(tools::file_write::FileWriteTool));
     let gate = permissions::rule_set_permission::RuleSetPermission::from_settings(
-        &base::settings::Settings::defaults_for("m"),
+        &base::settings::LoadedSettings::new(
+            base::settings::Settings::defaults_for("m"),
+            base::settings::PathSettings::default(),
+        ),
         [],
     );
     let session = Arc::new(base::context::SessionState::new(

@@ -6,14 +6,14 @@
 
 use base::context::config::NetworkModeConfig;
 use base::interface::health::{CheckResult, HealthCheck};
-use base::settings::{PermissionMode, Settings};
+use base::settings::{LoadedSettings, PermissionMode};
 use hooks::{HookConfig, HookEvent, OnError};
 use std::sync::Arc;
 
-pub struct PermissionModeCheck(Arc<Settings>);
+pub struct PermissionModeCheck(Arc<LoadedSettings>);
 
 impl PermissionModeCheck {
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>) -> Self {
         Self(settings)
     }
 }
@@ -44,10 +44,10 @@ const INTERCEPTING_EVENTS: [HookEvent; 3] = [
     HookEvent::Stop,
 ];
 
-pub struct HooksFailOpenCheck(Arc<Settings>);
+pub struct HooksFailOpenCheck(Arc<LoadedSettings>);
 
 impl HooksFailOpenCheck {
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>) -> Self {
         Self(settings)
     }
 }
@@ -99,12 +99,12 @@ impl HealthCheck for HooksFailOpenCheck {
 /// fully holds; with the network open and the network policy not required,
 /// such a command can still send what it reads anywhere.
 pub struct UnattendedNetworkCheck {
-    settings: Arc<Settings>,
+    settings: Arc<LoadedSettings>,
     unattended_scenes: Vec<String>,
 }
 
 impl UnattendedNetworkCheck {
-    pub fn new(settings: Arc<Settings>, unattended_scenes: Vec<String>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>, unattended_scenes: Vec<String>) -> Self {
         Self {
             settings,
             unattended_scenes,
@@ -147,10 +147,10 @@ impl HealthCheck for UnattendedNetworkCheck {
 /// `network_mode: allowlist` reads as "these domains and nothing else", and
 /// for a sandboxed command it is "nothing else": neither OS backend filters
 /// by domain.
-pub struct NetworkAllowlistCheck(Arc<Settings>);
+pub struct NetworkAllowlistCheck(Arc<LoadedSettings>);
 
 impl NetworkAllowlistCheck {
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>) -> Self {
         Self(settings)
     }
 }
@@ -225,11 +225,15 @@ impl HealthCheck for PanicStrategyCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base::settings::Settings;
 
-    fn settings_with(f: impl FnOnce(&mut Settings)) -> Arc<Settings> {
+    fn settings_with(f: impl FnOnce(&mut Settings)) -> Arc<LoadedSettings> {
         let mut s = Settings::defaults_for("m");
         f(&mut s);
-        Arc::new(s)
+        Arc::new(LoadedSettings::new(
+            s,
+            base::settings::PathSettings::default(),
+        ))
     }
 
     #[test]

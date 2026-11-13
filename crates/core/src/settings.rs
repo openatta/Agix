@@ -1,20 +1,21 @@
-//! Configuration injected by the application layer.
+//! The settings types: what one settings.json file may say
+//! ([`SettingsFile`]), what the tiers say once merged ([`Settings`]), and what
+//! loading them produced ([`LoadedSettings`] — the values, where this scene's
+//! data lives, each permission rule with its tier, the managed layer and the
+//! project-trust decision).
 //!
-//! `Settings::load()` is the single canonical settings.json loader (global →
-//! scene → project, generic recursive JSON merge — see its doc comment).
-//! Everything downstream (the AGENT itself, `Builder`) receives the already-
-//! merged result; it does not perform its own multi-layer config merging.
-//!
-//! Where the layers come from is a separate question from what is done with
-//! them: `load()` reads the six files on disk,
-//! [`Settings::load_from`] takes them from any
-//! [`ConfigSource`](crate::interface::config_source::ConfigSource), and both
-//! run the same merge.
+//! [`LoadedSettings::load`] is the single canonical settings.json loader
+//! (global → scene → project, generic recursive JSON merge). Everything
+//! downstream (the AGENT itself, `Builder`) receives the already-merged
+//! result; it does not perform its own multi-layer config merging.
 
 use crate::provider::{ApiType, ProviderConfig, TaskModelOverride};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+
+mod loaded;
+pub use loaded::{LoadedRule, LoadedSettings};
 
 /// The shared, committed settings file present in every tier.
 pub const SETTINGS_FILE: &str = "settings.json";
@@ -23,15 +24,25 @@ pub const SETTINGS_FILE: &str = "settings.json";
 /// same tier, overriding it.
 pub const SETTINGS_LOCAL_FILE: &str = "settings.local.json";
 
-/// Complete AGENT configuration. Merged by `Settings::load()` before injection.
+/// One settings.json file: the settings it overrides, and the permission rules
+/// it adds to every other tier's.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SettingsFile {
+    #[serde(flatten)]
+    pub settings: Settings,
+    /// Allow/deny/ask rules for specific tools.
+    ///
+    /// Every tier's rules apply side by side: a project's rules are added to
+    /// the global and scene ones, never substituted for them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub permission_rules: Vec<PermissionRule>,
+}
+
+/// What the settings tiers say once merged. Every field is one a settings
+/// file can set; what loading them produced besides is [`LoadedSettings`].
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Settings {
     pub model: ModelSettings,
-    /// Where this scene's data lives, from `Settings::load`'s arguments; a
-    /// settings file's `paths` is stripped before merging, so the file schema
-    /// leaves it out.
-    #[schemars(skip)]
-    pub paths: PathSettings,
     #[serde(default)]
     pub execution: ExecutionSettings,
     #[serde(default)]
@@ -68,14 +79,6 @@ pub struct Settings {
     /// other logs a warning when this is set.
     #[serde(default)]
     pub telemetry_url: Option<String>,
-    /// Not read. Transcripts always go under the state directory
-    /// (`paths.local_data_dir`); the field is kept so existing settings files
-    /// and struct literals still compile, and a settings file that sets it
-    /// gets a warning when it loads.
-    #[deprecated(note = "not read: transcripts always go under `paths.local_data_dir`")]
-    #[serde(default)]
-    pub session_dir: Option<PathBuf>,
-
     /// The file-based memory system (`MEMORY.md` + one `.md` per memory).
     /// Default `true`. `false` drops the memory prompt, the memory index in
     /// each turn's reminder, and recall.
@@ -104,20 +107,6 @@ pub struct Settings {
     /// Permission mode for tool execution.
     #[serde(default)]
     pub permission_mode: PermissionMode,
-
-    /// Allow/deny/ask rules for specific tools.
-    ///
-    /// Every tier's rules apply side by side: a project's rules are added to
-    /// the global and scene ones, never substituted for them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permission_rules: Vec<PermissionRule>,
-
-    /// Rules contributed by the `settings.local.json` overlays, kept apart
-    /// from `permission_rules` so they reach the rule engine as
-    /// `RuleSource::LocalSettings`. Populated by `Settings::load`, never read
-    /// from a settings file — hence `serde(skip)`.
-    #[serde(skip)]
-    pub local_permission_rules: Vec<PermissionRule>,
 
     /// Whether an RPC client may request a *more permissive* mode than
     /// `permission_mode` above.
@@ -157,22 +146,6 @@ pub struct Settings {
     #[serde(default)]
     pub project_trust: crate::project_trust::ProjectTrustSettings,
 
-    /// What `Settings::load` decided about the project tier: trusted or not,
-    /// and what of it needs trust. Never read from a settings file.
-    #[serde(skip)]
-    pub project_layer: crate::project_trust::ProjectLayer,
-
-    /// The values `Settings::load` left out because they do not fit their
-    /// setting. Never read from a settings file.
-    #[serde(skip)]
-    pub ignored_values: Vec<IgnoredValue>,
-
-    /// The deployment's layer, above every other — see
-    /// [`crate::managed_settings`]. Set by [`Settings::apply_managed`] or by a
-    /// `Tier::Managed` layer in `load_from`; never read from a settings file.
-    #[serde(skip)]
-    pub managed: Option<crate::managed_settings::ManagedSettings>,
-
     /// MCP server configurations, keyed by server name (merged from
     /// global/scene/project layers). `$VAR` / `${VAR}` / `${VAR:-default}`
     /// are expanded in a server's `command`, `args`, `env`, `url` and
@@ -187,13 +160,6 @@ pub struct Settings {
     /// value into `McpServerConfig` themselves.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub mcp_servers: HashMap<String, serde_json::Value>,
-
-    /// For each of `mcp_servers`, the directory of the tier its `command`
-    /// was declared in: the global or scene configuration directory, or the
-    /// project root. A stdio server starts there. Never read from a settings
-    /// file.
-    #[serde(skip)]
-    pub mcp_server_dirs: HashMap<String, PathBuf>,
 
     /// Multi-provider LLM registry, keyed by provider id.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -333,10 +299,6 @@ pub struct PermissionRule {
     pub tool: String,
     /// Action: "allow", "deny", or "ask".
     pub action: PermissionAction,
-    /// The tier whose settings file this rule came from. Set by
-    /// `Settings::load`; `None` for rules built in code.
-    #[serde(skip)]
-    pub tier: Option<crate::interface::config_source::Tier>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -391,13 +353,23 @@ pub struct PathSettings {
     /// Which product instance's user-level state `user_data_dir` was built
     /// for (see `base::paths::ConfigPaths`). Carried alongside the resolved
     /// dirs so downstream code (e.g. `FrozenContext::collect`) doesn't have
-    /// to re-derive it from the path. Defaults to `"code"` on deserialize
-    /// for settings.json files predating this field — `Settings::merge`
-    /// never copies a deserialized `paths` value over the one `Settings::load`
-    /// sets explicitly, so this default only matters for standalone
-    /// (de)serialization, not for the daemon's actual startup path.
+    /// to re-derive it from the path.
     #[serde(default = "default_scope")]
     pub scope: String,
+}
+
+/// Placeholder directories for settings that were not loaded from any — the
+/// ones [`LoadedSettings::new`] is commonly given in tests.
+impl Default for PathSettings {
+    fn default() -> Self {
+        Self {
+            user_data_dir: PathBuf::from("~/.agix/scenes/agent"),
+            global_data_dir: PathBuf::from("~/.agix"),
+            local_data_dir: PathBuf::from("."),
+            workspace: Workspace::Project(PathBuf::new()),
+            scope: default_scope(),
+        }
+    }
 }
 
 fn default_scope() -> String {
@@ -459,7 +431,7 @@ impl PathSettings {
     /// Bash sandbox's deny-file-write rules (`tools::bash::sandbox`) protect
     /// exactly this path to stop a sandboxed command from granting itself
     /// permissions, and a copy written anywhere else would sit outside that
-    /// protection while still being loaded by `Settings::load`.
+    /// protection while still being loaded by `LoadedSettings::load`.
     ///
     /// `None` without a project: "this project" means nothing there, and its
     /// `local_data_dir` is the state root, whose `settings.local.json` is the
@@ -1005,343 +977,6 @@ pub enum Effort {
 }
 
 impl Settings {
-    /// Load settings from user and local directories, with ENV override.
-    /// Priority (low → high): `global_dir/settings.json` (shared by every
-    /// scene) → `scene_dir/settings.json` → `local_dir/settings.json`
-    /// (project). Each tier is immediately followed by its own gitignored
-    /// `settings.local.json` overlay, which outranks the `settings.json`
-    /// beside it. This is the **single canonical settings.json loader** —
-    /// `daemon` and any other embedder should call this rather than parsing
-    /// settings.json themselves. An embedder whose configuration does not
-    /// live on this machine's disk calls [`load_from`](Self::load_from) with
-    /// its own source and gets the same merge.
-    ///
-    /// Merging is a **generic recursive JSON merge** (later layer's object
-    /// keys override/extend the earlier layer's, non-object values fully
-    /// replace) applied directly to the JSON representation, not a
-    /// hand-written field-by-field `Settings` merge — this is why adding a
-    /// new field to `Settings` needs no changes here: it flows through
-    /// automatically. `paths` is deliberately excluded from every layer
-    /// before merging — a settings.json file cannot override where its own
-    /// layers live, that's decided by the caller's `global_dir`/`scene_dir`/
-    /// `local_dir`/`scope` arguments alone.
-    ///
-    /// The project tier is the one exception to "every layer merges the same
-    /// way": unless the global tier's `project_trust` trusts the project root
-    /// (`local_dir`'s parent), what in it could loosen anything is held back
-    /// before it merges — see [`crate::project_trust`]. `project_trust`
-    /// itself is read from the global tier only. The decision, and what it
-    /// held back, is `project_layer`.
-    ///
-    /// **Never fails** — a layer that doesn't exist is skipped; a layer that
-    /// fails to parse is skipped with a `tracing::warn!` (path + error)
-    /// rather than aborting startup or silently losing the problem. A value
-    /// that parses but does not fit its setting (a string where an object
-    /// was expected) is left out by itself, with a warning and an entry in
-    /// `ignored_values`; the rest of its layer and every other layer apply.
-    ///
-    /// `scope` identifies which product instance `scene_dir` belongs to (see
-    /// `base::paths::ConfigPaths`) — no default at this layer; callers decide.
-    ///
-    /// `default_model` seeds `model.model_name` **before** any layer is
-    /// merged in — same priority tier as `defaults_for`'s own hardcoded
-    /// default, i.e. lower priority than every settings.json layer. This
-    /// lets a caller's CLI `--model` flag act as a fallback (only takes
-    /// effect when no settings.json layer specifies one) rather than a hard
-    /// override.
-    pub fn load(
-        global_dir: PathBuf,
-        scene_dir: PathBuf,
-        local_dir: PathBuf,
-        scope: &str,
-        default_model: &str,
-    ) -> Self {
-        let source = crate::interface::config_source::FileTiers::new(
-            global_dir.clone(),
-            scene_dir.clone(),
-            local_dir.clone(),
-        );
-        Self::load_from(
-            &source,
-            global_dir,
-            scene_dir,
-            local_dir,
-            scope,
-            default_model,
-        )
-    }
-
-    /// [`load`](Self::load) for a session without a project: no project tier,
-    /// and a [`Workspace::Scratch`] in the state root's scratchpad until the
-    /// session is given a directory of its own
-    /// ([`crate::paths::session_scratch_dir`]).
-    pub fn load_without_project(
-        global_dir: PathBuf,
-        scene_dir: PathBuf,
-        scope: &str,
-        default_model: &str,
-    ) -> Self {
-        let scratch = global_dir.join(crate::paths::STATE_ROOT_SCRATCHPAD);
-        let mut settings = Self::load(
-            global_dir.clone(),
-            scene_dir,
-            global_dir,
-            scope,
-            default_model,
-        );
-        settings.paths.workspace = Workspace::Scratch(scratch);
-        settings
-    }
-
-    /// [`load`](Self::load) with the layers coming from wherever `source` says
-    /// instead of from the six files on disk.
-    ///
-    /// The merge is identical — that is the point of the split. `source`
-    /// decides only which layers exist, in what order, and what JSON is in
-    /// them; everything after that (stripping `paths`, holding an overlay's
-    /// `permission_rules` apart, the recursive merge, leaving out values that
-    /// do not fit, validation) happens here and is the same for every
-    /// source.
-    ///
-    /// The directory arguments stay because they are not where configuration
-    /// is read from — they are where this scene's *data* lives, which
-    /// `settings.paths` reports and which a settings file is never allowed to
-    /// override — and because they say which project the project tier is,
-    /// and whether it is one of its own.
-    pub fn load_from(
-        source: &dyn crate::interface::config_source::ConfigSource,
-        global_dir: PathBuf,
-        scene_dir: PathBuf,
-        local_dir: PathBuf,
-        scope: &str,
-        default_model: &str,
-    ) -> Self {
-        use crate::interface::config_source::Tier;
-        use crate::project_trust::{gate_layer, ProjectLayer, ProjectTrust, ProjectTrustSettings};
-
-        let base = Self::defaults_for(default_model);
-        let mut merged_json = serde_json::to_value(&base).unwrap_or_else(|_| serde_json::json!({}));
-
-        let mut permission_rules: Vec<PermissionRule> = Vec::new();
-        let mut local_permission_rules: Vec<PermissionRule> = Vec::new();
-
-        let layers = source.layers();
-        let own_project =
-            crate::project_trust::is_own_project_dir(&local_dir, &global_dir, &scene_dir);
-        // Two tiers sharing a directory are read once, at the higher tier: a
-        // project rooted at `$HOME` reads `~/.agix` as its project tier, and
-        // those files are still the user's global settings.
-        let scene_is_global = crate::project_trust::same_dir(&scene_dir, &global_dir);
-        let project_is_global =
-            !own_project && crate::project_trust::same_dir(&local_dir, &global_dir);
-        let is_global = |tier: Tier| match tier {
-            Tier::Global => true,
-            Tier::Scene => scene_is_global,
-            Tier::Project => project_is_global,
-            Tier::Managed => false,
-        };
-        let is_own_project = |tier: Tier| tier == Tier::Project && own_project;
-
-        let project_trust = ProjectTrustSettings::from_layers(
-            layers
-                .iter()
-                .filter(|l| is_global(l.tier))
-                .map(|l| &l.value),
-        );
-        let (trust, matched) = if own_project {
-            project_trust.decide(local_dir.parent().unwrap_or(&local_dir))
-        } else {
-            (ProjectTrust::NoProject, None)
-        };
-        let withhold = trust.is_untrusted();
-        let mut project_layer = ProjectLayer {
-            trust,
-            matched,
-            ..Default::default()
-        };
-        let mut ignored_values = Vec::new();
-        let mut managed: Option<crate::managed_settings::ManagedSettings> = None;
-        let mut mcp_server_dirs: HashMap<String, PathBuf> = HashMap::new();
-        let mut mcp_secret_vars: Vec<String> = Vec::new();
-
-        for layer in layers {
-            if layer.tier == Tier::Managed {
-                let this =
-                    crate::managed_settings::ManagedSettings::from_value(layer.origin, layer.value);
-                managed = Some(match managed {
-                    Some(earlier) => earlier.followed_by(this),
-                    None => this,
-                });
-                continue;
-            }
-            for key in unknown_settings_keys(&layer.value) {
-                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
-            }
-            for key in deprecated_settings_keys(&layer.value) {
-                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key is deprecated and not read; remove it");
-            }
-            let mut layer_json = layer.value;
-            if let Some(obj) = layer_json.as_object_mut() {
-                // `paths` is resolved from this function's own arguments,
-                // never from settings.json content.
-                obj.remove("paths");
-                if !is_global(layer.tier) && obj.remove("project_trust").is_some() {
-                    tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, "project_trust is read from the global tier only, ignoring it here");
-                }
-                if is_own_project(layer.tier) {
-                    for (name, server) in obj
-                        .get("mcp_servers")
-                        .and_then(|v| v.as_object())
-                        .into_iter()
-                        .flatten()
-                    {
-                        let entry = project_layer
-                            .mcp_servers
-                            .entry(name.clone())
-                            .or_insert(serde_json::Value::Null);
-                        merge_json_values(entry, server.clone());
-                    }
-                    let gated = gate_layer(obj, &merged_json, withhold);
-                    if withhold && !gated.is_empty() {
-                        tracing::warn!(origin = %layer.origin, withheld = ?gated, "project is not trusted; settings only a trusted project may set are ignored");
-                    }
-                    project_layer.requires_trust.extend(gated);
-                }
-                if let Some(rules) = obj.remove("permission_rules") {
-                    let (rules, unread) = read_permission_rules(rules);
-                    for (key, error) in unread {
-                        tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "permission rule does not read, ignoring it");
-                        ignored_values.push(IgnoredValue {
-                            tier: layer.tier.name(),
-                            origin: layer.origin.clone(),
-                            key,
-                            error,
-                        });
-                    }
-                    let mut kept = Vec::new();
-                    for mut rule in rules {
-                        if is_own_project(layer.tier) && rule.action == PermissionAction::Allow {
-                            project_layer
-                                .requires_trust
-                                .push(format!("permission_rules.allow({})", rule.tool));
-                            if withhold {
-                                continue;
-                            }
-                        }
-                        rule.tier = Some(layer.tier);
-                        kept.push(rule);
-                    }
-                    if layer.machine_local {
-                        local_permission_rules.extend(kept);
-                    } else {
-                        permission_rules.extend(kept);
-                    }
-                }
-            }
-            let declared_in = if is_global(layer.tier) {
-                &global_dir
-            } else if is_own_project(layer.tier) {
-                local_dir.parent().unwrap_or(&local_dir)
-            } else {
-                &scene_dir
-            };
-            for (name, server) in layer_json
-                .get("mcp_servers")
-                .and_then(|v| v.as_object())
-                .into_iter()
-                .flatten()
-            {
-                if server.get("command").is_some() || !mcp_server_dirs.contains_key(name) {
-                    mcp_server_dirs.insert(name.clone(), declared_in.to_path_buf());
-                }
-                // A project's own servers read nothing from this process's
-                // environment (`confined_to_own_env`), so the names they
-                // write are not secrets of the daemon's.
-                if !is_own_project(layer.tier) {
-                    mcp_secret_vars.extend(
-                        crate::interface::exec::env::variables_an_mcp_server_reads(server),
-                    );
-                }
-            }
-            for (key, error) in merge_fitting(&mut merged_json, layer_json) {
-                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "settings value does not fit its setting, ignoring it");
-                ignored_values.push(IgnoredValue {
-                    tier: layer.tier.name(),
-                    origin: layer.origin.clone(),
-                    key,
-                    error,
-                });
-            }
-        }
-        let mut seen = std::collections::HashSet::new();
-        project_layer
-            .requires_trust
-            .retain(|key| seen.insert(key.clone()));
-
-        // Every merge step above was checked to deserialize.
-        let mut settings: Settings = serde_json::from_value(merged_json).unwrap_or(base);
-
-        settings.ignored_values = ignored_values;
-        settings.permission_rules = permission_rules;
-        settings.local_permission_rules = local_permission_rules;
-        settings.project_trust = project_trust;
-        settings.project_layer = project_layer;
-        settings.mcp_server_dirs = mcp_server_dirs;
-
-        // Before any session these settings start runs a child process: a
-        // provider key is not read until a client is built, an MCP secret not
-        // until its server connects, and a hook or `Bash` can run before that.
-        for name in settings
-            .providers
-            .values()
-            .filter_map(|p| p.api_key_env.as_deref())
-            .chain(mcp_secret_vars.iter().map(String::as_str))
-        {
-            crate::interface::exec::env::hold_back_credential(name);
-        }
-
-        settings.paths = PathSettings {
-            user_data_dir: scene_dir,
-            global_data_dir: global_dir,
-            workspace: Workspace::project_of(&local_dir),
-            local_data_dir: local_dir,
-            scope: scope.to_string(),
-        };
-
-        // Validate: reject program-only permission modes from user config.
-        if let Err(reason) = settings.validate() {
-            tracing::warn!("Settings validation: {reason}");
-            settings.permission_mode = PermissionMode::default();
-        }
-        if managed.is_some() {
-            settings.apply_managed(managed);
-        }
-
-        settings
-    }
-
-    /// Put the deployment's layer on top of these settings, replacing any
-    /// managed layer they already carry. With bypass disabled, a
-    /// `bypassPermissions` the lower tiers configured becomes `default`.
-    pub fn apply_managed(&mut self, managed: Option<crate::managed_settings::ManagedSettings>) {
-        if let Some(m) = &managed {
-            if m.disable_bypass_permissions_mode
-                && self.permission_mode == PermissionMode::BypassPermissions
-            {
-                tracing::warn!(origin = %m.origin, "managed settings disable bypassPermissions; permission_mode falls back to default");
-                self.permission_mode = PermissionMode::Default;
-            }
-        }
-        self.managed = managed;
-    }
-
-    /// Whether the deployment has taken `bypassPermissions` away.
-    pub fn bypass_disabled(&self) -> bool {
-        self.managed
-            .as_ref()
-            .is_some_and(|m| m.disable_bypass_permissions_mode)
-    }
-
     /// Validate settings consistency. Returns Err on invalid combinations.
     pub fn validate(&self) -> Result<(), String> {
         if !self.permission_mode.is_user_settable() {
@@ -1355,7 +990,6 @@ impl Settings {
     }
 
     /// Quick default for a given model name.
-    #[allow(deprecated)]
     pub fn defaults_for(model_name: &str) -> Self {
         Self {
             model: ModelSettings {
@@ -1367,13 +1001,6 @@ impl Settings {
                 thinking_mode: ThinkingMode::On,
                 effort: Some(Effort::High),
                 fallback_model: None,
-            },
-            paths: PathSettings {
-                user_data_dir: PathBuf::from("~/.agix/scenes/agent"),
-                global_data_dir: PathBuf::from("~/.agix"),
-                local_data_dir: PathBuf::from("."),
-                workspace: Workspace::Project(PathBuf::new()),
-                scope: default_scope(),
             },
             execution: ExecutionSettings::default(),
             compaction: CompactionConfig::default(),
@@ -1387,20 +1014,13 @@ impl Settings {
             telemetry_url: None,
             telemetry_enabled: true,
             allow_client_permission_override: false,
-            session_dir: None,
             memory_enabled: true,
             disable_skill_shell_execution: false,
             path_style: Default::default(),
             permission_mode: PermissionMode::default(),
-            permission_rules: Vec::new(),
-            local_permission_rules: Vec::new(),
             hooks_config: None,
             project_trust: Default::default(),
-            project_layer: Default::default(),
-            ignored_values: Vec::new(),
-            managed: None,
             mcp_servers: HashMap::new(),
-            mcp_server_dirs: HashMap::new(),
             providers: HashMap::new(),
             default_provider: None,
             task_models: HashMap::new(),
@@ -1413,18 +1033,21 @@ impl Settings {
 /// `docs/schemas/settings.schema.json` for editor autocomplete/validation
 /// (reference it from a settings.json file via a `"$schema"` key).
 ///
-/// Generated from `Settings`'s own type definitions, then adjusted to what
-/// `Settings::load()` does with a file: a file is merged over the built-in
-/// defaults, so a field the defaults already supply is optional however the
-/// type declares it ([`optional_where_defaulted`]); `paths` is never read
-/// from a file and is not in it; program-only modes are left out. Regenerate
-/// with `cargo test -p base write_settings_schema -- --ignored` after changing
-/// any `Settings`-reachable type.
+/// Generated from [`SettingsFile`]'s type definitions, then adjusted to what
+/// [`LoadedSettings::load`] does with a file: a file is merged over the
+/// built-in defaults, so a field the defaults already supply is optional
+/// however the type declares it ([`optional_where_defaulted`]); program-only
+/// modes are left out. Regenerate with
+/// `cargo test -p base write_settings_schema -- --ignored` after changing any
+/// `SettingsFile`-reachable type.
 pub fn settings_json_schema() -> serde_json::Value {
-    let mut schema =
-        serde_json::to_value(schemars::schema_for!(Settings)).unwrap_or(serde_json::Value::Null);
-    let defaults =
-        serde_json::to_value(Settings::defaults_for("")).unwrap_or(serde_json::Value::Null);
+    let mut schema = serde_json::to_value(schemars::schema_for!(SettingsFile))
+        .unwrap_or(serde_json::Value::Null);
+    let defaults = serde_json::to_value(SettingsFile {
+        settings: Settings::defaults_for(""),
+        permission_rules: Vec::new(),
+    })
+    .unwrap_or(serde_json::Value::Null);
     optional_where_defaulted(&mut schema, &defaults);
     admit_permission_mode_aliases(&mut schema);
     schema
@@ -1548,27 +1171,6 @@ fn read_permission_rules(rules: serde_json::Value) -> (Vec<PermissionRule>, Vec<
     (kept, unread)
 }
 
-/// The top-level keys of one settings file that the schema marks deprecated.
-pub fn deprecated_settings_keys(layer: &serde_json::Value) -> Vec<String> {
-    static DEPRECATED: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
-        settings_json_schema()["properties"]
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter(|(_, property)| property["deprecated"] == true)
-            .map(|(key, _)| key.clone())
-            .collect()
-    });
-    let Some(fields) = layer.as_object() else {
-        return Vec::new();
-    };
-    fields
-        .keys()
-        .filter(|key| DEPRECATED.contains(key))
-        .cloned()
-        .collect()
-}
-
 /// Merge `over` into `merged` — a settings object that deserializes — one
 /// value at a time, leaving out each value that would stop the result from
 /// deserializing. Returns the dotted keys left out, with why. An object
@@ -1620,7 +1222,7 @@ fn merge_fitting_at(
 /// Recursively merge `over` into `base` in place: objects merge key-by-key
 /// (recursing into shared keys), anything else (arrays, scalars, null) fully
 /// replaces the corresponding `base` value. This is the same algorithm
-/// `Settings::load()` uses to merge global/scene/project tiers, exposed here
+/// `LoadedSettings::load()` uses to merge global/scene/project tiers, exposed here
 /// so other crates (e.g. `daemon`'s `config.setProvider` RPC) can apply a
 /// partial patch to a single settings.json tier with identical semantics.
 pub fn merge_json_values(base: &mut serde_json::Value, over: serde_json::Value) {
@@ -1644,6 +1246,14 @@ pub fn merge_json_values(base: &mut serde_json::Value, over: serde_json::Value) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shared_rules(s: &LoadedSettings) -> Vec<&LoadedRule> {
+        s.rules.iter().filter(|r| !r.machine_local).collect()
+    }
+
+    fn local_rules(s: &LoadedSettings) -> Vec<&LoadedRule> {
+        s.rules.iter().filter(|r| r.machine_local).collect()
+    }
 
     #[test]
     fn default_execution_settings() {
@@ -1707,7 +1317,7 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let project = root.path().join("project");
             write_settings(&project, &format!(r#"{{"permission_mode": "{spelling}"}}"#));
-            let settings = Settings::load(
+            let settings = LoadedSettings::load(
                 root.path().join("global"),
                 root.path().join("scene"),
                 project,
@@ -1798,7 +1408,7 @@ mod tests {
         write_settings(&project, r#"{"model": {"model_name": "committed"}}"#);
         write_local_settings(&project, r#"{"model": {"model_name": "machine-local"}}"#);
 
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             root.path().join("global"),
             root.path().join("scene"),
             project,
@@ -1825,7 +1435,7 @@ mod tests {
             r#"{"permission_rules": [{"tool": "Bash(ls)", "action": "allow"}]}"#,
         );
 
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             root.path().join("global"),
             root.path().join("scene"),
             project,
@@ -1833,19 +1443,17 @@ mod tests {
             "m",
         );
         assert_eq!(
-            settings
-                .permission_rules
-                .iter()
-                .map(|r| r.tool.as_str())
+            shared_rules(&settings)
+                .into_iter()
+                .map(|r| r.rule.tool.as_str())
                 .collect::<Vec<_>>(),
             vec!["Bash(rm:*)"],
             "the committed tier's rules must survive the overlay"
         );
         assert_eq!(
-            settings
-                .local_permission_rules
-                .iter()
-                .map(|r| r.tool.as_str())
+            local_rules(&settings)
+                .into_iter()
+                .map(|r| r.rule.tool.as_str())
                 .collect::<Vec<_>>(),
             vec!["Bash(ls)"]
         );
@@ -1865,12 +1473,12 @@ mod tests {
             r#"{"permission_rules": [{"tool": "Bash(ls)", "action": "allow"}]}"#,
         );
 
-        let settings = Settings::load(global, root.path().join("scene"), project, "code", "m");
+        let settings =
+            LoadedSettings::load(global, root.path().join("scene"), project, "code", "m");
         assert_eq!(
-            settings
-                .local_permission_rules
-                .iter()
-                .map(|r| r.tool.as_str())
+            local_rules(&settings)
+                .into_iter()
+                .map(|r| r.rule.tool.as_str())
                 .collect::<Vec<_>>(),
             vec!["Bash(id)", "Bash(ls)"]
         );
@@ -1896,17 +1504,16 @@ mod tests {
             r#"{"permission_rules": [{"tool": "Bash(ls)", "action": "allow"}]}"#,
         );
 
-        let settings = Settings::load(global, scene, project, "code", "m");
+        let settings = LoadedSettings::load(global, scene, project, "code", "m");
         assert_eq!(
-            settings
-                .permission_rules
-                .iter()
-                .map(|r| (r.tool.as_str(), r.tier))
+            shared_rules(&settings)
+                .into_iter()
+                .map(|r| (r.rule.tool.as_str(), r.tier))
                 .collect::<Vec<_>>(),
             vec![
-                ("Bash(rm:*)", Some(Tier::Global)),
-                ("Read(~/.ssh/**)", Some(Tier::Scene)),
-                ("Bash(ls)", Some(Tier::Project)),
+                ("Bash(rm:*)", Tier::Global),
+                ("Read(~/.ssh/**)", Tier::Scene),
+                ("Bash(ls)", Tier::Project),
             ],
             "a project tier that writes any rule must not erase the user's"
         );
@@ -1922,7 +1529,7 @@ mod tests {
             r#"{"permission_rules": [{"tool": "Bash(rm:*)", "action": "deny"}]}"#,
         );
 
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             home_agix.clone(),
             root.path().join("scene"),
             home_agix,
@@ -1930,12 +1537,11 @@ mod tests {
             "m",
         );
         assert_eq!(
-            settings
-                .permission_rules
-                .iter()
-                .map(|r| (r.tool.as_str(), r.tier))
+            shared_rules(&settings)
+                .into_iter()
+                .map(|r| (r.rule.tool.as_str(), r.tier))
                 .collect::<Vec<_>>(),
-            vec![("Bash(rm:*)", Some(Tier::Project))]
+            vec![("Bash(rm:*)", Tier::Project)]
         );
     }
 
@@ -1945,7 +1551,7 @@ mod tests {
         let global = root.path().join("global");
         write_local_settings(&global, r#"{"paths": {"scope": "hijacked"}}"#);
 
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             global,
             root.path().join("scene"),
             root.path().join("project"),
@@ -1965,7 +1571,7 @@ mod tests {
         write_settings(&scene, r#"{"model": {"model_name": "scene-model"}}"#);
         write_settings(&project, r#"{}"#);
 
-        let settings = Settings::load(global, scene, project, "code", "cli-default");
+        let settings = LoadedSettings::load(global, scene, project, "code", "cli-default");
         assert_eq!(settings.model.model_name, "scene-model");
     }
 
@@ -1989,7 +1595,7 @@ mod tests {
                     "permission_rules": [{"tool": "Bash(curl:*)", "action": "deny"}]}),
             );
         let root = tempfile::tempdir().unwrap();
-        let settings = Settings::load_from(
+        let settings = LoadedSettings::load_from(
             &source,
             root.path().join("global"),
             root.path().join("scene"),
@@ -2000,11 +1606,10 @@ mod tests {
 
         assert_eq!(settings.permission_mode, PermissionMode::Default);
         assert!(settings.bypass_disabled());
-        assert_eq!(settings.permission_rules.len(), 1);
+        assert_eq!(shared_rules(&settings).len(), 1);
         let managed = settings.managed.expect("the managed layer");
         assert_eq!(managed.origin, "it");
         assert_eq!(managed.permission_rules[0].tool, "Bash(curl:*)");
-        assert_eq!(managed.permission_rules[0].tier, Some(Tier::Managed));
     }
 
     #[test]
@@ -2018,7 +1623,7 @@ mod tests {
             serde_json::json!({"model": {"model_name": "forced"}}),
         );
         let root = tempfile::tempdir().unwrap();
-        let settings = Settings::load_from(
+        let settings = LoadedSettings::load_from(
             &source,
             root.path().join("global"),
             root.path().join("scene"),
@@ -2054,7 +1659,8 @@ mod tests {
         write_settings(&scene_dir, scene);
         write_settings(&project_dir, project);
         write_local_settings(&project_dir, project_local);
-        let from_files = Settings::load(global_dir, scene_dir, project_dir, "code", "cli-default");
+        let from_files =
+            LoadedSettings::load(global_dir, scene_dir, project_dir, "code", "cli-default");
 
         let parse = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
         let source = InMemoryLayers::new()
@@ -2075,7 +1681,7 @@ mod tests {
         // Directories that do not exist, so a fall-back to reading files
         // could not produce this result.
         let elsewhere = root.path().join("no-such-tree");
-        let from_memory = Settings::load_from(
+        let from_memory = LoadedSettings::load_from(
             &source,
             elsewhere.join("global"),
             elsewhere.join("scene"),
@@ -2088,18 +1694,16 @@ mod tests {
         assert_eq!(from_memory.model.model_name, "scene-model");
         assert_eq!(from_memory.model.max_tokens, from_files.model.max_tokens);
         assert_eq!(
-            from_memory
-                .permission_rules
-                .iter()
-                .map(|r| r.tool.as_str())
+            shared_rules(&from_memory)
+                .into_iter()
+                .map(|r| r.rule.tool.as_str())
                 .collect::<Vec<_>>(),
             vec!["Bash(rm:*)"]
         );
         assert_eq!(
-            from_memory
-                .local_permission_rules
-                .iter()
-                .map(|r| r.tool.as_str())
+            local_rules(&from_memory)
+                .into_iter()
+                .map(|r| r.rule.tool.as_str())
                 .collect::<Vec<_>>(),
             vec!["Bash(ls)"]
         );
@@ -2110,7 +1714,7 @@ mod tests {
     #[test]
     fn load_falls_back_to_cli_default_model_when_no_layer_sets_it() {
         let root = tempfile::tempdir().unwrap();
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             root.path().join("global"),
             root.path().join("scene"),
             root.path().join("project"),
@@ -2134,7 +1738,8 @@ mod tests {
             r#"{"providers": {"deepseek": {"api_key": "project-key"}}}"#,
         );
 
-        let settings = Settings::load(global, root.path().join("scene"), project, "code", "m");
+        let settings =
+            LoadedSettings::load(global, root.path().join("scene"), project, "code", "m");
         let deepseek = &settings.providers["deepseek"];
         assert_eq!(deepseek.api_key.as_deref(), Some("project-key"));
         assert_eq!(deepseek.default_model.as_deref(), Some("deepseek-pro"));
@@ -2151,7 +1756,7 @@ mod tests {
         );
         let name = std::ffi::OsStr::new("AGIX_SETTINGS_TEST_DEEPSEEK_KEY");
         assert!(!is_engine_credential(name));
-        Settings::load(
+        LoadedSettings::load(
             root.path().join("global"),
             root.path().join("scene"),
             project,
@@ -2179,7 +1784,7 @@ mod tests {
             r#"{"mcp_servers": {"own": {"type": "stdio", "command": "x",
                 "env": {"T": "$AGIX_SETTINGS_TEST_PROJECT_VAR"}}}}"#,
         );
-        Settings::load(global, root.path().join("scene"), project, "code", "m");
+        LoadedSettings::load(global, root.path().join("scene"), project, "code", "m");
         for name in [
             "AGIX_SETTINGS_TEST_MCP_HEADER",
             "AGIX_SETTINGS_TEST_MCP_SECRET",
@@ -2197,7 +1802,7 @@ mod tests {
         let global = root.path().join("global");
         write_settings(&global, r#"{"paths": {"scope": "hijacked"}}"#);
 
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             global,
             root.path().join("scene"),
             root.path().join("project"),
@@ -2213,7 +1818,7 @@ mod tests {
         let global = root.path().join("global");
         write_settings(&global, "not valid json {{{");
         // Must not panic — malformed layer is skipped, defaults are used.
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             global,
             root.path().join("scene"),
             root.path().join("project"),
@@ -2244,7 +1849,7 @@ mod tests {
     fn settings_without_a_project_have_no_project_root() {
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join(".agix");
-        let settings = Settings::load_without_project(
+        let settings = LoadedSettings::load_without_project(
             state.clone(),
             state.join("scenes/harnix"),
             "harnix",
@@ -2254,7 +1859,7 @@ mod tests {
         assert!(settings.paths.working_dir().starts_with(&state));
         assert_eq!(settings.paths.local_data_dir, state);
 
-        let project = Settings::load(
+        let project = LoadedSettings::load(
             state.clone(),
             state.join("scenes/code"),
             root.path().join("repo/.agix"),
@@ -2269,15 +1874,13 @@ mod tests {
     }
 
     #[test]
-    fn session_dir_is_reported_as_deprecated_and_still_loads() {
+    fn session_dir_is_an_unknown_key_and_the_rest_of_its_file_loads() {
         let layer = serde_json::json!({"session_dir": "/tmp/x", "language": "en"});
-        assert_eq!(deprecated_settings_keys(&layer), ["session_dir"]);
-        assert!(unknown_settings_keys(&layer).is_empty());
-        assert!(deprecated_settings_keys(&serde_json::json!([1])).is_empty());
+        assert_eq!(unknown_settings_keys(&layer), ["session_dir"]);
 
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("settings.json"), layer.to_string()).unwrap();
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             dir.path().to_path_buf(),
             dir.path().join("scene"),
             dir.path().join("project"),
@@ -2285,7 +1888,7 @@ mod tests {
             "m",
         );
         assert_eq!(settings.language.as_deref(), Some("en"));
-        assert!(settings.ignored_values.is_empty());
+        assert!(settings.ignored.is_empty());
     }
 
     #[test]
@@ -2299,27 +1902,21 @@ mod tests {
                ]}"#,
         )
         .unwrap();
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             dir.path().to_path_buf(),
             dir.path().join("scene"),
             dir.path().join("project"),
             "code",
             "m",
         );
-        let rules: Vec<_> = settings
-            .permission_rules
-            .iter()
-            .map(|r| (r.tool.as_str(), r.action))
+        let rules: Vec<_> = shared_rules(&settings)
+            .into_iter()
+            .map(|r| (r.rule.tool.as_str(), r.rule.action))
             .collect();
         assert_eq!(rules, [("Bash", PermissionAction::Deny)]);
-        assert_eq!(
-            settings.ignored_values.len(),
-            1,
-            "{:?}",
-            settings.ignored_values
-        );
-        assert_eq!(settings.ignored_values[0].key, "permission_rules[0]");
-        assert!(settings.ignored_values[0].error.contains("allwo"));
+        assert_eq!(settings.ignored.len(), 1, "{:?}", settings.ignored);
+        assert_eq!(settings.ignored[0].key, "permission_rules[0]");
+        assert!(settings.ignored[0].error.contains("allwo"));
 
         let (rules, unread) = read_permission_rules(serde_json::json!({"tool": "Bash"}));
         assert!(rules.is_empty());
@@ -2338,13 +1935,24 @@ mod tests {
             "default_provider",
             "task_models",
             "hooks_config",
+            "permission_rules",
         ] {
             assert!(props.contains_key(key), "schema missing property `{key}`");
         }
-        assert!(
-            !props.contains_key("paths"),
-            "`paths` is not read from a file"
-        );
+        for key in [
+            "paths",
+            "session_dir",
+            "local_permission_rules",
+            "project_layer",
+            "ignored_values",
+            "managed",
+            "mcp_server_dirs",
+        ] {
+            assert!(
+                !props.contains_key(key),
+                "`{key}` is not read from a file, so it is not in the file schema"
+            );
+        }
     }
 
     #[test]
@@ -2407,7 +2015,7 @@ mod tests {
     #[test]
     fn load_missing_directories_returns_plain_defaults() {
         let root = tempfile::tempdir().unwrap();
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             root.path().join("nonexistent-global"),
             root.path().join("nonexistent-scene"),
             root.path().join("nonexistent-project"),
@@ -2442,8 +2050,8 @@ mod tests {
                 }
             }
 
-            fn load(&self) -> Settings {
-                Settings::load(
+            fn load(&self) -> LoadedSettings {
+                LoadedSettings::load(
                     self.global.clone(),
                     self.scene.clone(),
                     self.project.join(".agix"),
@@ -2524,20 +2132,19 @@ mod tests {
 
             let settings = tiers.load();
 
-            assert_eq!(settings.project_layer.trust, ProjectTrust::Untrusted);
+            assert_eq!(settings.trust(), ProjectTrust::Untrusted);
             assert_eq!(settings.permission_mode, PermissionMode::Default);
-            assert!(settings
-                .permission_rules
-                .iter()
-                .all(|r| r.action == PermissionAction::Deny));
-            assert_eq!(settings.permission_rules.len(), 1);
-            assert!(settings.local_permission_rules.is_empty());
+            assert!(shared_rules(&settings)
+                .into_iter()
+                .all(|r| r.rule.action == PermissionAction::Deny));
+            assert_eq!(shared_rules(&settings).len(), 1);
+            assert!(local_rules(&settings).is_empty());
             assert!(settings.hooks_config.is_none());
             assert!(settings.mcp_servers.is_empty());
             assert!(!settings.sandbox.read_anywhere);
             assert_eq!(settings.language.as_deref(), Some("fr"));
             assert_eq!(
-                settings.project_layer.requires_trust,
+                settings.requires_trust(),
                 [
                     "hooks_config",
                     "mcp_servers.fs",
@@ -2547,7 +2154,7 @@ mod tests {
                     "permission_rules.allow(Read)",
                 ]
             );
-            assert!(settings.project_layer.mcp_servers.contains_key("fs"));
+            assert!(settings.project_mcp_servers().contains_key("fs"));
         }
 
         #[test]
@@ -2568,7 +2175,7 @@ mod tests {
                 settings.sandbox.network_mode,
                 crate::context::config::NetworkModeConfig::DenyAll
             );
-            assert!(settings.project_layer.requires_trust.is_empty());
+            assert!(settings.requires_trust().is_empty());
         }
 
         #[test]
@@ -2578,17 +2185,16 @@ mod tests {
 
             let settings = tiers.load();
 
-            assert_eq!(settings.project_layer.trust, ProjectTrust::Trusted);
-            assert_eq!(settings.project_layer.matched, None);
+            assert_eq!(settings.trust(), ProjectTrust::Trusted);
+            assert_eq!(settings.trust_pattern(), None);
             assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
-            assert_eq!(settings.permission_rules.len(), 2);
+            assert_eq!(shared_rules(&settings).len(), 2);
             assert!(settings.hooks_config.is_some());
             assert!(settings.mcp_servers.contains_key("fs"));
             assert!(settings.sandbox.read_anywhere);
             assert!(
                 settings
-                    .project_layer
-                    .requires_trust
+                    .requires_trust()
                     .contains(&"hooks_config".to_string()),
                 "what trust governs is reported even while it is granted"
             );
@@ -2609,9 +2215,9 @@ mod tests {
 
             let settings = tiers.load();
 
-            assert_eq!(settings.project_layer.trust, ProjectTrust::Trusted);
+            assert_eq!(settings.trust(), ProjectTrust::Trusted);
             assert_eq!(
-                settings.project_layer.matched.as_deref(),
+                settings.trust_pattern(),
                 Some(tiers.project.to_str().unwrap())
             );
             assert_eq!(settings.permission_mode, PermissionMode::BypassPermissions);
@@ -2637,7 +2243,7 @@ mod tests {
 
             let settings = tiers.load();
 
-            assert_eq!(settings.project_layer.trust, ProjectTrust::Untrusted);
+            assert_eq!(settings.trust(), ProjectTrust::Untrusted);
             assert!(settings.hooks_config.is_none());
             assert_eq!(
                 settings.project_trust,
@@ -2685,7 +2291,7 @@ mod tests {
                 assert!(!settings.memory_enabled, "{trust}");
                 assert_eq!(settings.language, None, "{trust}");
                 let ignored: Vec<(&str, &str)> = settings
-                    .ignored_values
+                    .ignored
                     .iter()
                     .map(|v| (v.tier, v.key.as_str()))
                     .collect();
@@ -2746,7 +2352,7 @@ mod tests {
             assert_eq!(settings.instruction_file, None);
             assert_eq!(settings.language.as_deref(), Some("fr"));
             assert_eq!(
-                settings.project_layer.requires_trust,
+                settings.requires_trust(),
                 [
                     "providers.anthropic",
                     "providers.x",
@@ -2771,7 +2377,7 @@ mod tests {
             tiers.project_writes(r#"{"plugins": {"enabled": true, "allow": ["a"]}}"#);
             let settings = tiers.load();
             assert!(!settings.plugins.enabled);
-            assert_eq!(settings.project_layer.requires_trust, ["plugins.enabled"]);
+            assert_eq!(settings.requires_trust(), ["plugins.enabled"]);
 
             let tiers = Tiers::new();
             write_settings(
@@ -2784,7 +2390,7 @@ mod tests {
             tiers.project_writes(r#"{"plugins": {"allow": []}}"#);
             let settings = tiers.load();
             assert_eq!(settings.plugins.allow, ["a", "b"]);
-            assert_eq!(settings.project_layer.requires_trust, ["plugins.allow"]);
+            assert_eq!(settings.requires_trust(), ["plugins.allow"]);
         }
 
         #[test]
@@ -2795,7 +2401,7 @@ mod tests {
                 r#"{"project_trust": {"default": "untrusted"}, "hooks_config": {}}"#,
             );
 
-            let settings = Settings::load(
+            let settings = LoadedSettings::load(
                 tiers.global.clone(),
                 tiers.scene.clone(),
                 tiers.global.clone(),
@@ -2803,7 +2409,7 @@ mod tests {
                 "m",
             );
 
-            assert_eq!(settings.project_layer.trust, ProjectTrust::NoProject);
+            assert_eq!(settings.trust(), ProjectTrust::NoProject);
             assert!(settings.hooks_config.is_some());
             assert_eq!(
                 settings.project_trust.default,

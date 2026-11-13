@@ -26,7 +26,10 @@ async fn test_pool() -> (Arc<SessionPool>, tempfile::TempDir) {
         crate::config::StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     let client: Arc<dyn AnthropicClient> = Arc::new(model::mock::MockAnthropicClient::new());
-    let mut settings = Settings::defaults_for("claude-sonnet-4-6");
+    let mut settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("claude-sonnet-4-6"),
+        base::settings::PathSettings::default(),
+    );
     settings.paths.user_data_dir = dir.path().join("user");
     settings.paths.global_data_dir = dir.path().join("global");
 

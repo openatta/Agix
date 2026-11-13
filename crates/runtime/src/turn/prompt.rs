@@ -92,7 +92,7 @@ pub(super) fn open_conversation_with_user_blocks(request: &mut ModelRequest) {
 }
 
 pub(super) fn build_prompt_context<'a>(
-    settings: &'a base::settings::Settings,
+    settings: &'a base::settings::LoadedSettings,
     frozen: Option<&'a base::frozen::FrozenContext>,
     mcp_instructions: Option<&'a str>,
     skills_text: Option<&'a str>,

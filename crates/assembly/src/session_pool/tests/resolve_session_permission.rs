@@ -13,14 +13,17 @@ impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
     }
 }
 
-fn defaults() -> Settings {
-    Settings::defaults_for("claude-sonnet-4-6")
+fn defaults() -> base::settings::LoadedSettings {
+    base::settings::LoadedSettings::new(
+        Settings::defaults_for("claude-sonnet-4-6"),
+        base::settings::PathSettings::default(),
+    )
 }
 
 /// Everything the resolver needs beyond the settings/options under test,
 /// with the host having supplied its own permission.
 fn resolve(
-    settings: &Settings,
+    settings: &base::settings::LoadedSettings,
     options: Option<&SessionOptions>,
 ) -> (
     Arc<dyn base::interface::permission::PermissionPolicy>,
@@ -54,12 +57,15 @@ fn nothing_configured_builds_a_real_asking_permission() {
 async fn a_bypass_session_gets_the_hosts_permission_or_else_a_gate_that_only_validates() {
     use base::interface::permission::PermissionOutcome;
     let mut settings = defaults();
-    settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
-    settings.permission_rules = vec![base::settings::PermissionRule {
-        tool: "Bash".into(),
-        action: base::settings::PermissionAction::Deny,
-        tier: None,
-    }];
+    settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
+    settings.rules = vec![base::settings::LoadedRule::new(
+        base::settings::PermissionRule {
+            tool: "Bash".into(),
+            action: base::settings::PermissionAction::Deny,
+        },
+        base::interface::config_source::Tier::Project,
+        false,
+    )];
 
     let (host, resolved) = resolve(&settings, None);
     assert!(
@@ -187,7 +193,7 @@ fn session_options_cannot_loosen_an_asking_settings_default() {
 #[test]
 fn allow_client_permission_override_restores_client_wins() {
     let mut settings = defaults();
-    settings.allow_client_permission_override = true;
+    settings.values.allow_client_permission_override = true;
     let opts = SessionOptions {
         permission_mode: Some(base::settings::PermissionMode::BypassPermissions),
         ..Default::default()
@@ -202,7 +208,7 @@ fn allow_client_permission_override_restores_client_wins() {
 #[test]
 fn a_client_may_always_tighten() {
     let mut settings = defaults();
-    settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
+    settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
     let opts = SessionOptions {
         permission_mode: Some(base::settings::PermissionMode::Plan),
         ..Default::default()
@@ -230,19 +236,19 @@ fn auto_and_yolo_in_session_options_clamp_and_resolve_as_bypass() {
             "{spelling} must clamp like bypassPermissions"
         );
         let mut accepts_edits = defaults();
-        accepts_edits.permission_mode = PermissionMode::AcceptEdits;
+        accepts_edits.values.permission_mode = PermissionMode::AcceptEdits;
         assert_eq!(
             effective_permission_mode(&accepts_edits, Some(&opts)),
             PermissionMode::AcceptEdits
         );
 
         let mut bypass = defaults();
-        bypass.permission_mode = PermissionMode::BypassPermissions;
+        bypass.values.permission_mode = PermissionMode::BypassPermissions;
         let (host, resolved) = resolve(&bypass, Some(&opts));
         assert!(Arc::ptr_eq(&host, &resolved), "{spelling}");
 
         let mut overridable = defaults();
-        overridable.allow_client_permission_override = true;
+        overridable.values.allow_client_permission_override = true;
         let (host, resolved) = resolve(&overridable, Some(&opts));
         assert!(Arc::ptr_eq(&host, &resolved), "{spelling}");
     }
@@ -268,7 +274,7 @@ fn effective_mode_prefers_session_options_then_settings_then_ask() {
         "an unconfigured daemon asks"
     );
 
-    settings.permission_mode = PermissionMode::BypassPermissions;
+    settings.values.permission_mode = PermissionMode::BypassPermissions;
     assert_eq!(
         effective_permission_mode(&settings, None),
         PermissionMode::BypassPermissions

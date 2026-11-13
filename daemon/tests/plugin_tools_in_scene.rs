@@ -199,12 +199,17 @@ async fn an_admitted_plugin_tool_passes_the_scene_whitelist_and_the_rest_do_not(
         "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
-    config.settings.memory_enabled = false;
-    config.settings.permission_rules = [ADMITTED, NOT_ADMITTED]
-        .map(|tool| PermissionRule {
-            tool: tool.into(),
-            action: PermissionAction::Allow,
-            tier: None,
+    config.settings.values.memory_enabled = false;
+    config.settings.rules = [ADMITTED, NOT_ADMITTED]
+        .map(|tool| {
+            base::settings::LoadedRule::new(
+                PermissionRule {
+                    tool: tool.into(),
+                    action: PermissionAction::Allow,
+                },
+                base::interface::config_source::Tier::Project,
+                false,
+            )
         })
         .to_vec();
     let model = Arc::new(MockAnthropicClient::new());

@@ -201,7 +201,7 @@ pub(super) struct Inner {
     /// lookups resolve against the parent's *real* scope, not a guess.
     /// `None` when unset (e.g. in tests, or the generic `AgentSpawner`
     /// bridge) falls back to a hardcoded `"code"` scope.
-    pub(super) parent_settings: Option<Arc<Settings>>,
+    pub(super) parent_settings: Option<Arc<LoadedSettings>>,
     /// What the parent session was built on, which every delegate is built
     /// on too; its modules are the ones a delegate is assembled with. `None`
     /// for an `AgentTool` built on its own.
@@ -562,7 +562,7 @@ impl Inner {
         inner: &Inner,
         model_name: Option<&str>,
         cwd: std::path::PathBuf,
-    ) -> Settings {
+    ) -> LoadedSettings {
         let c = &inner.config;
         let model_name = model_name.unwrap_or(&c.model).to_string();
         match &inner.parent_settings {
@@ -602,7 +602,7 @@ impl Inner {
     pub(super) fn scene_for_subagent(
         &self,
         def: Option<&AgentTypeDefinition>,
-        settings: &Settings,
+        settings: &LoadedSettings,
     ) -> Arc<dyn Scene> {
         let parent = self.parent_scene.get();
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {

@@ -30,7 +30,7 @@ pub(super) struct Delegate {
     pub(super) event_rx: EventReceiver,
     pub(super) input_tx: InputSender,
     pub(super) def: Option<AgentTypeDefinition>,
-    pub(super) settings: Arc<Settings>,
+    pub(super) settings: Arc<LoadedSettings>,
     pub(super) payload: SubagentPayload,
     pub(super) history_store: Option<Arc<dyn HistoryStore>>,
 }
@@ -79,10 +79,10 @@ impl Inner {
             .or_else(|| def.as_ref().and_then(|d| d.model.clone()));
         let mut sub_settings = Inner::sub_settings(self, model_override.as_deref(), cwd.clone());
         if let Some(d) = &def {
-            apply_agent_type_overrides(&mut sub_settings, d);
+            apply_agent_type_overrides(&mut sub_settings.values, d);
         }
         if let Some(mode) = run.permission_mode {
-            sub_settings.permission_mode = mode.min_permissive(sub_settings.permission_mode);
+            sub_settings.values.permission_mode = mode.min_permissive(sub_settings.permission_mode);
         }
         let scene = self.scene_for_subagent(def.as_ref(), &sub_settings);
         let scene_id = scene.id().to_string();

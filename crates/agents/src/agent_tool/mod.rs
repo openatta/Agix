@@ -21,8 +21,8 @@ use base::interface::permission::{PermissionFacts, PermissionSet, Reach, Subject
 use base::interface::scene::Scene;
 use base::paths::PromptFiles;
 use base::settings::{
-    Effort, ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig,
-    Settings, ThinkingMode,
+    Effort, ExecutionSettings, LoadedSettings, ModelSettings, PathSettings, PermissionMode,
+    SandboxConfig, Settings, ThinkingMode,
 };
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
@@ -262,7 +262,7 @@ impl AgentTool {
     /// Attach the parent `Agent`'s own settings so sub-agents inherit its
     /// real scope/paths. See the
     /// `Inner::parent_settings` doc comment.
-    pub fn with_settings(mut self, settings: Arc<Settings>) -> Self {
+    pub fn with_settings(mut self, settings: Arc<LoadedSettings>) -> Self {
         let mut inner = (*self.inner).clone();
         inner.parent_settings = Some(settings);
         self.inner = Arc::new(inner);

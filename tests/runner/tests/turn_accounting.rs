@@ -58,12 +58,15 @@ async fn one_turn_of_two_calls() -> Ran {
     .reporting_usage(PER_CALL);
     let model: Arc<dyn Model> = model_arc.clone();
 
-    let mut settings = Settings::defaults_for("accounting-model");
-    settings.model.model_name = "accounting-model".into();
-    settings.model.max_tokens = 1024;
-    settings.model.thinking_mode = ThinkingMode::Off;
-    settings.memory_enabled = false;
-    settings.permission_mode = PermissionMode::BypassPermissions;
+    let mut settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("accounting-model"),
+        base::settings::PathSettings::default(),
+    );
+    settings.values.model.model_name = "accounting-model".into();
+    settings.values.model.max_tokens = 1024;
+    settings.values.model.thinking_mode = ThinkingMode::Off;
+    settings.values.memory_enabled = false;
+    settings.values.permission_mode = PermissionMode::BypassPermissions;
     settings.paths = PathSettings {
         user_data_dir: root.join("user"),
         global_data_dir: root.join("global"),

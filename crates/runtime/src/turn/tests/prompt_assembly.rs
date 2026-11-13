@@ -12,7 +12,6 @@ use tokio_util::sync::CancellationToken;
 
 use base::error::ToolError;
 use base::interface::scene::{ExecutionParams, Scene, TokenBudget};
-use base::settings::Settings;
 use base::tool::{
     InMemoryToolRegistry, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool,
     ToolContext, ToolResult,
@@ -145,64 +144,58 @@ fn test_scene(allowed: Vec<String>) -> Arc<dyn Scene> {
     })
 }
 
-#[allow(deprecated)]
-fn test_settings(root: &std::path::Path) -> Settings {
+fn test_settings(root: &std::path::Path) -> base::settings::LoadedSettings {
     use base::settings::*;
-    Settings {
-        model: ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: String::new(),
-            auth_token: String::new(),
-            model_name: "test".into(),
-            max_tokens: 2000,
-            thinking_mode: ThinkingMode::Auto,
-            effort: None,
-            fallback_model: None,
+    base::settings::LoadedSettings::new(
+        Settings {
+            model: ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: String::new(),
+                auth_token: String::new(),
+                model_name: "test".into(),
+                max_tokens: 2000,
+                thinking_mode: ThinkingMode::Auto,
+                effort: None,
+                fallback_model: None,
+            },
+            execution: ExecutionSettings::default(),
+            compaction: CompactionConfig::default(),
+            sandbox: SandboxConfig::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: false,
+            disable_skill_shell_execution: false,
+            path_style: Default::default(),
+            permission_mode: PermissionMode::default(),
+            allow_client_permission_override: false,
+            telemetry_enabled: false,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            scripts: Vec::new(),
         },
-        paths: PathSettings {
+        PathSettings {
             user_data_dir: root.to_path_buf(),
             global_data_dir: root.to_path_buf(),
             workspace: base::settings::Workspace::project_of(root),
             local_data_dir: root.to_path_buf(),
             scope: "code".into(),
         },
-        execution: ExecutionSettings::default(),
-        compaction: CompactionConfig::default(),
-        sandbox: SandboxConfig::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        session_dir: None,
-        memory_enabled: false,
-        disable_skill_shell_execution: false,
-        path_style: Default::default(),
-        permission_mode: PermissionMode::default(),
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: false,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        scripts: Vec::new(),
-    }
+    )
 }
 
 /// An `Agent` wired with `GuidedTool`, `PlainTool` and the real
 /// `ToolSearch` and nothing else, so `build_tool_defs()` output is
 /// exactly these three and easy to assert on.
-fn agent_with(settings: Settings, scene_allowed: Vec<String>) -> Agent {
+fn agent_with(settings: base::settings::LoadedSettings, scene_allowed: Vec<String>) -> Agent {
     let registry = Arc::new(InMemoryToolRegistry::new());
     registry.register(Arc::new(GuidedTool));
     registry.register(Arc::new(PlainTool));

@@ -48,9 +48,9 @@ impl RuleSetPermission {
         }
     }
 
-    /// Build one straight from `Settings`, wiring in every permission-rule
-    /// tier with its own `RuleSource` (see
-    /// `crate::rule::rules_from_all_tiers`) and holding every call to the
+    /// Build one straight from loaded settings, wiring in every
+    /// permission-rule tier with its own `RuleSource` (see
+    /// `crate::rule::rules_from`) and holding every call to the
     /// managed layer (`crate::gate::ManagedPolicy`).
     ///
     /// This is the path that makes `permission_rules` and
@@ -64,14 +64,14 @@ impl RuleSetPermission {
     /// caller adds on top (the daemon's `SessionOptions::permission_rules`),
     /// evaluated alongside the configured ones rather than replacing them.
     pub fn from_settings(
-        settings: &base::settings::Settings,
+        settings: &base::settings::LoadedSettings,
         extra_rules: impl IntoIterator<Item = PermissionRule>,
     ) -> Self {
-        let mut rules = crate::rule::rules_from_all_tiers(settings);
+        let mut rules = crate::rule::rules_from(settings);
         rules.extend(extra_rules);
         Self::new(Arc::new(
             PermissionGate::new(crate::ruleset::RuleSet::new(rules))
-                .with_managed(crate::gate::ManagedPolicy::from_settings(settings)),
+                .with_managed(crate::gate::ManagedPolicy::from(&settings.managed)),
         ))
         .with_sandbox(base::tool::SandboxSettings {
             allow_read: settings.sandbox.allow_read.clone(),
@@ -678,10 +678,10 @@ mod tests {
         );
     }
 
-    fn project_settings(root: &Path) -> base::settings::Settings {
+    fn project_settings(root: &Path) -> base::settings::LoadedSettings {
         let project = root.join("project");
         std::fs::create_dir_all(&project).unwrap();
-        base::settings::Settings::load(
+        base::settings::LoadedSettings::load(
             root.join("global"),
             root.join("scene"),
             project,
@@ -691,7 +691,7 @@ mod tests {
     }
 
     /// The rule is written to the project's `settings.local.json`, in the
-    /// shape the next `Settings::load` reads back as a local-tier allow.
+    /// shape the next `LoadedSettings::load` reads back as a local-tier allow.
     #[tokio::test]
     async fn a_project_grant_is_written_where_the_next_session_reads_it() {
         let root = tempfile::tempdir().unwrap();
@@ -717,7 +717,7 @@ mod tests {
             PermissionOutcome::Permit
         ));
         let reloaded = project_settings(root.path());
-        let rules: Vec<_> = crate::rule::rules_from_all_tiers(&reloaded)
+        let rules: Vec<_> = crate::rule::rules_from(&reloaded)
             .into_iter()
             .filter(|r| r.source == RuleSource::LocalSettings)
             .collect();
@@ -736,7 +736,7 @@ mod tests {
     #[tokio::test]
     async fn a_project_grant_without_a_project_is_kept_for_the_session() {
         let root = tempfile::tempdir().unwrap();
-        let settings = base::settings::Settings::load_without_project(
+        let settings = base::settings::LoadedSettings::load_without_project(
             root.path().join("global"),
             root.path().join("scene"),
             "code",
@@ -868,8 +868,13 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("settings.json"), body).unwrap();
         }
-        let settings =
-            base::settings::Settings::load(global, root.path().join("scene"), project, "code", "m");
+        let settings = base::settings::LoadedSettings::load(
+            global,
+            root.path().join("scene"),
+            project,
+            "code",
+            "m",
+        );
 
         let perm = RuleSetPermission::from_settings(&settings, []);
         assert_eq!(
@@ -895,24 +900,23 @@ mod tests {
     fn with_managed(
         user: serde_json::Value,
         managed: serde_json::Value,
-    ) -> base::settings::Settings {
+    ) -> base::settings::LoadedSettings {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("settings.json"), user.to_string()).unwrap();
-        let mut settings = base::settings::Settings::load(
+        base::settings::LoadedSettings::load(
             root.path().to_path_buf(),
             root.path().join("scene"),
             root.path().join("project"),
             "code",
             "m",
-        );
-        settings.apply_managed(Some(base::managed_settings::ManagedSettings::from_value(
+        )
+        .with_managed(Some(base::managed_settings::ManagedSettings::from_value(
             "it", managed,
-        )));
-        settings
+        )))
     }
 
     async fn verdict(
-        settings: &base::settings::Settings,
+        settings: &base::settings::LoadedSettings,
         mode: PermissionMode,
         command: &'static str,
     ) -> PermissionOutcome {

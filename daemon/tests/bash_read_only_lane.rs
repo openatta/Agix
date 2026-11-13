@@ -89,8 +89,8 @@ impl Daemon {
         let paths =
             StaticDaemonPaths::with_project(home.clone(), work.clone()).with_global(home.clone());
         let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
-        config.settings.memory_enabled = false;
-        config.settings.permission_mode = base::settings::PermissionMode::Default;
+        config.settings.values.memory_enabled = false;
+        config.settings.values.permission_mode = base::settings::PermissionMode::Default;
 
         let model = Arc::new(MockAnthropicClient::new());
         let pool = daemon::assemble::pool(

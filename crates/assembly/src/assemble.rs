@@ -179,9 +179,7 @@ pub async fn pool(
     assembly: Assembly,
 ) -> anyhow::Result<Arc<SessionPool>> {
     let (managed_path, managed) = managed_settings(config);
-    let mut settings = config.settings.clone();
-    settings.apply_managed(managed.clone());
-    let settings = Arc::new(settings);
+    let settings = Arc::new(config.settings.clone().with_managed(managed.clone()));
     for (section, module) in crate::modules::unassembled_settings(&settings) {
         tracing::warn!(
             section,

@@ -62,7 +62,7 @@ impl SessionPool {
             .map_err(PoolError::InvalidRequest)?;
 
         let scene_id_for_result = scene.id().to_string();
-        let project_trust = binding.settings.project_layer.trust;
+        let project_trust = binding.settings.trust();
         let sid = Id::new().to_string();
         let created_id = self
             .create(
@@ -204,11 +204,11 @@ impl SessionPool {
         let permission_mode = effective_permission_mode(&base_settings, options);
         let settings_snapshot = {
             let mut snap = (*base_settings).clone();
-            snap.execution.permission_prompt_timeout_secs =
+            snap.values.execution.permission_prompt_timeout_secs =
                 self.permission_prompt_timeout.as_secs();
-            snap.permission_mode = permission_mode;
+            snap.values.permission_mode = permission_mode;
             if let Some(name) = &model_name {
-                snap.model.model_name = name.clone();
+                snap.values.model.model_name = name.clone();
             }
             if let base::settings::Workspace::Scratch(_) = snap.paths.workspace {
                 snap.paths.workspace = base::settings::Workspace::Scratch(

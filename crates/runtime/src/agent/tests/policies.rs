@@ -18,7 +18,7 @@ fn build_hook_runner_defaults_to_empty_without_hooks_config() {
 #[test]
 fn build_hook_runner_parses_hooks_config_into_real_hooks() {
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "PreToolUse": [
             { "type": "command", "command": "echo hi" }
         ]
@@ -41,7 +41,7 @@ fn build_hook_runner_parses_hooks_config_into_real_hooks() {
 #[test]
 fn build_hook_runner_keeps_hooks_for_unwired_events_and_only_warns() {
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "ConfigChange": [
             { "type": "command", "command": "echo reconfigured" }
         ],
@@ -71,7 +71,7 @@ fn build_hook_runner_keeps_hooks_for_unwired_events_and_only_warns() {
 fn build_hook_runner_degrades_to_empty_on_malformed_hooks_config() {
     let mut settings = test_settings();
     // Wrong shape: hooks value must be a map of event -> Vec<HookConfig>.
-    settings.hooks_config = Some(serde_json::json!("not-a-hooks-map"));
+    settings.values.hooks_config = Some(serde_json::json!("not-a-hooks-map"));
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let runner = build_hook_runner(
         &settings,
@@ -607,7 +607,7 @@ async fn a_turn_policy_decides_when_the_loop_stops() {
 #[test]
 fn the_settings_compaction_numbers_reach_the_sessions_context_budget() {
     let mut settings = test_settings();
-    settings.compaction.threshold_tokens = Some(1234);
+    settings.values.compaction.threshold_tokens = Some(1234);
     let (agent, _rx, _tx) = Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
@@ -723,8 +723,8 @@ async fn the_egress_policy_reaches_the_tool_that_has_to_obey_it() {
     }
 
     let mut settings = test_settings();
-    settings.sandbox.network_mode = base::context::config::NetworkModeConfig::Allowlist;
-    settings.sandbox.allowed_domains = vec!["allowed.test".into()];
+    settings.values.sandbox.network_mode = base::context::config::NetworkModeConfig::Allowlist;
+    settings.values.sandbox.allowed_domains = vec!["allowed.test".into()];
 
     let model: Arc<dyn Model> = Arc::new(ToolThenStopModel {
         calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -861,7 +861,7 @@ async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
     // A fallback *is* configured, so the engine's own policy would switch
     // to it. The point is that the host's policy wins.
     let mut settings = test_settings();
-    settings.model.fallback_model = Some("some-other-model".into());
+    settings.values.model.fallback_model = Some("some-other-model".into());
 
     let (mut agent, mut event_rx, input_tx) = Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)

@@ -70,7 +70,10 @@ impl ProjectModules {
     /// [`Self::refresh_agent_types`], so a second mechanism would be both
     /// redundant and — at one `notify` stream per catalog per project — the
     /// thing that runs a process out of them.
-    pub(crate) fn build(settings: &Settings, plugins: &crate::plugins::Contributions) -> Self {
+    pub(crate) fn build(
+        settings: &base::settings::LoadedSettings,
+        plugins: &crate::plugins::Contributions,
+    ) -> Self {
         let _ = (settings, plugins);
         Self {
             #[cfg(feature = "skills")]
@@ -107,7 +110,7 @@ impl ProjectModules {
     /// Re-read the skill directories into the catalog the pair's sessions
     /// already share. A running session notices the difference at the start
     /// of its next turn.
-    pub(crate) fn reload_skills(&self, settings: &Settings) {
+    pub(crate) fn reload_skills(&self, settings: &base::settings::LoadedSettings) {
         #[cfg(feature = "skills")]
         {
             let packages = self
@@ -125,7 +128,7 @@ impl ProjectModules {
     /// Take up what the active packages contribute now.
     pub(crate) fn refresh_plugins(
         &self,
-        settings: &Settings,
+        settings: &base::settings::LoadedSettings,
         plugins: &crate::plugins::Contributions,
     ) {
         self.refresh_agent_types(settings, &plugins.agent_types);
@@ -188,7 +191,7 @@ impl ProjectModules {
     /// Re-merge the agent types from the tiers and what plugins contribute.
     pub(crate) fn refresh_agent_types(
         &self,
-        settings: &Settings,
+        settings: &base::settings::LoadedSettings,
         plugin_agent_types: &[AgentTypeDefinition],
     ) {
         #[cfg(feature = "agents")]
@@ -233,7 +236,7 @@ impl ProjectModules {
 
 #[cfg(feature = "skills")]
 fn skill_catalog(
-    settings: &Settings,
+    settings: &base::settings::LoadedSettings,
     packages: &[crate::plugins::PackageSkills],
 ) -> skills::manager::SkillManager {
     let providers: Vec<Arc<dyn base::interface::skill_provider::SkillProvider>> = packages
@@ -297,7 +300,10 @@ mod tests {
     #[test]
     fn a_shadowed_package_skill_is_reported_with_what_shadows_it() {
         let home = tempfile::tempdir().unwrap();
-        let mut settings = Settings::defaults_for("test");
+        let mut settings = base::settings::LoadedSettings::new(
+            Settings::defaults_for("test"),
+            base::settings::PathSettings::default(),
+        );
         settings.paths.global_data_dir = home.path().join("global");
         settings.paths.user_data_dir = home.path().join("scene");
         settings.paths.local_data_dir = home.path().join("project/.agix");

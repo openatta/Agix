@@ -179,7 +179,7 @@ impl Drop for Root {
 /// as a host assembles one, its settings adjusted by `edit`.
 pub(super) fn assembled_root(model: Arc<RoutedModel>, edit: impl FnOnce(&mut Settings)) -> Root {
     let (mut settings, dir) = parent_settings_for_test("code");
-    edit(&mut settings);
+    edit(&mut settings.values);
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
     let (agent, events, input) = Builder::new()

@@ -345,7 +345,7 @@ impl SessionPool {
         let (project_trust, settings) = match project {
             Some((project, scene)) => {
                 let settings = self.settings_for_project(project.as_deref(), &scene).await;
-                (settings.project_layer.trust, settings)
+                (settings.trust(), settings)
             }
             None => (
                 base::project_trust::ProjectTrust::NoProject,

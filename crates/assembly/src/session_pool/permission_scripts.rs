@@ -17,7 +17,7 @@ use super::*;
 /// — i.e. *ask*. Managed settings that disable bypass turn a
 /// `bypassPermissions` result, however it was reached, into `Default`.
 pub(super) fn effective_permission_mode(
-    settings: &Settings,
+    settings: &base::settings::LoadedSettings,
     options: Option<&SessionOptions>,
 ) -> base::settings::PermissionMode {
     let mode = requested_permission_mode(settings, options);
@@ -63,7 +63,7 @@ fn requested_permission_mode(
 /// bug in their JavaScript.
 #[cfg(feature = "scripts")]
 pub(super) fn bind_scripts(
-    settings: &Arc<base::settings::Settings>,
+    settings: &Arc<base::settings::LoadedSettings>,
     project_root: &std::path::Path,
     packages: &[crate::plugins::PackageScripts],
 ) -> (
@@ -131,8 +131,10 @@ pub(super) fn bind_scripts(
 /// load whatever file the repository puts at it, with the authority of a
 /// script inside the project.
 #[cfg_attr(not(feature = "scripts"), allow(dead_code))]
-pub(super) fn operator_script_bindings(settings: &Settings) -> Vec<base::settings::ScriptBinding> {
-    if !settings.project_layer.trust.is_untrusted() {
+pub(super) fn operator_script_bindings(
+    settings: &base::settings::LoadedSettings,
+) -> Vec<base::settings::ScriptBinding> {
+    if !settings.trust().is_untrusted() {
         return settings.scripts.clone();
     }
     settings
@@ -158,7 +160,7 @@ pub(super) fn operator_script_bindings(settings: &Settings) -> Vec<base::setting
 /// loudly rather than ignored — and so is a package that ships one.
 #[cfg(not(feature = "scripts"))]
 pub(super) fn bind_scripts(
-    settings: &Arc<base::settings::Settings>,
+    settings: &Arc<base::settings::LoadedSettings>,
     _project_root: &std::path::Path,
     packages: &[crate::plugins::PackageScripts],
 ) -> (Option<()>, Vec<(String, String)>) {
@@ -195,7 +197,7 @@ pub(super) fn bind_scripts(
 /// equivalent one: a host that sandboxes the daemon itself relies on it.
 pub(super) fn resolve_session_permission(
     host: Option<&PermissionSet>,
-    settings: &Settings,
+    settings: &base::settings::LoadedSettings,
     mode: base::settings::PermissionMode,
     options: Option<&SessionOptions>,
 ) -> PermissionSet {

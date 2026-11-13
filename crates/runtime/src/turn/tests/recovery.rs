@@ -116,7 +116,7 @@ fn agent(
     root: &std::path::Path,
 ) -> (Agent, crate::agent::EventReceiver) {
     let mut settings = recall_test_settings(root);
-    settings.memory_enabled = false;
+    settings.values.memory_enabled = false;
     let mut builder = crate::agent::Builder::new()
         .scene(Arc::new(scene::code::CodeScene::default()))
         .model(model)

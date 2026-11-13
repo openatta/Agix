@@ -5,7 +5,7 @@
 //! `AGIX_CONFIG_HOME` at runtime.
 //!
 //! [`load_daemon_config`] delegates all settings.json parsing/merging to
-//! `base::settings::Settings::load()` — the single canonical
+//! `base::settings::LoadedSettings::load()` — the single canonical
 //! loader (global → scene → project, generic recursive JSON merge).
 //! `DaemonConfig` just wraps that one `Settings` plus the handful of fields
 //! that are genuinely daemon-process-level, not settings.json content
@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use base::settings::Settings;
+use base::settings::{LoadedSettings, PathSettings, Settings};
 use permissions::ruleset::RuleSet;
 
 /// Controls where the daemon reads its configuration and writes its runtime
@@ -171,7 +171,7 @@ pub struct DaemonConfig {
     /// framing.
     pub ws_addr: Option<SocketAddr>,
     pub tcp_token: Option<String>,
-    /// Always empty: sessions take their rules from `settings.permission_rules`
+    /// Always empty: sessions take their rules from `settings.rules`
     /// (see `session_pool::resolve_session_permission`), not from here.
     pub permission_rules: RuleSet,
     /// Session 空闲超时秒数，超时后自动回收（默认 3600 = 1 小时）。
@@ -184,7 +184,7 @@ pub struct DaemonConfig {
     /// platform's path (`base::managed_settings::managed_settings_path`). A
     /// file named here must exist.
     pub managed_settings_path: Option<PathBuf>,
-    pub settings: Settings,
+    pub settings: LoadedSettings,
 }
 
 impl std::fmt::Debug for DaemonConfig {
@@ -236,7 +236,10 @@ impl DaemonConfig {
             session_idle_timeout_secs: 3600,
             mcp_policy_path: None,
             managed_settings_path: None,
-            settings: Settings::defaults_for("claude-sonnet-4-6"),
+            settings: LoadedSettings::new(
+                Settings::defaults_for("claude-sonnet-4-6"),
+                PathSettings::default(),
+            ),
         }
     }
 }
@@ -244,7 +247,7 @@ impl DaemonConfig {
 /// Priority (low → high): global (`global_root()/settings.json`, shared by
 /// every scene) → scene (`config_root()/settings.json`) → project
 /// (`project_root()/.agix/settings.json`) — delegates entirely to
-/// `Settings::load()`; see its doc comment for the merge algorithm.
+/// `LoadedSettings::load()`; see its doc comment for the merge algorithm.
 pub fn load_daemon_config(
     cli_model: &str,
     cli_max_tokens: u32,
@@ -256,18 +259,18 @@ pub fn load_daemon_config(
     let project_root = paths.project_root();
     let global_root = paths.global_root();
 
-    let mut settings = Settings::load(
+    let mut settings = LoadedSettings::load(
         global_root.clone(),
         config_root.clone(),
         project_root.join(".agix"),
         scope,
         cli_model,
     );
-    // `--max-tokens` is a fallback (same tier as `Settings::load`'s
+    // `--max-tokens` is a fallback (same tier as `LoadedSettings::load`'s
     // `default_model` param) — only takes effect when no settings.json
     // layer set it, which is what still holding the default means.
     if settings.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
-        settings.model.max_tokens = cli_max_tokens;
+        settings.values.model.max_tokens = cli_max_tokens;
     }
 
     let socket_path = cli_socket
@@ -558,6 +561,7 @@ mod tests {
         // non-object value) fully replaces the scene layer's.
         let hooks = config
             .settings
+            .values
             .hooks_config
             .expect("hooks should be present");
         let command = hooks["PreToolUse"][0]["command"].as_str().unwrap();
@@ -588,8 +592,8 @@ mod tests {
         );
         let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
         let config = load_daemon_config("cli-model", 2000, None, "code", &paths);
-        assert_eq!(config.settings.permission_rules.len(), 1);
-        assert_eq!(config.settings.permission_rules[0].tool, "Bash(git push:*)");
+        assert_eq!(config.settings.rules.len(), 1);
+        assert_eq!(config.settings.rules[0].rule.tool, "Bash(git push:*)");
     }
 
     #[test]

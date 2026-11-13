@@ -480,7 +480,7 @@ static POINTS: [ExtensionPoint; 45] = [
         frequency: Frequency::PerProcess,
         trust: Trust::host_only(),
         defined_in: "base::interface::config_source::ConfigSource",
-        wired_by: &[Wiring::Process("base::settings::Settings::load_from")],
+        wired_by: &[Wiring::Process("base::settings::LoadedSettings::load_from")],
     },
     ExtensionPoint {
         id: "token.count",

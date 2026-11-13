@@ -56,8 +56,8 @@ impl Daemon {
             "code",
             &StaticDaemonPaths::new(root.clone()),
         );
-        config.settings.memory_enabled = false;
-        config.settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
+        config.settings.values.memory_enabled = false;
+        config.settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
         let model = Arc::new(MockAnthropicClient::new());
         let pool = daemon::assemble::pool(
             &config,

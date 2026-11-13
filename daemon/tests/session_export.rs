@@ -117,7 +117,7 @@ async fn start_daemon(held: Option<usize>) -> Daemon {
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.session_cap = 8;
-    config.settings.memory_enabled = false;
+    config.settings.values.memory_enabled = false;
 
     let store: Arc<dyn history::store::HistoryStore> = Arc::new(
         history::store::JsonlHistoryStore::with_roots(

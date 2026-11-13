@@ -12,7 +12,7 @@ pub struct Builder {
     scene: Option<Arc<dyn Scene>>,
     model: Option<Arc<dyn Model>>,
     tools: Option<Arc<dyn base::tool::ToolRegistry>>,
-    settings: Option<Arc<Settings>>,
+    settings: Option<Arc<LoadedSettings>>,
     permission: Option<PermissionSet>,
     memory_store: Option<Arc<MemoryStore>>,
     compactor: Option<Arc<dyn Compactor>>,
@@ -572,7 +572,7 @@ impl Builder {
         self.tools = Some(t);
         self
     }
-    pub fn settings(mut self, s: Arc<Settings>) -> Self {
+    pub fn settings(mut self, s: Arc<LoadedSettings>) -> Self {
         self.settings = Some(s);
         self
     }

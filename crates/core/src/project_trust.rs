@@ -9,7 +9,7 @@
 //! loosen — the same rule the engine already applies to what arrives with a
 //! plugin. [`gate_layer`] applies it to a settings file; agent types, skill
 //! commands and the hooks search path read [`ProjectTrust`] off
-//! `Settings::project_layer`.
+//! `LoadedSettings::trust`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -105,7 +105,7 @@ impl ProjectTrustSettings {
     }
 }
 
-/// Whether the project tier of a `Settings` is in effect as written.
+/// Whether the project tier of a `LoadedSettings` is in effect as written.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ProjectTrust {
     /// No project tier of its own: no project at all, or one whose `.agix`
@@ -130,7 +130,7 @@ impl ProjectTrust {
     }
 }
 
-/// What `Settings::load_from` found in the project tier.
+/// What `LoadedSettings::load_from` found in the project tier.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectLayer {
     pub trust: ProjectTrust,

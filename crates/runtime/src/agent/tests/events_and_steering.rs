@@ -481,7 +481,7 @@ async fn compacting_on_request_works_far_below_the_threshold() {
 /// then lets it finish. Returns every event up to `TurnComplete` and what
 /// each model call was sent.
 pub(super) async fn steer_during_a_tool_step(
-    settings: base::settings::Settings,
+    settings: base::settings::LoadedSettings,
     builder: impl FnOnce(Builder) -> Builder,
     steered: &[(&str, &str)],
 ) -> (
@@ -547,9 +547,9 @@ pub(super) async fn steer_during_a_tool_step(
     (events, sent)
 }
 
-pub(super) fn prompt_hook(command: &str) -> base::settings::Settings {
+pub(super) fn prompt_hook(command: &str) -> base::settings::LoadedSettings {
     let mut settings = test_settings();
-    settings.hooks_config = Some(serde_json::json!({
+    settings.values.hooks_config = Some(serde_json::json!({
         "UserPromptSubmit": [ { "type": "command", "command": command } ]
     }));
     settings

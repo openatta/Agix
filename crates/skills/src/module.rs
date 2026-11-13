@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use base::interface::skill_provider::SkillProvider;
-use base::settings::Settings;
+use base::settings::LoadedSettings;
 use runtime::module::{Module, ModuleError, SessionContext};
 
 use crate::manager::SkillManager;
@@ -105,14 +105,14 @@ impl Module for SkillsModule {
 /// [`build_skill_manager_unwatched`] instead: one watcher per manager is
 /// fine for one manager, and a `notify` backend has a per-process ceiling
 /// that a host building one of these per project will reach.
-pub fn build_default_skill_manager(settings: &Settings) -> SkillManager {
+pub fn build_default_skill_manager(settings: &LoadedSettings) -> SkillManager {
     build_skill_manager(settings, &[], true)
 }
 
 /// [`build_default_skill_manager`] without the watcher — the same catalog,
 /// reloaded by whoever is already watching rather than by a `notify` thread
 /// of its own.
-pub fn build_skill_manager_unwatched(settings: &Settings) -> SkillManager {
+pub fn build_skill_manager_unwatched(settings: &LoadedSettings) -> SkillManager {
     build_skill_manager(settings, &[], false)
 }
 
@@ -121,7 +121,7 @@ pub fn build_skill_manager_unwatched(settings: &Settings) -> SkillManager {
 /// of the same name, and a package's over a built-in, the order agent types
 /// are merged in.
 pub fn build_skill_manager_with_plugins(
-    settings: &Settings,
+    settings: &LoadedSettings,
     plugins: &[Arc<dyn SkillProvider>],
 ) -> SkillManager {
     build_skill_manager(settings, plugins, false)
@@ -130,9 +130,9 @@ pub fn build_skill_manager_with_plugins(
 /// The project's own skills whose body runs a command (`` !`cmd` `` or a
 /// ` ```! ` block) or whose `allowed-tools` grant something — what waits for
 /// the project to be trusted. As `skills/<name>`, for `project.status`.
-pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
+pub fn project_skills_requiring_trust(settings: &LoadedSettings) -> Vec<String> {
     use crate::manager::SkillSource;
-    if settings.project_layer.trust == base::project_trust::ProjectTrust::NoProject {
+    if settings.trust() == base::project_trust::ProjectTrust::NoProject {
         return Vec::new();
     }
     let Some(project) = settings.paths.project_root() else {
@@ -161,12 +161,12 @@ pub fn project_skills_requiring_trust(settings: &Settings) -> Vec<String> {
     out
 }
 
-fn prompt_files(settings: &Settings) -> base::paths::PromptFiles {
+fn prompt_files(settings: &LoadedSettings) -> base::paths::PromptFiles {
     base::paths::PromptFiles::for_project(&base::paths::ConfigPaths::from_settings(&settings.paths))
 }
 
 fn build_skill_manager(
-    settings: &Settings,
+    settings: &LoadedSettings,
     plugins: &[Arc<dyn SkillProvider>],
     watch: bool,
 ) -> SkillManager {
@@ -239,11 +239,17 @@ mod tests {
         );
         skill("reads", "", "Just text.");
 
-        let mut settings = Settings::defaults_for("m");
+        let mut settings = LoadedSettings::new(
+            base::settings::Settings::defaults_for("m"),
+            base::settings::PathSettings::default(),
+        )
+        .with_project_layer(base::project_trust::ProjectLayer {
+            trust: base::project_trust::ProjectTrust::Untrusted,
+            ..Default::default()
+        });
         settings.paths.local_data_dir = project.path().join(".agix");
         settings.paths.workspace =
             base::settings::Workspace::project_of(&settings.paths.local_data_dir);
-        settings.project_layer.trust = base::project_trust::ProjectTrust::Untrusted;
 
         assert_eq!(
             project_skills_requiring_trust(&settings),
@@ -271,7 +277,10 @@ mod tests {
     fn a_disk_skill_wins_over_a_packaged_one_which_wins_over_a_built_in() {
         use crate::manager::SkillSource;
         let home = tempfile::tempdir().unwrap();
-        let mut settings = Settings::defaults_for("m");
+        let mut settings = LoadedSettings::new(
+            base::settings::Settings::defaults_for("m"),
+            base::settings::PathSettings::default(),
+        );
         settings.paths.global_data_dir = home.path().join("global");
         settings.paths.user_data_dir = home.path().join("scene");
         settings.paths.local_data_dir = home.path().join("project/.agix");

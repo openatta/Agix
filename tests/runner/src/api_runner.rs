@@ -30,7 +30,7 @@ pub struct AgentRunnerConfig {
     pub telemetry_path: Option<PathBuf>,
     /// 模板项目 fixture 目录（如 `tests/fixtures/template_project`）。设置后，
     /// 每次跑用例前会把它拷贝到临时工作目录，Settings 通过真实的
-    /// `Settings::load()` 从拷贝出来的 `.agix/settings.json` 读 hooks/mcp/agents
+    /// `LoadedSettings::load()` 从拷贝出来的 `.agix/settings.json` 读 hooks/mcp/agents
     /// 配置——而不是像默认路径那样手搭一份空 Settings。None 时行为不变（兼容
     /// 不需要模板项目配置的用例，如裸 Agent 冒烟测试）。
     pub fixture_dir: Option<PathBuf>,
@@ -239,12 +239,12 @@ async fn build_agent(
         std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".into());
 
     let mut settings = if config.fixture_dir.is_some() {
-        // 真实的 Settings::load() 路径：从拷贝出来的模板项目读
+        // 真实的 LoadedSettings::load() 路径：从拷贝出来的模板项目读
         // .agix/settings.json（hooks_config/mcp_servers/...），project_root()
         // 落在 workdir 本身，工具（Bash/Read/...)、skills/rules 发现都对着这份
         // 拷贝操作,不是手搭的空 Settings。
         let workdir = tmp.join("workdir");
-        base::settings::Settings::load(
+        base::settings::LoadedSettings::load(
             tmp.join("global_empty"),
             tmp.join("scene_empty"),
             workdir.join(".agix"),
@@ -252,9 +252,12 @@ async fn build_agent(
             &model_name,
         )
     } else {
-        base::settings::Settings::defaults_for(&model_name)
+        base::settings::LoadedSettings::new(
+            base::settings::Settings::defaults_for(&model_name),
+            base::settings::PathSettings::default(),
+        )
     };
-    settings.model = base::settings::ModelSettings {
+    settings.values.model = base::settings::ModelSettings {
         api_type: ApiType::Anthropic,
         base_url: String::new(),
         auth_token: String::new(),
@@ -273,10 +276,10 @@ async fn build_agent(
             scope: "code".into(),
         };
     }
-    settings.memory_enabled = false;
+    settings.values.memory_enabled = false;
     // 测试非交互运行,始终旁路权限确认——和 daemon 的生产选择一致（IDE/测试
     // 宿主自己管沙盒）。
-    settings.permission_mode = PermissionMode::BypassPermissions;
+    settings.values.permission_mode = PermissionMode::BypassPermissions;
     let settings = Arc::new(settings);
 
     let tools_registry = make_tools();
@@ -300,7 +303,7 @@ async fn build_agent(
         .session_id(session_id)
         .skip_warmup(true);
 
-    // A fixture's settings.json may bind scripts, and `Settings::load` parses
+    // A fixture's settings.json may bind scripts, and `LoadedSettings::load` parses
     // that section whether or not anything acts on it. Without this the
     // harness would read a `scripts` block and quietly run without it — which
     // is the failure the carrier refuses to make anywhere else, and it would

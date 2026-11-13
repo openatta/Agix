@@ -72,7 +72,7 @@ impl Module for AgentsModule {
 
     fn on_session(&self, cx: &mut SessionContext<'_>) -> Result<(), ModuleError> {
         let settings = cx.settings;
-        let engine_config = Arc::new(EngineConfig::from_settings(settings));
+        let engine_config = Arc::new(EngineConfig::from_loaded(settings));
         let max_depth = engine_config.max_agent_depth;
 
         let template = Arc::new(base::tool::InMemoryToolRegistry::new());

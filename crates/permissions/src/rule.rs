@@ -71,7 +71,7 @@ pub fn format_rule_string(r: &PermissionRule) -> String {
 /// 手写错的规则不该让整个 session 拒绝启动；跳过的后果是"这条规则不生效"，
 /// 在 `ask` 默认下是更保守的方向（该问的还是会问），不是静默放行。
 ///
-/// 多数调用方要的是 [`rules_from_all_tiers`]——它按来源分别调用本函数，
+/// 多数调用方要的是 [`rules_from`]——它按来源分别调用本函数，
 /// 直接用本函数意味着调用方自己决定 `source`。
 pub fn rules_from_settings(
     rules: &[base::settings::PermissionRule],
@@ -101,30 +101,27 @@ pub fn rules_from_settings(
         .collect()
 }
 
-/// 一个 `Settings` 里全部权限规则，各自带上所在层对应的 [`RuleSource`]：
+/// 加载结果里全部权限规则，各自带上所在层对应的 [`RuleSource`]：
 /// 全局与 scene 层是用户自己的设置（`UserSettings`），项目层是仓库里提交的
 /// （`ProjectSettings`），`settings.local.json` 是 `LocalSettings`，部署方的
-/// managed 层是 `PolicySettings`。代码里直接构造、没有层信息的规则按
-/// `ProjectSettings` 算。
-pub fn rules_from_all_tiers(settings: &base::settings::Settings) -> Vec<PermissionRule> {
+/// managed 层是 `PolicySettings`。
+pub fn rules_from(loaded: &base::settings::LoadedSettings) -> Vec<PermissionRule> {
     use base::interface::config_source::Tier;
-    let mut rules: Vec<PermissionRule> = settings
-        .permission_rules
-        .iter()
+    let (local, shared): (Vec<_>, Vec<_>) = loaded.rules.iter().partition(|r| r.machine_local);
+    let mut rules: Vec<PermissionRule> = shared
+        .into_iter()
         .flat_map(|r| {
             let source = match r.tier {
-                Some(Tier::Global | Tier::Scene) => RuleSource::UserSettings,
-                Some(Tier::Project) | None => RuleSource::ProjectSettings,
-                Some(Tier::Managed) => RuleSource::PolicySettings,
+                Tier::Global | Tier::Scene => RuleSource::UserSettings,
+                Tier::Project => RuleSource::ProjectSettings,
+                Tier::Managed => RuleSource::PolicySettings,
             };
-            rules_from_settings(std::slice::from_ref(r), source)
+            rules_from_settings(std::slice::from_ref(&r.rule), source)
         })
         .collect();
-    rules.extend(rules_from_settings(
-        &settings.local_permission_rules,
-        RuleSource::LocalSettings,
-    ));
-    if let Some(managed) = &settings.managed {
+    let local: Vec<_> = local.into_iter().map(|r| r.rule.clone()).collect();
+    rules.extend(rules_from_settings(&local, RuleSource::LocalSettings));
+    if let Some(managed) = &loaded.managed {
         rules.extend(rules_from_settings(
             &managed.permission_rules,
             RuleSource::PolicySettings,
@@ -228,7 +225,6 @@ mod tests {
         base::settings::PermissionRule {
             tool: tool.to_string(),
             action,
-            tier: None,
         }
     }
 

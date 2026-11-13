@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use base::interface::config_source::{InMemoryLayers, Tier};
-use base::settings::{settings_json_schema, unknown_settings_keys, Settings};
+use base::settings::{settings_json_schema, unknown_settings_keys, LoadedSettings};
 use serde_json::Value;
 
 struct Example {
@@ -136,7 +136,7 @@ fn left_out_by_loader(example: &Example) -> Vec<String> {
     let source =
         InMemoryLayers::new().with(Tier::Global, false, &example.at, example.value.clone());
     let dir = PathBuf::from("/nonexistent");
-    let settings = Settings::load_from(
+    let settings = LoadedSettings::load_from(
         &source,
         dir.join("global"),
         dir.join("scene"),
@@ -145,7 +145,7 @@ fn left_out_by_loader(example: &Example) -> Vec<String> {
         "model",
     );
     let mut left_out: Vec<String> = settings
-        .ignored_values
+        .ignored
         .into_iter()
         .map(|ignored| format!("{}: {}", ignored.key, ignored.error))
         .collect();

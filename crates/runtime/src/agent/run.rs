@@ -381,7 +381,7 @@ impl Agent {
             &self.config,
             &self.exec,
             &self.session.session_id,
-            self.settings.project_layer.trust,
+            self.settings.trust(),
         );
 
         let (frozen, _, _) = tokio::join!(
@@ -515,7 +515,7 @@ impl Agent {
     }
 
     /// Access the engine settings (read-only).
-    pub fn settings(&self) -> &Settings {
+    pub fn settings(&self) -> &LoadedSettings {
         &self.settings
     }
 

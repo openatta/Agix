@@ -7,7 +7,9 @@ use super::*;
 /// `create()` builds (`FileRecorder` + optional OTel sink via
 /// `telemetry::spawn`), just writing to one shared `pool.jsonl` instead of
 /// per-session files, since these events happen before any session exists.
-pub(super) fn build_pool_telemetry(settings: &Settings) -> telemetry::TelemetryHandle {
+pub(super) fn build_pool_telemetry(
+    settings: &base::settings::LoadedSettings,
+) -> telemetry::TelemetryHandle {
     #[cfg(feature = "otel")]
     for name in OTLP_HEADER_VARIABLES {
         base::interface::exec::env::hold_back_credential(name);
@@ -62,7 +64,10 @@ pub(super) fn build_pool_telemetry(settings: &Settings) -> telemetry::TelemetryH
 /// The per-call override stays because a test harness points recordings at a
 /// fixture directory; a host that simply wants recording on should not have to
 /// invent a path, so `settings.recorder` is consulted next.
-pub(super) fn recordings_root(settings: &Settings, requested: Option<&str>) -> PathBuf {
+pub(super) fn recordings_root(
+    settings: &base::settings::LoadedSettings,
+    requested: Option<&str>,
+) -> PathBuf {
     if let Some(dir) = requested {
         return PathBuf::from(dir);
     }

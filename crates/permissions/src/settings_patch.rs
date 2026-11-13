@@ -45,7 +45,7 @@ pub enum AppendError {
 /// already present, the file is left untouched.
 ///
 /// The shape here is the one `base::settings::Settings`
-/// deserializes — writing anything else produces a file `Settings::load`
+/// deserializes — writing anything else produces a file `LoadedSettings::load`
 /// silently drops as an unknown key.
 ///
 /// Returns `Ok(true)` if the file was modified, `Ok(false)` if the rule was
@@ -132,8 +132,8 @@ mod tests {
         );
     }
 
-    /// The written shape must be the one `Settings` actually deserializes —
-    /// a file whose rules land under a key `Settings` doesn't know is
+    /// The written shape must be the one the loader actually reads — a file
+    /// whose rules land under a key the loader doesn't know is
     /// indistinguishable from an empty one once loaded.
     #[test]
     fn appended_rules_round_trip_through_settings_load() {
@@ -143,7 +143,7 @@ mod tests {
         append_permission_rule(&local, AppendTarget::Deny, "Bash(rm -rf:*)").unwrap();
 
         let empty = TempDir::new().unwrap();
-        let settings = base::settings::Settings::load(
+        let settings = base::settings::LoadedSettings::load(
             empty.path().to_path_buf(),
             empty.path().to_path_buf(),
             dir.path().to_path_buf(),
@@ -152,9 +152,10 @@ mod tests {
         );
 
         let loaded: Vec<_> = settings
-            .local_permission_rules
+            .rules
             .iter()
-            .map(|r| (r.tool.as_str(), r.action))
+            .filter(|r| r.machine_local)
+            .map(|r| (r.rule.tool.as_str(), r.rule.action))
             .collect();
         assert_eq!(
             loaded,

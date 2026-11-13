@@ -79,11 +79,11 @@ pub struct ManagedPolicy {
     unreadable: Option<String>,
 }
 
-impl ManagedPolicy {
-    /// The managed layer `settings` carry. A rule in it that does not parse
-    /// makes the layer unreadable rather than dropping the rule.
-    pub fn from_settings(settings: &base::settings::Settings) -> Self {
-        let Some(managed) = &settings.managed else {
+/// What the managed layer holds every call to. A rule in it that does not
+/// parse makes the layer unreadable rather than dropping the rule.
+impl From<&Option<base::managed_settings::ManagedSettings>> for ManagedPolicy {
+    fn from(managed: &Option<base::managed_settings::ManagedSettings>) -> Self {
+        let Some(managed) = managed else {
             return Self::default();
         };
         let mut unreadable = managed.error.clone();
@@ -112,7 +112,9 @@ impl ManagedPolicy {
             unreadable,
         }
     }
+}
 
+impl ManagedPolicy {
     /// Why the layer cannot be honoured, when it cannot.
     pub fn unreadable(&self) -> Option<&str> {
         self.unreadable.as_deref()

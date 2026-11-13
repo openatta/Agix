@@ -55,7 +55,6 @@ const PROCESS_STATE: &[(&str, &str, Kind, &str)] = &[
     ("crates/ptc/src/lib.rs", "SLOTS", NotYet("an EngineFactory that builds run_slots per pool"), "the RunCode thread budget; nothing in production passes `with_run_slots`, so every pool in the process draws on this one semaphore"),
     ("crates/ptc/src/engine.rs", "ORIGIN", Constant, "the epoch of a monotonic clock, fixed on first read"),
     ("crates/core/src/settings.rs", "KNOWN", Constant, "the settings keys, derived once from the schema"),
-    ("crates/core/src/settings.rs", "DEPRECATED", Constant, "the deprecated settings keys, derived once from the schema"),
     ("crates/core/src/public_suffix.rs", "RULES", Constant, "the public suffix list compiled into the binary, parsed once"),
     ("crates/core/src/engine_exec.rs", "WARNED", OnceFlag, "says once per process that the engine's subprocesses run unconfined"),
     ("crates/tools/src/bash/sandbox.rs", "ONCE", OnceFlag, "sweeps stale session temp directories once per process"),

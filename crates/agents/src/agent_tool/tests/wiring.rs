@@ -5,7 +5,7 @@ use super::*;
 /// Parent `Settings` for a sub-agent spawn, pointed at a throwaway temp
 /// directory so `Builder::build()`'s skill/agent/plugin scans have
 /// nothing real to find.
-pub(super) fn parent_settings_for_test(scope: &str) -> (Settings, std::path::PathBuf) {
+pub(super) fn parent_settings_for_test(scope: &str) -> (LoadedSettings, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
         "agix-subagent-test-{}-{}",
         std::process::id(),
@@ -15,7 +15,10 @@ pub(super) fn parent_settings_for_test(scope: &str) -> (Settings, std::path::Pat
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let mut s = Settings::defaults_for("test-model");
+    let mut s = base::settings::LoadedSettings::new(
+        Settings::defaults_for("test-model"),
+        base::settings::PathSettings::default(),
+    );
     s.paths = PathSettings {
         user_data_dir: dir.clone(),
         global_data_dir: dir.clone(),
@@ -24,7 +27,7 @@ pub(super) fn parent_settings_for_test(scope: &str) -> (Settings, std::path::Pat
         scope: scope.to_string(),
     };
     // Keep the turn from making an extra post-turn extraction call.
-    s.memory_enabled = false;
+    s.values.memory_enabled = false;
     (s, dir)
 }
 

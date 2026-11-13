@@ -23,24 +23,48 @@ use model::adapter::AnthropicModel;
 use model::client::{AuthMode, HttpAnthropicClient};
 use tokio_util::sync::CancellationToken;
 
-#[allow(deprecated)]
 fn settings(
     model_name: String,
     data_dir: std::path::PathBuf,
     project: std::path::PathBuf,
-) -> Settings {
-    Settings {
-        model: ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: String::new(),
-            auth_token: String::new(),
-            model_name,
-            max_tokens: 8192,
-            thinking_mode: ThinkingMode::Auto,
-            effort: None,
-            fallback_model: None,
+) -> base::settings::LoadedSettings {
+    base::settings::LoadedSettings::new(
+        Settings {
+            model: ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: String::new(),
+                auth_token: String::new(),
+                model_name,
+                max_tokens: 8192,
+                thinking_mode: ThinkingMode::Auto,
+                effort: None,
+                fallback_model: None,
+            },
+            execution: ExecutionSettings::default(),
+            compaction: CompactionConfig::default(),
+            sandbox: SandboxConfig::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: false,
+            disable_skill_shell_execution: true,
+            path_style: Default::default(),
+            permission_mode: PermissionMode::default(),
+            allow_client_permission_override: false,
+            telemetry_enabled: false,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            scripts: Vec::new(),
         },
-        paths: PathSettings {
+        PathSettings {
             user_data_dir: data_dir.clone(),
             global_data_dir: data_dir,
             // The project is the directory this lives in.
@@ -48,37 +72,7 @@ fn settings(
             local_data_dir: project.join(".agix"),
             scope: "code".into(),
         },
-        execution: ExecutionSettings::default(),
-        compaction: CompactionConfig::default(),
-        sandbox: SandboxConfig::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        session_dir: None,
-        memory_enabled: false,
-        disable_skill_shell_execution: true,
-        path_style: Default::default(),
-        permission_mode: PermissionMode::default(),
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: false,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        scripts: Vec::new(),
-    }
+    )
 }
 
 #[tokio::main]

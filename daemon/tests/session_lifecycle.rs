@@ -196,9 +196,19 @@ impl ScriptedServer {
 /// A daemon whose model is scripted, with a real `HistoryStore` (handed back
 /// so tests can inspect transcripts directly) and caller-supplied `Settings`
 /// so the permission posture under test is explicit rather than ambient.
+/// What a scripted server starts from: the caller's settings, and the
+/// permission rules a settings file would have added.
+struct Seed(Settings, Vec<base::settings::PermissionRule>);
+
+impl From<Settings> for Seed {
+    fn from(settings: Settings) -> Self {
+        Self(settings, Vec::new())
+    }
+}
+
 async fn start_scripted_server(
     rounds: Vec<Vec<StreamEvent>>,
-    settings: Settings,
+    settings: impl Into<Seed>,
     prompt_timeout: Duration,
 ) -> (ScriptedServer, SeenRequests) {
     start_scripted_server_in("code", rounds, settings, prompt_timeout).await
@@ -210,7 +220,7 @@ async fn start_scripted_server(
 async fn start_scripted_server_in(
     scene_id: &str,
     rounds: Vec<Vec<StreamEvent>>,
-    settings: Settings,
+    settings: impl Into<Seed>,
     prompt_timeout: Duration,
 ) -> (ScriptedServer, SeenRequests) {
     start_scripted_server_holding(scene_id, rounds, settings, prompt_timeout, 8).await
@@ -220,7 +230,7 @@ async fn start_scripted_server_in(
 async fn start_scripted_server_holding(
     scene_id: &str,
     rounds: Vec<Vec<StreamEvent>>,
-    settings: Settings,
+    settings: impl Into<Seed>,
     prompt_timeout: Duration,
     session_cap: usize,
 ) -> (ScriptedServer, SeenRequests) {
@@ -248,12 +258,18 @@ async fn start_scripted_server_holding(
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
     config.session_cap = session_cap;
-    // The caller's settings, kept inside this test's directory: `Settings::
-    // defaults_for` carries a literal `~/.agix`, and the assembly places the
-    // memory store and the history roots from exactly these paths.
-    let settings_paths = config.settings.paths.clone();
-    config.settings = settings;
-    config.settings.paths = settings_paths;
+    let Seed(settings, rules) = settings.into();
+    config.settings.values = settings;
+    config.settings.rules = rules
+        .into_iter()
+        .map(|rule| {
+            base::settings::LoadedRule::new(
+                rule,
+                base::interface::config_source::Tier::Project,
+                false,
+            )
+        })
+        .collect();
 
     let store: Arc<dyn history::store::HistoryStore> = Arc::new(
         history::store::JsonlHistoryStore::with_roots(
@@ -4398,15 +4414,16 @@ async fn a_rebuilt_session_keeps_the_options_it_was_created_with() {
 
 #[tokio::test]
 async fn settings_permission_rules_finally_reach_the_daemon() {
-    // `settings.permission_rules` has been parsed by `Settings::load` for a
+    // `settings.permission_rules` has been parsed by the settings loader for a
     // long time with no production consumer at all. Under the ask default it
     // finally has one: an Allow rule pre-empts the prompt.
-    let mut settings = ask_settings();
-    settings.permission_rules = vec![base::settings::PermissionRule {
-        tool: "Bash(touch ruled.txt)".into(),
-        action: base::settings::PermissionAction::Allow,
-        tier: None,
-    }];
+    let settings = Seed(
+        ask_settings(),
+        vec![base::settings::PermissionRule {
+            tool: "Bash(touch ruled.txt)".into(),
+            action: base::settings::PermissionAction::Allow,
+        }],
+    );
 
     let (srv, _seen) = start_scripted_server(
         asking_bash_rounds("ruled.txt"),

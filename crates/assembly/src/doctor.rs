@@ -1,6 +1,6 @@
 //! `daemon.doctor` — read-only configuration/wiring diagnostics.
 //!
-//! Re-inspects the same three settings.json tiers `Settings::load()` already
+//! Re-inspects the same three settings.json tiers `LoadedSettings::load()` already
 //! merged at startup, but reports per-tier existence/parse status instead of
 //! just logging a warning and moving on — useful for a user (or an IDE
 //! plugin) asking "why isn't my provider config taking effect?" without
@@ -14,7 +14,7 @@
 use crate::config::DaemonPaths;
 use crate::doctor_posture;
 use base::interface::health::{CheckResult, HealthCheck, HealthChecks};
-use base::settings::Settings;
+use base::settings::LoadedSettings;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -29,7 +29,7 @@ struct TierStatus {
     /// Top-level keys no setting reads; they are ignored.
     unknown_keys: Vec<String>,
     /// Values in this tier's files that do not fit their setting, left out
-    /// of the merge — see `Settings::ignored_values`.
+    /// of the merge — see `LoadedSettings::ignored`.
     ignored_values: Vec<base::settings::IgnoredValue>,
 }
 
@@ -92,12 +92,12 @@ pub struct SettingsTiersCheck {
 impl SettingsTiersCheck {
     /// `settings` are the ones loaded from these tiers; what their load left
     /// out is reported against the tier it came from.
-    pub fn new(paths: &dyn DaemonPaths, settings: &Settings) -> Self {
+    pub fn new(paths: &dyn DaemonPaths, settings: &LoadedSettings) -> Self {
         Self {
             global: paths.global_root(),
             scene: paths.config_root(),
             project: paths.project_root().join(".agix"),
-            ignored: settings.ignored_values.clone(),
+            ignored: settings.ignored.clone(),
         }
     }
 }
@@ -159,10 +159,10 @@ impl HealthCheck for SettingsTiersCheck {
 
 /// Provider and task-model routing — the same resolution `main.rs` runs at
 /// startup, re-run here so this reflects the live settings after a reload.
-pub struct ProviderRoutingCheck(Arc<Settings>);
+pub struct ProviderRoutingCheck(Arc<LoadedSettings>);
 
 impl ProviderRoutingCheck {
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>) -> Self {
         Self(settings)
     }
 }
@@ -209,10 +209,10 @@ impl HealthCheck for ProviderRoutingCheck {
 /// The hooks section, parsed the same tolerant way the engine parses it — so
 /// this reports what will actually load rather than a whole-map verdict the
 /// engine does not share.
-pub struct HooksCheck(Arc<Settings>);
+pub struct HooksCheck(Arc<LoadedSettings>);
 
 impl HooksCheck {
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>) -> Self {
         Self(settings)
     }
 }
@@ -258,10 +258,10 @@ impl HealthCheck for HooksCheck {
 
 /// How full the durable memory store is. At the cap, turn-end extraction
 /// stops adding memories, and only removing some makes room again.
-pub struct MemoryCheck(Arc<Settings>);
+pub struct MemoryCheck(Arc<LoadedSettings>);
 
 impl MemoryCheck {
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub fn new(settings: Arc<LoadedSettings>) -> Self {
         Self(settings)
     }
 }
@@ -304,11 +304,11 @@ pub struct ManagedSettingsCheck {
 }
 
 impl ManagedSettingsCheck {
-    pub fn new(path: PathBuf, settings: &Settings) -> Self {
+    pub fn new(path: PathBuf, settings: &LoadedSettings) -> Self {
         Self {
             path,
             managed: settings.managed.clone(),
-            unreadable: permissions::gate::ManagedPolicy::from_settings(settings)
+            unreadable: permissions::gate::ManagedPolicy::from(&settings.managed)
                 .unreadable()
                 .map(str::to_string),
         }
@@ -416,7 +416,7 @@ impl HealthCheck for ProjectTrustCheck {
 pub fn run_doctor(
     paths: &dyn DaemonPaths,
     scene_id: &str,
-    settings: Arc<Settings>,
+    settings: Arc<LoadedSettings>,
     history_store_wired: bool,
     plugin_status: crate::plugins::PluginStatus,
     extra: &HealthChecks,
@@ -460,7 +460,7 @@ pub fn run_doctor(
         plugins: PluginsReport {
             status: plugin_status.as_str().to_string(),
         },
-        permission_rules_count: settings.permission_rules.len(),
+        permission_rules_count: settings.rules.len(),
         model: ModelReport {
             model_name: settings.model.model_name.clone(),
             api_type: format!("{:?}", settings.model.api_type),
@@ -503,11 +503,12 @@ pub struct ModelReport {
 mod tests {
     use super::*;
     use crate::config::StaticDaemonPaths;
+    use base::settings::Settings;
 
     fn run_doctor(
         paths: &dyn DaemonPaths,
         scene_id: &str,
-        settings: Arc<Settings>,
+        settings: Arc<LoadedSettings>,
         history_store_wired: bool,
         plugin_status: crate::plugins::PluginStatus,
         extra: &HealthChecks,
@@ -523,10 +524,13 @@ mod tests {
         serde_json::to_value(report).unwrap()
     }
 
-    fn base_settings() -> Arc<Settings> {
+    fn base_settings() -> Arc<LoadedSettings> {
         let mut settings = Settings::defaults_for("test-model");
         settings.memory_enabled = false;
-        Arc::new(settings)
+        Arc::new(LoadedSettings::new(
+            settings,
+            base::settings::PathSettings::default(),
+        ))
     }
 
     fn no_extra_checks() -> HealthChecks {
@@ -620,7 +624,7 @@ mod tests {
             r#"{"language": 5, "memory_enabled": false}"#,
         )
         .unwrap();
-        let settings = Settings::load(
+        let settings = LoadedSettings::load(
             global.clone(),
             global.join("scenes/code"),
             project.join(".agix"),
@@ -663,9 +667,12 @@ mod tests {
     fn reports_provider_routing_errors() {
         let dir = tempfile::tempdir().unwrap();
         let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
-        let mut settings = Settings::defaults_for("test-model");
-        settings.default_provider = Some("does-not-exist".into());
-        settings.providers.insert(
+        let mut settings = base::settings::LoadedSettings::new(
+            Settings::defaults_for("test-model"),
+            base::settings::PathSettings::default(),
+        );
+        settings.values.default_provider = Some("does-not-exist".into());
+        settings.values.providers.insert(
             "real".into(),
             base::provider::ProviderConfig {
                 api_type: Some("anthropic".into()),
@@ -734,7 +741,10 @@ mod tests {
     #[test]
     fn a_full_memory_store_is_reported_degraded() {
         let dir = tempfile::tempdir().unwrap();
-        let mut settings = Settings::defaults_for("test-model");
+        let mut settings = base::settings::LoadedSettings::new(
+            Settings::defaults_for("test-model"),
+            base::settings::PathSettings::default(),
+        );
         settings.paths.global_data_dir = dir.path().join("global");
         settings.paths.user_data_dir = dir.path().join("global/scenes/code");
         settings.paths.local_data_dir = dir.path().join("project");
@@ -763,7 +773,7 @@ mod tests {
                 .unwrap();
         };
         let cap = base::memory::MAX_MEMORIES;
-        let memory_check = |settings: &Arc<Settings>| {
+        let memory_check = |settings: &Arc<LoadedSettings>| {
             let report = run_doctor(
                 &StaticDaemonPaths::new(dir.path().to_path_buf()),
                 "code",
@@ -891,7 +901,10 @@ mod documented_shape_tests {
     /// The doc's example is written for a fresh install with no settings.json
     /// anywhere; `run_doctor` has to be called under exactly that to compare.
     fn report_the_example_describes(dir: &Path) -> serde_json::Value {
-        let mut settings = Settings::defaults_for("claude-sonnet-4-6");
+        let mut settings = base::settings::LoadedSettings::new(
+            base::settings::Settings::defaults_for("claude-sonnet-4-6"),
+            base::settings::PathSettings::default(),
+        );
         settings.paths.global_data_dir = dir.join("global");
         settings.paths.user_data_dir = dir.join("global/scenes/code");
         settings.paths.local_data_dir = dir.join("project");

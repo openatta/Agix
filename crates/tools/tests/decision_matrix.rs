@@ -263,7 +263,10 @@ const RULES: [(&str, RuleCase); 5] = [
 ];
 
 fn permission(tool: &str, case: RuleCase) -> RuleSetPermission {
-    let mut settings = Settings::defaults_for("matrix-model");
+    let mut settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("matrix-model"),
+        base::settings::PathSettings::default(),
+    );
     let mut extra = Vec::new();
     let user_rule = |behavior| PermissionRule {
         source: RuleSource::UserSettings,
@@ -283,7 +286,6 @@ fn permission(tool: &str, case: RuleCase) -> RuleSetPermission {
                 permission_rules: vec![base::settings::PermissionRule {
                     tool: tool.into(),
                     action: PermissionAction::Ask,
-                    tier: Some(base::interface::config_source::Tier::Managed),
                 }],
                 disable_bypass_permissions_mode: false,
             });
@@ -431,7 +433,10 @@ async fn every_builtin_tool_is_decided_the_same_in_every_cell() {
 
 /// What `RuleSetPermission` hands a tool's own checks, for the same session.
 fn context_like_the_gates(session: &Arc<SessionState>, cwd: &Path) -> ToolContext {
-    let settings = Settings::defaults_for("matrix-model");
+    let settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("matrix-model"),
+        base::settings::PathSettings::default(),
+    );
     let mut ctx = ToolContext::from_engine_ctx_with(
         cwd.to_path_buf(),
         tokio_util::sync::CancellationToken::new(),

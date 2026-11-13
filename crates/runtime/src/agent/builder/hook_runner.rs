@@ -15,7 +15,7 @@ use super::*;
 /// `model`/`agent_tool` back the `"type": "prompt"` / `"type": "agent"`
 /// hook executors (`crate::hook_executors`).
 pub(in crate::agent) fn build_hook_runner(
-    settings: &Settings,
+    settings: &LoadedSettings,
     model: Arc<dyn Model>,
     agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
     session_id: Option<String>,
@@ -63,7 +63,7 @@ pub(in crate::agent) fn build_hook_runner(
     // An untrusted project's hooks config is already gone from `settings`;
     // its `hooks/` directory goes too, or a user hook naming a script would
     // run the project's file of that name.
-    let project_untrusted = settings.project_layer.trust.is_untrusted();
+    let project_untrusted = settings.trust().is_untrusted();
     let project_hooks = settings
         .paths
         .project_root()

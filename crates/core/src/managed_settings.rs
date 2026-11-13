@@ -15,7 +15,6 @@
 //! (`permissions::gate::ManagedPolicy`); this module only says what the file
 //! holds. Semantics: `docs/ARCHITECTURE.md` §6.1.
 
-use crate::interface::config_source::Tier;
 use crate::settings::PermissionRule;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -50,7 +49,6 @@ pub struct ManagedSettings {
     /// Why the layer cannot be honoured. While set, every tool call is refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Each tagged `Tier::Managed`.
     pub permission_rules: Vec<PermissionRule>,
     pub disable_bypass_permissions_mode: bool,
 }
@@ -97,13 +95,7 @@ impl ManagedSettings {
         let permission_rules = match fields.remove("permission_rules") {
             None => Vec::new(),
             Some(rules) => match serde_json::from_value::<Vec<PermissionRule>>(rules) {
-                Ok(rules) => rules
-                    .into_iter()
-                    .map(|rule| PermissionRule {
-                        tier: Some(Tier::Managed),
-                        ..rule
-                    })
-                    .collect(),
+                Ok(rules) => rules,
                 Err(e) => return Self::broken(origin, format!("permission_rules: {e}")),
             },
         };
@@ -166,7 +158,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rules_and_the_bypass_switch_are_read_and_tagged_managed() {
+    fn rules_and_the_bypass_switch_are_read() {
         let m = ManagedSettings::from_value(
             "it",
             json!({
@@ -179,7 +171,6 @@ mod tests {
         assert!(m.disable_bypass_permissions_mode);
         assert_eq!(m.permission_rules.len(), 1);
         assert_eq!(m.permission_rules[0].action, PermissionAction::Deny);
-        assert_eq!(m.permission_rules[0].tier, Some(Tier::Managed));
     }
 
     #[test]

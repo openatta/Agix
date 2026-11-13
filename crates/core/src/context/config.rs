@@ -79,7 +79,7 @@ pub struct EngineConfig {
     /// Mirrors `Settings.disable_skill_shell_execution` — read by the skill
     /// expansion's `` !`cmd` `` step via `ToolContext.config`.
     pub disable_skill_shell_execution: bool,
-    /// Whether the project tier is in effect (`Settings::project_layer`); an
+    /// Whether the project tier is in effect (`LoadedSettings::trust`); an
     /// untrusted project's skill `` !`cmd` `` is not run.
     pub project_trust: crate::project_trust::ProjectTrust,
     /// How the engine reads the files it puts in front of the model.
@@ -320,12 +320,13 @@ impl EngineConfig {
         }
     }
 
-    /// Derive a real `EngineConfig` from a loaded `Settings`. Starts from
+    /// Derive a real `EngineConfig` from loaded settings. Starts from
     /// `defaults_for()`'s baseline and overlays every field `Settings`
     /// actually carries; fields `Settings` has no equivalent for (e.g.
     /// `strong_model`, `file_limits`) are left at their
     /// `defaults_for()` value.
-    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+    pub fn from_loaded(loaded: &crate::settings::LoadedSettings) -> Self {
+        let settings = &loaded.values;
         let mut c = Self::defaults_for(settings.model.model_name.clone());
         c.max_tokens = settings.model.max_tokens;
         c.fallback_model = settings.model.fallback_model.clone();
@@ -370,15 +371,15 @@ impl EngineConfig {
             // settings.json this session actually reads — not to whatever
             // sits under the invoking user's home.
             paths: std::sync::Arc::new(crate::paths::SensitivePaths::for_paths(
-                &crate::paths::ConfigPaths::from_settings(&settings.paths),
+                &crate::paths::ConfigPaths::from_settings(&loaded.paths),
             )),
             require_enforcement: settings.sandbox.require_enforcement,
             unattended_requires_network_policy: settings.sandbox.unattended_requires_network_policy,
         };
         c.disable_skill_shell_execution = settings.disable_skill_shell_execution;
-        c.project_trust = settings.project_layer.trust;
+        c.project_trust = loaded.trust();
         c.prompt_files = crate::paths::PromptFiles::for_project(
-            &crate::paths::ConfigPaths::from_settings(&settings.paths),
+            &crate::paths::ConfigPaths::from_settings(&loaded.paths),
         );
         c.path_style = settings.path_style.unwrap_or_default();
         c.subprocess_env = settings.sandbox.subprocess_env.clone();
@@ -427,33 +428,30 @@ pub fn default_blocking_limit(model: &str, max_tokens: u32) -> usize {
 #[cfg(test)]
 mod sandbox_wiring_tests {
     use super::*;
-    use crate::settings::Settings;
+    use crate::settings::{LoadedSettings, PathSettings, Settings};
+
+    fn config_of(s: &Settings) -> EngineConfig {
+        EngineConfig::from_loaded(&LoadedSettings::new(s.clone(), PathSettings::default()))
+    }
 
     #[test]
     fn path_style_is_absolute_unless_settings_say_otherwise() {
         let mut s = Settings::defaults_for("test-model");
-        assert_eq!(
-            EngineConfig::from_settings(&s).path_style,
-            PathStyle::Absolute
-        );
+        assert_eq!(config_of(&s).path_style, PathStyle::Absolute);
         s = serde_json::from_value(serde_json::json!({
             "model": serde_json::to_value(&s.model).unwrap(),
-            "paths": serde_json::to_value(&s.paths).unwrap(),
             "path_style": "workspace_relative",
         }))
         .unwrap();
-        assert_eq!(
-            EngineConfig::from_settings(&s).path_style,
-            PathStyle::WorkspaceRelative
-        );
+        assert_eq!(config_of(&s).path_style, PathStyle::WorkspaceRelative);
     }
 
     #[test]
     fn the_delegation_depth_is_read_from_settings() {
         let mut s = Settings::defaults_for("test-model");
-        assert_eq!(EngineConfig::from_settings(&s).max_agent_depth, 3);
+        assert_eq!(config_of(&s).max_agent_depth, 3);
         s.execution.max_agent_depth = 1;
-        assert_eq!(EngineConfig::from_settings(&s).max_agent_depth, 1);
+        assert_eq!(config_of(&s).max_agent_depth, 1);
     }
 
     #[test]
@@ -490,7 +488,7 @@ mod sandbox_wiring_tests {
             sb.deny_read = vec![PathBuf::from("/tmp/secret")];
             sb.dangerously_disable_sandbox = true;
         });
-        let c = EngineConfig::from_settings(&s);
+        let c = config_of(&s);
 
         assert_eq!(c.sandbox_policy.network_mode, NetworkModeConfig::Allowlist);
         assert_eq!(c.sandbox_policy.allowed_domains, ["api.example.com"]);
@@ -508,7 +506,7 @@ mod sandbox_wiring_tests {
     /// `~/.ssh` and `~/.aws` readable by any command the classifier allows.
     #[test]
     fn empty_deny_read_means_defaults_not_an_empty_deny_list() {
-        let c = EngineConfig::from_settings(&settings_with_sandbox(|sb| {
+        let c = config_of(&settings_with_sandbox(|sb| {
             sb.deny_read = Vec::new();
         }));
         assert_eq!(c.sandbox_policy.deny_read, None);

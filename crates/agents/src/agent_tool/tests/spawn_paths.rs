@@ -197,7 +197,7 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tools = Arc::new(InMemoryToolRegistry::new());
         let (mut settings, dir) = parent_settings_for_test("code");
-        settings.permission_mode = parent_mode;
+        settings.values.permission_mode = parent_mode;
         let agent_tool = AgentTool::with_parent_tools(
             Arc::new(ProbeThenTextModel {
                 calls: Default::default(),

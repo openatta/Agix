@@ -76,60 +76,54 @@ impl Model for RecordingAnswerModel {
     }
 }
 
-#[allow(deprecated)]
-fn recall_test_settings(root: &std::path::Path) -> Settings {
-    Settings {
-        model: ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: "https://api.example.com".into(),
-            auth_token: "test".into(),
-            model_name: "test-model".into(),
-            max_tokens: 4096,
-            thinking_mode: ThinkingMode::Off,
-            effort: None,
-            fallback_model: None,
+fn recall_test_settings(root: &std::path::Path) -> base::settings::LoadedSettings {
+    base::settings::LoadedSettings::new(
+        Settings {
+            model: ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: "https://api.example.com".into(),
+                auth_token: "test".into(),
+                model_name: "test-model".into(),
+                max_tokens: 4096,
+                thinking_mode: ThinkingMode::Off,
+                effort: None,
+                fallback_model: None,
+            },
+            execution: Default::default(),
+            compaction: Default::default(),
+            sandbox: Default::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: true,
+            disable_skill_shell_execution: false,
+            path_style: Default::default(),
+            permission_mode: PermissionMode::Default,
+            allow_client_permission_override: false,
+            telemetry_enabled: false,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            scripts: Vec::new(),
         },
-        paths: PathSettings {
+        PathSettings {
             user_data_dir: root.join("user-data"),
             global_data_dir: root.join("global-data"),
             workspace: base::settings::Workspace::project_of(&root.join("local-data")),
             local_data_dir: root.join("local-data"),
             scope: "code".into(),
         },
-        execution: Default::default(),
-        compaction: Default::default(),
-        sandbox: Default::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        memory_enabled: true,
-        disable_skill_shell_execution: false,
-        path_style: Default::default(),
-        permission_mode: PermissionMode::Default,
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: false,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        session_dir: None,
-        scripts: Vec::new(),
-    }
+    )
 }
 
-fn test_settings() -> Settings {
+fn test_settings() -> base::settings::LoadedSettings {
     recall_test_settings(&std::env::temp_dir().join("agix-mcp-module-tests"))
 }
 
@@ -351,7 +345,7 @@ async fn run_one_turn(
     let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
     let mut settings = recall_test_settings(tmp.path());
     // Keep the transcript to just what this test injects.
-    settings.memory_enabled = false;
+    settings.values.memory_enabled = false;
 
     let (mut agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)

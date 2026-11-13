@@ -12,8 +12,8 @@ use base::event::AgentEvent;
 use base::id::Id;
 use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
-use base::settings::Settings;
 use base::settings::{Divergence, RecorderConfig, RecorderMode};
+use base::settings::{LoadedSettings, Settings};
 #[cfg(feature = "mcp")]
 use mcp::manager::McpManager;
 use model::adapter::AnthropicModel;
@@ -125,7 +125,7 @@ fn tier_covers(tier: &crate::watch_hub::Tier, key: &ProjectSceneKey) -> bool {
 /// because they are the same fact stated four times: a binding is built from
 /// one `Settings`, and rebuilding it is how any of them changes.
 struct ProjectBinding {
-    settings: Arc<Settings>,
+    settings: Arc<LoadedSettings>,
     /// The conversation's model for a session on this pair, and the
     /// per-task-type routing behind it. `providers` and `task_models` are
     /// settings fields like any other, so they are decided by the pair: a
@@ -153,7 +153,7 @@ struct ProjectBinding {
 
 impl ProjectBinding {
     fn build(
-        settings: Arc<Settings>,
+        settings: Arc<LoadedSettings>,
         plugins: &crate::plugins::Contributions,
         watch: Vec<crate::watch_hub::WatchToken>,
         client: &Arc<dyn AnthropicClient>,
@@ -610,9 +610,9 @@ pub struct SessionPool {
     client: Arc<dyn AnthropicClient>,
     /// Hot-swappable so `config.setProvider` can take effect for sessions
     /// created *after* the call without a daemon restart. Sessions already
-    /// running keep whatever `Arc<Settings>` snapshot they were built with —
-    /// only new `create()` calls observe the update.
-    settings: AsyncRwLock<Arc<Settings>>,
+    /// running keep whatever `Arc<LoadedSettings>` snapshot they were built
+    /// with — only new `create()` calls observe the update.
+    settings: AsyncRwLock<Arc<LoadedSettings>>,
     /// This daemon instance's *default* scene (resolved + validated from
     /// `--scene` at startup — see `main.rs::resolve_scene`). Every session
     /// created without an explicit `scene` uses this one.
@@ -896,20 +896,19 @@ struct AdmittedMcp {
 /// `settings.local.json`) declare. A key a project sets at all, even one
 /// field of a global server's, makes that server the project's.
 #[cfg(feature = "mcp")]
-fn project_tier_mcp_servers(settings: &Settings) -> std::collections::HashSet<String> {
-    settings.project_layer.mcp_servers.keys().cloned().collect()
+fn project_tier_mcp_servers(settings: &LoadedSettings) -> std::collections::HashSet<String> {
+    settings.project_mcp_servers().keys().cloned().collect()
 }
 
 /// What `project.status` answers for `root`, from the settings its sessions
 /// are built with.
 fn project_trust_report(
     root: &Path,
-    settings: &Settings,
+    settings: &LoadedSettings,
     plugin_agent_types: &[base::agent_type::AgentTypeDefinition],
 ) -> api::ProjectStatus {
-    let layer = &settings.project_layer;
     #[cfg_attr(not(any(feature = "agents", feature = "skills")), allow(unused_mut))]
-    let mut requires_trust = layer.requires_trust.clone();
+    let mut requires_trust = settings.requires_trust().to_vec();
     #[cfg(feature = "agents")]
     requires_trust.extend(agents::agent_tool::project_agent_types_requiring_trust(
         settings,
@@ -921,8 +920,8 @@ fn project_trust_report(
     requires_trust.extend(skills::module::project_skills_requiring_trust(settings));
     api::ProjectStatus {
         project_root: root.to_path_buf(),
-        trust: layer.trust.into(),
-        matched: layer.matched.clone(),
+        trust: settings.trust().into(),
+        matched: settings.trust_pattern().map(str::to_string),
         default: settings.project_trust.default,
         requires_trust,
     }
@@ -1024,7 +1023,7 @@ impl SessionPool {
         cap: usize,
         idle_timeout_secs: u64,
         client: Arc<dyn AnthropicClient>,
-        settings: Arc<Settings>,
+        settings: Arc<LoadedSettings>,
         scene: Arc<dyn Scene>,
         permission: Option<PermissionSet>,
         cwd: PathBuf,
@@ -1155,8 +1154,9 @@ impl SessionPool {
         path: PathBuf,
         managed: Option<base::managed_settings::ManagedSettings>,
     ) -> Self {
-        let mut settings = (**self.settings.get_mut()).clone();
-        settings.apply_managed(managed.clone());
+        let settings = (**self.settings.get_mut())
+            .clone()
+            .with_managed(managed.clone());
         *self.settings.get_mut() = Arc::new(settings);
         self.managed_settings_path = path;
         self.managed_settings = managed;
@@ -1164,9 +1164,8 @@ impl SessionPool {
     }
 
     /// `settings` with this pool's managed layer on top.
-    pub(crate) fn with_managed_layer(&self, mut settings: Settings) -> Settings {
-        settings.apply_managed(self.managed_settings.clone());
-        settings
+    pub(crate) fn with_managed_layer(&self, settings: LoadedSettings) -> LoadedSettings {
+        settings.with_managed(self.managed_settings.clone())
     }
 
     #[cfg(feature = "mcp")]

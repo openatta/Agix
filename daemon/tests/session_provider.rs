@@ -88,16 +88,18 @@ async fn start_daemon() -> Daemon {
         "code",
         &StaticDaemonPaths::new(dir.path().to_path_buf()),
     );
-    config.settings.memory_enabled = false;
+    config.settings.values.memory_enabled = false;
     config
         .settings
+        .values
         .providers
         .insert("one".into(), provider(&["one-a"]));
     config
         .settings
+        .values
         .providers
         .insert("two".into(), provider(&["two-a", "two-b"]));
-    config.settings.default_provider = Some("one".into());
+    config.settings.values.default_provider = Some("one".into());
 
     let pool = daemon::assemble::pool(
         &config,

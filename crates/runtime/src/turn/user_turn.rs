@@ -208,7 +208,7 @@ impl Agent {
             &self.config,
             &self.exec,
             &self.session.session_id,
-            self.settings.project_layer.trust,
+            self.settings.trust(),
         );
         if collected_this_turn {
             self.prompt.frozen = Some(
@@ -824,7 +824,7 @@ impl Agent {
                             &self.config,
                             &self.exec,
                             &self.session.session_id,
-                            self.settings.project_layer.trust,
+                            self.settings.trust(),
                         ))
                         .await;
                 }

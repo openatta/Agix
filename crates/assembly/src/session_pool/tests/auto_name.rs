@@ -108,7 +108,7 @@ async fn bind(
     task_router: Option<TaskRouter>,
 ) {
     let mut settings = (**pool.settings.read().await).clone();
-    settings.memory_enabled = false;
+    settings.values.memory_enabled = false;
     let mut binding = ProjectBinding::build(
         Arc::new(settings),
         &Default::default(),

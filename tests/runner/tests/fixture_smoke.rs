@@ -61,7 +61,7 @@ fn custom_agent_type_frontmatter_parses() {
     );
 }
 
-/// 端到端验证 api_runner.rs 实际会走的路径：`Settings::load()` 指向拷贝出来的
+/// 端到端验证 api_runner.rs 实际会走的路径：`LoadedSettings::load()` 指向拷贝出来的
 /// `.agix/`，`project_root()` 落在 fixture 根，hooks_config/mcp_servers 通过
 /// 三层合并读出来——不是靠读代码猜的。
 #[test]
@@ -70,7 +70,7 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let settings = base::settings::Settings::load(
+    let settings = base::settings::LoadedSettings::load(
         tmp.join("global_empty"),
         tmp.join("scene_empty"),
         fixture_dir().join(".agix"),
@@ -85,6 +85,7 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
     );
     let hooks = settings
         .hooks_config
+        .as_ref()
         .expect("hooks_config should load from fixture's .agix/settings.json");
     assert!(hooks.get("PreToolUse").is_some());
     assert!(

@@ -93,11 +93,14 @@ async fn trace(case: Case) -> String {
     let model_arc = ScriptedModel::new(case.replies);
     let model: Arc<dyn Model> = model_arc.clone();
 
-    let mut settings = Settings::defaults_for("golden-model");
-    settings.model.model_name = "golden-model".into();
-    settings.model.max_tokens = 1024;
-    settings.model.thinking_mode = ThinkingMode::Off;
-    settings.model.fallback_model = case.fallback_model.clone();
+    let mut settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("golden-model"),
+        base::settings::PathSettings::default(),
+    );
+    settings.values.model.model_name = "golden-model".into();
+    settings.values.model.max_tokens = 1024;
+    settings.values.model.thinking_mode = ThinkingMode::Off;
+    settings.values.model.fallback_model = case.fallback_model.clone();
     settings.paths = PathSettings {
         user_data_dir: root.join("user"),
         global_data_dir: root.join("global"),
@@ -105,10 +108,10 @@ async fn trace(case: Case) -> String {
         local_data_dir: root.join("local"),
         scope: "code".into(),
     };
-    settings.memory_enabled = false;
-    settings.permission_mode = case.permission_mode;
-    settings.hooks_config = case.hooks_config.clone();
-    settings.compaction.reactive = case.reactive_compact;
+    settings.values.memory_enabled = false;
+    settings.values.permission_mode = case.permission_mode;
+    settings.values.hooks_config = case.hooks_config.clone();
+    settings.values.compaction.reactive = case.reactive_compact;
     let settings = Arc::new(settings);
 
     let registry = Arc::new(InMemoryToolRegistry::new());

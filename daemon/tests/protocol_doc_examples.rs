@@ -282,8 +282,8 @@ async fn start_daemon_with(
     config.session_cap = 8;
     // Post-turn memory extraction would fire a second model call and slow the
     // one turn this test runs; nothing here reads memory.
-    config.settings.memory_enabled = false;
-    configure(&mut config.settings);
+    config.settings.values.memory_enabled = false;
+    configure(&mut config.settings.values);
 
     let store: Arc<dyn history::store::HistoryStore> = Arc::new(
         history::store::JsonlHistoryStore::with_roots(

@@ -5,7 +5,7 @@ use base::interface::model::Model;
 use base::interface::permission::PermissionSet;
 use base::interface::scene::Scene;
 use base::memory::MemoryStore;
-use base::settings::Settings;
+use base::settings::LoadedSettings;
 use base::tool::InMemoryToolRegistry;
 use compaction::cached::CachedMicroCompact;
 use compaction::compact::{Compactor, DefaultCompactor};
@@ -56,7 +56,7 @@ impl Drop for SessionEnd {
 
 pub struct Agent {
     pub(crate) scene: Arc<dyn Scene>,
-    pub(crate) settings: Arc<Settings>,
+    pub(crate) settings: Arc<LoadedSettings>,
     /// Derived from `settings`; every tool call's `ToolExecCtx.config` is a
     /// clone of this, so tools see the configured sandbox/permission/shell
     /// settings rather than defaults.

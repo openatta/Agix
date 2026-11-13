@@ -165,7 +165,7 @@ impl SessionPool {
     }
 
     /// The currently-active settings snapshot (for config-inspection RPCs).
-    pub async fn settings(&self) -> Arc<Settings> {
+    pub async fn settings(&self) -> Arc<LoadedSettings> {
         self.settings.read().await.clone()
     }
 
@@ -511,7 +511,7 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
         changed: Option<&crate::watch_hub::Tier>,
-    ) -> (Arc<Settings>, ReloadReport) {
+    ) -> (Arc<LoadedSettings>, ReloadReport) {
         let startup_scene = self.settings.read().await.paths.scope.clone();
         let project_root = project_root.unwrap_or(self.cwd.as_path());
         let is_default = project_root == self.cwd.as_path() && scene_id == startup_scene;
@@ -529,7 +529,7 @@ impl SessionPool {
                 self.scene.id().to_string(),
             );
             let loaded = off_the_runtime(move || {
-                Settings::load(global_root, config_root, local_dir, &scene, &default_model)
+                LoadedSettings::load(global_root, config_root, local_dir, &scene, &default_model)
             })
             .await;
             let reloaded = Arc::new(self.with_managed_layer(loaded));

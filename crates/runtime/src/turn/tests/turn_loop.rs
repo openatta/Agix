@@ -12,57 +12,51 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
-#[allow(deprecated)]
 fn prompt_context_includes_os() {
-    let settings = base::settings::Settings {
-        model: base::settings::ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: "https://api.example.com".into(),
-            auth_token: "test".into(),
-            model_name: "test-model".into(),
-            max_tokens: 4096,
-            thinking_mode: ThinkingMode::Auto,
-            effort: None,
-            fallback_model: None,
+    let settings = base::settings::LoadedSettings::new(
+        base::settings::Settings {
+            model: base::settings::ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: "https://api.example.com".into(),
+                auth_token: "test".into(),
+                model_name: "test-model".into(),
+                max_tokens: 4096,
+                thinking_mode: ThinkingMode::Auto,
+                effort: None,
+                fallback_model: None,
+            },
+            execution: Default::default(),
+            compaction: Default::default(),
+            sandbox: Default::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: true,
+            disable_skill_shell_execution: false,
+            path_style: Default::default(),
+            permission_mode: base::settings::PermissionMode::Default,
+            allow_client_permission_override: false,
+            telemetry_enabled: false,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            scripts: Vec::new(),
         },
-        paths: base::settings::PathSettings {
+        base::settings::PathSettings {
             user_data_dir: "/tmp/user".into(),
             global_data_dir: "/tmp/global".into(),
             workspace: base::settings::Workspace::project_of(std::path::Path::new("/tmp/local")),
             local_data_dir: "/tmp/local".into(),
             scope: "code".into(),
         },
-        execution: Default::default(),
-        compaction: Default::default(),
-        sandbox: Default::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        memory_enabled: true,
-        disable_skill_shell_execution: false,
-        path_style: Default::default(),
-        permission_mode: base::settings::PermissionMode::Default,
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: false,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        session_dir: None,
-        scripts: Vec::new(),
-    };
+    );
     let ctx = build_prompt_context(
         &settings,
         None,
@@ -228,7 +222,7 @@ async fn max_budget_tokens_stops_the_turn_on_reported_usage() {
     let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
 
     let mut settings = recall_test_settings(tmp.path());
-    settings.execution = base::settings::ExecutionSettings {
+    settings.values.execution = base::settings::ExecutionSettings {
         max_budget_tokens: Some(1000),
         ..Default::default()
     };

@@ -726,7 +726,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Complete AGENT configuration. Merged by `Settings::load()` before injection.",
+  "description": "One settings.json file: the settings it overrides, and the permission rules\nit adds to every other tier's.",
   "properties": {
     "allow_client_permission_override": {
       "default": false,
@@ -937,15 +937,6 @@
       },
       "type": "array"
     },
-    "session_dir": {
-      "default": null,
-      "deprecated": true,
-      "description": "Not read. Transcripts always go under the state directory\n(`paths.local_data_dir`); the field is kept so existing settings files\nand struct literals still compile, and a settings file that sets it\ngets a warning when it loads.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "task_models": {
       "additionalProperties": {
         "$ref": "#/$defs/TaskModelOverride"
@@ -967,6 +958,6 @@
       ]
     }
   },
-  "title": "Settings",
+  "title": "SettingsFile",
   "type": "object"
 }

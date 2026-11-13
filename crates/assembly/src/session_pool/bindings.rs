@@ -11,7 +11,7 @@ impl SessionPool {
     /// the workspace is a `Workspace::Scratch` that `create` narrows to the
     /// session's own directory.
     ///
-    /// Does not validate that `project_root` exists — `Settings::load`
+    /// Does not validate that `project_root` exists — `LoadedSettings::load`
     /// already degrades a missing/unreadable `settings.json` to defaults
     /// (soft-degrade, same as every other tier). Callers that need to
     /// reject a nonexistent project outright (`session.create`) check that
@@ -22,7 +22,7 @@ impl SessionPool {
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
-    ) -> Arc<Settings> {
+    ) -> Arc<LoadedSettings> {
         self.binding_for(project_root, scene_id)
             .await
             .settings
@@ -72,14 +72,14 @@ impl SessionPool {
                 key.0.clone(),
             );
             let loaded = off_the_runtime(move || match project {
-                Some(root) => Settings::load(
+                Some(root) => LoadedSettings::load(
                     global_root,
                     scene_root,
                     root.join(".agix"),
                     &scene_id,
                     &default_model,
                 ),
-                None => Settings::load_without_project(
+                None => LoadedSettings::load_without_project(
                     global_root,
                     scene_root,
                     &scene_id,
@@ -146,7 +146,7 @@ impl SessionPool {
     #[allow(clippy::type_complexity)]
     pub(super) fn watch_tiers_of(
         &self,
-        settings: &Settings,
+        settings: &base::settings::LoadedSettings,
         key: &ProjectSceneKey,
     ) -> (
         Vec<crate::watch_hub::WatchToken>,

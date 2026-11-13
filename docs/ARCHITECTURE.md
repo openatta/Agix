@@ -710,8 +710,8 @@ Agent 的上下文,本来就该在一处。
 
    | 谁点名 | 哪些变量 | 在哪里记下 |
    |---|---|---|
-   | 任何一层设置的 `providers` | `api_key_env` | `Settings::load` |
-   | 全局层、场景层设置的 `mcp_servers` | `oauth.client_secret_env`、`oauth.private_key_jwt.key_env`,以及 `command` / `args` / `env` / `url` / `headers` 里的每个 `$VAR` | `Settings::load` |
+   | 任何一层设置的 `providers` | `api_key_env` | `LoadedSettings::load` |
+   | 全局层、场景层设置的 `mcp_servers` | `oauth.client_secret_env`、`oauth.private_key_jwt.key_env`,以及 `command` / `args` / `env` / `url` / `headers` 里的每个 `$VAR` | `LoadedSettings::load` |
    | 插件包的 `[[mcp]]` | 同上 | 插件启用时(`active_plugins`) |
    | 任何连上的 MCP server(经 `mcp.addServer`、嵌入方直接交给 `McpManager` 的也算) | 同上 | 连接之前(`spawn_service`) |
    | MCP 策略文件的 `enterprise_idp`、`Assembly::mcp_enterprise_idp` | `client_secret_env` | 装配时 |
@@ -1388,7 +1388,7 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 从不落到 daemon 的工作目录(它可能是任何一个项目)。哪一层算"声明它的",看哪一层给了它的
 `command`:项目层只补了 `env` 的全局 server 仍在全局目录启动。信任之后项目层恢复全部行为。
 
-一个值类型不对(`"language": 5`、`"network_mode": 42`)时,`Settings::load` 只丢掉这个值并
+一个值类型不对(`"language": 5`、`"network_mode": 42`)时,`LoadedSettings::load` 只丢掉这个值并
 warn,`daemon.doctor` 的 `settings.tiers` 报 `degraded`、在那一层的 `ignored_values` 里列出;
 同一个文件里其余的值和别的层照常。整个对象的值都不对时报这个对象本身。这对信任与否都一样:
 一处拼错不会让全局层的 hook、沙箱设置跟着失效。`permission_rules` 逐条读:一条写错的规则只丢它
@@ -1409,7 +1409,7 @@ warn,`daemon.doctor` 的 `settings.tiers` 报 `degraded`、在那一层的 `igno
 写法只在不含 `.` / `..` 时也拿来比,所以 `/home/u/work/**` 不会命中
 `/home/u/work/../../tmp/x`。`project_trust` 只从全局层读,场景层、项目层里写的忽略并记一条
 warn。全局层 `settings.json` 与 `settings.local.json` 的
-`trusted` 清单相加,不是后者盖前者。合并时的判定结果在 `Settings::project_layer`:
+`trusted` 清单相加,不是后者盖前者。合并时的判定结果在 `LoadedSettings::trust`、`LoadedSettings::requires_trust`:
 信任状态、命中的那条、以及项目层里哪些东西要信任才生效(`requires_trust`)。
 
 宿主经 `project.status` 读状态与 `requires_trust`(用来画"信任这个项目吗"的对话框),经

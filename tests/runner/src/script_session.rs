@@ -197,7 +197,7 @@ impl Session {
     }
 
     /// Root the session at a project directory, the way a real one is rooted:
-    /// `Settings::load` from its `.agix`, so tools, rules and skills all
+    /// `LoadedSettings::load` from its `.agix`, so tools, rules and skills all
     /// resolve against it.
     pub fn in_project(mut self, dir: impl Into<PathBuf>) -> Self {
         self.project = Some(dir.into());
@@ -283,18 +283,21 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     let model: Arc<dyn Model> = model_arc.clone();
 
     let mut settings = match &session.project {
-        Some(dir) => Settings::load(
+        Some(dir) => base::settings::LoadedSettings::load(
             root.join("global_empty"),
             root.join("scene_empty"),
             dir.join(".agix"),
             "code",
             "script-model",
         ),
-        None => Settings::defaults_for("script-model"),
+        None => base::settings::LoadedSettings::new(
+            Settings::defaults_for("script-model"),
+            base::settings::PathSettings::default(),
+        ),
     };
-    settings.model.model_name = "script-model".into();
-    settings.model.max_tokens = 1024;
-    settings.model.thinking_mode = ThinkingMode::Off;
+    settings.values.model.model_name = "script-model".into();
+    settings.values.model.max_tokens = 1024;
+    settings.values.model.thinking_mode = ThinkingMode::Off;
     settings.paths = PathSettings {
         user_data_dir: root.join("user"),
         global_data_dir: root.join("global"),
@@ -302,17 +305,17 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         local_data_dir: root.join("local"),
         scope: "code".into(),
     };
-    settings.memory_enabled = session.memory.is_some();
+    settings.values.memory_enabled = session.memory.is_some();
     // The same choice the daemon makes for a non-interactive host: nothing is
     // here to answer a prompt, and a case that hung on one would look like a
     // case whose turn never finished.
     if !session.asking {
-        settings.permission_mode = base::settings::PermissionMode::BypassPermissions;
+        settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
     } else {
-        settings.permission_mode = base::settings::PermissionMode::Default;
+        settings.values.permission_mode = base::settings::PermissionMode::Default;
     }
-    settings.scripts = session.bindings;
-    settings.hooks_config = session.hooks;
+    settings.values.scripts = session.bindings;
+    settings.values.hooks_config = session.hooks;
     let settings = Arc::new(settings);
 
     let registry = Arc::new(InMemoryToolRegistry::new());

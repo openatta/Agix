@@ -251,13 +251,13 @@ impl SessionPrompt {
         self.append.is_none() && self.override_text.is_none()
     }
 
-    pub(super) fn applied_to(&self, settings: &Settings) -> Settings {
+    pub(super) fn applied_to(&self, settings: &LoadedSettings) -> LoadedSettings {
         let mut out = settings.clone();
         if let Some(append) = &self.append {
-            out.prompt_append = Some(append.clone());
+            out.values.prompt_append = Some(append.clone());
         }
         if let Some(text) = &self.override_text {
-            out.prompt_override = Some(text.clone());
+            out.values.prompt_override = Some(text.clone());
         }
         out
     }

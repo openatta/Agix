@@ -133,7 +133,7 @@ pub fn load_agent_types_from_dir(
 /// first: global, scene, then the project's `.agix/agents` tagged with
 /// whether the project is trusted. A session with no project tier of its own
 /// has no third.
-pub fn agent_type_dirs(settings: &Settings) -> Vec<(std::path::PathBuf, AgentTypeSource)> {
+pub fn agent_type_dirs(settings: &LoadedSettings) -> Vec<(std::path::PathBuf, AgentTypeSource)> {
     use base::project_trust::ProjectTrust;
     let mut dirs = vec![
         (
@@ -145,7 +145,7 @@ pub fn agent_type_dirs(settings: &Settings) -> Vec<(std::path::PathBuf, AgentTyp
             AgentTypeSource::User,
         ),
     ];
-    let trusted = match settings.project_layer.trust {
+    let trusted = match settings.trust() {
         ProjectTrust::NoProject => None,
         ProjectTrust::Trusted => Some(true),
         ProjectTrust::Untrusted => Some(false),
@@ -171,7 +171,7 @@ pub fn agent_type_dirs(settings: &Settings) -> Vec<(std::path::PathBuf, AgentTyp
 /// ([`AgentTypeSource::may_shadow`]): an untrusted project's type only adds
 /// names nothing else defines.
 /// How the [`agent_type_dirs`] of a session with these settings are read.
-pub fn agent_type_files(settings: &Settings) -> PromptFiles {
+pub fn agent_type_files(settings: &LoadedSettings) -> PromptFiles {
     PromptFiles::for_project(&base::paths::ConfigPaths::from_settings(&settings.paths))
 }
 
@@ -204,7 +204,7 @@ pub fn merge_agent_types(
 /// may hand their sub-agent a looser mode or a higher call cap than
 /// `settings` give the session. As `agents/<name>`, for `project.status`.
 pub fn project_agent_types_requiring_trust(
-    settings: &Settings,
+    settings: &LoadedSettings,
     plugin_types: &[AgentTypeDefinition],
 ) -> Vec<String> {
     let dirs = agent_type_dirs(settings);

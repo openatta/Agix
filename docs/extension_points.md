@@ -53,7 +53,7 @@
 | `model.request` | 拦截 | `Builder::model_interceptor`、`Registrar::model_interceptor`、脚本绑定 | 每次模型调用之前的最后一刻 | 请求里的一切 | 每次模型调用(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
 | `model.message` | 拦截 | `Builder::model_interceptor`、`Registrar::model_interceptor`、脚本绑定 | 承载它的那段流结束之后 | 消息内容 | 每次模型调用(10⁰–10¹ 量级) | 完全 | 完全 | 需声明能力 |
 | `credentials` | 契约 | 进程级:`base::interface::model_factory::ModelFactoryRegistry::with_credentials` | 启动时,读 provider 配置的那一刻 | 凭据本身 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
-| `config.source` | 契约 | 进程级:`base::settings::Settings::load_from` | 进程启动,任何东西被构建之前 | 有哪些层、每层里是什么 JSON;合并本身动不了 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
+| `config.source` | 契约 | 进程级:`base::settings::LoadedSettings::load_from` | 进程启动,任何东西被构建之前 | 有哪些层、每层里是什么 JSON;合并本身动不了 | 每进程(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
 | `token.count` | 契约 | `Builder::token_counter` | 每次预算检查 | 压缩据以触发的那个数字 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `history.store` | 契约 | `Builder::history_store` | 每次追加,以及恢复时 | 日志怎么持久化、存到哪 | 每轮(10⁰–10¹ 量级) | 不开放 | 不开放 | 不开放 |
 | `history.query` | 契约 | 随 `history.store`:`HistoryStore::find_sessions` | 每当有人要的是若干会话而不是某一个会话 | 返回哪些会话、按什么顺序、怎么算匹配 | 每会话(10⁰ 量级) | 不开放 | 不开放 | 不开放 |
@@ -249,17 +249,17 @@ OpenAI 兼容端点的推理没有标准字段,两项按厂商条目配置:
 
 ### 配置从哪来 — `config.source`
 
-`Settings::load` 读六个文件:全局、scene、项目三个层级,每级一个 `settings.json`
+`LoadedSettings::load` 读六个文件:全局、scene、项目三个层级,每级一个 `settings.json`
 和一个进了 gitignore 的 `settings.local.json` 覆盖层。配置存在配置服务、
 ConfigMap 或者数据库里的部署,实现
-`base::interface::config_source::ConfigSource`,改调 `Settings::load_from`:
+`base::interface::config_source::ConfigSource`,改调 `LoadedSettings::load_from`:
 
 ```rust
 let source = config_source::Chain(vec![
     Arc::new(config_source::FileTiers::new(global.clone(), scene.clone(), project.clone())),
     Arc::new(control_plane.fetch_layers()?),   // an `InMemoryLayers`
 ]);
-let settings = Settings::load_from(&source, global, scene, project, "code", "opus");
+let settings = LoadedSettings::load_from(&source, global, scene, project, "code", "opus");
 ```
 
 一个 source 只决定有哪些层、顺序如何、每层里是什么 JSON。合并两边是同一套——每层
@@ -269,7 +269,7 @@ let settings = Settings::load_from(&source, global, scene, project, "code", "opu
 那几个目录参数即使 source 一个字节都不从里面读也得留着:它们是 scene 的*数据*待
 的地方,而这件事从来轮不到配置文件来决定。
 
-`layers()` 返回的是层而不是 `Result`,因为 `Settings::load` 从不失败。够不着自己
+`layers()` 返回的是层而不是 `Result`,因为 `LoadedSettings::load` 从不失败。够不着自己
 那份存储的 source 记下原因,把手上有的交出来:丢一层是坏事,而因为一个远端服务慢
 就拒绝启动,更坏。
 

@@ -76,7 +76,7 @@ impl AgentTool {
         &self,
         model_name: Option<&str>,
         cwd: std::path::PathBuf,
-    ) -> Settings {
+    ) -> LoadedSettings {
         Inner::sub_settings(&self.inner, model_name, cwd)
     }
 

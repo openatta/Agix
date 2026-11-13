@@ -76,15 +76,15 @@ pub(super) fn apply_agent_type_overrides(settings: &mut Settings, def: &AgentTyp
 /// parent's actual scope/paths (skills/hooks/agents/memory all resolve
 /// correctly), auth, sandbox policy, etc.
 pub(super) fn settings_from_parent(
-    parent: &Settings,
+    parent: &LoadedSettings,
     model_name: String,
     max_tokens: u32,
     fallback_model: Option<String>,
-) -> Settings {
+) -> LoadedSettings {
     let mut settings = parent.clone();
-    settings.model.model_name = model_name;
-    settings.model.max_tokens = max_tokens;
-    settings.model.fallback_model = fallback_model;
+    settings.values.model.model_name = model_name;
+    settings.values.model.max_tokens = max_tokens;
+    settings.values.model.fallback_model = fallback_model;
     settings
 }
 
@@ -96,64 +96,58 @@ pub(super) fn settings_from_parent(
 /// The user-level roots hang off `local_data_dir`, not `$HOME`: with no
 /// instance configuration in hand, the invoking user's home is the one
 /// directory this has no grounds to assume it owns.
-#[allow(deprecated)]
 pub(super) fn fallback_settings(
     model_name: String,
     max_tokens: u32,
     fallback_model: Option<String>,
     local_data_dir: std::path::PathBuf,
-) -> Settings {
-    Settings {
-        model: ModelSettings {
-            api_type: base::provider::ApiType::Anthropic,
-            base_url: String::new(),
-            auth_token: String::new(),
-            model_name,
-            max_tokens,
-            thinking_mode: ThinkingMode::Auto,
-            effort: None,
-            fallback_model,
+) -> LoadedSettings {
+    LoadedSettings::new(
+        Settings {
+            model: ModelSettings {
+                api_type: base::provider::ApiType::Anthropic,
+                base_url: String::new(),
+                auth_token: String::new(),
+                model_name,
+                max_tokens,
+                thinking_mode: ThinkingMode::Auto,
+                effort: None,
+                fallback_model,
+            },
+            execution: ExecutionSettings::default(),
+            compaction: Default::default(),
+            sandbox: SandboxConfig::default(),
+            plugins: Default::default(),
+            instruction_file: None,
+            prompt_append: None,
+            prompt_override: None,
+            recorder: None,
+            telemetry_url: None,
+            memory_enabled: true,
+            disable_skill_shell_execution: false,
+            path_style: Default::default(),
+            permission_mode: PermissionMode::default(),
+            allow_client_permission_override: false,
+            telemetry_enabled: true,
+            hooks_config: None,
+            project_trust: Default::default(),
+            mcp_servers: Default::default(),
+            providers: Default::default(),
+            default_provider: None,
+            task_models: Default::default(),
+            language: None,
+            // A sub-agent inherits no script bindings: a script bound in the
+            // parent's configuration applies to the parent's prompt, and quietly
+            // running it against every spawned agent's prompt too would be a
+            // scope nobody asked for.
+            scripts: Vec::new(),
         },
-        paths: PathSettings {
+        PathSettings {
             user_data_dir: local_data_dir.join("scenes").join("code"),
             global_data_dir: local_data_dir.clone(),
             workspace: base::settings::Workspace::project_of(&local_data_dir),
             local_data_dir,
             scope: "code".to_string(),
         },
-        execution: ExecutionSettings::default(),
-        compaction: Default::default(),
-        sandbox: SandboxConfig::default(),
-        plugins: Default::default(),
-        instruction_file: None,
-        prompt_append: None,
-        prompt_override: None,
-        recorder: None,
-        telemetry_url: None,
-        session_dir: None,
-        memory_enabled: true,
-        disable_skill_shell_execution: false,
-        path_style: Default::default(),
-        permission_mode: PermissionMode::default(),
-        permission_rules: Vec::new(),
-        local_permission_rules: Vec::new(),
-        allow_client_permission_override: false,
-        telemetry_enabled: true,
-        hooks_config: None,
-        project_trust: Default::default(),
-        project_layer: Default::default(),
-        ignored_values: Vec::new(),
-        managed: None,
-        mcp_servers: Default::default(),
-        mcp_server_dirs: Default::default(),
-        providers: Default::default(),
-        default_provider: None,
-        task_models: Default::default(),
-        language: None,
-        // A sub-agent inherits no script bindings: a script bound in the
-        // parent's configuration applies to the parent's prompt, and quietly
-        // running it against every spawned agent's prompt too would be a
-        // scope nobody asked for.
-        scripts: Vec::new(),
-    }
+    )
 }

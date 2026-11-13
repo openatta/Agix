@@ -308,8 +308,8 @@ async fn automatic_compaction_leaves_room_for_the_request_overhead() {
         .compactor(Arc::new(Cascade))
         .settings(Arc::new({
             let mut s = test_settings();
-            s.compaction.threshold_tokens = Some(6_000);
-            s.compaction.keep_recent = Some(50);
+            s.values.compaction.threshold_tokens = Some(6_000);
+            s.values.compaction.keep_recent = Some(50);
             s
         }))
         .skip_warmup(true)
@@ -399,9 +399,9 @@ fn over_the_threshold(fails: bool) -> (Agent, Arc<std::sync::atomic::AtomicUsize
         }))
         .settings(Arc::new({
             let mut s = test_settings();
-            s.compaction.threshold_tokens = Some(6_000);
-            s.compaction.keep_recent = Some(50);
-            s.compaction.reactive = false;
+            s.values.compaction.threshold_tokens = Some(6_000);
+            s.values.compaction.keep_recent = Some(50);
+            s.values.compaction.reactive = false;
             s
         }))
         .skip_warmup(true)

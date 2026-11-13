@@ -121,7 +121,10 @@ impl Model for TwoToolSteps {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tool_step_does_not_relist_tools_without_an_announcement() {
     let dir = tempfile::tempdir().unwrap();
-    let mut settings = Settings::defaults_for("test-model");
+    let mut settings = base::settings::LoadedSettings::new(
+        Settings::defaults_for("test-model"),
+        base::settings::PathSettings::default(),
+    );
     settings.paths = PathSettings {
         user_data_dir: dir.path().to_path_buf(),
         global_data_dir: dir.path().to_path_buf(),
@@ -129,8 +132,8 @@ async fn a_tool_step_does_not_relist_tools_without_an_announcement() {
         local_data_dir: dir.path().to_path_buf(),
         scope: "code".into(),
     };
-    settings.memory_enabled = false;
-    settings.telemetry_enabled = false;
+    settings.values.memory_enabled = false;
+    settings.values.telemetry_enabled = false;
 
     let asked = Arc::new(Asked::default());
     let model = Arc::new(TwoToolSteps(AtomicUsize::new(0)));

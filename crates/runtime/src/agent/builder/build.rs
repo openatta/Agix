@@ -229,7 +229,7 @@ impl Builder {
         tools.register(std::sync::Arc::new(tools::task_message::TaskMessageTool));
 
         let config = Arc::new({
-            let mut c = base::context::EngineConfig::from_settings(&settings);
+            let mut c = base::context::EngineConfig::from_loaded(&settings);
             c.path_style = settings.path_style.unwrap_or_else(|| scene.path_style());
             c.deferred_tools = Arc::new(
                 scene

@@ -182,7 +182,7 @@ impl base::interface::model::Model for CountsTurnCalls {
 async fn answered_by_a_counting_model(pool: &SessionPool) -> Arc<CountsTurnCalls> {
     let model = Arc::new(CountsTurnCalls::default());
     let mut settings = (**pool.settings.read().await).clone();
-    settings.memory_enabled = false;
+    settings.values.memory_enabled = false;
     let mut binding = ProjectBinding::build(
         Arc::new(settings),
         &Default::default(),
