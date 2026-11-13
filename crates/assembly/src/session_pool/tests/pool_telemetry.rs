@@ -1,6 +1,7 @@
 //! `pool_telemetry_tests` 原样搬来的用例。
 
 use super::*;
+use crate::session_pool::parts::events::build_pool_telemetry;
 
 #[tokio::test]
 async fn relative_local_data_dir_yields_a_noop_handle() {

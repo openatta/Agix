@@ -142,23 +142,21 @@ impl SessionPool {
         };
         if let Some((name, created_at, last_active)) = already_active {
             let (message_count, entry_count) = self.history_counts(session_id).await;
-            let _ = self
-                .pool_telemetry
-                .record(telemetry::TelemetryEvent::resume_action(
-                    session_id,
-                    0,
-                    None,
-                    telemetry::ResumeActionPayload {
-                        outcome: telemetry::ResumeOutcome::Succeeded,
-                        source: "already_active".into(),
-                        entry_count,
-                        projected_message_count: message_count,
-                        compact_boundary_count: 0,
-                        sidechain_entry_count: 0,
-                        warning_kind: None,
-                        latency_ms: resume_start.elapsed().as_millis() as u64,
-                    },
-                ));
+            self.events.record(telemetry::TelemetryEvent::resume_action(
+                session_id,
+                0,
+                None,
+                telemetry::ResumeActionPayload {
+                    outcome: telemetry::ResumeOutcome::Succeeded,
+                    source: "already_active".into(),
+                    entry_count,
+                    projected_message_count: message_count,
+                    compact_boundary_count: 0,
+                    sidechain_entry_count: 0,
+                    warning_kind: None,
+                    latency_ms: resume_start.elapsed().as_millis() as u64,
+                },
+            ));
             return Ok(self
                 .resume_report(
                     session_id,
@@ -266,23 +264,21 @@ impl SessionPool {
     }
 
     fn record_refused_resume(&self, session_id: &str, why: &str, started: Instant) {
-        let _ = self
-            .pool_telemetry
-            .record(telemetry::TelemetryEvent::resume_action(
-                session_id,
-                0,
-                None,
-                telemetry::ResumeActionPayload {
-                    outcome: telemetry::ResumeOutcome::Failed,
-                    source: why.into(),
-                    entry_count: 0,
-                    projected_message_count: 0,
-                    compact_boundary_count: 0,
-                    sidechain_entry_count: 0,
-                    warning_kind: Some(why.into()),
-                    latency_ms: started.elapsed().as_millis() as u64,
-                },
-            ));
+        self.events.record(telemetry::TelemetryEvent::resume_action(
+            session_id,
+            0,
+            None,
+            telemetry::ResumeActionPayload {
+                outcome: telemetry::ResumeOutcome::Failed,
+                source: why.into(),
+                entry_count: 0,
+                projected_message_count: 0,
+                compact_boundary_count: 0,
+                sidechain_entry_count: 0,
+                warning_kind: Some(why.into()),
+                latency_ms: started.elapsed().as_millis() as u64,
+            },
+        ));
     }
 
     /// Whether `sid` has a log with entries in it. A log that is not there is

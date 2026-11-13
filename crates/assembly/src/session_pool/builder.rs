@@ -169,7 +169,6 @@ impl SessionPoolBuilder {
                 self.settings,
             ),
         };
-        let (events_tx, _) = tokio::sync::broadcast::channel(1024);
         #[cfg(feature = "mcp")]
         let (mcp_auth, mcp_policy) = self.mcp.into_auth(&settings);
         let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
@@ -182,7 +181,7 @@ impl SessionPoolBuilder {
 
         let scenes = SceneCatalog::new(self.scene, paths.global_root().join("scenes"));
 
-        let pool_telemetry = build_pool_telemetry(&settings);
+        let events = DaemonEvents::new(&settings);
         let specs = SpecStore::new(self.history_store.clone(), self.cap);
 
         Arc::new_cyclic(|this| SessionPool {
@@ -208,7 +207,7 @@ impl SessionPoolBuilder {
             managed_settings,
             scheduler,
             this: this.clone(),
-            events_tx,
+            events,
             health: std::sync::RwLock::new(base::interface::health::HealthChecks::new()),
             plugins,
             last_good_routers: AsyncMutex::new(HashMap::new()),
@@ -231,7 +230,6 @@ impl SessionPoolBuilder {
             credentials: self.credentials,
             rust_plugins: self.rust_plugins,
             customize: self.customize,
-            pool_telemetry,
         })
     }
 }

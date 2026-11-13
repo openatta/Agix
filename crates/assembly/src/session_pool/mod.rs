@@ -53,6 +53,7 @@ use facade::history_rpc::*;
 use facade::settings_reload::*;
 #[cfg(feature = "mcp")]
 use mcp_status::*;
+use parts::events::DaemonEvents;
 use parts::hub::SessionHub;
 use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
 use parts::scenes::SceneCatalog;
@@ -581,11 +582,9 @@ pub struct SessionPool {
     /// This pool, for the tasks it starts that outlive the call that started
     /// them. Set by `Arc::new_cyclic` in the builder, so always there.
     this: std::sync::Weak<SessionPool>,
-    /// Daemon-level async notifications (MCP connect outcomes, import
-    /// auto-detection, future error events) — see `daemon.subscribeEvents`.
-    /// `send()` returning `Err` just means "no subscribers right now", not
-    /// a real error, so callers of `emit_event` ignore it.
-    events_tx: tokio::sync::broadcast::Sender<api::DaemonEvent>,
+    /// Daemon-level notifications (`daemon.subscribeEvents`) and the
+    /// pool-level telemetry.
+    events: DaemonEvents,
     /// The plugin subsystem — see `crate::plugins`. Everything plugins
     /// contribute arrives through it, and in a build without the `plugins`
     /// feature it is a stub that contributes nothing.
@@ -663,16 +662,6 @@ pub struct SessionPool {
     credentials: Arc<dyn base::interface::credentials::CredentialSource>,
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
-    /// Pool-level telemetry sink — for events that happen *before* any
-    /// per-session `Agent`/handle exists (`session.resume` against a
-    /// session that's already live, a terminal sidechain, or an unknown
-    /// id), which have nowhere else to record to. Every per-session event
-    /// still goes through that session's own handle (see `create()`); this
-    /// one is only for the handful of pool-level exits that never reach
-    /// `create()` at all. Writes to `<local_data_dir>/telemetry/pool.jsonl`,
-    /// gated by the same `settings.telemetry_enabled` flag — noop if
-    /// disabled or the path can't be resolved/opened.
-    pool_telemetry: telemetry::TelemetryHandle,
 }
 
 /// Default ceiling on an unanswered `kind:"prompt"` permission ask.
@@ -919,27 +908,20 @@ impl SessionPool {
     /// Subscribe to daemon-level async notifications (MCP connect
     /// outcomes, import auto-detection, ...) — see `daemon.subscribeEvents`.
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<api::DaemonEvent> {
-        self.events_tx.subscribe()
+        self.events.subscribe()
     }
 
     /// Publish a daemon-level notification to every current subscriber. A
     /// `send` error just means nobody's listening right now — not a real
     /// failure, so this is intentionally infallible from the caller's side.
     pub fn emit_event(&self, event: api::DaemonEvent) {
-        if let Some(recorded) = event.telemetry() {
-            let _ = self.pool_telemetry.record(recorded);
-        }
-        let _ = self.events_tx.send(event);
+        self.events.emit(event);
     }
 
     /// Record how long the daemon took to start, in the pool-level
     /// telemetry.
     pub fn record_startup(&self, timing: telemetry::StartupTimingPayload) {
-        let _ = self
-            .pool_telemetry
-            .record(telemetry::TelemetryEvent::startup_timing(
-                "", 0, None, timing,
-            ));
+        self.events.record_startup(timing);
     }
 
     /// The project directory this pool's sessions run in.
