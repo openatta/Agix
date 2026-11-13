@@ -145,6 +145,12 @@ pub trait Elicitation: Send + Sync {
     /// this host has no way to ask" is useful, and one inventing an answer
     /// is not.
     async fn ask(&self, request: ElicitRequest) -> ElicitOutcome;
+
+    /// Whether a clarification asked here can reach a person. A session
+    /// whose elicitation cannot carry one is not offered `AskUserQuestion`.
+    fn can_clarify(&self) -> bool {
+        true
+    }
 }
 
 /// Declines everything, with a reason naming the absence.

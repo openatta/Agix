@@ -20,7 +20,6 @@ file  crates/session/src/session.rs                        -                    
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
 fn    crates/agents/src/agent_tool/mod.rs                  AgentTool::call                          187
-fn    crates/agents/src/agent_tool/permission.rs           ParentPermission::decide                 145
 fn    crates/agents/src/lib.rs                             AgentsModule::on_session                 111
 fn    crates/assembly/src/assemble.rs                      pool                                     137
 fn    crates/assembly/src/export.rs                        pack                                     211

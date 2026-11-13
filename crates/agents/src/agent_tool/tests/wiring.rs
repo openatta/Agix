@@ -647,34 +647,18 @@ async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
     );
 }
 
-/// An `Ask` from the parent must not stall the sub-agent forever — a
-/// sub-agent has no channel a human could answer on.
+/// The parent's question comes back to the sub-agent as it is: the
+/// sub-agent's own runtime puts it to the person.
 #[tokio::test]
-async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
-    struct AlwaysPrompts;
-    #[async_trait]
-    impl PermissionPolicy for AlwaysPrompts {
-        async fn decide(
-            &self,
-            _req: &base::interface::permission::PermissionRequest<'_>,
-        ) -> base::interface::permission::PermissionOutcome {
-            base::interface::permission::PermissionOutcome::Prompt {
-                prompt_id: "p1".into(),
-                message: "run rm -rf?".into(),
-                paths: vec![],
-                reason: base::interface::permission::Reason::new(
-                    base::interface::permission::Stage::ModeDefault,
-                    "asked",
-                ),
-                answerable: base::interface::permission::Answerable::HookOrPerson,
-            }
-        }
-    }
-
+async fn the_parents_question_comes_back_to_the_sub_agent_unasked() {
     let parent = test_parent();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let agent_tool = TestParent {
-        permission: Some(PermissionSet::without_grants(Arc::new(AlwaysPrompts))),
+        permission: Some(PermissionSet::without_grants(Arc::new(
+            PromptsForEverything,
+        ))),
         state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        events: Some(runtime::event_bus::EventBus::new(tx)),
         ..parent
     }
     .agent_tool();
@@ -687,12 +671,41 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
         &Arc::new(base::context::SessionState::new("/tmp".into())),
     )
     .await;
-    match outcome {
-        base::interface::permission::PermissionOutcome::Deny { reason } => {
-            assert!(reason.message.contains("parent session"), "got {reason}");
-            assert!(reason.message.contains("run rm -rf?"), "got {reason}");
-        }
-        other => panic!("expected a denial, got {other:?}"),
+    assert!(
+        matches!(
+            outcome,
+            base::interface::permission::PermissionOutcome::Prompt { .. }
+        ),
+        "{outcome:?}"
+    );
+    assert!(rx.try_recv().is_err(), "the relay put the question itself");
+}
+
+/// A question asked once the parent's channel is gone is declined, saying
+/// so and what was asked, rather than left waiting.
+#[tokio::test]
+async fn a_question_for_a_closed_parent_is_declined_legibly() {
+    let agent_tool = test_parent().agent_tool();
+    let outcome = agent_tool
+        .sub_relay(None)
+        .elicitation
+        .ask(authorization("p1", "run rm -rf?"))
+        .await;
+    let reason = outcome.decline_reason().expect("declined");
+    assert!(reason.contains("parent session"), "{reason}");
+    assert!(reason.contains("run rm -rf?"), "{reason}");
+}
+
+fn authorization(id: &str, message: &str) -> base::interface::elicitation::ElicitRequest {
+    base::interface::elicitation::ElicitRequest {
+        id: id.into(),
+        kind: base::interface::elicitation::ElicitKind::Authorization {
+            tool_name: "Bash".into(),
+            paths: vec![],
+            tool_use_id: Some("toolu_sub".into()),
+        },
+        message: message.into(),
+        options: runtime::elicitation::ChannelElicitation::authorization_options(),
     }
 }
 
@@ -789,9 +802,9 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     assert!(
         matches!(
             check("Monitor", watch.clone()).await,
-            PermissionOutcome::Deny { .. }
+            PermissionOutcome::Prompt { .. }
         ),
-        "a default-mode sub-agent is asked about a Monitor command; with no channel, refused"
+        "a default-mode sub-agent is asked about a Monitor command"
     );
 
     sub_session.set_permission_mode(PermissionMode::BypassPermissions);
@@ -839,7 +852,7 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
         ..test_parent()
     }
     .agent_tool();
-    let member = agent_tool.delegator.permission_handler();
+    let member = agent_tool.sub_permission();
     let write = registry.get("Write");
     let outcome = sub_decides(
         &member,
@@ -897,71 +910,37 @@ impl base::tool::Tool for AsksAboutDeploys {
 
 /// "Always allow" answered to a sub-agent's question is kept in the parent
 /// session's rule set: the parent's next call of the same kind runs without
-/// asking, a different one is still asked about.
+/// asking, a different one is still asked about. A turn's grant is not.
 #[tokio::test]
 async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
-    use base::interface::permission::{PermissionOutcome, PermissionRequest};
+    use base::interface::permission::{
+        Grant, GrantError, GrantScope, PermissionOutcome, PermissionRequest,
+    };
     let rules = Arc::new(permissions::policy::Policy::empty());
     let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
-    let parent = test_parent();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let pending: runtime::agent::PendingPermissions = Arc::default();
     let agent_tool = TestParent {
         permission: Some(PermissionSet::of(rules.clone())),
         state: parent_session.clone(),
-        events: Some(runtime::event_bus::EventBus::new(tx)),
-        pending: pending.clone(),
-        ..parent
+        ..test_parent()
     }
     .agent_tool();
-
-    let deploy: Arc<dyn base::tool::Tool> = Arc::new(AsksAboutDeploys);
-    let staging = serde_json::json!({"target": "staging"});
-    let sub = agent_tool.sub_permission();
-    let sub_session = Arc::new(base::context::SessionState::new("/tmp".into()));
-    let asked = tokio::spawn({
-        let (sub, sub_session, deploy, staging) = (
-            sub.clone(),
-            sub_session.clone(),
-            deploy.clone(),
-            staging.clone(),
-        );
-        async move {
-            sub_decides(
-                &sub,
-                Some(&deploy),
-                "Deploy",
-                &staging,
-                Path::new("/tmp"),
-                &sub_session,
-            )
-            .await
-        }
-    });
-    let prompt_id = loop {
-        match rx
-            .recv()
-            .await
-            .expect("the question reaches the parent's channel")
-        {
-            AgentEvent::PermissionPrompt { prompt_id, .. } => break prompt_id,
-            _ => continue,
-        }
-    };
-    pending
-        .lock()
-        .unwrap()
-        .remove(&prompt_id)
-        .expect("registered with the parent")
-        .send(runtime::agent::PermissionDecision::PermitAlways {
-            scope: runtime::agent::PersistScope::Session,
-        })
+    let grants = agent_tool.sub_permission().grants;
+    grants
+        .grant(Grant::new(
+            "Deploy",
+            Some("staging".into()),
+            GrantScope::Session,
+        ))
+        .await
         .unwrap();
     assert!(matches!(
-        asked.await.unwrap(),
-        PermissionOutcome::Permit { .. }
+        grants
+            .grant(Grant::new("Deploy", None, GrantScope::Turn))
+            .await,
+        Err(GrantError::NotKept)
     ));
 
+    let deploy: Arc<dyn base::tool::Tool> = Arc::new(AsksAboutDeploys);
     let parent_decides = |input: Value| {
         let (rules, parent_session, deploy) =
             (rules.clone(), parent_session.clone(), deploy.clone());
@@ -979,7 +958,7 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
         }
     };
     assert!(matches!(
-        parent_decides(staging.clone()).await,
+        parent_decides(serde_json::json!({"target": "staging"})).await,
         PermissionOutcome::Permit { .. }
     ));
     assert!(matches!(
@@ -989,51 +968,47 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
 }
 
 /// A question a sub-agent running as a task asks is put to the parent's host
-/// naming that task, and the host's answer decides the call.
+/// naming the sub-agent and its task, which shows as waiting until the
+/// host's answer comes back as the answer.
 #[tokio::test]
 async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
-    use base::interface::permission::PermissionOutcome;
-    let parent = test_parent();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let pending: runtime::agent::PendingPermissions = Arc::default();
+    let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
     let agent_tool = TestParent {
-        permission: Some(PermissionSet::without_grants(Arc::new(
-            PromptsForEverything,
-        ))),
-        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        state: parent_session.clone(),
         events: Some(runtime::event_bus::EventBus::new(tx)),
         pending: pending.clone(),
-        ..parent
+        ..test_parent()
     }
     .agent_tool();
-    let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
     let task = parent_session.register_task(
         "task-1",
         base::context::TaskType::Agent,
         tokio_util::sync::CancellationToken::new(),
         serde_json::json!({}),
     );
-    let sub = agent_tool.delegator.permission_handler_for(Some(task));
-    let asked = tokio::spawn(async move {
-        sub_decides(
-            &sub,
-            None,
-            "Bash",
-            &serde_json::json!({}),
-            Path::new("/tmp"),
-            &Arc::new(base::context::SessionState::new("/tmp".into())),
-        )
-        .await
-    });
-    let (prompt_id, task_id) = loop {
+    let asker = agent_tool.sub_relay(Some(task.clone())).elicitation;
+    let asked = tokio::spawn(async move { asker.ask(authorization("p1", "run the probe?")).await });
+    let (prompt_id, message, task_id, tool_use_id) = loop {
         match rx.recv().await.expect("the question reaches the parent") {
             AgentEvent::PermissionPrompt {
-                prompt_id, task_id, ..
-            } => break (prompt_id, task_id),
+                prompt_id,
+                message,
+                task_id,
+                tool_use_id,
+                ..
+            } => break (prompt_id, message, task_id, tool_use_id),
             _ => continue,
         }
     };
+    assert_eq!(message, "[sub-agent sub] run the probe?");
     assert_eq!(task_id.as_deref(), Some("task-1"));
+    assert_eq!(
+        tool_use_id, None,
+        "the sub-agent's call is not one of the parent's"
+    );
+    assert_eq!(*task.waiting_for.lock().unwrap(), vec![prompt_id.clone()]);
     pending
         .lock()
         .unwrap()
@@ -1043,10 +1018,18 @@ async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
             reason: "HOST-SAYS-NO".into(),
         })
         .unwrap();
-    match asked.await.unwrap() {
-        PermissionOutcome::Deny { reason } => assert_eq!(reason.message, "HOST-SAYS-NO"),
-        other => panic!("the host's answer did not decide the call: {other:?}"),
+    match asked
+        .await
+        .unwrap()
+        .answer_as::<runtime::agent::PermissionDecision>()
+    {
+        Some(runtime::agent::PermissionDecision::Deny { reason }) => {
+            assert_eq!(reason, "HOST-SAYS-NO")
+        }
+        other => panic!("the host's answer did not come back: {other:?}"),
     }
+    assert!(task.waiting_for.lock().unwrap().is_empty());
+    assert!(pending.lock().unwrap().is_empty());
 }
 
 /// An unattended sub-agent is handed the parent's question as it is, for its

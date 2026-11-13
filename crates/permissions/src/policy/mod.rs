@@ -12,6 +12,7 @@
 //! still answers to, and what marks a question only a person may answer.
 
 mod answer;
+mod delegated;
 mod judge;
 mod subject;
 #[cfg(test)]
@@ -25,12 +26,12 @@ use base::interface::permission::{
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::tool::{SandboxSettings, ToolContext};
+use delegated::Delegated;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
 pub struct Policy {
     rules: RwLock<RuleSet>,
-    deny_rules_only: bool,
     managed: ManagedLayer,
     /// What the context of a call made without one is given, and where its
     /// credential locations are named.
@@ -121,7 +122,6 @@ impl Policy {
     pub fn new(rules: RuleSet) -> Self {
         Self {
             rules: RwLock::new(rules),
-            deny_rules_only: false,
             managed: ManagedLayer::default(),
             sandbox: SandboxSettings::default(),
             local_settings_file: None,
@@ -130,16 +130,6 @@ impl Policy {
 
     pub fn empty() -> Self {
         Self::new(RuleSet::empty())
-    }
-
-    /// A policy whose only verdict of its own is a matching `deny` rule:
-    /// anything else it lets through, whatever the session's mode, so it can
-    /// sit in front of another policy and refuse only what the rules refuse.
-    pub fn deny_rules_only(rules: RuleSet) -> Self {
-        Self {
-            deny_rules_only: true,
-            ..Self::new(rules)
-        }
     }
 
     /// Every permission-rule tier of `settings` with its own `RuleSource`
@@ -215,13 +205,13 @@ impl Policy {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The mode the call is judged in: the session's live one, the stricter
-    /// of the two for a delegate's call, and never `bypassPermissions` while
-    /// the managed layer turns it off.
+    /// The mode the call is judged in: the session's live one, held over a
+    /// delegate's as `PermissionMode::for_delegate` says, and never
+    /// `bypassPermissions` while the managed layer turns it off.
     fn mode_for(&self, req: &PermissionRequest<'_>) -> PermissionMode {
         let own = req.session.permission_mode();
         let mode = match req.delegate {
-            Some(delegate) => own.for_delegate(delegate.permission_mode()),
+            Some(delegate) => own.for_delegate(delegate.mode),
             None => own,
         };
         match mode {
@@ -318,9 +308,10 @@ impl PermissionPolicy for Policy {
         // Not a permit, even though dispatch's own "Tool not found" would
         // follow: a caller that asks before looking the tool up must not be
         // able to run it unchecked by naming it wrongly.
+        let delegated = Delegated::of(req);
         let Some(tool) = req.tool else {
-            if self.deny_rules_only {
-                return self.only_denials_by_name(req.tool_name);
+            if let Some(denied) = delegated.denial_by_name(req.tool_name) {
+                return PermissionOutcome::Deny { reason: denied };
             }
             let unknown = ToolFacts::unknown_tool();
             let verdict = Verdict::Ask {
@@ -362,10 +353,8 @@ impl PermissionPolicy for Policy {
             mode,
             hook,
             named: subject::Named::of(&facts.subject, ctx),
+            delegated,
         };
-        if self.deny_rules_only {
-            return self.only_denials(&call);
-        }
         let verdict = self.judge(&call);
         self.conclude(verdict, facts, Some(ctx), hook, req.attendance)
     }

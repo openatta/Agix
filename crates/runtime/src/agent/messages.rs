@@ -231,10 +231,6 @@ pub type InputReceiver = mpsc::UnboundedReceiver<InputMessage>;
 pub type EventSender = crate::event_bus::EventBus;
 pub type EventReceiver = mpsc::UnboundedReceiver<AgentEvent>;
 
-/// Registry of permission requests awaiting a host response, keyed by
-/// `prompt_id`. Shared between `Agent::pending_permissions` and
-/// `agent_tool::ParentPermission` (a sub-agent registers into the *parent's*
-/// copy of this same map — see `ParentPermission`'s doc comment).
 /// What [`Builder::session_prompt`] puts over a session's settings. `None`
 /// leaves the settings' `prompt_append` / `prompt_override` in force.
 #[derive(
@@ -263,6 +259,9 @@ impl SessionPrompt {
     }
 }
 
+/// Permission questions awaiting the host's answer, keyed by `prompt_id`. A
+/// sub-agent's questions are registered in its parent's (`agents`'
+/// `ParentElicitation`), so the parent's host answers them as its own.
 pub type PendingPermissions = Arc<
     std::sync::Mutex<
         std::collections::HashMap<String, tokio::sync::oneshot::Sender<PermissionDecision>>,

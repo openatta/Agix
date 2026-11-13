@@ -59,47 +59,33 @@ impl Delegator {
         Some(parent.granted(Some(&def.mcp_servers)))
     }
 
-    /// The parent session's own policy, so a session's rules cannot be
-    /// bypassed by spawning a sub-agent.
-    pub(crate) fn permission_handler(&self) -> PermissionSet {
-        self.permission_handler_for(None)
-    }
-
-    /// `permission_handler` for a sub-agent running as `task`, which shows as
-    /// waiting while a question of the sub-agent's waits on the host.
-    pub(crate) fn permission_handler_for(
+    /// How the delegate `delegate_id` asks about its calls: of the parent's
+    /// policy, held to `rules` besides; its questions go to the parent's host
+    /// as `task`'s, or are refused when `asks` says nobody can be asked.
+    pub(crate) fn relay(
         &self,
+        delegate_id: &str,
         task: Option<Arc<base::context::RunningTask>>,
-    ) -> PermissionSet {
-        self.permission_handler_asking(task, true)
-    }
-
-    /// `permission_handler_for`, where `can_ask: false` refuses what the
-    /// parent's rules leave to a question instead of taking it to the host.
-    /// A team member's is this one too, judged in the member's own mode.
-    pub(crate) fn permission_handler_asking(
-        &self,
-        task: Option<Arc<base::context::RunningTask>>,
-        can_ask: bool,
-    ) -> PermissionSet {
+        asks: AskRoute,
+        rules: Vec<base::permission::PermissionRule>,
+    ) -> Relay {
         let env = &self.env;
-        let policy = env.host.permission.policy.clone();
-        PermissionSet {
-            policy: Arc::new(ParentPermission {
-                parent: if can_ask {
-                    policy
-                } else {
-                    Arc::new(NoPrompt(policy))
-                },
-                parent_grants: env.host.permission.grants.clone(),
-                parent_session: env.parent.state.clone(),
-                event_tx: env.parent.events.clone(),
+        Relay {
+            permission: PermissionSet {
+                policy: Arc::new(DelegateRelay {
+                    parent: env.host.permission.policy.clone(),
+                    parent_session: env.parent.state.clone(),
+                    asks,
+                    rules,
+                }),
+                grants: Arc::new(ParentGrants(env.host.permission.grants.clone())),
+            },
+            elicitation: Arc::new(ParentElicitation {
+                delegate_id: delegate_id.to_string(),
+                events: env.parent.events.clone(),
                 pending: env.parent.pending_permissions.clone(),
-                timeout_secs: env.config.permission_prompt_timeout_secs,
                 task,
-                parent_exec: env.host.exec.clone(),
             }),
-            grants: Arc::new(ParentGrants(env.host.permission.grants.clone())),
         }
     }
 

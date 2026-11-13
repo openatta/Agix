@@ -1,5 +1,7 @@
 //! The permission pipeline's guards (D1 PERM-*).
 //!
+//! PERM-2: a call is decided by the engine's policy, or relayed to a parent's
+//! by a delegate; no other policy stands between a call and the rules.
 //! PERM-3: a call is let through by the policy, or by the person the runtime
 //! asked — nowhere else builds a `PermissionOutcome::Permit`.
 //! PERM-4: whether anyone attends a session is read in one place, and the
@@ -8,6 +10,8 @@
 //! PERM-5: only the shell's confinement, the engine's own processes and the
 //! confinement report confine a process; the backends implement `confine`
 //! and call nothing.
+//! PERM-6: neither the permission engine nor a delegate's relay makes up a
+//! tool context; they judge with the one the call runs with.
 //! PERM-7: the permission engine does not reach the machine.
 //! PERM-8: the decision matrix names every `Stage` the policy can refuse or
 //! ask at, and its stage test reaches each one.
@@ -33,6 +37,84 @@ fn place(f: &SourceFile, hit: &Hit) -> String {
     }
 }
 
+const POLICIES: &[(&str, &str)] = &[
+    (
+        "crates/permissions/src/policy/mod.rs::Policy",
+        "the engine's policy: rules, modes, the managed layer",
+    ),
+    (
+        "crates/agents/src/agent_tool/permission.rs::DelegateRelay",
+        "a delegate's calls, handed to its parent's policy",
+    ),
+    (
+        "crates/assembly/src/assemble.rs::AllowAllPermission",
+        "the host's allow-everything permission; D1-5a makes the host a layer of rules",
+    ),
+    (
+        "tests/live/src/handle.rs::AllowAll",
+        "the live tier's stand-in for the daemon's own allow-everything host permission",
+    ),
+    (
+        "crates/runtime/src/agent/builder/build.rs::AllowAll",
+        "the builder's allow-everything default; D1-5a makes the policy the default",
+    ),
+];
+
+#[test]
+fn only_the_policy_and_the_delegate_relay_decide_a_call() {
+    let found = par_flat_map(ws().production(), |f| {
+        scan::impls(f, View::Prod)
+            .into_iter()
+            .filter(|imp| {
+                imp.trait_path
+                    .as_ref()
+                    .is_some_and(|t| t.last().is_some_and(|s| s == "PermissionPolicy"))
+            })
+            .map(|imp| Finding {
+                key: format!("{}::{}", f.rel, imp.self_ty),
+                hit: imp.hit,
+            })
+            .collect()
+    });
+    allow::check(
+        "permissions::POLICIES",
+        found,
+        POLICIES,
+        "add rules to `permissions::policy::Policy`, or hand the call to it the way          `DelegateRelay` does",
+    );
+}
+
+const MAKES_A_CONTEXT: &[(&str, &str)] = &[(
+    "crates/permissions/src/policy/mod.rs::Policy::context_for",
+    "a request that brought no context; D1-4 makes the context a required field",
+)];
+
+#[test]
+fn the_policy_and_the_relay_judge_with_the_calls_own_context() {
+    let found = par_flat_map(ws().production(), |f| {
+        if !(f.rel.starts_with("crates/permissions/") || f.rel.starts_with("crates/agents/")) {
+            return Vec::new();
+        }
+        scan::calls(f, View::Prod)
+            .into_iter()
+            .filter(|call| {
+                matches!(&call.callee, Callee::Path(p)
+                    if p.ends_with(&["ToolContext".into(), "from_engine_ctx_with".into()]))
+            })
+            .map(|call| Finding {
+                key: place(f, &call.hit),
+                hit: call.hit,
+            })
+            .collect()
+    });
+    allow::check(
+        "permissions::MAKES_A_CONTEXT",
+        found,
+        MAKES_A_CONTEXT,
+        "judge with `PermissionRequest::ctx`, the context the call runs with",
+    );
+}
+
 const PERMITS: &[(&str, &str)] = &[
     (
         "crates/permissions/src/policy/**",
@@ -41,10 +123,6 @@ const PERMITS: &[(&str, &str)] = &[
     (
         "crates/runtime/src/turn/tool_permission.rs::ask",
         "the answering step: the person the runtime asked approved the call",
-    ),
-    (
-        "crates/agents/src/agent_tool/permission.rs::permitted",
-        "ParentPermission's own answering loop and AlwaysPermit; D1-3c replaces them",
     ),
     (
         "crates/assembly/src/assemble.rs::AllowAllPermission::decide",

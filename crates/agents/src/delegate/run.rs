@@ -8,16 +8,14 @@ use base::context::{TaskLease, TaskType};
 use base::interface::delegate::{
     AskRoute, DelegateEnd, DelegateError, DelegateOutcome, Delegated, StartedAgent,
 };
-use base::interface::permission::PermissionSet;
 use tokio_util::sync::CancellationToken;
 
 use super::Delegator;
 use crate::agent_tool::{
-    bg_task_id, conclude, task_notification, with_deny_rules, without_panics, OneShot, Spec,
+    bg_task_id, conclude, task_notification, without_panics, OneShot, Relay, Spec,
 };
 
-/// Where the delegate's questions go, and the deny rules held in front of its
-/// permission.
+/// Where the delegate's questions go, and the deny rules its delegation adds.
 pub(super) struct Ask {
     pub(super) asks: AskRoute,
     pub(super) deny_rules: Vec<base::permission::PermissionRule>,
@@ -31,16 +29,13 @@ pub(super) struct Started {
 }
 
 impl Delegator {
-    fn permission_for(
+    fn relay_for(
         &self,
+        spec: &Spec,
         task: Option<Arc<base::context::RunningTask>>,
         ask: &Ask,
-    ) -> PermissionSet {
-        let can_ask = ask.asks == AskRoute::Host;
-        with_deny_rules(
-            self.permission_handler_asking(task, can_ask),
-            &ask.deny_rules,
-        )
+    ) -> Relay {
+        self.relay(&spec.session_id, task, ask.asks, ask.deny_rules.clone())
     }
 
     fn lease(
@@ -100,7 +95,7 @@ impl Delegator {
         let lease = self.lease(task_id, TaskType::Agent, &stop, detail);
         let task = lease.task().clone();
         let shot = OneShot {
-            permission: self.permission_for(Some(task.clone()), &ask),
+            relay: self.relay_for(&spec, Some(task.clone()), &ask),
             spec,
             prompt,
             cancel: stop,
@@ -149,7 +144,7 @@ impl Delegator {
             agent_session_id: spec.session_id.clone(),
         };
         let shot = OneShot {
-            permission: self.permission_for(Some(task.clone()), &ask),
+            relay: self.relay_for(&spec, Some(task.clone()), &ask),
             spec,
             prompt,
             cancel: stop,
@@ -199,7 +194,7 @@ impl Delegator {
         let lease = self.lease(bg_task_id(), TaskType::Teammate, &stop, detail);
         let task = lease.task().clone();
         let shot = OneShot {
-            permission: self.permission_for(Some(task.clone()), &ask),
+            relay: self.relay_for(&spec, Some(task.clone()), &ask),
             spec,
             prompt,
             cancel: stop,
@@ -235,7 +230,7 @@ impl Delegator {
         let _running = self.limits.hook_agents.enter(spec.session_id.clone());
         let session_id = spec.session_id.clone();
         let shot = OneShot {
-            permission: self.permission_handler(),
+            relay: self.relay(&spec.session_id, None, AskRoute::Host, Vec::new()),
             spec,
             prompt,
             cancel: stop,

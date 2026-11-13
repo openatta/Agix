@@ -301,6 +301,11 @@ impl Builder {
         self
     }
 
+    /// Whether a clarification this session asks can reach a person.
+    fn questions_answered(&self) -> bool {
+        self.question_prompts || self.elicitation.as_ref().is_some_and(|e| e.can_clarify())
+    }
+
     /// Let something other than the engine contribute to the system prompt.
     ///
     /// Registered blocks are merged with the kernel's stages and sorted with

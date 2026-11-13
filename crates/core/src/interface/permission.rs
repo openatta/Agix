@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::context::SessionState;
 use crate::interface::tool::{CallTraits, PermissionDecision, Tool, ToolContext, ToolOrigin};
-use crate::permission::PermissionRule;
+use crate::permission::{PermissionMode, PermissionRule};
 
 /// What a tool's permission match content is, which decides how rules are
 /// matched against it.
@@ -552,10 +552,8 @@ pub struct PermissionRequest<'a> {
     /// mode as it is now, what it has read.
     pub session: &'a Arc<SessionState>,
     /// Set when the call is a delegate's — a sub-agent's, a team member's —
-    /// relayed to this session's policy. The call is then judged against the
-    /// delegate's state, in the mode `PermissionMode::for_delegate` gives it
-    /// against `session`'s.
-    pub delegate: Option<&'a Arc<SessionState>>,
+    /// relayed to this session's policy.
+    pub delegate: Option<Delegate<'a>>,
     /// What the tool says about the call, gathered with `ctx`.
     pub facts: Option<&'a ToolFacts>,
     /// The context the call runs with: the judged session's.
@@ -588,7 +586,7 @@ impl<'a> PermissionRequest<'a> {
         }
     }
 
-    pub fn for_delegate(mut self, delegate: &'a Arc<SessionState>) -> Self {
+    pub fn for_delegate(mut self, delegate: Delegate<'a>) -> Self {
         self.delegate = Some(delegate);
         self
     }
@@ -616,7 +614,43 @@ impl<'a> PermissionRequest<'a> {
     /// The state the call is judged against: the delegate's when there is
     /// one, the session's otherwise.
     pub fn judged(&self) -> &'a Arc<SessionState> {
-        self.delegate.unwrap_or(self.session)
+        self.delegate.map_or(self.session, |d| d.session)
+    }
+}
+
+/// A delegate's call as the session that relays it hands it on: judged
+/// against the delegate's state, in `mode`, and held to `rules` on top of the
+/// policy's own.
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct Delegate<'a> {
+    /// The session the call runs in.
+    pub session: &'a Arc<SessionState>,
+    /// The delegate's mode as every session between it and the policy holds
+    /// it (`PermissionMode::for_delegate`, once per relaying session). The
+    /// policy holds it to its own session's mode in turn.
+    pub mode: PermissionMode,
+    /// What the delegation itself adds: its `deny` rules refuse the call in
+    /// any mode.
+    pub rules: &'a [PermissionRule],
+}
+
+impl<'a> Delegate<'a> {
+    /// `session`'s call in its own live mode, with nothing added.
+    pub fn of(session: &'a Arc<SessionState>) -> Self {
+        Self::new(session, session.permission_mode(), &[])
+    }
+
+    pub fn new(
+        session: &'a Arc<SessionState>,
+        mode: PermissionMode,
+        rules: &'a [PermissionRule],
+    ) -> Self {
+        Self {
+            session,
+            mode,
+            rules,
+        }
     }
 }
 

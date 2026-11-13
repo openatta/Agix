@@ -7,9 +7,7 @@
 //! command's allowance always sat. A hook's approve (S16) comes before the
 //! refusal for want of a person (S17): it is an answer given in advance.
 
-use super::judge::Call;
 use super::{Policy, Verdict};
-use crate::ruleset::RuleHit;
 use base::interface::permission::{
     Answerable, Attendance, Basis, ExecProfile, HookAnswer, Obligations, PermissionOutcome, Reach,
     Reason, Stage, ToolFacts,
@@ -66,39 +64,6 @@ impl Policy {
                 answerable,
             },
         }
-    }
-
-    /// A deny-rules-only policy: its rules' denial, or nothing in the way.
-    pub(super) fn only_denials(&self, call: &Call<'_>) -> PermissionOutcome {
-        let hit = call.named.hit(&self.rules_now(), call.name, call.ctx);
-        denial_of(call.name, hit)
-    }
-
-    pub(super) fn only_denials_by_name(&self, tool_name: &str) -> PermissionOutcome {
-        denial_of(tool_name, self.rules_now().evaluate(tool_name, None))
-    }
-}
-
-fn denial_of(tool_name: &str, hit: RuleHit) -> PermissionOutcome {
-    let (rule, message) = match hit {
-        RuleHit::Deny(rule) => {
-            let message = format!("denied by rule: {}", crate::rule::format_rule_string(&rule));
-            (rule, message)
-        }
-        RuleHit::Unclear(rule) => {
-            let message = super::subject::unclear_message(tool_name, &rule);
-            (rule, message)
-        }
-        _ => {
-            return PermissionOutcome::Permit {
-                basis: Basis::Bypass,
-                profile: ExecProfile::Session,
-                obligations: Obligations::default(),
-            }
-        }
-    };
-    PermissionOutcome::Deny {
-        reason: Reason::new(Stage::DelegateRule, message).with_rule(rule),
     }
 }
 

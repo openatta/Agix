@@ -262,7 +262,6 @@ fn deny() -> Option<Value> {
 /// the person said — written to the project's `settings.local.json` — not
 /// quietly downgraded to an allow for the rest of the session.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D1: fix pending"]
 async fn a_sub_agents_local_permit_always_is_written_to_the_project() {
     let daemon = Daemon::start(Setup::default(), |_, _| {}).await;
     daemon.model.push_turn(tool_round(

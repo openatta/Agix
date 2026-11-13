@@ -36,7 +36,7 @@ pub(crate) struct OneShot {
     pub(crate) spec: Spec,
     pub(crate) prompt: String,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
-    pub(crate) permission: PermissionSet,
+    pub(crate) relay: Relay,
     /// The task the run's cost, structured output and questions show on.
     pub(crate) task: Option<Arc<base::context::RunningTask>>,
     /// Registered into this delegate's own tool registry only.
@@ -55,7 +55,7 @@ impl Delegator {
         spec: &Spec,
         depth: u32,
         extra_tools: Vec<Arc<dyn base::tool::Tool>>,
-        permission: PermissionSet,
+        relay: Relay,
         extracts_memories: bool,
     ) -> Result<Delegate, base::error::ToolError> {
         let agent_type = spec.agent_type.as_deref();
@@ -82,7 +82,7 @@ impl Delegator {
         let sid = spec.session_id.clone();
         let parent_session_id = Some(self.env.parent.id.clone());
         // First, so that what the delegate decides for itself below — its
-        // permission, narrowed from the parent's — replaces what it inherits.
+        // permission, relayed to the parent's — replaces what it inherits.
         let builder = Builder::new().inherit(self.env.host.clone());
         let mut builder = match self.env.hooks() {
             Some(runner) => builder.hooks(runner),
@@ -97,7 +97,8 @@ impl Delegator {
         .settings(settings.clone())
         .agent_depth(depth)
         .memory_extraction(extracts_memories)
-        .permission(permission);
+        .permission(relay.permission)
+        .elicitation(relay.elicitation);
         if let Some(schema) = &spec.output_schema {
             builder = builder.output_schema(schema.clone());
         }
@@ -150,7 +151,7 @@ impl Delegator {
             spec,
             prompt,
             cancel,
-            permission,
+            relay,
             task,
             extra_tools,
             background,
@@ -166,7 +167,7 @@ impl Delegator {
             history_store,
             under_hook: _under_hook,
         } = match self
-            .build_delegate(&spec, depth, extra_tools, permission, false)
+            .build_delegate(&spec, depth, extra_tools, relay, false)
             .await
         {
             Ok(delegate) => delegate,

@@ -5,6 +5,7 @@ use super::*;
 impl Builder {
     pub fn build(self) -> Result<(Agent, EventReceiver, InputSender), EngineError> {
         let host_layers = self.host_layers();
+        let questions_answered = self.questions_answered();
         let scene = self
             .scene
             .ok_or_else(|| EngineError::Internal("scene required".into()))?;
@@ -532,7 +533,6 @@ impl Builder {
         // only to what is advertised: `ToolSearch` and dispatch read this same
         // registry, so a tool the scene excludes has to be absent from it.
         let attended = scene.interactive;
-        let questions_answered = self.question_prompts || self.elicitation.is_some();
         for t in tools.list() {
             let waits_on_a_reply = base::interface::scene::NEEDS_A_USER.contains(&t.name())
                 && (!attended || (t.name() == ASK_USER_QUESTION && !questions_answered));

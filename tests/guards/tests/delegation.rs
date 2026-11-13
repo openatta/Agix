@@ -521,10 +521,7 @@ const ORPHAN_TOKEN_CRATES: &[&str] = &["agents", "team", "skills"];
 const ORPHAN_TOKEN_FILES: &[&str] = &["crates/runtime/src/hook_executors.rs"];
 
 /// `(file, why)`: a fresh token there stops nothing anyone would wait on.
-const ORPHAN_TOKENS_ALLOWED: &[(&str, &str)] = &[(
-    "crates/agents/src/agent_tool/permission.rs",
-    "a `ToolContext` built only for `validate_input`; nothing runs on it",
-)];
+const ORPHAN_TOKENS_ALLOWED: &[(&str, &str)] = &[];
 
 #[test]
 fn delegation_and_hooks_make_no_orphan_tokens() {

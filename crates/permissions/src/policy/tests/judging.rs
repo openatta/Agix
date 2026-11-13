@@ -521,38 +521,46 @@ async fn bypass_spelling_consults_nothing(spelling: &str) {
     }
 }
 
+/// A delegation's own deny rules hold its delegate's calls in any mode, and
+/// only its delegate's: the session relaying them is not held to them.
 #[tokio::test]
-async fn a_deny_rules_only_gate_refuses_what_a_rule_denies_in_any_mode_and_nothing_else() {
-    let deny_bash = || {
-        RuleSet::new(vec![PermissionRule {
-            source: base::permission::RuleSource::Session,
-            behavior: base::permission::RuleBehavior::Deny,
-            tool_name: "Bash".into(),
-            rule_content: None,
-        }])
-    };
+async fn a_delegations_deny_rules_refuse_its_calls_in_any_mode_and_nothing_else() {
+    let deny_bash = [PermissionRule {
+        source: base::permission::RuleSource::Session,
+        behavior: base::permission::RuleBehavior::Deny,
+        tool_name: "Bash".into(),
+        rule_content: None,
+    }];
+    let bash: Arc<dyn Tool> = Arc::new(FakeTool::new("Bash").matches("ls"));
+    let input = json!({});
     for mode in [PermissionMode::BypassPermissions, PermissionMode::Default] {
         let ctx = ctx_with_mode(mode);
-        let denied = Policy::deny_rules_only(deny_bash())
-            .check_with(&FakeTool::new("Bash").matches("ls"), &json!({}), &ctx)
-            .await
-            .unwrap();
-        assert!(
-            matches!(denied, PermissionOutcome::Deny { .. }),
-            "{mode:?}: {denied:?}"
-        );
-        let other = Policy::deny_rules_only(deny_bash())
-            .check_with(
-                &FakeTool::new("Write").matches("/repo/.agix/settings.json"),
-                &json!({}),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert!(
-            matches!(other, PermissionOutcome::Permit { .. }),
-            "{mode:?}: {other:?}"
-        );
+        let delegate =
+            Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
+        let request = PermissionRequest::new(
+            "Bash",
+            Some(&bash),
+            &input,
+            &ctx.cwd,
+            &ctx.session_id,
+            &ctx.session,
+        )
+        .with_ctx(&ctx);
+        let delegated = request.for_delegate(base::interface::permission::Delegate::new(
+            &delegate, mode, &deny_bash,
+        ));
+        match Policy::empty().decide(&delegated).await {
+            PermissionOutcome::Deny { reason } => {
+                assert_eq!(reason.stage, Stage::DelegateRule, "{mode:?}: {reason}")
+            }
+            other => panic!("{mode:?}: {other:?}"),
+        }
+        if mode == PermissionMode::BypassPermissions {
+            assert!(matches!(
+                Policy::empty().decide(&request).await,
+                PermissionOutcome::Permit { .. }
+            ));
+        }
     }
 }
 

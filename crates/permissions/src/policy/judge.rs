@@ -9,6 +9,7 @@
 //! reported as its own even when another rule asks too, so that a hook cannot
 //! answer it.
 
+use super::delegated::Delegated;
 use super::subject::{managed_ask_of, unclear_message, Named};
 use super::{Policy, Verdict};
 use crate::rule::format_rule_string;
@@ -26,6 +27,7 @@ pub(super) struct Call<'a> {
     pub(super) mode: PermissionMode,
     pub(super) hook: &'a HookAnswer,
     pub(super) named: Named,
+    pub(super) delegated: Delegated,
 }
 
 struct Asked {
@@ -56,6 +58,9 @@ impl Policy {
         }
         if let HookAnswer::Block { reason, .. } = call.hook {
             return Verdict::deny(Stage::Hook, format!("Blocked by PreToolUse hook: {reason}"));
+        }
+        if let Some(denied) = call.delegated.denial(call) {
+            return Verdict::Deny(denied);
         }
         if call.mode == PermissionMode::BypassPermissions {
             return self.under_bypass(call);

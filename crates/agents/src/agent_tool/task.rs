@@ -1,6 +1,5 @@
 //! Task plumbing for delegates: ids, the steer inbox, how a run's end reads
-//! as a task status and as the notice its parent is posted, deny rules over a
-//! delegate's permission.
+//! as a task status and as the notice its parent is posted.
 
 use super::*;
 
@@ -41,26 +40,6 @@ pub(crate) fn open_inbox(task: Option<&base::context::RunningTask>, agent: &Agen
 }
 
 pub(crate) const NOTIFIED_RESULT_BYTES: usize = 4 * 1024;
-
-/// `base` with `deny_rules` in front: what they refuse is refused, anything
-/// else is decided as it would have been.
-pub(crate) fn with_deny_rules(
-    base: PermissionSet,
-    deny_rules: &[base::permission::PermissionRule],
-) -> PermissionSet {
-    if deny_rules.is_empty() {
-        return base;
-    }
-    PermissionSet {
-        policy: Arc::new(DenyRulesFirst {
-            rules: permissions::policy::Policy::deny_rules_only(
-                permissions::ruleset::RuleSet::new(deny_rules.to_vec()),
-            ),
-            inner: base.policy,
-        }),
-        grants: base.grants,
-    }
-}
 
 /// What one of a sub-agent's events tells its task: a model call's cost, the
 /// structured output it handed in.

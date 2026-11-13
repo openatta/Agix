@@ -3,6 +3,7 @@ use crate::ruleset::RuleSet;
 use async_trait::async_trait as async_trait2;
 use base::context::SessionState;
 use base::error::ToolError;
+use base::interface::permission::Delegate;
 use base::permission::PermissionMode;
 use base::tool::{PermissionDecision as ToolPermissionDecision, Tool};
 use serde_json::json;
@@ -195,7 +196,7 @@ async fn a_delegate_is_judged_in_its_own_mode_held_to_plan_and_taken_along_by_by
             "s1",
             &session,
         )
-        .for_delegate(&delegate);
+        .for_delegate(Delegate::of(&delegate));
         let perm = &perm;
         async move { perm.decide(&req).await }
     };
@@ -277,7 +278,7 @@ async fn a_delegates_own_tool_is_judged_under_the_sessions_rules() {
                     "s1",
                     &own,
                 )
-                .for_delegate(&delegate),
+                .for_delegate(Delegate::of(&delegate)),
             )
             .await
         }
@@ -828,7 +829,8 @@ async fn a_call_is_judged_on_the_providers_of_the_session_it_runs_in() {
     );
 
     perm.decide(&req).await;
-    perm.decide(&req.for_delegate(&delegate)).await;
+    perm.decide(&req.for_delegate(Delegate::of(&delegate)))
+        .await;
 
     let seen = probe.0.lock().unwrap();
     assert_eq!(seen.len(), 2);

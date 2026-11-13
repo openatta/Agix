@@ -22,7 +22,7 @@ use base::interface::exec::{
     Confined, Enforcement, ExecProviders, ProcessSpec, Sandbox, SandboxMode, SandboxPolicy,
 };
 use base::interface::permission::{
-    Answerable, Attendance, HookAnswer, ModeStance, PermissionOutcome, PermissionPolicy,
+    Answerable, Attendance, Delegate, HookAnswer, ModeStance, PermissionOutcome, PermissionPolicy,
     PermissionRequest, Reach, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
@@ -890,6 +890,22 @@ async fn stage_with(
     stage_of(&policy.decide(&request).await)
 }
 
+/// A delegate's call, held to `rules` on top of `policy`'s own.
+async fn delegated(
+    policy: &Policy,
+    name: &str,
+    input: &Value,
+    cwd: &Path,
+    rules: &[PermissionRule],
+) -> Option<Stage> {
+    let parent = session(cwd, PermissionMode::Default, false);
+    let delegate = session(cwd, PermissionMode::Default, false);
+    let tool = builtin_tools().get(name);
+    let request = PermissionRequest::new(name, tool.as_ref(), input, cwd, "matrix", &parent)
+        .for_delegate(Delegate::new(&delegate, PermissionMode::Default, rules));
+    stage_of(&policy.decide(&request).await)
+}
+
 /// PERM-8: every stage the policy refuses or asks at is reached by a call
 /// here, so a stage added to the policy is added to the matrix too.
 #[tokio::test]
@@ -919,13 +935,12 @@ async fn every_stage_of_the_policy_is_reached() {
         permission_rules: Vec::new(),
         disable_bypass_permissions_mode: false,
     });
-    let deny_bash =
-        Policy::deny_rules_only(permissions::ruleset::RuleSet::new(vec![PermissionRule {
-            source: RuleSource::Session,
-            behavior: RuleBehavior::Deny,
-            tool_name: "Bash".into(),
-            rule_content: None,
-        }]));
+    let deny_bash = [PermissionRule {
+        source: RuleSource::Session,
+        behavior: RuleBehavior::Deny,
+        tool_name: "Bash".into(),
+        rule_content: None,
+    }];
     let block = HookAnswer::Block {
         hook: "guard".into(),
         reason: "not today".into(),
@@ -1003,7 +1018,14 @@ async fn every_stage_of_the_policy_is_reached() {
         ),
         (
             Stage::DelegateRule,
-            reached(deny_bash, "Bash", bash("ls"), Default).await,
+            delegated(
+                &plain(RuleCase::None),
+                "Bash",
+                &bash("ls"),
+                &cwd,
+                &deny_bash,
+            )
+            .await,
         ),
         (
             Stage::BypassImmune,

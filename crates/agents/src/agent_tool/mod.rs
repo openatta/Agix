@@ -63,7 +63,7 @@ use base::interface::delegate::{
 use base::interface::tool_selector::{ToolPattern, ToolSelector};
 pub(crate) use build::*;
 pub use catalog::*;
-use permission::*;
+pub(crate) use permission::*;
 use settings::*;
 pub(crate) use spawn_meta::*;
 pub(crate) use task::*;

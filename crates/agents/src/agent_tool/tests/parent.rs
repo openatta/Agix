@@ -91,7 +91,7 @@ impl TestParent {
         let mut host = self.host.unwrap_or_else(host_contracts);
         host.permission = self
             .permission
-            .unwrap_or_else(|| PermissionSet::without_grants(Arc::new(AlwaysPermit)));
+            .unwrap_or_else(|| PermissionSet::without_grants(Arc::new(PermitsEverything)));
         let events = self.events.unwrap_or_else(|| {
             let (tx, _) = tokio::sync::mpsc::unbounded_channel();
             runtime::event_bus::EventBus::new(tx)
@@ -145,8 +145,14 @@ impl AgentTool {
         );
     }
 
+    /// A delegate's permission, put to this parent, asking its host.
     pub(super) fn sub_permission(&self) -> PermissionSet {
-        self.delegator.permission_handler()
+        self.sub_relay(None).permission
+    }
+
+    pub(super) fn sub_relay(&self, task: Option<Arc<base::context::RunningTask>>) -> Relay {
+        self.delegator
+            .relay("sub", task, AskRoute::Host, Vec::new())
     }
 
     pub(super) fn sub_settings(&self, model_name: Option<&str>) -> LoadedSettings {
@@ -294,7 +300,13 @@ impl AgentTool {
             called_from: None,
         };
         let built = d
-            .build_delegate(&spec, depth, Vec::new(), d.permission_handler(), true)
+            .build_delegate(
+                &spec,
+                depth,
+                Vec::new(),
+                d.relay(&spec.session_id, None, AskRoute::Host, Vec::new()),
+                true,
+            )
             .await?;
         Ok((built.agent, built.event_rx, built.input_tx, built.payload))
     }
@@ -310,5 +322,21 @@ pub(super) fn finished_text(
             _ => Ok(outcome.text),
         },
         Delegated::Started(_) => panic!("a waited delegate was started in the background"),
+    }
+}
+
+struct PermitsEverything;
+
+#[async_trait]
+impl PermissionPolicy for PermitsEverything {
+    async fn decide(
+        &self,
+        _: &base::interface::permission::PermissionRequest<'_>,
+    ) -> base::interface::permission::PermissionOutcome {
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }

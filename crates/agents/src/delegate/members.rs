@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use base::context::{TaskLease, TaskType};
-use base::interface::delegate::{DelegateEnd, DelegateError, Delegated, StartedAgent, TeamSeat};
+use base::interface::delegate::{
+    AskRoute, DelegateEnd, DelegateError, Delegated, StartedAgent, TeamSeat,
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{Delegator, SlotRule};
@@ -196,7 +198,13 @@ impl Delegator {
         let live = &self.members.live;
         let depth = self.limits.spawn_guard()?;
         let delegate = self
-            .build_delegate(&spec, depth, Vec::new(), self.permission_handler(), true)
+            .build_delegate(
+                &spec,
+                depth,
+                Vec::new(),
+                self.relay(&spec.session_id, None, AskRoute::Host, Vec::new()),
+                true,
+            )
             .await
             .map_err(|e| match e {
                 base::error::ToolError::Execution(e) => DelegateError::Build(e.to_string()),
