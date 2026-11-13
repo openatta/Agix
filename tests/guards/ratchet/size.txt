@@ -15,7 +15,7 @@ file  crates/mcp/src/oauth/mod.rs                          -                    
 file  crates/platform/src/sandbox.rs                       -                                        1498
 file  crates/ptc/src/lib.rs                                -                                        973
 file  crates/runtime/src/agent/builder/build.rs            -                                        942
-file  crates/runtime/src/turn/user_turn.rs                 -                                        1339
+file  crates/runtime/src/turn/user_turn.rs                 -                                        1442
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
@@ -61,7 +61,6 @@ fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction
 fn    crates/runtime/src/turn/memory_extraction.rs         extract_memories_after_turn              224
 fn    crates/runtime/src/turn/process.rs                   Agent::process_turn                      253
 fn    crates/runtime/src/turn/tool_exec.rs                 execute_tool_inner                       220
-fn    crates/runtime/src/turn/user_turn.rs                 Agent::run_user_turn_inner               584
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/skills/src/tool.rs                            SkillTool::call                          155
