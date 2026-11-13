@@ -271,6 +271,10 @@ pub(super) async fn execute_tool_inner(
     let authorized = authorize(ctx, name, &tool, &input, &tool_ctx, &hook).await?;
     let user_approved = authorized.by_person;
     tool_ctx.approval = Some(authorized.approval);
+    let owed = authorized
+        .obligations
+        .scan_nested_repos
+        .then(|| tool_ctx.clone());
 
     let input_for_post_hook = input.clone();
     let input_json_size = serde_json::to_string(&input)
@@ -317,6 +321,17 @@ pub(super) async fn execute_tool_inner(
     let latency_ms = tool_start.elapsed().as_millis() as u64;
 
     let mut outcome = answer_of(ctx, result);
+    if let Some(after) = owed {
+        super::obligations::fulfil(
+            ctx,
+            name,
+            &input_for_post_hook,
+            after,
+            authorized.background,
+            &mut outcome,
+        )
+        .await;
+    }
     let measured = (latency_ms, input_json_size, user_approved);
     record_execution(ctx, name, &outcome, measured);
 

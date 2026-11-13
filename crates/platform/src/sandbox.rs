@@ -142,8 +142,13 @@
 //!    create a `.git` entry would break `git init`, `git clone` and every
 //!    package manager that checks out a git dependency, and a repository built
 //!    elsewhere and moved in would evade it anyway. The engine's own `git`
-//!    carries `-c core.fsmonitor=false` and is unaffected; catching a new
-//!    nested `.git` after a command runs is left to a later version.
+//!    carries `-c core.fsmonitor=false` and is unaffected. Above the backends,
+//!    the runtime looks for one after every command not held to the strict
+//!    profile (`tools::nested_repos`; a background command when its task
+//!    ends): an undeclared gitlink whose configuration names a program has its
+//!    `.git` moved aside unless the person attending keeps it. What it does
+//!    not catch is what a command starts that outlives it and plants one
+//!    later.
 //!
 //! Not among them, measured on bubblewrap 0.8: `/proc` is mounted afresh for
 //! the command's PID namespace, so it shows neither the host's processes nor
@@ -2696,7 +2701,7 @@ mod tests {
     /// one whose configuration names a program for that git to run.
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "known escape: nested repository, see sandbox.rs header"]
+    #[ignore = "known escape: the backends cannot stop a nested repository; tools::nested_repos catches it after the command"]
     fn audit2_a_sandboxed_command_cannot_plant_an_embedded_repositorys_configuration() {
         let s = UnderSandboxExec::new().expect("sandbox-exec runs here");
         assert!(

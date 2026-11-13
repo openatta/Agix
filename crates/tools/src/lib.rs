@@ -12,6 +12,7 @@ pub mod glob;
 pub mod goal;
 pub mod grep;
 pub mod monitor;
+pub mod nested_repos;
 pub mod notebook_edit;
 pub mod ping;
 pub mod plan_mode;

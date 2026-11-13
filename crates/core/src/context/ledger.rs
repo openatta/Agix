@@ -10,6 +10,9 @@ pub struct SessionLedger {
     pub token_target: TokenTarget,
     /// Skills invoked or announced so far, re-injected after compaction.
     pub invoked_skills: Vec<String>,
+    /// Repositories nested in the project the session has already reported
+    /// or been told to keep, with a digest of their configuration then.
+    pub nested_repos: std::collections::BTreeMap<std::path::PathBuf, u64>,
 }
 
 impl SessionLedger {

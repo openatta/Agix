@@ -5,6 +5,7 @@
 mod attachments;
 mod compact;
 mod memory_extraction;
+mod obligations;
 mod process;
 mod prompt;
 mod reporting;

@@ -1198,3 +1198,146 @@ fn a_redacting_transformer_also_takes_the_structured_result_away() {
         Some(serde_json::json!({"password": "nothing here"}))
     );
 }
+
+/// Lets every call through, owing a look for nested repositories.
+struct ScanningPermission(base::interface::permission::ExecProfile);
+#[async_trait::async_trait]
+impl base::interface::permission::PermissionPolicy for ScanningPermission {
+    async fn decide(
+        &self,
+        _req: &base::interface::permission::PermissionRequest<'_>,
+    ) -> base::interface::permission::PermissionOutcome {
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: self.0,
+            obligations: base::interface::permission::Obligations::scanning_nested_repos(true),
+        }
+    }
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+const PLANT: &str = "mkdir sub && cd sub && git init -q && touch f && git add f && \
+     git -c user.email=t@example.com -c user.name=T commit -q -m s && \
+     git config core.fsmonitor 'touch pwned; false' && cd .. && git add sub";
+
+/// A session in a fresh repository, its commands unsandboxed, whose calls
+/// all owe a look for nested repositories.
+fn scanning_session(
+    unattended: bool,
+    elicitation: Arc<dyn base::interface::elicitation::Elicitation>,
+) -> (tempfile::TempDir, ToolExecCtx) {
+    use base::interface::permission::ExecProfile;
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    git_in(&cwd, &["init", "-q"]);
+    std::fs::write(cwd.join("a"), "a").unwrap();
+    git_in(&cwd, &["add", "a"]);
+    git_in(&cwd, &["commit", "-qm", "first"]);
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools.register(Arc::new(tools::bash::BashTool));
+    tools.register(Arc::new(tools::monitor::MonitorTool));
+    let profile = if unattended {
+        ExecProfile::Unattended
+    } else {
+        ExecProfile::Session
+    };
+    let mut ctx = test_exec_ctx_with_permission(
+        tools,
+        Arc::new(hooks::HookRunner::new(std::collections::HashMap::new())),
+        Arc::new(ScanningPermission(profile)),
+    );
+    let mut config = base::context::EngineConfig::defaults_for("test");
+    config.dangerously_disable_sandbox = true;
+    ctx.config = Arc::new(config);
+    ctx.cwd = cwd.clone();
+    ctx.session_state = Arc::new(base::context::SessionState::for_tests_in(
+        base::context::SessionEnv {
+            unattended,
+            ..base::context::SessionEnv::new(cwd)
+        },
+    ));
+    ctx.elicitation = elicitation;
+    (dir, ctx)
+}
+
+#[tokio::test]
+async fn a_repository_a_command_nests_is_moved_aside_when_nobody_attends() {
+    let (dir, ctx) = scanning_session(true, Arc::new(base::interface::elicitation::DeclineAll));
+    let answer = execute_tool_with_telemetry(&ctx, "Bash", serde_json::json!({"command": PLANT}))
+        .await
+        .unwrap();
+    assert!(answer.text.contains("Moved aside"), "{}", answer.text);
+    assert!(answer.text.contains("core.fsmonitor"), "{}", answer.text);
+    let sub = dir.path().join("sub");
+    assert!(!sub.join(".git").exists());
+    assert!(std::fs::read_dir(&sub).unwrap().flatten().any(|e| e
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".git.agix-quarantine-")));
+}
+
+#[tokio::test]
+async fn the_person_attending_decides_whether_a_nested_repository_stays() {
+    use base::interface::elicitation::{ElicitKind, ElicitOutcome, FixedElicitation};
+    let keeps = FixedElicitation::new(ElicitOutcome::answered(&"keep"));
+    let (dir, ctx) = scanning_session(false, keeps.clone());
+    let answer = execute_tool_with_telemetry(&ctx, "Bash", serde_json::json!({"command": PLANT}))
+        .await
+        .unwrap();
+    assert!(answer.text.contains("Kept"), "{}", answer.text);
+    assert!(dir.path().join("sub/.git").is_dir());
+    let asked = keeps.asked();
+    assert_eq!(asked.len(), 1);
+    assert!(matches!(asked[0].kind, ElicitKind::Clarification { .. }));
+    let again = execute_tool_with_telemetry(&ctx, "Bash", serde_json::json!({"command": "true"}))
+        .await
+        .unwrap();
+    assert!(!again.text.contains("sub/.git"), "{}", again.text);
+
+    let unanswered = Arc::new(base::interface::elicitation::DeclineAll);
+    let (dir, ctx) = scanning_session(false, unanswered);
+    let answer = execute_tool_with_telemetry(&ctx, "Bash", serde_json::json!({"command": PLANT}))
+        .await
+        .unwrap();
+    assert!(answer.text.contains("Moved aside"), "{}", answer.text);
+    assert!(!dir.path().join("sub/.git").exists());
+}
+
+#[tokio::test]
+async fn a_background_command_is_checked_when_its_task_ends() {
+    let (dir, ctx) = scanning_session(true, Arc::new(base::interface::elicitation::DeclineAll));
+    let started = execute_tool_with_telemetry(
+        &ctx,
+        "Monitor",
+        serde_json::json!({"command": PLANT, "description": "plant"}),
+    )
+    .await
+    .unwrap();
+    assert!(!started.text.contains("Moved aside"), "{}", started.text);
+    let notice = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            if let Some(n) = ctx
+                .session_state
+                .take_notices()
+                .into_iter()
+                .find(|n| n.contains("Moved aside"))
+            {
+                return n;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the check runs once the monitor ends");
+    assert!(notice.contains("sub/.git"), "{notice}");
+    assert!(!dir.path().join("sub/.git").exists());
+}

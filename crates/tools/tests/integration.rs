@@ -5,6 +5,7 @@
 mod decision_matrix;
 mod edits_after_writes;
 mod execution_providers;
+mod nested_repos;
 mod outside_the_project;
 mod path_style;
 mod permission_rules;
