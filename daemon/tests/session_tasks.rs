@@ -83,22 +83,23 @@ impl Daemon {
     }
 
     async fn start_with(model: Arc<dyn AnthropicClient>) -> Self {
-        Self::start_configured(model, |_| {}).await
+        Self::start_configured(model, |_, _| {}).await
     }
 
-    /// Permission prompts are on, and go unanswered for `timeout_secs`
-    /// before they are given up on.
-    async fn start_asking(model: Arc<dyn AnthropicClient>, timeout_secs: u64) -> Self {
-        Self::start_configured(model, |settings| {
+    /// Permission prompts are on, and go unanswered for `prompt_timeout`
+    /// (`--permission-prompt-timeout`, zero for no limit) before they are
+    /// given up on.
+    async fn start_asking(model: Arc<dyn AnthropicClient>, prompt_timeout: Duration) -> Self {
+        Self::start_configured(model, |settings, assembly| {
             settings.permission_mode = base::settings::PermissionMode::Default;
-            settings.execution.permission_prompt_timeout_secs = timeout_secs;
+            assembly.permission_prompt_timeout = prompt_timeout;
         })
         .await
     }
 
     async fn start_configured(
         model: Arc<dyn AnthropicClient>,
-        configure: impl FnOnce(&mut base::settings::Settings),
+        configure: impl FnOnce(&mut base::settings::Settings, &mut daemon::Assembly),
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("tasks.sock");
@@ -113,15 +114,16 @@ impl Daemon {
         );
         config.settings.values.memory_enabled = false;
         config.settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
-        configure(&mut config.settings.values);
+        let mut assembly = daemon::Assembly {
+            cwd: Some(cwd),
+            model_client: Some(model),
+            ..Default::default()
+        };
+        configure(&mut config.settings.values, &mut assembly);
         let pool = daemon::assemble::pool(
             &config,
             Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
-            daemon::Assembly {
-                cwd: Some(cwd),
-                model_client: Some(model),
-                ..Default::default()
-            },
+            assembly,
         )
         .await
         .expect("the daemon assembles");
@@ -1384,7 +1386,8 @@ fn first_of(frames: &Mutex<Vec<serde_json::Value>>, kind: &str) -> Option<serde_
 /// subscribes afterwards.
 #[tokio::test]
 async fn a_question_one_host_answers_is_withdrawn_from_every_other() {
-    let daemon = Arc::new(Daemon::start_asking(asks_to_run("touch made.txt"), 0).await);
+    let daemon =
+        Arc::new(Daemon::start_asking(asks_to_run("touch made.txt"), Duration::ZERO).await);
     let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
         .as_str()
         .unwrap()
@@ -1428,7 +1431,8 @@ async fn a_question_one_host_answers_is_withdrawn_from_every_other() {
 /// A question nobody answers in time is withdrawn from every watcher.
 #[tokio::test]
 async fn a_question_nobody_answers_in_time_is_withdrawn() {
-    let daemon = Arc::new(Daemon::start_asking(asks_to_run("touch made.txt"), 1).await);
+    let daemon =
+        Arc::new(Daemon::start_asking(asks_to_run("touch made.txt"), Duration::from_secs(1)).await);
     let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
         .as_str()
         .unwrap()
