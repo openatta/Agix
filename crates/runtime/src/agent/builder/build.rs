@@ -70,6 +70,180 @@ struct ModuleInputs<'a> {
     mcp: Option<Box<dyn base::interface::mcp_servers::McpServers>>,
 }
 
+struct PluginLayers {
+    rust: crate::plugin::Registrar,
+    quickjs: crate::plugin::Registrar,
+    tool_owners: std::collections::HashMap<String, crate::plugin::ToolOwner>,
+    agent_types: Vec<base::agent_type::AgentTypeDefinition>,
+}
+
+struct HookWiring {
+    delegator: crate::module::LateDelegator,
+    session_ended: CancellationToken,
+    hooks: Arc<HookRunner>,
+    task_wake: Option<mpsc::UnboundedSender<()>>,
+}
+
+struct EventWiring {
+    tx: crate::event_bus::EventBus,
+    rx: EventReceiver,
+    pending_permissions: PendingPermissions,
+    pending_questions: crate::elicitation::PendingQuestions,
+}
+
+/// Not `ToolSurface`: that name is the scene's allow/deny lists in `base`.
+struct SessionTools {
+    tools: Arc<InMemoryToolRegistry>,
+    policy: Arc<crate::tool_policy::ToolPolicy>,
+}
+
+struct Chains {
+    prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry>,
+    tool_middleware: Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>,
+    result_transformers: Vec<Arc<dyn base::interface::tool_result::ToolResultTransformer>>,
+    model_interceptors: Vec<Arc<dyn base::interface::model_interceptor::ModelInterceptor>>,
+    retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
+    prompt_middleware: Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>,
+    health_checks: Vec<Arc<dyn base::interface::health::HealthCheck>>,
+    turn_starts: Vec<crate::plugin::TurnStart>,
+}
+
+struct Wired {
+    scene: Arc<SceneSpec>,
+    settings: Arc<LoadedSettings>,
+    exec: base::interface::exec::ExecProviders,
+    config: Arc<base::context::EngineConfig>,
+    session: SessionManager,
+    session_state: Arc<base::context::SessionState>,
+    attachment: base::context::EngineAttachment,
+    session_ended: CancellationToken,
+    tools: Arc<InMemoryToolRegistry>,
+    skill_catalog: crate::module::LateSkillCatalog,
+    command_registry: Arc<crate::commands::CommandRegistry>,
+    mcp: Box<dyn base::interface::mcp_servers::McpServers>,
+    delegator: crate::module::LateDelegator,
+    tool_policy: Arc<crate::tool_policy::ToolPolicy>,
+    permission: PermissionSet,
+    pending_permissions: PendingPermissions,
+    pending_questions: crate::elicitation::PendingQuestions,
+    hooks: Arc<HookRunner>,
+    event_tx: crate::event_bus::EventBus,
+    event_rx: EventReceiver,
+    input_tx: InputSender,
+    input_rx: mpsc::UnboundedReceiver<InputMessage>,
+    claude_md_content: Option<String>,
+    rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
+    environment: Arc<dyn base::interface::environment::Environment>,
+    memory_store: Arc<MemoryStore>,
+    compactor: Arc<dyn Compactor>,
+    model: Arc<dyn Model>,
+    telemetry_handle: TelemetryHandle,
+    agent_depth: u32,
+    chains: Chains,
+}
+
+impl PluginLayers {
+    fn take_tools(&mut self) -> Vec<Arc<dyn base::tool::Tool>> {
+        std::mem::take(&mut self.rust.tools)
+            .into_iter()
+            .chain(std::mem::take(&mut self.quickjs.tools))
+            .collect()
+    }
+
+    fn into_chains(self, ext: &mut Builder) -> Chains {
+        let PluginLayers {
+            rust: mut rust_layer,
+            quickjs: mut quickjs_layer,
+            ..
+        } = self;
+        let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> =
+            if rust_layer.registers_on_prompt_registry()
+                || quickjs_layer.registers_on_prompt_registry()
+            {
+                use base::interface::prompt_registry::PromptRegistry as _;
+                let own = base::interface::prompt_registry::InMemoryPromptRegistry::new();
+                for block in std::mem::take(&mut rust_layer.prompt_blocks) {
+                    own.register_block(block);
+                }
+                for (name, provider, _) in std::mem::take(&mut rust_layer.prompt_variables) {
+                    own.register_variable(&name, provider);
+                }
+                for (hook, authority) in std::mem::take(&mut rust_layer.assembly_hooks) {
+                    own.register_assembly_hook(hook, authority);
+                }
+                for (hook, authority) in std::mem::take(&mut rust_layer.async_assembly_hooks) {
+                    own.register_async_assembly_hook(hook, authority);
+                }
+                Arc::new(
+                    base::interface::prompt_registry::LayeredPromptRegistry::new(
+                        ext.prompt_registry.take(),
+                        own,
+                        base::interface::prompt_registry::ScriptContributions {
+                            blocks: std::mem::take(&mut quickjs_layer.prompt_blocks),
+                            variables: std::mem::take(&mut quickjs_layer.prompt_variables),
+                            assembly_hooks: std::mem::take(&mut quickjs_layer.assembly_hooks),
+                            async_assembly_hooks: std::mem::take(
+                                &mut quickjs_layer.async_assembly_hooks,
+                            ),
+                        },
+                    ),
+                )
+            } else {
+                ext.prompt_registry
+                    .take()
+                    .unwrap_or_else(|| Arc::new(base::interface::prompt_registry::NoRegistrations))
+            };
+        // Rust first in a chain and innermost around a tool call; QuickJS
+        // after it and outside it.
+        let tool_middleware: Vec<_> = quickjs_layer
+            .tool_middleware
+            .into_iter()
+            .chain(std::mem::take(&mut ext.tool_middleware))
+            .chain(rust_layer.tool_middleware)
+            .collect();
+        let result_transformers: Vec<_> = std::mem::take(&mut ext.result_transformers)
+            .into_iter()
+            .chain(rust_layer.tool_results)
+            .chain(quickjs_layer.tool_results)
+            .collect();
+        let model_interceptors: Vec<_> = std::mem::take(&mut ext.model_interceptors)
+            .into_iter()
+            .chain(rust_layer.model_interceptors)
+            .chain(quickjs_layer.model_interceptors)
+            .collect();
+        let retrieval_hooks: Vec<_> = std::mem::take(&mut ext.retrieval_hooks)
+            .into_iter()
+            .chain(rust_layer.retrieval_hooks)
+            .chain(quickjs_layer.retrieval_hooks)
+            .collect();
+        let prompt_middleware: Vec<_> = std::mem::take(&mut ext.prompt_middleware)
+            .into_iter()
+            .chain(rust_layer.prompt_middleware)
+            .chain(quickjs_layer.prompt_middleware)
+            .collect();
+        let health_checks: Vec<_> = std::mem::take(&mut ext.health_checks)
+            .into_iter()
+            .chain(rust_layer.health_checks)
+            .chain(quickjs_layer.health_checks)
+            .collect();
+        let turn_starts: Vec<_> = rust_layer
+            .turn_starts
+            .into_iter()
+            .chain(quickjs_layer.turn_starts)
+            .collect();
+        Chains {
+            prompt_registry,
+            tool_middleware,
+            result_transformers,
+            model_interceptors,
+            retrieval_hooks,
+            prompt_middleware,
+            health_checks,
+            turn_starts,
+        }
+    }
+}
+
 impl Builder {
     pub fn build(mut self) -> Result<(Agent, EventReceiver, InputSender), EngineError> {
         let Resolved {
@@ -96,16 +270,13 @@ impl Builder {
             .take()
             .unwrap_or_else(|| Arc::new(DefaultCompactor) as Arc<dyn Compactor>);
         let agent_depth = self.agent_depth;
-        let (
-            crate::plugin::Layers {
-                rust: mut rust_layer,
-                quickjs: mut quickjs_layer,
-                tool_owners: plugin_tool_owners,
-            },
-            plugin_agent_types,
-        ) = self.register_plugins(&session, &settings, &scene)?;
-        let (delegator, session_ended, hooks, task_wake) =
-            self.wire_hooks(&settings, &model, &session);
+        let mut plugins = self.register_plugins(&session, &settings, &scene)?;
+        let HookWiring {
+            delegator,
+            session_ended,
+            hooks,
+            task_wake,
+        } = self.wire_hooks(&settings, &model, &session);
         let skill_catalog = crate::module::LateSkillCatalog::default();
         register_task_tools(&tools);
 
@@ -130,7 +301,12 @@ impl Builder {
             fire_here: fire_jobs_here,
         } = self.register_session_tools(&tools, &settings, &model, &telemetry_handle);
 
-        let (event_tx, event_rx, pending_permissions, pending_questions) = self.wire_events();
+        let EventWiring {
+            tx: event_tx,
+            rx: event_rx,
+            pending_permissions,
+            pending_questions,
+        } = self.wire_events();
         let mcp_slot = self.mcp_servers.take();
         let mcp = self.run_modules(ModuleInputs {
             tools: &tools,
@@ -146,7 +322,7 @@ impl Builder {
             session: &session,
             session_state: &session_state,
             depth: agent_depth,
-            plugin_agent_types: &plugin_agent_types,
+            plugin_agent_types: &plugins.agent_types,
             delegator: &delegator,
             skill_catalog: &skill_catalog,
             session_ended: &session_ended,
@@ -163,15 +339,15 @@ impl Builder {
         })?;
         let command_registry = self.command_registry(&skill_catalog, mcp.as_ref());
 
-        let plugin_tools: Vec<_> = std::mem::take(&mut rust_layer.tools)
-            .into_iter()
-            .chain(std::mem::take(&mut quickjs_layer.tools))
-            .collect();
-        let tool_policy = self.finalize_tools(
-            &tools,
+        let plugin_tools = plugins.take_tools();
+        let SessionTools {
+            tools,
+            policy: tool_policy,
+        } = self.finalize_tools(
+            tools,
             &scene,
             plugin_tools,
-            &plugin_tool_owners,
+            &plugins.tool_owners,
             questions_answered,
         )?;
 
@@ -193,9 +369,139 @@ impl Builder {
             injected_state,
         );
 
-        // Built before the `Agent` literal takes ownership of `scene` and
-        // `settings`. The ceilings are read once per session, which is when
-        // they are decided — neither can change mid-session.
+        let chains = plugins.into_chains(&mut self);
+        Ok(self.assemble(Wired {
+            scene,
+            settings,
+            exec,
+            config,
+            session,
+            session_state,
+            attachment,
+            session_ended,
+            tools,
+            skill_catalog,
+            command_registry,
+            mcp,
+            delegator,
+            tool_policy,
+            permission,
+            pending_permissions,
+            pending_questions,
+            hooks,
+            event_tx,
+            event_rx,
+            input_tx,
+            input_rx,
+            claude_md_content,
+            rules,
+            environment,
+            memory_store,
+            compactor,
+            model,
+            telemetry_handle,
+            agent_depth,
+            chains,
+        }))
+    }
+}
+
+impl Builder {
+    fn assemble(mut self, w: Wired) -> (Agent, EventReceiver, InputSender) {
+        let chains = w.chains;
+        let (recovery_policy, turn_policy, budget_policy) = self.policies(&w.settings, &w.scene);
+        let settings = match &self.session_prompt {
+            Some(prompt) => Arc::new(prompt.applied_to(&w.settings)),
+            None => w.settings,
+        };
+        let session_end = SessionEnd {
+            ended: w.session_ended,
+            tools: w.tools.clone(),
+            state: w.session_state.clone(),
+            attachment: w.attachment,
+        };
+        let gate = self.gate(
+            w.permission,
+            &w.event_tx,
+            w.pending_permissions,
+            w.pending_questions,
+            w.hooks,
+            chains.turn_starts,
+        );
+        let agent = Agent {
+            scene: w.scene,
+            exec: w.exec,
+            config: w.config,
+            session: w.session,
+            session_state: w.session_state,
+            current_turn_id: String::new(),
+            session_end,
+            identity: self.identity(w.agent_depth),
+            llm: ModelRoute {
+                model: w.model,
+                task_router: self.task_router.take(),
+                recovery_policy,
+                model_interceptors: Arc::new(chains.model_interceptors),
+            },
+            tooling: Tooling {
+                tools: w.tools,
+                skills: Arc::new(w.skill_catalog),
+                commands: w.command_registry,
+                mcp: w.mcp,
+                delegator: Arc::new(w.delegator),
+                tool_middleware: Arc::new(chains.tool_middleware),
+                result_transformers: Arc::new(chains.result_transformers),
+                mcp_shadow_warned: std::collections::HashSet::new(),
+                tool_policy: w.tool_policy,
+            },
+            gate,
+            prompt: self.prompt_context(
+                chains.prompt_registry,
+                chains.prompt_middleware,
+                w.claude_md_content,
+                w.rules,
+            ),
+            policies: Policies {
+                turn_policy,
+                budget_policy,
+                health: Arc::new(base::interface::health::HealthChecks::from_vec(
+                    chains.health_checks,
+                )),
+                environment: w.environment,
+            },
+            memory: self.memory(w.memory_store, chains.retrieval_hooks),
+            compaction: compaction_state(
+                w.compactor,
+                settings.values.compaction.cached_microcompact,
+            ),
+            settings,
+            turn: Default::default(),
+            last_had_tool_uses: true,
+            slash_skill_grants: Vec::new(),
+            repeat_guard: Default::default(),
+            telemetry: Telemetry {
+                telemetry_handle: w.telemetry_handle,
+                perf: Arc::new(PerfCollector::new()),
+            },
+            channels: Channels {
+                input_rx: w.input_rx,
+                event_tx: w.event_tx,
+                current_turn_cancel: Default::default(),
+                steering: self.steering.take().map(|s| s.0).unwrap_or_default(),
+            },
+        };
+        (agent, w.event_rx, w.input_tx)
+    }
+
+    fn policies(
+        &self,
+        settings: &LoadedSettings,
+        scene: &SceneSpec,
+    ) -> (
+        Arc<dyn base::interface::recovery_policy::RecoveryPolicy>,
+        Arc<dyn base::interface::turn_policy::TurnPolicy>,
+        Arc<dyn base::interface::budget_policy::BudgetPolicy>,
+    ) {
         let recovery_policy: Arc<dyn base::interface::recovery_policy::RecoveryPolicy> =
             self.recovery_policy.clone().unwrap_or_else(|| {
                 Arc::new(base::interface::recovery_policy::DefaultRecovery::new(
@@ -210,227 +516,96 @@ impl Builder {
                     5,
                 ))
             });
-
         let budget_policy: Arc<dyn base::interface::budget_policy::BudgetPolicy> =
             self.budget_policy.clone().unwrap_or_else(|| {
                 Arc::new(base::interface::budget_policy::EngineBudget::from_settings(
                     &settings.values,
                 ))
             });
-
-        let settings = match &self.session_prompt {
-            Some(prompt) => Arc::new(prompt.applied_to(&settings)),
-            None => settings,
-        };
-
-        // Capture feature flags before settings is moved into the Agent struct
-        let cached_mc_enabled = settings.values.compaction.cached_microcompact;
-
-        let prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry> =
-            if rust_layer.registers_on_prompt_registry()
-                || quickjs_layer.registers_on_prompt_registry()
-            {
-                use base::interface::prompt_registry::PromptRegistry as _;
-                let own = base::interface::prompt_registry::InMemoryPromptRegistry::new();
-                for block in std::mem::take(&mut rust_layer.prompt_blocks) {
-                    own.register_block(block);
-                }
-                for (name, provider, _) in std::mem::take(&mut rust_layer.prompt_variables) {
-                    own.register_variable(&name, provider);
-                }
-                for (hook, authority) in std::mem::take(&mut rust_layer.assembly_hooks) {
-                    own.register_assembly_hook(hook, authority);
-                }
-                for (hook, authority) in std::mem::take(&mut rust_layer.async_assembly_hooks) {
-                    own.register_async_assembly_hook(hook, authority);
-                }
-                Arc::new(
-                    base::interface::prompt_registry::LayeredPromptRegistry::new(
-                        self.prompt_registry,
-                        own,
-                        base::interface::prompt_registry::ScriptContributions {
-                            blocks: std::mem::take(&mut quickjs_layer.prompt_blocks),
-                            variables: std::mem::take(&mut quickjs_layer.prompt_variables),
-                            assembly_hooks: std::mem::take(&mut quickjs_layer.assembly_hooks),
-                            async_assembly_hooks: std::mem::take(
-                                &mut quickjs_layer.async_assembly_hooks,
-                            ),
-                        },
-                    ),
-                )
-            } else {
-                self.prompt_registry
-                    .unwrap_or_else(|| Arc::new(base::interface::prompt_registry::NoRegistrations))
-            };
-        // Rust first in a chain and innermost around a tool call; QuickJS
-        // after it and outside it.
-        let tool_middleware: Vec<_> = quickjs_layer
-            .tool_middleware
-            .into_iter()
-            .chain(self.tool_middleware)
-            .chain(rust_layer.tool_middleware)
-            .collect();
-        let result_transformers: Vec<_> = self
-            .result_transformers
-            .into_iter()
-            .chain(rust_layer.tool_results)
-            .chain(quickjs_layer.tool_results)
-            .collect();
-        let model_interceptors: Vec<_> = self
-            .model_interceptors
-            .into_iter()
-            .chain(rust_layer.model_interceptors)
-            .chain(quickjs_layer.model_interceptors)
-            .collect();
-        let retrieval_hooks: Vec<_> = self
-            .retrieval_hooks
-            .into_iter()
-            .chain(rust_layer.retrieval_hooks)
-            .chain(quickjs_layer.retrieval_hooks)
-            .collect();
-        let prompt_middleware: Vec<_> = self
-            .prompt_middleware
-            .into_iter()
-            .chain(rust_layer.prompt_middleware)
-            .chain(quickjs_layer.prompt_middleware)
-            .collect();
-        let health_checks: Vec<_> = self
-            .health_checks
-            .into_iter()
-            .chain(rust_layer.health_checks)
-            .chain(quickjs_layer.health_checks)
-            .collect();
-        let turn_starts: Vec<_> = rust_layer
-            .turn_starts
-            .into_iter()
-            .chain(quickjs_layer.turn_starts)
-            .collect();
-        let session_end = SessionEnd {
-            ended: session_ended,
-            tools: tools.clone(),
-            state: session_state.clone(),
-            attachment,
-        };
-
-        Ok((
-            Agent {
-                scene,
-                settings,
-                exec,
-                config,
-                session,
-                session_state,
-                current_turn_id: String::new(),
-                session_end,
-                identity: Identity {
-                    agent_depth,
-                    agent_type: self.agent_type,
-                    team_seat: self.team_seat,
-                    drive_goals: !self.goal_rounds_from_owner,
-                    skip_warmup: self.skip_warmup,
-                },
-                llm: ModelRoute {
-                    model,
-                    task_router: self.task_router,
-                    recovery_policy,
-                    model_interceptors: Arc::new(model_interceptors),
-                },
-                tooling: Tooling {
-                    tools,
-                    skills: Arc::new(skill_catalog),
-                    commands: command_registry,
-                    mcp,
-                    delegator: Arc::new(delegator),
-                    tool_middleware: Arc::new(tool_middleware),
-                    result_transformers: Arc::new(result_transformers),
-                    mcp_shadow_warned: std::collections::HashSet::new(),
-                    tool_policy,
-                },
-                gate: Gate {
-                    permission,
-                    elicitation: self.elicitation.unwrap_or_else(|| {
-                        let channel = crate::elicitation::ChannelElicitation::new(
-                            event_tx.clone(),
-                            pending_permissions.clone(),
-                        );
-                        Arc::new(if self.question_prompts {
-                            channel.with_questions(pending_questions.clone())
-                        } else {
-                            channel
-                        })
-                    }),
-                    pending_permissions,
-                    pending_questions,
-                    permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-                    orphaned_permission: None,
-                    has_handled_orphaned_permission: false,
-                    hooks,
-                    turn_starts: Arc::new(turn_starts),
-                },
-                prompt: PromptContext {
-                    prompt_registry,
-                    prompt_assembler: self.prompt_assembler.unwrap_or_else(|| {
-                        Arc::new(base::interface::prompt_assembler::DefaultAssembler)
-                    }),
-                    prompt_middleware: Arc::new(prompt_middleware),
-                    frozen: self.frozen, // pre-seeded or lazily computed on first turn
-                    claude_md_content,
-                    rules,
-                    session_context_injected: false,
-                    announced_skills: None,
-                },
-                policies: Policies {
-                    turn_policy,
-                    budget_policy,
-                    health: Arc::new(base::interface::health::HealthChecks::from_vec(
-                        health_checks,
-                    )),
-                    environment,
-                },
-                memory: Memory {
-                    memory_store,
-                    memory_retriever: self.memory_retriever.unwrap_or_else(|| {
-                        Arc::new(base::interface::memory_contracts::LlmRetriever)
-                    }),
-                    retrieval_hooks: Arc::new(retrieval_hooks),
-                    extract_after_turn: self.memory_extraction,
-                    extractions: tokio::task::JoinSet::new(),
-                },
-                compaction: Compaction {
-                    compactor,
-                    compaction_state: compaction::reactive::CompactionState::default(),
-                    compact_warning_issued: false,
-                    tool_results_ever_cleared: false,
-                    time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig::default(),
-                    cached_mc: CachedMicroCompact::new(compaction::cached::CachedMcConfig {
-                        enabled: cached_mc_enabled,
-                        ..Default::default()
-                    }),
-                    request_overhead_tokens: 0,
-                    auto_backoff: Default::default(),
-                },
-                turn: Default::default(),
-                last_had_tool_uses: true,
-                slash_skill_grants: Vec::new(),
-                repeat_guard: Default::default(),
-                telemetry: Telemetry {
-                    telemetry_handle,
-                    perf: Arc::new(PerfCollector::new()),
-                },
-                channels: Channels {
-                    input_rx,
-                    event_tx,
-                    current_turn_cancel: Default::default(),
-                    steering: self.steering.map(|s| s.0).unwrap_or_default(),
-                },
-            },
-            event_rx,
-            input_tx,
-        ))
+        (recovery_policy, turn_policy, budget_policy)
     }
-}
 
-impl Builder {
+    fn identity(&mut self, agent_depth: u32) -> Identity {
+        Identity {
+            agent_depth,
+            agent_type: self.agent_type.take(),
+            team_seat: self.team_seat.take(),
+            drive_goals: !self.goal_rounds_from_owner,
+            skip_warmup: self.skip_warmup,
+        }
+    }
+
+    fn gate(
+        &mut self,
+        permission: PermissionSet,
+        event_tx: &crate::event_bus::EventBus,
+        pending_permissions: PendingPermissions,
+        pending_questions: crate::elicitation::PendingQuestions,
+        hooks: Arc<HookRunner>,
+        turn_starts: Vec<crate::plugin::TurnStart>,
+    ) -> Gate {
+        Gate {
+            permission,
+            elicitation: self.elicitation.take().unwrap_or_else(|| {
+                let channel = crate::elicitation::ChannelElicitation::new(
+                    event_tx.clone(),
+                    pending_permissions.clone(),
+                );
+                Arc::new(if self.question_prompts {
+                    channel.with_questions(pending_questions.clone())
+                } else {
+                    channel
+                })
+            }),
+            pending_permissions,
+            pending_questions,
+            permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            orphaned_permission: None,
+            has_handled_orphaned_permission: false,
+            hooks,
+            turn_starts: Arc::new(turn_starts),
+        }
+    }
+
+    fn prompt_context(
+        &mut self,
+        prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry>,
+        prompt_middleware: Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>,
+        claude_md_content: Option<String>,
+        rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
+    ) -> PromptContext {
+        PromptContext {
+            prompt_registry,
+            prompt_assembler: self
+                .prompt_assembler
+                .take()
+                .unwrap_or_else(|| Arc::new(base::interface::prompt_assembler::DefaultAssembler)),
+            prompt_middleware: Arc::new(prompt_middleware),
+            frozen: self.frozen.take(),
+            claude_md_content,
+            rules,
+            session_context_injected: false,
+            announced_skills: None,
+        }
+    }
+
+    fn memory(
+        &mut self,
+        memory_store: Arc<MemoryStore>,
+        retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
+    ) -> Memory {
+        Memory {
+            memory_store,
+            memory_retriever: self
+                .memory_retriever
+                .take()
+                .unwrap_or_else(|| Arc::new(base::interface::memory_contracts::LlmRetriever)),
+            retrieval_hooks: Arc::new(retrieval_hooks),
+            extract_after_turn: self.memory_extraction,
+            extractions: tokio::task::JoinSet::new(),
+        }
+    }
+
     fn resolve(&mut self) -> Result<Resolved, EngineError> {
         let host_layers = self.host_layers();
         let questions_answered = self.questions_answered();
@@ -449,38 +624,7 @@ impl Builder {
             .tools
             .take()
             .unwrap_or_else(|| Arc::new(InMemoryToolRegistry::new()));
-        // Per-session tool registry, seeded from whatever was passed in (a
-        // daemon's shared, immutable-after-startup template of built-in
-        // tools — see `SessionPool.tools`). Every per-session-stateful tool
-        // this function registers below (`Skill`/`Agent`/`TeamCreate`/
-        // `TeamDelete`/`TaskStop`/`TaskOutput`/MCP adapters)
-        // goes into *this* fresh copy, not the caller-supplied one: in a
-        // daemon the caller's `Arc` is shared by every session, and
-        // `InMemoryToolRegistry::register` appends without replacing by name.
-        let tools = {
-            let session_tools = Arc::new(InMemoryToolRegistry::new());
-            let mut had_tool_search = false;
-            for t in template.list() {
-                // `ToolSearchTool` closes over the registry it searches. The
-                // instance in the incoming template closes over the
-                // *template*, so it would report on the template's tools —
-                // which have none of the engine-state tools registered below.
-                // Drop it and
-                // rebind one to this session's registry instead. (Same `Arc`,
-                // read at call time, so later registrations are visible.)
-                if t.name() == "ToolSearch" {
-                    had_tool_search = true;
-                    continue;
-                }
-                session_tools.register(t);
-            }
-            if had_tool_search {
-                session_tools.register(Arc::new(tools::tool_search::ToolSearchTool::new(
-                    session_tools.clone(),
-                )));
-            }
-            session_tools
-        };
+        let tools = session_registry(template.as_ref());
 
         let settings = self
             .settings
@@ -511,37 +655,8 @@ impl Builder {
                 policy.with_no_one_to_ask(NO_HOST_TO_ASK)
             }))
         });
-        let configured_instruction_file = settings.values.instruction_file.clone();
-        let instruction_file = self
-            .instruction_file
-            .clone()
-            .or(configured_instruction_file);
-        // Pre-read AGENTS.md / CLAUDE.md content for userContext injection.
-        let instruction_provider: Arc<
-            dyn base::interface::instruction_provider::InstructionProvider,
-        > = self.instruction_provider.clone().unwrap_or_else(|| {
-            Arc::new(
-                base::interface::instruction_provider::InstructionFile::new(
-                    instruction_file.clone(),
-                )
-                .reading_with(base::paths::PromptFiles::for_project(
-                    &base::paths::ConfigPaths::from_settings(&settings.paths),
-                )),
-            )
-        });
-        let claude_md_content = {
-            let docs = instruction_provider.documents();
-            if docs.is_empty() {
-                None
-            } else {
-                Some(
-                    docs.into_iter()
-                        .map(|d| d.content)
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                )
-            }
-        };
+        let (instruction_file, instruction_provider, claude_md_content) =
+            self.instruction_context(&settings);
         let environment = self
             .environment
             .clone()
@@ -573,6 +688,48 @@ impl Builder {
             rules,
             memory_store,
         })
+    }
+
+    fn instruction_context(
+        &self,
+        settings: &LoadedSettings,
+    ) -> (
+        Option<PathBuf>,
+        Arc<dyn base::interface::instruction_provider::InstructionProvider>,
+        Option<String>,
+    ) {
+        let configured_instruction_file = settings.values.instruction_file.clone();
+        let instruction_file = self
+            .instruction_file
+            .clone()
+            .or(configured_instruction_file);
+        // Pre-read AGENTS.md / CLAUDE.md content for userContext injection.
+        let instruction_provider: Arc<
+            dyn base::interface::instruction_provider::InstructionProvider,
+        > = self.instruction_provider.clone().unwrap_or_else(|| {
+            Arc::new(
+                base::interface::instruction_provider::InstructionFile::new(
+                    instruction_file.clone(),
+                )
+                .reading_with(base::paths::PromptFiles::for_project(
+                    &base::paths::ConfigPaths::from_settings(&settings.paths),
+                )),
+            )
+        });
+        let claude_md_content = {
+            let docs = instruction_provider.documents();
+            if docs.is_empty() {
+                None
+            } else {
+                Some(
+                    docs.into_iter()
+                        .map(|d| d.content)
+                        .collect::<Vec<_>>()
+                        .join("\n\n"),
+                )
+            }
+        };
+        (instruction_file, instruction_provider, claude_md_content)
     }
 
     fn open_session(&self, settings: &LoadedSettings) -> Result<SessionManager, EngineError> {
@@ -622,13 +779,7 @@ impl Builder {
         session: &SessionManager,
         settings: &LoadedSettings,
         scene: &SceneSpec,
-    ) -> Result<
-        (
-            crate::plugin::Layers,
-            Vec<base::agent_type::AgentTypeDefinition>,
-        ),
-        EngineError,
-    > {
+    ) -> Result<PluginLayers, EngineError> {
         let agent_depth = self.agent_depth;
         let mut layers = {
             let plugin_session = crate::plugin::PluginSession {
@@ -649,7 +800,12 @@ impl Builder {
                 .into_iter()
                 .chain(std::mem::take(&mut layers.quickjs.agent_types))
                 .collect();
-        Ok((layers, plugin_agent_types))
+        Ok(PluginLayers {
+            rust: layers.rust,
+            quickjs: layers.quickjs,
+            tool_owners: layers.tool_owners,
+            agent_types: plugin_agent_types,
+        })
     }
 
     fn wire_hooks(
@@ -657,12 +813,7 @@ impl Builder {
         settings: &LoadedSettings,
         model: &Arc<dyn Model>,
         session: &SessionManager,
-    ) -> (
-        crate::module::LateDelegator,
-        CancellationToken,
-        Arc<HookRunner>,
-        Option<mpsc::UnboundedSender<()>>,
-    ) {
+    ) -> HookWiring {
         let delegator = crate::module::LateDelegator::default();
         let session_ended = CancellationToken::new();
         let own_runner = self.hooks.is_none();
@@ -689,7 +840,12 @@ impl Builder {
             }
             None => None,
         };
-        (delegator, session_ended, hooks, task_wake)
+        HookWiring {
+            delegator,
+            session_ended,
+            hooks,
+            task_wake,
+        }
     }
 
     fn engine_config(
@@ -863,14 +1019,7 @@ impl Builder {
         }
     }
 
-    fn wire_events(
-        &mut self,
-    ) -> (
-        crate::event_bus::EventBus,
-        EventReceiver,
-        PendingPermissions,
-        crate::elicitation::PendingQuestions,
-    ) {
+    fn wire_events(&mut self) -> EventWiring {
         let (primary_tx, event_rx) = mpsc::unbounded_channel();
         let event_tx = crate::event_bus::EventBus::with_sinks(
             primary_tx,
@@ -882,7 +1031,12 @@ impl Builder {
         let pending_permissions: PendingPermissions =
             Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let pending_questions: crate::elicitation::PendingQuestions = Default::default();
-        (event_tx, event_rx, pending_permissions, pending_questions)
+        EventWiring {
+            tx: event_tx,
+            rx: event_rx,
+            pending_permissions,
+            pending_questions,
+        }
     }
 
     fn run_modules(
@@ -1006,50 +1160,14 @@ impl Builder {
 
     fn finalize_tools(
         &self,
-        tools: &Arc<InMemoryToolRegistry>,
+        registry: Arc<InMemoryToolRegistry>,
         scene: &Arc<SceneSpec>,
         plugin_tools: Vec<Arc<dyn base::tool::Tool>>,
         plugin_tool_owners: &std::collections::HashMap<String, crate::plugin::ToolOwner>,
         questions_answered: bool,
-    ) -> Result<Arc<crate::tool_policy::ToolPolicy>, EngineError> {
-        // Scene-contributed tools (`SceneSpec::extra_tools`, default empty).
-        //
-        // Deliberately last. The collision check is the whole point of this
-        // block, and it can only see names already in the registry — running
-        // it before `Agent`/`Skill`/`WebSearch`/`Cron*`/`Worktree*` are
-        // registered would let a scene claim one of those names, pass the
-        // check against an empty slot, and then win the lookup anyway
-        // (`get` returns the first match, and the engine's own instance is
-        // appended after). That is precisely the shadowing this rejects.
-        for t in scene.extra_tools.iter().cloned() {
-            if tools.get(t.name()).is_some() {
-                return Err(EngineError::Internal(format!(
-                    "scene {:?} contributes a tool named {:?}, which is already \
-                     registered; rename the scene's tool",
-                    scene.id,
-                    t.name()
-                )));
-            }
-            tools.register(t);
-        }
-
-        // After the scene's tools. The same `Arc` arriving twice is not a
-        // collision; a different tool under a taken name is.
-        for t in plugin_tools {
-            match tools.get(t.name()) {
-                Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
-                Some(_) => {
-                    return Err(EngineError::Internal(format!(
-                        "a plugin contributes a tool named {:?}, which is already registered by \
-                         something else",
-                        t.name()
-                    )));
-                }
-                None => {
-                    tools.register(t);
-                }
-            }
-        }
+    ) -> Result<SessionTools, EngineError> {
+        let tools = &registry;
+        admit_extra_tools(tools, scene, plugin_tools)?;
 
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicy::new(
             scene,
@@ -1109,8 +1227,90 @@ impl Builder {
                 "tools registered twice; dispatch reaches only the first of each"
             );
         }
-        Ok(tool_policy)
+        Ok(SessionTools {
+            tools: registry,
+            policy: tool_policy,
+        })
     }
+}
+
+// Per-session tool registry, seeded from whatever was passed in (a
+// daemon's shared, immutable-after-startup template of built-in
+// tools — see `SessionPool.tools`). Every per-session-stateful tool
+// this function registers below (`Skill`/`Agent`/`TeamCreate`/
+// `TeamDelete`/`TaskStop`/`TaskOutput`/MCP adapters)
+// goes into *this* fresh copy, not the caller-supplied one: in a
+// daemon the caller's `Arc` is shared by every session, and
+// `InMemoryToolRegistry::register` appends without replacing by name.
+fn session_registry(template: &dyn base::tool::ToolRegistry) -> Arc<InMemoryToolRegistry> {
+    let session_tools = Arc::new(InMemoryToolRegistry::new());
+    let mut had_tool_search = false;
+    for t in template.list() {
+        // `ToolSearchTool` closes over the registry it searches. The
+        // instance in the incoming template closes over the
+        // *template*, so it would report on the template's tools —
+        // which have none of the engine-state tools registered below.
+        // Drop it and
+        // rebind one to this session's registry instead. (Same `Arc`,
+        // read at call time, so later registrations are visible.)
+        if t.name() == "ToolSearch" {
+            had_tool_search = true;
+            continue;
+        }
+        session_tools.register(t);
+    }
+    if had_tool_search {
+        session_tools.register(Arc::new(tools::tool_search::ToolSearchTool::new(
+            session_tools.clone(),
+        )));
+    }
+    session_tools
+}
+
+fn admit_extra_tools(
+    tools: &InMemoryToolRegistry,
+    scene: &SceneSpec,
+    plugin_tools: Vec<Arc<dyn base::tool::Tool>>,
+) -> Result<(), EngineError> {
+    // Scene-contributed tools (`SceneSpec::extra_tools`, default empty).
+    //
+    // Deliberately last. The collision check is the whole point of this
+    // block, and it can only see names already in the registry — running
+    // it before `Agent`/`Skill`/`WebSearch`/`Cron*`/`Worktree*` are
+    // registered would let a scene claim one of those names, pass the
+    // check against an empty slot, and then win the lookup anyway
+    // (`get` returns the first match, and the engine's own instance is
+    // appended after). That is precisely the shadowing this rejects.
+    for t in scene.extra_tools.iter().cloned() {
+        if tools.get(t.name()).is_some() {
+            return Err(EngineError::Internal(format!(
+                "scene {:?} contributes a tool named {:?}, which is already \
+                     registered; rename the scene's tool",
+                scene.id,
+                t.name()
+            )));
+        }
+        tools.register(t);
+    }
+
+    // After the scene's tools. The same `Arc` arriving twice is not a
+    // collision; a different tool under a taken name is.
+    for t in plugin_tools {
+        match tools.get(t.name()) {
+            Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
+            Some(_) => {
+                return Err(EngineError::Internal(format!(
+                    "a plugin contributes a tool named {:?}, which is already registered by \
+                         something else",
+                    t.name()
+                )));
+            }
+            None => {
+                tools.register(t);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn register_task_tools(tools: &InMemoryToolRegistry) {
@@ -1233,6 +1433,22 @@ fn bind_tools(
         session_state.attach(attachment.clone());
     }
     attachment
+}
+
+fn compaction_state(compactor: Arc<dyn Compactor>, cached_mc_enabled: bool) -> Compaction {
+    Compaction {
+        compactor,
+        compaction_state: compaction::reactive::CompactionState::default(),
+        compact_warning_issued: false,
+        tool_results_ever_cleared: false,
+        time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig::default(),
+        cached_mc: CachedMicroCompact::new(compaction::cached::CachedMcConfig {
+            enabled: cached_mc_enabled,
+            ..Default::default()
+        }),
+        request_overhead_tokens: 0,
+        auto_backoff: Default::default(),
+    }
 }
 
 /// What this engine's settings and scene make of the session's env.
