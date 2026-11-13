@@ -1683,3 +1683,30 @@ mod package_binding_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod catalog_tests {
+    use base::interface::catalog::{self, Wiring};
+    use std::collections::BTreeSet;
+
+    /// The catalog's "script binding" wiring and the adapters this carrier
+    /// has are one list kept in two places.
+    #[test]
+    fn the_catalogs_script_points_are_the_ones_a_script_can_be_bound_to() {
+        let in_catalog: BTreeSet<&str> = catalog::all()
+            .iter()
+            .filter(|p| p.wired_by.contains(&Wiring::Script))
+            .map(|p| p.id)
+            .collect();
+        let bindable: BTreeSet<&str> = super::bindings::BINDABLE_POINTS.iter().copied().collect();
+        assert_eq!(
+            bindable.len(),
+            super::bindings::BINDABLE_POINTS.len(),
+            "BINDABLE_POINTS repeats a point"
+        );
+        assert_eq!(
+            in_catalog, bindable,
+            "points the catalog marks `Wiring::Script` vs `BINDABLE_POINTS`"
+        );
+    }
+}
