@@ -66,7 +66,6 @@ const PROCESS_STATE: &[(&str, &str, Kind, &str)] = &[
     ("crates/platform/src/sandbox.rs", "NEXT_FENCE", IdCounter, "the keys of SERVED's entries"),
     ("crates/plugin/src/state.rs", "SEQ", IdCounter, "temporary file names for saving the enable state"),
     ("crates/core/src/interface/catalog.rs", "POINTS", Constant, "the table of extension points"),
-    ("crates/runtime/src/turn/user_turn.rs", "EMPTY", Constant, "an empty set to borrow before the frozen context exists"),
     ("crates/skills/src/tool.rs", "FENCED", Constant, "a compiled regex"),
     ("crates/skills/src/tool.rs", "INLINE", Constant, "a compiled regex"),
 ];

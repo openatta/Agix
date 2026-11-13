@@ -81,7 +81,7 @@ async fn turn_throughput() -> anyhow::Result<()> {
                         format!("r-{turn}"),
                         "Read",
                         json!({
-                            "file_path": project.join("crates/runtime/src/turn/user_turn.rs").to_string_lossy(),
+                            "file_path": project.join("crates/core/src/context/session.rs").to_string_lossy(),
                             "offset": 1 + turn * 300,
                             "limit": 300
                         }),
