@@ -74,7 +74,8 @@ impl Delegator {
             apply_agent_type_overrides(&mut sub_settings.values, d);
         }
         if let Some(mode) = spec.permission_mode {
-            sub_settings.values.permission_mode = mode.min_permissive(sub_settings.permission_mode);
+            sub_settings.values.permission_mode =
+                mode.min_permissive(sub_settings.values.permission_mode);
         }
         let scene = self.scene_for_subagent(def.as_ref());
         let scene_id = scene.id.clone();
@@ -119,9 +120,17 @@ impl Delegator {
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
         let cwd = &spec.cwd;
         if let Some(store) = &history_store {
-            write_sidechain_meta(store, &sid, parent_session_id, &scene_id, cwd, &settings).await;
+            write_sidechain_meta(
+                store,
+                &sid,
+                parent_session_id,
+                &scene_id,
+                cwd,
+                &settings.values,
+            )
+            .await;
         }
-        let payload = SubagentPayload::of(&sid, cwd, &settings, agent_type);
+        let payload = SubagentPayload::of(&sid, cwd, &settings.values, agent_type);
         Ok(Delegate {
             agent,
             event_rx,
@@ -193,7 +202,7 @@ impl Delegator {
             called_from,
             &sid,
             agent_type,
-            &settings.model.model_name,
+            &settings.values.model.model_name,
             background,
             stage,
         );

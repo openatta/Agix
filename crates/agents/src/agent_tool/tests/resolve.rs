@@ -419,12 +419,15 @@ fn custom_agent_type_model_override_is_applied_to_sub_settings() {
     assert_eq!(model_override.as_deref(), Some("claude-opus-4-8"));
 
     let settings = agent_tool.sub_settings(model_override.as_deref());
-    assert_eq!(settings.model.model_name, "claude-opus-4-8");
+    assert_eq!(settings.values.model.model_name, "claude-opus-4-8");
 
     // A call with no override (or an unknown type) still falls back to
     // the parent's configured model — this must not regress.
     let settings_default = agent_tool.sub_settings(None);
-    assert_eq!(settings_default.model.model_name, "parent-default-model");
+    assert_eq!(
+        settings_default.values.model.model_name,
+        "parent-default-model"
+    );
 }
 
 #[test]
@@ -621,8 +624,8 @@ fn run_sub_applies_permission_mode_and_max_turns_override_end_to_end() {
     let mut settings = agent_tool.sub_settings(None);
     apply_agent_type_overrides(&mut settings.values, &def);
     assert_eq!(
-        settings.permission_mode,
+        settings.values.permission_mode,
         base::settings::PermissionMode::Plan
     );
-    assert_eq!(settings.execution.max_api_calls_per_turn, 3);
+    assert_eq!(settings.values.execution.max_api_calls_per_turn, 3);
 }

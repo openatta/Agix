@@ -221,12 +221,12 @@ pub fn project_agent_types_requiring_trust(
     .into_iter()
     .filter(|def| {
         below.contains_key(&def.name)
-            || def
-                .permission_mode
-                .is_some_and(|m| m.permissiveness() > settings.permission_mode.permissiveness())
+            || def.permission_mode.is_some_and(|m| {
+                m.permissiveness() > settings.values.permission_mode.permissiveness()
+            })
             || def
                 .max_turns
-                .is_some_and(|n| n > settings.execution.max_api_calls_per_turn)
+                .is_some_and(|n| n > settings.values.execution.max_api_calls_per_turn)
     })
     .map(|def| format!("agents/{}", def.name))
     .collect();

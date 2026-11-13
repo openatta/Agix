@@ -154,7 +154,7 @@ fn subagent_inherits_the_parent_instruction_file() {
     }
     .agent_tool();
     assert_eq!(
-        agent_tool.sub_settings(None).instruction_file,
+        agent_tool.sub_settings(None).values.instruction_file,
         Some(std::path::PathBuf::from("/proj/AGENTS.md")),
         "sub-agents must inherit the project's instruction file from settings"
     );

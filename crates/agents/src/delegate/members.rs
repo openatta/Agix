@@ -221,7 +221,7 @@ impl Delegator {
             None,
             &spec.session_id,
             spec.agent_type.as_deref(),
-            &delegate.agent.settings().model.model_name,
+            &delegate.agent.settings().values.model.model_name,
             true,
             None,
         );

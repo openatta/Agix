@@ -82,14 +82,13 @@ impl Module for AgentsModule {
         for t in cx.template_tools.list() {
             template.register(t);
         }
-        let slots = self
-            .slots
-            .clone()
-            .unwrap_or_else(|| SubagentSlots::new(settings.execution.max_concurrent_subagents));
+        let slots = self.slots.clone().unwrap_or_else(|| {
+            SubagentSlots::new(settings.values.execution.max_concurrent_subagents)
+        });
         // The setting is the operator's switch; the scene's capability is what
         // the scene is for. A scene that does no teamwork never shows the
         // model these tools, rather than showing and refusing them.
-        let team_registry = (settings.execution.team_enabled && cx.scene.supports_team)
+        let team_registry = (settings.values.execution.team_enabled && cx.scene.supports_team)
             .then(|| Arc::new(team::registry::TeamRegistry::new()));
 
         let hook_agents = self.hook_agents.clone().unwrap_or_default();
