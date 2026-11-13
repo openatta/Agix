@@ -1,45 +1,33 @@
-//! Team coordinator using `dyn Model` trait.
+//! Team coordinator: runs a team's stages one after another, each stage's
+//! members side by side as delegates of the lead's session, and keeps the
+//! team's record on disk (`team.json`, `state.json`, `events.jsonl`).
 
 use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::error::ToolError;
-use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
+use base::interface::delegate::{
+    CallSite, DelegateEnd, DelegateMode, DelegateRequest, Delegated, Delegator, MemberLifetime,
+    StopsWith, TeamSeat, Workdir,
+};
 use base::interface::model::{Model, ModelEvent, StreamParams};
 use base::prompt::{BlockRole, PromptBlock};
 use base::settings::ThinkingMode;
-use base::tool::InMemoryToolRegistry;
 use base::tool::ToolContext;
 use base::tool::ToolResult;
 use base::tool::ToolResultContent;
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use crate::tool::{AggregateMode, TeamStage};
 
-/// The parent session's event channel, when the composition root wired one
-/// in — see [`Coordinator::set_event_sender`].
+/// The lead session's event channel, where a team's `TeamProgress` goes.
 pub type TeamEventSender = tokio::sync::mpsc::UnboundedSender<base::event::AgentEvent>;
 
 #[async_trait]
 pub trait Coordinator: Send + Sync {
     async fn orchestrate(&self, request: OrchestrateRequest) -> Result<ToolResult, ToolError>;
-
-    /// Attach the parent session's event channel so the coordinator can emit
-    /// `AgentEvent::TeamProgress` as stages start and finish, instead
-    /// of the whole team run being one long silence followed by an enormous
-    /// tool result. Default implementation is a no-op; coordinators that
-    /// don't emit progress simply ignore it.
-    ///
-    /// Takes `&self` (interior mutability) because the tool holding the
-    /// coordinator is registered before the session's event channel exists.
-    fn set_event_sender(&self, _tx: TeamEventSender) {}
-
-    /// Attach a telemetry handle so team lifecycle moments (member spawned/
-    /// completed, stage completed, resume) are also recorded into the
-    /// structured event stream, not just `events.jsonl`'s per-team audit
-    /// log. Default implementation is a no-op.
-    fn set_telemetry_handle(&self, _handle: telemetry::TelemetryHandle) {}
 
     /// Clean up a team's resources. Default implementation is a no-op;
     /// override for actual resource cleanup (task lists, scratchpad, etc.).
@@ -64,8 +52,6 @@ pub trait Coordinator: Send + Sync {
 pub struct OrchestrateRequest {
     pub model: Arc<dyn Model>,
     pub config: Arc<EngineConfig>,
-    pub parent_tools: Arc<InMemoryToolRegistry>,
-    pub sub_tools: Arc<InMemoryToolRegistry>,
     pub stages: Vec<TeamStage>,
     pub name: String,
     pub scratchpad: Option<String>,
@@ -94,58 +80,47 @@ pub enum TeammateLifecycle {
     Shutdown,
 }
 
-/// Default coordinator implementation.
-///
-/// Orchestrates sub-agents across stages using an optional [`AgentSpawner`].
-/// The spawner is injected at construction time via [`DefaultCoordinator::with_agent_spawner`]
-/// to break the circular dependency between the `team` and `runtime` crates:
-/// `team` knows only the trait from `base`, while `runtime` (which depends on `team`)
-/// provides the concrete implementation.
+/// How one stage member's run ended, as the team counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberEnd {
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// Default coordinator implementation: its members are delegated through a
+/// [`Delegator`] from `base`, which `agents` implements — `team` sits below
+/// it and knows only the trait.
 pub struct DefaultCoordinator {
-    spawner: Option<Arc<dyn AgentSpawner>>,
+    delegator: Option<Arc<dyn Delegator>>,
     registry: Option<Arc<crate::registry::TeamRegistry>>,
-    /// Parent session's event channel — see [`Coordinator::set_event_sender`].
-    events: Arc<std::sync::RwLock<Option<TeamEventSender>>>,
-    /// See [`Coordinator::set_telemetry_handle`].
-    telemetry: Arc<std::sync::RwLock<Option<telemetry::TelemetryHandle>>>,
-    /// The scene this coordinator's session runs under — `team` doesn't
-    /// depend on the `scene` crate (same reason `tools`' sandbox policy
-    /// takes an override rather than a dependency), so this is threaded in
-    /// by whoever constructs the coordinator (`runtime::agent::Builder`,
-    /// which does have it) rather than looked up here. Used to stamp
-    /// `team.json`'s `scene` field; `"unknown"` if never set (e.g. tests
-    /// that build a bare `DefaultCoordinator`).
+    events: Option<TeamEventSender>,
+    telemetry: Option<telemetry::TelemetryHandle>,
+    /// Stamped into `team.json`; `"unknown"` when not given. `team` does not
+    /// depend on the `scene` crate, so whoever builds the coordinator says.
     scene_id: Option<String>,
 }
 
 impl DefaultCoordinator {
-    /// Create a coordinator with no spawner. Agents will not execute
-    /// until a spawner is provided via [`with_agent_spawner`].
+    /// A coordinator that cannot start members: every stage reports them
+    /// failed.
     pub fn new() -> Self {
         Self {
-            spawner: None,
+            delegator: None,
             registry: None,
-            events: Arc::new(std::sync::RwLock::new(None)),
-            telemetry: Arc::new(std::sync::RwLock::new(None)),
+            events: None,
+            telemetry: None,
             scene_id: None,
         }
     }
 
-    /// Create a coordinator with an [`AgentSpawner`] for executing sub-agents.
-    ///
-    /// The spawner wraps the runtime's `AgentTool` logic and is safe to pass
-    /// across crate boundaries because both sides depend only on the trait in `base`.
-    pub fn with_agent_spawner(spawner: Arc<dyn AgentSpawner>) -> Self {
+    pub fn with_delegator(delegator: Arc<dyn Delegator>) -> Self {
         Self {
-            spawner: Some(spawner),
-            registry: None,
-            events: Arc::new(std::sync::RwLock::new(None)),
-            telemetry: Arc::new(std::sync::RwLock::new(None)),
-            scene_id: None,
+            delegator: Some(delegator),
+            ..Self::new()
         }
     }
 
-    /// See `scene_id`'s doc comment.
     pub fn with_scene_id(mut self, scene_id: String) -> Self {
         self.scene_id = Some(scene_id);
         self
@@ -161,17 +136,20 @@ impl DefaultCoordinator {
         self
     }
 
-    /// The wired-in telemetry handle, if [`Coordinator::set_telemetry_handle`]
-    /// was ever called — `None` returns a noop handle's worth of nothing
-    /// rather than every call site checking `Option` separately.
-    fn telemetry(&self) -> Option<telemetry::TelemetryHandle> {
-        self.telemetry
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+    /// Where `TeamProgress` goes as stages start and finish, so a team run
+    /// is not one long silence followed by an enormous tool result.
+    pub fn with_events(mut self, events: TeamEventSender) -> Self {
+        self.events = Some(events);
+        self
     }
 
-    /// Emit one `TeamProgress` event, if a channel was wired in.
+    /// Where the team's stage and resume telemetry goes. Its members' own
+    /// `agent_spawned`/`agent_completed` are recorded by the delegator.
+    pub fn with_telemetry(mut self, handle: telemetry::TelemetryHandle) -> Self {
+        self.telemetry = Some(handle);
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn emit_progress(
         &self,
@@ -184,12 +162,7 @@ impl DefaultCoordinator {
         members: Vec<String>,
         failed: Vec<String>,
     ) {
-        let Some(tx) = self
-            .events
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        else {
+        let Some(tx) = &self.events else {
             return;
         };
         let _ = tx.send(base::event::AgentEvent::TeamProgress {
@@ -205,6 +178,51 @@ impl DefaultCoordinator {
     }
 }
 
+/// One stage member's seat and orders.
+struct MemberCall {
+    seat: TeamSeat,
+    stage: String,
+    prompt: String,
+    agent_type: Option<String>,
+    extra_tools: Vec<Arc<dyn base::tool::Tool>>,
+    permission_mode: base::settings::PermissionMode,
+}
+
+/// One stage member, delegated and waited on. It stops with the lead's call.
+async fn run_member(
+    delegator: &dyn Delegator,
+    call: MemberCall,
+    ctx: &ToolContext,
+) -> (String, MemberEnd) {
+    let mode = DelegateMode::TeamMember {
+        seat: call.seat,
+        permission_mode: Some(call.permission_mode),
+        lifetime: MemberLifetime::Stage {
+            stage: call.stage,
+            extra_tools: call.extra_tools,
+        },
+    };
+    let mut req = DelegateRequest::new(call.prompt, mode, StopsWith::Call(ctx.cancel.clone()));
+    req.agent_type = call.agent_type;
+    req.workdir = Workdir::At(ctx.cwd.clone());
+    req.called_from = Some(CallSite {
+        turn: ctx.turn_no,
+        tool_use_id: ctx.tool_use_id.clone(),
+    });
+    match delegator.delegate(req).await {
+        Ok(Delegated::Finished(outcome)) => match outcome.end {
+            DelegateEnd::Completed | DelegateEnd::CutShort(_) => (outcome.text, MemberEnd::Done),
+            DelegateEnd::Cancelled => (outcome.text, MemberEnd::Cancelled),
+            DelegateEnd::Failed(e) => (format!("ERROR: {e}"), MemberEnd::Failed),
+        },
+        Ok(Delegated::Started(_)) => (
+            "ERROR: a stage member was started instead of waited on".into(),
+            MemberEnd::Failed,
+        ),
+        Err(e) => (format!("ERROR: {e}"), MemberEnd::Failed),
+    }
+}
+
 impl Default for DefaultCoordinator {
     fn default() -> Self {
         Self::new()
@@ -213,26 +231,10 @@ impl Default for DefaultCoordinator {
 
 #[async_trait]
 impl Coordinator for DefaultCoordinator {
-    fn set_event_sender(&self, tx: TeamEventSender) {
-        *self
-            .events
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
-    }
-
-    fn set_telemetry_handle(&self, handle: telemetry::TelemetryHandle) {
-        *self
-            .telemetry
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
-    }
-
     async fn orchestrate(&self, req: OrchestrateRequest) -> Result<ToolResult, ToolError> {
         let OrchestrateRequest {
             model,
             config,
-            parent_tools: _,
-            sub_tools: _,
             stages,
             name,
             scratchpad,
@@ -345,7 +347,14 @@ impl Coordinator for DefaultCoordinator {
         let sp_display = sp_path.display().to_string();
 
         let mut any_err = false;
+        let mut cancelled = false;
+        let mut started = 0;
         for (si, stage) in stages.iter().enumerate() {
+            if ctx.cancel.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            started = si + 1;
             let stage_start = std::time::Instant::now();
             let mut sections: Vec<(String, String, bool)> = Vec::new();
             let stage_members: Vec<String> = stage.agents.iter().map(|a| a.label.clone()).collect();
@@ -376,8 +385,7 @@ impl Coordinator for DefaultCoordinator {
                 tracing::warn!(team_id = %team_id, event = "stage_started", stage = %stage.name, error = %e, "failed to append team event");
             }
 
-            // Spawn agents in this stage using the AgentSpawner (if provided)
-            if let Some(ref spawner) = self.spawner {
+            if let Some(delegator) = &self.delegator {
                 // Transition every agent in this stage to Active up front —
                 // the concurrent futures below don't need to mutate `lifecycles`.
                 for agent_spec in &stage.agents {
@@ -394,23 +402,6 @@ impl Coordinator for DefaultCoordinator {
                     .await
                     {
                         tracing::warn!(team_id = %team_id, event = "member_spawned", label = %agent_spec.label, error = %e, "failed to append team event");
-                    }
-                    if let Some(handle) = self.telemetry() {
-                        let _ = handle.record(telemetry::TelemetryEvent::agent_spawned(
-                            &team_id,
-                            0,
-                            None,
-                            telemetry::AgentSpawnedPayload {
-                                agent_id: agent_spec.label.clone(),
-                                role: agent_spec
-                                    .agent_type
-                                    .clone()
-                                    .unwrap_or_else(|| "default".to_string()),
-                                model: None,
-                                stage_name: Some(stage.name.clone()),
-                                background: false,
-                            },
-                        ));
                     }
                 }
 
@@ -435,9 +426,9 @@ impl Coordinator for DefaultCoordinator {
                         .await
                         .unwrap_or_default()
                 };
+                let ctx = &ctx;
                 let futs = stage.agents.iter().map(|agent_spec| {
                     let permits = permits.clone();
-                    let spawner = spawner.clone();
                     let label = agent_spec.label.clone();
                     // Prepend a short orientation block — team, stage, role,
                     // peers, scratchpad — rather than leaning on the
@@ -462,9 +453,6 @@ impl Coordinator for DefaultCoordinator {
                         },
                         &agent_spec.prompt,
                     );
-                    let agent_type = agent_spec.agent_type.clone();
-                    let cwd = ctx.cwd.clone();
-                    let cancel = ctx.cancel.child_token();
                     // Mailbox tools scoped to this member's own label — lets
                     // it coordinate with whichever siblings are concurrently
                     // running in the same stage. The lead is blocked awaiting
@@ -485,28 +473,21 @@ impl Coordinator for DefaultCoordinator {
                         )),
                         Arc::new(crate::team_memory::TeamMemoryReadTool::new(memory.clone())),
                     ];
-                    let role = agent_type.clone().unwrap_or_else(|| "default".to_string());
-                    let seat = base::interface::agent_spawner::TeamSeat {
-                        team: name.clone(),
-                        member: label.clone(),
+                    let call = MemberCall {
+                        seat: TeamSeat {
+                            team: name.clone(),
+                            member: label.clone(),
+                        },
+                        stage: stage.name.clone(),
+                        prompt,
+                        agent_type: agent_spec.agent_type.clone(),
+                        extra_tools,
+                        permission_mode,
                     };
                     async move {
-                        let member_start = std::time::Instant::now();
                         let _permit = permits.acquire_owned().await.expect("semaphore closed");
-                        let request = SpawnRequest::new(prompt, cwd, cancel)
-                            .agent_type(agent_type)
-                            .mode(SpawnMode::TeamMember {
-                                extra_tools,
-                                permission_mode: Some(permission_mode),
-                                seat: Some(seat),
-                            });
-                        let result = spawner.spawn(request).await;
-                        drop(_permit);
-                        let duration_ms = member_start.elapsed().as_millis() as u64;
-                        match result {
-                            Ok(text) => (label, text, false, duration_ms, role),
-                            Err(e) => (label, format!("ERROR: {e}"), true, duration_ms, role),
-                        }
+                        let (text, end) = run_member(delegator.as_ref(), call, ctx).await;
+                        (label, text, end)
                     }
                 });
                 let results = futures::future::join_all(futs).await;
@@ -516,9 +497,12 @@ impl Coordinator for DefaultCoordinator {
                     lifecycles.insert(agent_spec.label.clone(), TeammateLifecycle::Completed);
                 }
 
-                for (label, text, is_error, duration_ms, role) in results {
-                    if is_error {
-                        any_err = true;
+                for (label, text, end) in results {
+                    let is_error = end != MemberEnd::Done;
+                    match end {
+                        MemberEnd::Done => {}
+                        MemberEnd::Failed => any_err = true,
+                        MemberEnd::Cancelled => cancelled = true,
                     }
                     if let Err(e) = crate::persist::append_team_event(
                         &team_dir,
@@ -532,41 +516,25 @@ impl Coordinator for DefaultCoordinator {
                     {
                         tracing::warn!(team_id = %team_id, event = "member_completed", label = %label, error = %e, "failed to append team event");
                     }
-                    if let Some(handle) = self.telemetry() {
-                        let _ = handle.record(telemetry::TelemetryEvent::agent_completed(
-                            &team_id,
-                            0,
-                            None,
-                            telemetry::AgentCompletedPayload {
-                                agent_id: label.clone(),
-                                role,
-                                had_error: is_error,
-                                duration_ms,
-                            },
-                        ));
-                    }
                     sections.push((label, text, is_error));
                 }
             } else {
-                // No spawner available — log a warning that agents cannot be spawned.
-                // This happens when TeamCreate is used standalone without a daemon wiring.
                 tracing::warn!(
-                    "TeamCreate: no AgentSpawner provided — stage '{}' agents will not execute. \
-                     Wire RuntimeAgentSpawner at the composition root to enable team coordination.",
+                    "TeamCreate: no delegator — stage '{}' agents will not execute",
                     stage.name
                 );
                 for agent_spec in &stage.agents {
                     sections.push((
                         agent_spec.label.clone(),
-                        "[AgentSpawner not available — team coordination requires daemon wiring]"
-                            .to_string(),
+                        "[no delegator — this session cannot start team members]".to_string(),
                         true,
                     ));
                     any_err = true;
                 }
             }
+            cancelled |= ctx.cancel.is_cancelled();
 
-            if let Some(mode) = stage.aggregate {
+            if let Some(mode) = stage.aggregate.filter(|_| !cancelled) {
                 if !sections.is_empty() {
                     sections = aggregate(
                         &*model,
@@ -575,6 +543,7 @@ impl Coordinator for DefaultCoordinator {
                         &stage.name,
                         &sections,
                         Some(ctx.session_id.as_str()),
+                        &ctx.cancel,
                     )
                     .await;
                 }
@@ -608,7 +577,7 @@ impl Coordinator for DefaultCoordinator {
                 stage_members,
                 failed.clone(),
             );
-            if let Some(handle) = self.telemetry() {
+            if let Some(handle) = &self.telemetry {
                 let _ = handle.record(telemetry::TelemetryEvent::team_stage_complete(
                     &team_id,
                     0,
@@ -642,14 +611,19 @@ impl Coordinator for DefaultCoordinator {
             {
                 tracing::warn!(team_id = %team_id, stage = %stage.name, error = %e, "failed to write state.json snapshot (stage completion)");
             }
+            if cancelled {
+                break;
+            }
         }
 
-        let final_status = if any_err {
+        let final_status = if cancelled {
+            crate::persist::TeamStatus::Cancelled
+        } else if any_err {
             crate::persist::TeamStatus::Failed
         } else {
             crate::persist::TeamStatus::Completed
         };
-        let state = build_state_snapshot(stage_count.saturating_sub(1), final_status, &lifecycles);
+        let state = build_state_snapshot(started.saturating_sub(1), final_status, &lifecycles);
         if let Err(e) = crate::persist::write_team_state_atomic(&team_dir, &state).await {
             tracing::warn!(team_id = %team_id, error = %e, "failed to write final state.json");
         }
@@ -689,13 +663,15 @@ impl Coordinator for DefaultCoordinator {
             });
         }
 
+        let mut text = format!("{}\n\n_(scratchpad: {})_", scratch, sp_path.display());
+        if cancelled {
+            text.push_str(&format!(
+                "\n\nTeam `{name}` was cancelled: {started} of {stage_count} stages were started."
+            ));
+        }
         Ok(ToolResult {
-            content: ToolResultContent::Text(format!(
-                "{}\n\n_(scratchpad: {})_",
-                scratch,
-                sp_path.display()
-            )),
-            is_error: any_err,
+            content: ToolResultContent::Text(text),
+            is_error: any_err || cancelled,
             structured_content: None,
             mcp_meta: None,
             new_messages: None,
@@ -711,10 +687,8 @@ impl Coordinator for DefaultCoordinator {
     /// synchronous call, nothing is left `Active` to cancel by the time the
     /// model can even call `TeamDelete`) — but persistent members (`Agent`
     /// tool's `team_name`+`name` mode) genuinely can still be alive, so this
-    /// calls `AgentSpawner::stop_team_member` for every member on record;
-    /// it's a no-op for the ones that were never persistent in the first
-    /// place (nothing to find, matches `stop_team_member`'s own tolerance
-    /// for unknown names).
+    /// calls `Delegator::stop_member` for every member on record; it's a
+    /// no-op for the ones that were never persistent in the first place.
     ///
     /// No registry wired (a bare `DefaultCoordinator::new()` without
     /// `.with_registry(...)`, e.g. in tests that don't care about this) is
@@ -730,9 +704,14 @@ impl Coordinator for DefaultCoordinator {
                  (or it was already deleted). Use TeamList to see active teams."
             ));
         };
-        if let Some(spawner) = &self.spawner {
+        if let Some(delegator) = &self.delegator {
             for member in &info.members {
-                spawner.stop_team_member(name, &member.label).await;
+                delegator
+                    .stop_member(&TeamSeat {
+                        team: name.to_string(),
+                        member: member.label.clone(),
+                    })
+                    .await;
             }
         }
         if !info.team_dir.as_os_str().is_empty() {
@@ -793,11 +772,8 @@ impl Coordinator for DefaultCoordinator {
              Continue coordinating the remaining stages."
         );
 
-        // Through the handle from `set_telemetry_handle`, not
-        // `tracing::info!(target: "telemetry", ...)`: no subscriber in the
-        // workspace listens on that target.
         let latency_ms = start.elapsed().as_millis() as u64;
-        if let Some(handle) = self.telemetry() {
+        if let Some(handle) = &self.telemetry {
             let _ = handle.record(telemetry::TelemetryEvent::resume_action(
                 task_id,
                 0,
@@ -832,12 +808,13 @@ pub async fn aggregate(
     stage_name: &str,
     sections: &[(String, String, bool)],
     session_id: Option<&str>,
+    cancel: &CancellationToken,
 ) -> Vec<(String, String, bool)> {
     match mode {
         AggregateMode::Concat => sections.to_vec(),
         AggregateMode::Best => {
             if let Some(label) =
-                pick_best(model, model_name, stage_name, sections, session_id).await
+                pick_best(model, model_name, stage_name, sections, session_id, cancel).await
             {
                 sections
                     .iter()
@@ -849,7 +826,7 @@ pub async fn aggregate(
             }
         }
         AggregateMode::Aggregate => {
-            let text = merge(model, model_name, stage_name, sections, session_id)
+            let text = merge(model, model_name, stage_name, sections, session_id, cancel)
                 .await
                 .unwrap_or_else(|| {
                     let mut a = String::new();
@@ -869,6 +846,7 @@ async fn pick_best(
     stage_name: &str,
     sections: &[(String, String, bool)],
     session_id: Option<&str>,
+    cancel: &CancellationToken,
 ) -> Option<String> {
     let formatted: Vec<String> = sections
         .iter()
@@ -883,7 +861,7 @@ async fn pick_best(
          Pick the single best result. Return ONLY the agent label, nothing else.",
         formatted.join("\n\n"),
     );
-    let label = drain(model, model_name, prompt, 100, session_id).await?;
+    let label = drain(model, model_name, prompt, 100, session_id, cancel).await?;
     let label = label.trim().to_string();
     if sections.iter().any(|(l, _, _)| l == &label) {
         Some(label)
@@ -898,6 +876,7 @@ async fn merge(
     stage_name: &str,
     sections: &[(String, String, bool)],
     session_id: Option<&str>,
+    cancel: &CancellationToken,
 ) -> Option<String> {
     let formatted: Vec<String> = sections
         .iter()
@@ -911,7 +890,7 @@ async fn merge(
          Combine into one document. Capture best insights, remove redundancy, preserve facts.",
         formatted.join("\n\n"),
     );
-    drain(model, model_name, prompt, 4096, session_id).await
+    drain(model, model_name, prompt, 4096, session_id, cancel).await
 }
 
 async fn drain(
@@ -920,6 +899,7 @@ async fn drain(
     prompt: String,
     max_tokens: u32,
     session_id: Option<&str>,
+    cancel: &CancellationToken,
 ) -> Option<String> {
     let blocks = vec![PromptBlock {
         role: BlockRole::System,
@@ -948,13 +928,17 @@ async fn drain(
         input_map: None,
         provider_search: None,
     };
-    let cancel = tokio_util::sync::CancellationToken::new();
     let mut stream = model
-        .stream(blocks, vec![], messages, params, cancel)
+        .stream(blocks, vec![], messages, params, cancel.clone())
         .await
         .ok()?;
     let mut text = String::new();
-    while let Some(ev) = stream.next().await {
+    loop {
+        let ev = tokio::select! {
+            _ = cancel.cancelled() => return None,
+            ev = stream.next() => ev,
+        };
+        let Some(ev) = ev else { break };
         match ev.ok()? {
             ModelEvent::TextDelta { text: t } => text.push_str(&t),
             ModelEvent::EndTurn { .. } => break,
@@ -1007,6 +991,7 @@ fn chrono_id() -> String {
 mod tests {
     use super::*;
     use crate::tool::TeamAgentSpec;
+    use base::interface::delegate::{DelegateError, DelegateOutcome};
     use base::interface::model::{ModelError, ModelStream};
     use base::provider::ApiType;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1033,18 +1018,48 @@ mod tests {
         }
     }
 
-    /// A fake `AgentSpawner` whose `spawn` sleeps for a duration
+    fn finished_as(text: impl Into<String>, end: DelegateEnd) -> Result<Delegated, DelegateError> {
+        Ok(Delegated::Finished(DelegateOutcome {
+            text: text.into(),
+            end,
+            structured: None,
+            session_id: "member-session".into(),
+        }))
+    }
+
+    fn finished(text: impl Into<String>) -> Result<Delegated, DelegateError> {
+        finished_as(text, DelegateEnd::Completed)
+    }
+
+    fn cwd_of(req: &DelegateRequest) -> std::path::PathBuf {
+        match &req.workdir {
+            Workdir::At(dir) => dir.clone(),
+            other => panic!("a stage member runs in the lead's cwd, not {other:?}"),
+        }
+    }
+
+    fn stage_tools(req: DelegateRequest) -> Vec<Arc<dyn base::tool::Tool>> {
+        match req.mode {
+            DelegateMode::TeamMember {
+                lifetime: MemberLifetime::Stage { extra_tools, .. },
+                ..
+            } => extra_tools,
+            _ => panic!("only stage members are delegated here"),
+        }
+    }
+
+    /// A fake `Delegator` whose `delegate` sleeps for a duration
     /// encoded in the agent's task text (as a plain millisecond count),
     /// tracking in-flight concurrency via an `AtomicUsize`. Records every
     /// prompt it was handed so tests can inspect the injected team context.
-    struct FakeSpawner {
+    struct FakeDelegator {
         in_flight: AtomicUsize,
         peak_in_flight: AtomicUsize,
         prompts: std::sync::Mutex<Vec<String>>,
         agent_types: std::sync::Mutex<Vec<Option<String>>>,
     }
 
-    impl FakeSpawner {
+    impl FakeDelegator {
         fn new() -> Self {
             Self {
                 in_flight: AtomicUsize::new(0),
@@ -1056,7 +1071,7 @@ mod tests {
     }
 
     /// The coordinator prepends a `<team-context>` block, so the task
-    /// text a test encoded is the last line of what the spawner receives.
+    /// text a test encoded is the last line of what the delegator receives.
     fn task_text(prompt: &str) -> String {
         prompt
             .trim_end()
@@ -1068,11 +1083,10 @@ mod tests {
     }
 
     #[async_trait]
-    impl AgentSpawner for FakeSpawner {
-        async fn spawn(
-            &self,
-            request: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+    impl Delegator for FakeDelegator {
+        async fn stop_member(&self, _: &TeamSeat) {}
+
+        async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             let prompt = request.prompt;
             let cur = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             self.peak_in_flight.fetch_max(cur, Ordering::SeqCst);
@@ -1090,7 +1104,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            Ok(format!("done-{task}"))
+            finished(format!("done-{task}"))
         }
     }
 
@@ -1104,8 +1118,6 @@ mod tests {
         OrchestrateRequest {
             model: Arc::new(UnusedModel),
             config: Arc::new(EngineConfig::defaults_for("test")),
-            parent_tools: Arc::new(InMemoryToolRegistry::new()),
-            sub_tools: Arc::new(InMemoryToolRegistry::new()),
             stages,
             name: "test-team".to_string(),
             scratchpad: None,
@@ -1115,18 +1127,17 @@ mod tests {
     }
 
     /// Each spawn waits until all `n` of a stage are in flight at once.
-    struct GatheringSpawner {
+    struct GatheringDelegator {
         gathered: tokio::sync::Barrier,
     }
 
     #[async_trait]
-    impl AgentSpawner for GatheringSpawner {
-        async fn spawn(
-            &self,
-            _: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+    impl Delegator for GatheringDelegator {
+        async fn stop_member(&self, _: &TeamSeat) {}
+
+        async fn delegate(&self, _: DelegateRequest) -> Result<Delegated, DelegateError> {
             self.gathered.wait().await;
-            Ok("done".into())
+            finished("done")
         }
     }
 
@@ -1149,10 +1160,10 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(GatheringSpawner {
+        let delegator = Arc::new(GatheringDelegator {
             gathered: tokio::sync::Barrier::new(n),
         });
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner);
+        let coordinator = DefaultCoordinator::with_delegator(delegator);
         let req = make_request(ctx, stages);
 
         // Run one after the other, the first agent would wait for the rest
@@ -1188,8 +1199,8 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner);
+        let delegator = Arc::new(FakeDelegator::new());
+        let coordinator = DefaultCoordinator::with_delegator(delegator);
         let req = make_request(ctx, stages);
 
         let result = coordinator.orchestrate(req).await.expect("orchestrate ok");
@@ -1227,7 +1238,7 @@ mod tests {
             aggregate: None,
         }];
         let (_dir, ctx) = make_ctx();
-        let coordinator = DefaultCoordinator::with_agent_spawner(Arc::new(FakeSpawner::new()));
+        let coordinator = DefaultCoordinator::with_delegator(Arc::new(FakeDelegator::new()));
         let result = coordinator
             .orchestrate(make_request(ctx, stages))
             .await
@@ -1262,14 +1273,14 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner.clone());
+        let delegator = Arc::new(FakeDelegator::new());
+        let coordinator = DefaultCoordinator::with_delegator(delegator.clone());
         let req = make_request(ctx, stages);
 
         let result = coordinator.orchestrate(req).await.expect("orchestrate ok");
         assert!(!result.is_error, "no agent should have errored");
 
-        let peak = spawner.peak_in_flight.load(Ordering::SeqCst);
+        let peak = delegator.peak_in_flight.load(Ordering::SeqCst);
         assert!(
             peak <= 6,
             "expected peak in-flight <= 6 permits, observed {peak}"
@@ -1282,26 +1293,23 @@ mod tests {
         );
     }
 
-    /// A fake `AgentSpawner` that actually *uses* `extra_tools` (unlike
-    /// `FakeSpawner`, which ignores them) — it calls the `ListPeers` tool it was handed and returns its result as
+    /// A fake `Delegator` that actually *uses* `extra_tools` (unlike
+    /// `FakeDelegator`, which ignores them) — it calls the `ListPeers` tool it was handed and returns its result as
     /// the "agent's own output", proving the tool it received is real and
     /// wired to the right mailbox, not just present-but-inert.
-    struct MailboxAwareSpawner;
+    struct MailboxAwareDelegator;
 
     #[async_trait]
-    impl AgentSpawner for MailboxAwareSpawner {
-        async fn spawn(
-            &self,
-            request: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            let SpawnMode::TeamMember { extra_tools, .. } = request.mode else {
-                panic!("MailboxAwareSpawner test only expects team members to be spawned");
-            };
+    impl Delegator for MailboxAwareDelegator {
+        async fn stop_member(&self, _: &TeamSeat) {}
+
+        async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
+            let ctx = platform::tool_context_for_test(cwd_of(&request));
+            let extra_tools = stage_tools(request);
             let list_peers = extra_tools
                 .iter()
                 .find(|t| t.name() == "ListPeers")
                 .expect("coordinator must hand each team member a ListPeers tool");
-            let ctx = platform::tool_context_for_test(request.cwd);
             let result = list_peers
                 .call(
                     serde_json::json!({}),
@@ -1309,10 +1317,10 @@ mod tests {
                     base::tool::ProgressSender::noop("test"),
                 )
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+                .map_err(|e| DelegateError::Invalid(e.to_string()))?;
             match result.content {
-                ToolResultContent::Text(t) => Ok(t),
-                ToolResultContent::Blocks(_) => Ok("(blocks)".into()),
+                ToolResultContent::Text(t) => finished(t),
+                ToolResultContent::Blocks(_) => finished("(blocks)"),
             }
         }
     }
@@ -1343,8 +1351,8 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(MailboxAwareSpawner);
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner);
+        let delegator = Arc::new(MailboxAwareDelegator);
+        let coordinator = DefaultCoordinator::with_delegator(delegator);
         let req = make_request(ctx, stages);
 
         let result = coordinator.orchestrate(req).await.expect("orchestrate ok");
@@ -1365,20 +1373,18 @@ mod tests {
 
     /// Saves a team memory when its task says "remember", otherwise answers
     /// with the prompt it was given.
-    struct MemoryAwareSpawner;
+    struct MemoryAwareDelegator;
 
     #[async_trait]
-    impl AgentSpawner for MemoryAwareSpawner {
-        async fn spawn(
-            &self,
-            request: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            let SpawnMode::TeamMember { extra_tools, .. } = request.mode else {
-                panic!("only team members are expected");
-            };
+    impl Delegator for MemoryAwareDelegator {
+        async fn stop_member(&self, _: &TeamSeat) {}
+
+        async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             if !request.prompt.contains("remember") {
-                return Ok(request.prompt);
+                return finished(request.prompt);
             }
+            let ctx = platform::tool_context_for_test(cwd_of(&request));
+            let extra_tools = stage_tools(request);
             let save = extra_tools
                 .iter()
                 .find(|t| t.name() == "TeamMemorySave")
@@ -1388,13 +1394,12 @@ mod tests {
                 "description": "Handlers return typed errors",
                 "content": "Every handler returns a typed error, never a string."
             });
-            let ctx = platform::tool_context_for_test(request.cwd);
             let result = save
                 .call(input, ctx, base::tool::ProgressSender::noop("test"))
                 .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+                .map_err(|e| DelegateError::Invalid(e.to_string()))?;
             assert!(!result.is_error);
-            Ok("saved".into())
+            finished("saved")
         }
     }
 
@@ -1416,7 +1421,7 @@ mod tests {
 
         let (dir, ctx) = make_ctx();
         let registry = Arc::new(crate::registry::TeamRegistry::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(Arc::new(MemoryAwareSpawner))
+        let coordinator = DefaultCoordinator::with_delegator(Arc::new(MemoryAwareDelegator))
             .with_registry(registry.clone());
         let mut req = make_request(ctx, stages);
         req.name = "mem".into();
@@ -1456,10 +1461,10 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
+        let delegator = Arc::new(FakeDelegator::new());
         let registry = Arc::new(crate::registry::TeamRegistry::new());
         let coordinator =
-            DefaultCoordinator::with_agent_spawner(spawner).with_registry(registry.clone());
+            DefaultCoordinator::with_delegator(delegator).with_registry(registry.clone());
         let req = make_request(ctx, stages);
 
         coordinator.orchestrate(req).await.expect("orchestrate ok");
@@ -1519,9 +1524,9 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
+        let delegator = Arc::new(FakeDelegator::new());
         let registry = Arc::new(crate::registry::TeamRegistry::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner)
+        let coordinator = DefaultCoordinator::with_delegator(delegator)
             .with_registry(registry.clone())
             .with_scene_id("code".to_string());
         let req = make_request(ctx, stages);
@@ -1607,14 +1612,14 @@ mod tests {
         ];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner.clone());
+        let delegator = Arc::new(FakeDelegator::new());
+        let coordinator = DefaultCoordinator::with_delegator(delegator.clone());
         coordinator
             .orchestrate(make_request(ctx, stages))
             .await
             .expect("orchestrate ok");
 
-        let prompts = spawner.prompts.lock().unwrap().clone();
+        let prompts = delegator.prompts.lock().unwrap().clone();
         assert_eq!(prompts.len(), 3);
 
         let sources = prompts
@@ -1649,10 +1654,10 @@ mod tests {
         assert!(writer.contains("Stage 2/2: synthesis"));
         assert!(writer.contains("you are the only worker in this stage"));
 
-        let types = spawner.agent_types.lock().unwrap().clone();
+        let types = delegator.agent_types.lock().unwrap().clone();
         assert!(
             types.contains(&Some("explore".to_string())),
-            "a member's agent_type must reach the spawner, got {types:?}"
+            "a member's agent_type must reach the delegator, got {types:?}"
         );
     }
 
@@ -1684,10 +1689,9 @@ mod tests {
         ];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner);
+        let delegator = Arc::new(FakeDelegator::new());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        coordinator.set_event_sender(tx);
+        let coordinator = DefaultCoordinator::with_delegator(delegator).with_events(tx);
 
         let result = coordinator
             .orchestrate(make_request(ctx, stages))
@@ -1730,7 +1734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_telemetry_handle_records_agent_and_stage_lifecycle_events() {
+    async fn the_team_records_its_stages_and_leaves_its_members_to_the_delegator() {
         let stages = vec![TeamStage {
             name: "only".into(),
             agents: vec![TeamAgentSpec {
@@ -1742,10 +1746,10 @@ mod tests {
         }];
 
         let (_dir, ctx) = make_ctx();
-        let spawner = Arc::new(FakeSpawner::new());
-        let coordinator = DefaultCoordinator::with_agent_spawner(spawner);
+        let delegator = Arc::new(FakeDelegator::new());
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        coordinator.set_telemetry_handle(telemetry::TelemetryHandle::new(tx));
+        let coordinator = DefaultCoordinator::with_delegator(delegator)
+            .with_telemetry(telemetry::TelemetryHandle::new(tx));
 
         let result = coordinator
             .orchestrate(make_request(ctx, stages))
@@ -1757,18 +1761,7 @@ mod tests {
         while let Ok(event) = rx.try_recv() {
             kinds.push(event.kind().to_string());
         }
-        assert!(
-            kinds.contains(&"agent_spawned".to_string()),
-            "got: {kinds:?}"
-        );
-        assert!(
-            kinds.contains(&"agent_completed".to_string()),
-            "got: {kinds:?}"
-        );
-        assert!(
-            kinds.contains(&"team_stage_complete".to_string()),
-            "got: {kinds:?}"
-        );
+        assert_eq!(kinds, ["team_stage_complete"]);
     }
 
     #[tokio::test]
@@ -1780,9 +1773,9 @@ mod tests {
             .await
             .unwrap();
 
-        let coordinator = DefaultCoordinator::new();
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        coordinator.set_telemetry_handle(telemetry::TelemetryHandle::new(tx));
+        let coordinator =
+            DefaultCoordinator::new().with_telemetry(telemetry::TelemetryHandle::new(tx));
 
         let result = coordinator
             .resume_coordinator("task-1", &ctx)
@@ -1804,20 +1797,11 @@ mod tests {
 
         struct AlwaysFails;
         #[async_trait]
-        impl AgentSpawner for AlwaysFails {
-            async fn spawn(
-                &self,
-                _: SpawnRequest,
-            ) -> Result<String, Box<dyn std::error::Error + Send>> {
-                #[derive(Debug)]
-                struct E;
-                impl std::fmt::Display for E {
-                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                        write!(f, "boom")
-                    }
-                }
-                impl std::error::Error for E {}
-                Err(Box::new(E))
+        impl Delegator for AlwaysFails {
+            async fn stop_member(&self, _: &TeamSeat) {}
+
+            async fn delegate(&self, _: DelegateRequest) -> Result<Delegated, DelegateError> {
+                finished_as("", DelegateEnd::Failed("boom".into()))
             }
         }
 
@@ -1831,9 +1815,8 @@ mod tests {
             aggregate: None,
         }];
         let (_dir, ctx) = make_ctx();
-        let coordinator = DefaultCoordinator::with_agent_spawner(Arc::new(AlwaysFails));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        coordinator.set_event_sender(tx);
+        let coordinator = DefaultCoordinator::with_delegator(Arc::new(AlwaysFails)).with_events(tx);
 
         let result = coordinator
             .orchestrate(make_request(ctx, stages))
@@ -1856,7 +1839,7 @@ mod tests {
     }
 
     /// Without a wired channel nothing is emitted and orchestration is
-    /// unaffected: the case for embedders that never call `set_event_sender`.
+    /// unaffected: the case for embedders that give no `with_events`.
     #[tokio::test]
     async fn team_progress_is_a_no_op_without_a_wired_channel() {
         let stages = vec![TeamStage {
@@ -1869,7 +1852,7 @@ mod tests {
             aggregate: None,
         }];
         let (_dir, ctx) = make_ctx();
-        let coordinator = DefaultCoordinator::with_agent_spawner(Arc::new(FakeSpawner::new()));
+        let coordinator = DefaultCoordinator::with_delegator(Arc::new(FakeDelegator::new()));
         let result = coordinator
             .orchestrate(make_request(ctx, stages))
             .await
@@ -1877,19 +1860,19 @@ mod tests {
         assert!(!result.is_error);
     }
 
-    /// Cancels the lead's turn from inside the first stage's spawn and hands
-    /// back partial text, as a member cut short by an interrupt does.
+    /// Cancels the lead's turn from inside the first stage's member and
+    /// hands back partial text, ending as `end` says.
     struct CancelsTheLead {
         lead: tokio_util::sync::CancellationToken,
+        end: DelegateEnd,
         spawned: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait]
-    impl AgentSpawner for CancelsTheLead {
-        async fn spawn(
-            &self,
-            request: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+    impl Delegator for CancelsTheLead {
+        async fn stop_member(&self, _: &TeamSeat) {}
+
+        async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             let task = task_text(&request.prompt);
             self.spawned
                 .lock()
@@ -1898,51 +1881,107 @@ mod tests {
             if task == "first" {
                 self.lead.cancel();
             }
-            Ok(format!("partial-{task}"))
+            finished_as(format!("partial-{task}"), self.end.clone())
         }
     }
 
+    /// Whether the member says it was cancelled or not, the lead's call
+    /// being cancelled ends the team there. The first stage aggregates on a
+    /// model that panics if asked: a cancelled stage is not judged.
     #[tokio::test]
-    #[ignore = "D2: TeamCreate goes on after the lead is interrupted and reports success (C1)"]
     async fn an_interrupted_team_starts_no_further_stage_and_ends_cancelled() {
-        let stage = |name: &str, prompt: &str| TeamStage {
-            name: name.into(),
-            agents: vec![TeamAgentSpec {
-                label: name.into(),
-                prompt: prompt.into(),
-                agent_type: None,
-            }],
-            aggregate: None,
-        };
-        let (dir, ctx) = make_ctx();
-        let spawner = Arc::new(CancelsTheLead {
-            lead: ctx.cancel.clone(),
-            spawned: Default::default(),
-        });
-        let registry = Arc::new(crate::registry::TeamRegistry::new());
-        let coordinator =
-            DefaultCoordinator::with_agent_spawner(spawner.clone()).with_registry(registry.clone());
-        let result = coordinator
-            .orchestrate(make_request(
-                ctx,
-                vec![stage("one", "first"), stage("two", "second")],
-            ))
-            .await
-            .expect("orchestrate returns a result");
+        for end in [DelegateEnd::Completed, DelegateEnd::Cancelled] {
+            let stage = |name: &str, prompt: &str| TeamStage {
+                name: name.into(),
+                agents: vec![TeamAgentSpec {
+                    label: name.into(),
+                    prompt: prompt.into(),
+                    agent_type: None,
+                }],
+                aggregate: Some(AggregateMode::Best),
+            };
+            let (dir, ctx) = make_ctx();
+            let delegator = Arc::new(CancelsTheLead {
+                lead: ctx.cancel.clone(),
+                end: end.clone(),
+                spawned: Default::default(),
+            });
+            let registry = Arc::new(crate::registry::TeamRegistry::new());
+            let coordinator = DefaultCoordinator::with_delegator(delegator.clone())
+                .with_registry(registry.clone());
+            let result = coordinator
+                .orchestrate(make_request(
+                    ctx,
+                    vec![stage("one", "first"), stage("two", "second")],
+                ))
+                .await
+                .expect("orchestrate returns a result");
 
-        let spawned = spawner
-            .spawned
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        assert_eq!(spawned, ["first"], "no member of a later stage is started");
-        assert!(result.is_error, "an interrupted team is not a success");
-        let team_dir = registry.list()[0].team_dir.clone();
-        assert!(team_dir.starts_with(dir.path()));
-        let state: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(team_dir.join("state.json")).expect("state.json"),
+            let spawned = delegator
+                .spawned
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            assert_eq!(spawned, ["first"], "{end:?}: a later stage was started");
+            assert!(
+                result.is_error,
+                "{end:?}: an interrupted team is not a success"
+            );
+            let team_dir = registry.list()[0].team_dir.clone();
+            assert!(team_dir.starts_with(dir.path()));
+            let state: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(team_dir.join("state.json")).expect("state.json"),
+            )
+            .expect("state.json is json");
+            assert_eq!(state["status"], "cancelled", "{end:?}: {state}");
+            let log = std::fs::read_to_string(team_dir.join("events.jsonl")).unwrap();
+            let last: serde_json::Value =
+                serde_json::from_str(log.lines().last().unwrap()).unwrap();
+            assert_eq!(last["kind"], "team_completed", "{end:?}: {log}");
+            assert_eq!(last["status"], "cancelled", "{end:?}: {log}");
+        }
+    }
+
+    /// Hangs until `cancel` fires, as a judge cut off mid-answer would.
+    struct HangsUntilCancelled;
+
+    #[async_trait]
+    impl Model for HangsUntilCancelled {
+        fn api_type(&self) -> ApiType {
+            ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<base::interface::model::ModelMessage>,
+            _params: StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            Ok(Box::new(futures::stream::pending()))
+        }
+    }
+
+    /// A judge that would never answer stops with the lead's call, even when
+    /// the model itself ignores the token.
+    #[tokio::test]
+    async fn aggregation_stops_with_the_leads_call() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let sections = vec![
+            ("a".to_string(), "one".to_string(), false),
+            ("b".to_string(), "two".to_string(), false),
+        ];
+        let kept = aggregate(
+            &HangsUntilCancelled,
+            "m",
+            AggregateMode::Best,
+            "stage",
+            &sections,
+            None,
+            &cancel,
         )
-        .expect("state.json is json");
-        assert_eq!(state["status"], "cancelled", "{state}");
+        .await;
+        assert_eq!(kept, sections);
     }
 }

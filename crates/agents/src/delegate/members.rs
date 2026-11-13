@@ -212,6 +212,7 @@ impl Delegator {
             spec.agent_type.as_deref(),
             &delegate.agent.settings().model.model_name,
             true,
+            None,
         );
 
         let id = format!("member-{}", bg_task_id());

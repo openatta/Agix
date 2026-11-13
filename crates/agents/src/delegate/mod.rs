@@ -134,14 +134,14 @@ impl base::interface::delegate::Delegator for Delegator {
             DelegateMode::TeamMember {
                 seat,
                 permission_mode,
-                lifetime: MemberLifetime::Stage { extra_tools },
+                lifetime: MemberLifetime::Stage { stage, extra_tools },
             } => {
                 let spec = Spec {
                     permission_mode,
                     seat: Some(seat),
                     ..spec
                 };
-                self.stage_member(spec, prompt, stop, ask, extra_tools)
+                self.stage_member(spec, prompt, stop, ask, stage, extra_tools)
                     .await
             }
             DelegateMode::TeamMember {

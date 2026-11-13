@@ -23,6 +23,7 @@ impl SpawnTelemetry {
         agent_type: Option<&str>,
         model: &str,
         background: bool,
+        stage_name: Option<String>,
     ) -> Self {
         let handle = delegator.env.host.telemetry.clone();
         let parent_session_id = delegator.env.parent.id.clone();
@@ -36,7 +37,7 @@ impl SpawnTelemetry {
                 agent_id: agent_session_id.to_string(),
                 role: role.clone(),
                 model: (!model.is_empty()).then(|| model.to_string()),
-                stage_name: None,
+                stage_name,
                 background,
             },
         ));

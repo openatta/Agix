@@ -1,6 +1,6 @@
 //! `RuntimeAgentSpawner`: the session's `AgentSpawner`, for the consumers that
-//! still ask through it (the team coordinator, forked skills, agent hooks, a
-//! host's `session.startAgent`). Every request becomes a `DelegateRequest` and
+//! still ask through it (forked skills, agent hooks, a host's
+//! `session.startAgent`). Every request becomes a `DelegateRequest` and
 //! goes through the one dispatch, `Delegator::delegate`.
 
 use async_trait::async_trait;
@@ -9,7 +9,7 @@ use base::interface::agent_spawner::{
 };
 use base::interface::delegate::{
     DelegateEnd, DelegateError, DelegateMode, DelegateRequest, Delegated, Delegator as _,
-    MemberLifetime, StopsWith, TeamSeat, Workdir,
+    StopsWith, TeamSeat, Workdir,
 };
 use base::interface::tool_selector::ToolSelector;
 use std::sync::Arc;
@@ -54,18 +54,9 @@ impl AgentSpawner for RuntimeAgentSpawner {
             SpawnMode::Background { .. } => DelegateMode::Background {
                 notify_parent: true,
             },
-            SpawnMode::TeamMember {
-                extra_tools,
-                permission_mode,
-                seat: Some(seat),
-            } => DelegateMode::TeamMember {
-                seat,
-                permission_mode,
-                lifetime: MemberLifetime::Stage { extra_tools },
-            },
-            SpawnMode::TeamMember { seat: None, .. } => {
+            SpawnMode::TeamMember { .. } => {
                 return Err(failure(
-                    "a team member is spawned in a seat of its team".into(),
+                    "a team member is delegated through `Delegator`, with its stage".into(),
                 ))
             }
             _ => return Err(failure("this spawner does not know that spawn mode".into())),

@@ -83,6 +83,51 @@ async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
 }
 
 #[tokio::test]
+async fn a_stage_member_is_in_its_sessions_telemetry_by_session_and_stage() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            telemetry: TelemetryHandle::new(tx),
+            ..host_contracts()
+        }),
+        ..test_parent()
+    }
+    .agent_tool();
+    let _ = agent_tool
+        .run_stage_member(
+            "work",
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            Vec::new(),
+        )
+        .await;
+
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(serde_json::to_value(event).unwrap());
+    }
+    let of = |kind: &str| {
+        events
+            .iter()
+            .find(|e| e["type"] == kind)
+            .unwrap_or_else(|| panic!("no {kind} in {events:?}"))
+            .clone()
+    };
+    let spawned = of("agent_spawned");
+    let completed = of("agent_completed");
+    assert_eq!(spawned["stage_name"], "stage", "{spawned}");
+    assert_eq!(spawned["session_id"], agent_tool.delegator.env.parent.id);
+    let member = spawned["agent_id"].as_str().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e["session_id"] == member && e["type"] != "agent_spawned"),
+        "agent_id is not the member's session: {events:?}"
+    );
+    assert_eq!(completed["agent_id"], member);
+}
+
+#[tokio::test]
 async fn a_persistent_member_is_in_its_sessions_telemetry_from_start_to_stop() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let agent_tool = TestParent {

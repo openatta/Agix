@@ -197,7 +197,6 @@ impl base::tool::Tool for AskingProbe {
 /// member is.
 #[tokio::test]
 async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
-    use base::interface::agent_spawner::{AgentSpawner as _, SpawnMode, SpawnRequest};
     use base::settings::PermissionMode;
     for (parent_mode, probe_runs) in [
         (PermissionMode::Default, 0),
@@ -225,24 +224,23 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
         }
         .agent_tool();
 
-        crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone())
-            .spawn(
-                SpawnRequest::new(
-                    "probe",
-                    dir.clone(),
-                    tokio_util::sync::CancellationToken::new(),
-                )
-                .mode(SpawnMode::TeamMember {
+        let mut req = DelegateRequest::new(
+            "probe",
+            DelegateMode::TeamMember {
+                seat: TeamSeat {
+                    team: "team".into(),
+                    member: "member".into(),
+                },
+                permission_mode: Some(PermissionMode::BypassPermissions),
+                lifetime: MemberLifetime::Stage {
+                    stage: "stage".into(),
                     extra_tools: vec![Arc::new(AskingProbe { runs: runs.clone() })],
-                    permission_mode: Some(PermissionMode::BypassPermissions),
-                    seat: Some(base::interface::agent_spawner::TeamSeat {
-                        team: "team".into(),
-                        member: "member".into(),
-                    }),
-                }),
-            )
-            .await
-            .expect("the member runs");
+                },
+            },
+            StopsWith::Call(tokio_util::sync::CancellationToken::new()),
+        );
+        req.workdir = Workdir::At(dir.clone());
+        agent_tool.delegate(req).await.expect("the member runs");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             runs.load(std::sync::atomic::Ordering::SeqCst),
@@ -687,6 +685,7 @@ async fn a_stage_member_stopped_mid_turn_ends_cancelled() {
         },
         permission_mode: None,
         lifetime: MemberLifetime::Stage {
+            stage: "stage".into(),
             extra_tools: Vec::new(),
         },
     };

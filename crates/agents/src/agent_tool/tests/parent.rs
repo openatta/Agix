@@ -215,7 +215,10 @@ impl AgentTool {
                 member: "member".into(),
             },
             permission_mode,
-            lifetime: MemberLifetime::Stage { extra_tools },
+            lifetime: MemberLifetime::Stage {
+                stage: "stage".into(),
+                extra_tools,
+            },
         };
         finished_text(
             self.delegate(DelegateRequest::new(prompt, mode, StopsWith::Call(cancel)))

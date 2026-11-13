@@ -121,8 +121,12 @@ pub enum DelegateMode {
 }
 
 pub enum MemberLifetime {
-    /// One stage of a team; `extra_tools` go to this member's registry only.
-    Stage { extra_tools: Vec<Arc<dyn Tool>> },
+    /// One stage of a team, by name; `extra_tools` go to this member's
+    /// registry only.
+    Stage {
+        stage: String,
+        extra_tools: Vec<Arc<dyn Tool>>,
+    },
     /// Kept across messages until stopped.
     Persistent,
 }

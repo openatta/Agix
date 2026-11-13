@@ -479,9 +479,9 @@ async fn concurrent_first_calls_for_a_new_key_spawn_exactly_one_member() {
 }
 
 /// End-to-end across the `runtime`/`team` boundary: `TeamDelete`'s
-/// `cleanup_team` (via `AgentSpawner::stop_team_member`) must actually
+/// `cleanup_team` (via `Delegator::stop_member`) must actually
 /// stop a still-alive persistent member, not just remove its registry
-/// bookkeeping — what `TeamDeleteTool` holds a spawner for.
+/// bookkeeping — what `TeamDeleteTool` holds a delegator for.
 #[tokio::test]
 async fn team_delete_cleanup_stops_a_persistent_member() {
     let agent_tool = Arc::new(team_enabled_agent_tool());
@@ -515,11 +515,9 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
         .registry
         .clone()
         .expect("team_enabled_agent_tool sets a registry");
-    let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> = Arc::new(
-        crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone()),
-    );
     let coordinator =
-        team::coordinator::DefaultCoordinator::with_agent_spawner(spawner).with_registry(registry);
+        team::coordinator::DefaultCoordinator::with_delegator(agent_tool.delegator.clone())
+            .with_registry(registry);
 
     use team::coordinator::Coordinator as _;
     coordinator.cleanup_team("t3").await.expect(

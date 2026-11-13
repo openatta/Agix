@@ -105,8 +105,8 @@ impl Module for AgentsModule {
         let tool = Arc::new(AgentTool::new(delegator.clone()));
 
         let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-            Arc::new(RuntimeAgentSpawner::new(delegator));
-        cx.provide_agent_spawner(spawner.clone());
+            Arc::new(RuntimeAgentSpawner::new(delegator.clone()));
+        cx.provide_agent_spawner(spawner);
 
         // Withheld at the depth limit, so the deepest agents are never even
         // offered it.
@@ -115,25 +115,25 @@ impl Module for AgentsModule {
         }
 
         if let Some(registry) = team_registry {
-            let create = Arc::new(team::tool::TeamCreateTool::with_spawner(
+            let delegator: Arc<dyn base::interface::delegate::Delegator> = delegator;
+            let coordinator =
+                team::coordinator::DefaultCoordinator::with_delegator(delegator.clone())
+                    .with_registry(registry.clone())
+                    .with_scene_id(cx.scene.id.clone())
+                    .with_events(cx.events.unbounded_bridge())
+                    .with_telemetry(cx.host.telemetry.clone());
+            cx.tools.register(Arc::new(team::tool::TeamCreateTool::new(
                 cx.model.clone(),
                 cx.config.clone(),
-                cx.tools.clone(),
-                cx.tools.clone(),
-                spawner.clone(),
-                registry.clone(),
-                cx.scene.id.clone(),
-            ));
-            create.set_event_sender(cx.events.unbounded_bridge());
-            create.set_telemetry_handle(cx.host.telemetry.clone());
-            cx.tools.register(create);
+                Box::new(coordinator),
+            )));
             cx.tools
                 .register(Arc::new(team::tool::TeamListTool::new(registry.clone())));
-            // Needs the spawner as well as the registry, to stop members still
-            // alive, not just forget them.
+            // Needs the delegator as well as the registry, to stop members
+            // still alive, not just forget them.
             cx.tools
                 .register(Arc::new(team::tool::TeamDeleteTool::new(Box::new(
-                    team::coordinator::DefaultCoordinator::with_agent_spawner(spawner)
+                    team::coordinator::DefaultCoordinator::with_delegator(delegator)
                         .with_registry(registry),
                 ))));
         }

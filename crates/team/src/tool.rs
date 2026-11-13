@@ -1,13 +1,12 @@
-//! `TeamCreate` tool — spawn multiple sub-agents with staged parallel execution.
-//! Uses agent's own Coordinator + AgentTool.
+//! The `TeamCreate`, `TeamDelete` and `TeamList` tools: a team's stages run
+//! by a `Coordinator`, and the registry the three share.
 
-use crate::coordinator::{Coordinator, DefaultCoordinator, OrchestrateRequest};
+use crate::coordinator::{Coordinator, OrchestrateRequest};
 use async_trait::async_trait;
 use base::context::EngineConfig;
 use base::error::ToolError;
 use base::interface::model::Model;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
-use base::tool::InMemoryToolRegistry;
 use base::tool::PromptContext;
 use base::tool::ToolContext;
 use base::tool::{PathStyle, PermissionDecision, ToolSpec, ValidationResult};
@@ -96,61 +95,21 @@ pub struct TeamAgentSpec {
 pub struct TeamCreateTool {
     model: Arc<dyn Model>,
     config: Arc<EngineConfig>,
-    parent_tools: Arc<InMemoryToolRegistry>,
-    sub_tools: Arc<InMemoryToolRegistry>,
     coordinator: Box<dyn Coordinator>,
 }
 
 impl TeamCreateTool {
+    /// `model` is the lead's, for a stage's `best` and `aggregate` judging.
     pub fn new(
         model: Arc<dyn Model>,
         config: Arc<EngineConfig>,
-        parent_tools: Arc<InMemoryToolRegistry>,
-        sub_tools: Arc<InMemoryToolRegistry>,
+        coordinator: Box<dyn Coordinator>,
     ) -> Self {
         Self {
             model,
             config,
-            parent_tools,
-            sub_tools,
-            coordinator: Box::new(DefaultCoordinator::new()),
+            coordinator,
         }
-    }
-
-    pub fn with_spawner(
-        model: Arc<dyn Model>,
-        config: Arc<EngineConfig>,
-        parent_tools: Arc<InMemoryToolRegistry>,
-        sub_tools: Arc<InMemoryToolRegistry>,
-        spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
-        registry: Arc<crate::registry::TeamRegistry>,
-        scene_id: String,
-    ) -> Self {
-        Self {
-            model,
-            config,
-            parent_tools,
-            sub_tools,
-            coordinator: Box::new(
-                DefaultCoordinator::with_agent_spawner(spawner)
-                    .with_registry(registry)
-                    .with_scene_id(scene_id),
-            ),
-        }
-    }
-
-    /// Attach the parent session's event channel so team-stage progress is
-    /// emitted as stages start/finish rather than only at the very end.
-    /// Takes `&self` — the tool is registered before the session's event
-    /// channel exists; see `Coordinator::set_event_sender`.
-    pub fn set_event_sender(&self, tx: crate::coordinator::TeamEventSender) {
-        self.coordinator.set_event_sender(tx);
-    }
-
-    /// Attach a telemetry handle so team lifecycle events reach the
-    /// structured event stream — see `Coordinator::set_telemetry_handle`.
-    pub fn set_telemetry_handle(&self, handle: telemetry::TelemetryHandle) {
-        self.coordinator.set_telemetry_handle(handle);
     }
 }
 
@@ -224,8 +183,6 @@ impl base::tool::Tool for TeamCreateTool {
             .orchestrate(OrchestrateRequest {
                 model: self.model.clone(),
                 config: self.config.clone(),
-                parent_tools: self.parent_tools.clone(),
-                sub_tools: self.sub_tools.clone(),
                 stages,
                 name: inp.name,
                 scratchpad: inp.scratchpad,
@@ -505,8 +462,7 @@ mod tests {
         let tool = TeamCreateTool::new(
             Arc::new(NoopModel),
             Arc::new(EngineConfig::defaults_for("test")),
-            Arc::new(InMemoryToolRegistry::new()),
-            Arc::new(InMemoryToolRegistry::new()),
+            Box::new(crate::coordinator::DefaultCoordinator::new()),
         );
         let dir = tempfile::tempdir().unwrap();
         let input = serde_json::json!({

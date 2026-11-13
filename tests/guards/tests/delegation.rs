@@ -261,18 +261,7 @@ const LATE_BINDING_CRATES: &[&str] = &["agents", "team"];
 
 /// Late-bound fields still waiting to go, as `(file, struct.field, why)`.
 /// Only shrinks.
-const LATE_BOUND_RATCHET: &[(&str, &str, &str)] = &[
-    (
-        "crates/team/src/coordinator.rs",
-        "DefaultCoordinator.events",
-        "`Coordinator::set_event_sender`; the team side of D2 (C1) captures it at construction",
-    ),
-    (
-        "crates/team/src/coordinator.rs",
-        "DefaultCoordinator.telemetry",
-        "`Coordinator::set_telemetry_handle`; the team side of D2 (C1) captures it at construction",
-    ),
-];
+const LATE_BOUND_RATCHET: &[(&str, &str, &str)] = &[];
 
 const NO_SETTERS_ON: &[&str] = &["AgentTool", "Delegator"];
 

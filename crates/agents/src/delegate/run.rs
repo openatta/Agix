@@ -106,7 +106,7 @@ impl Delegator {
             task: Some(task),
             extra_tools: Vec::new(),
             background: false,
-            records_spawn: true,
+            stage: None,
         };
         let session_id = shot.spec.session_id.clone();
         let (text, end) = self.run_delegate(admission, shot).await;
@@ -155,7 +155,7 @@ impl Delegator {
             task: Some(task),
             extra_tools: Vec::new(),
             background: true,
-            records_spawn: true,
+            stage: None,
         };
         tokio::spawn(async move {
             let (text, end) =
@@ -173,6 +173,7 @@ impl Delegator {
         prompt: String,
         stop: CancellationToken,
         ask: Ask,
+        stage: String,
         extra_tools: Vec<Arc<dyn base::tool::Tool>>,
     ) -> Result<Delegated, DelegateError> {
         let admission = self.limits.admit_unslotted()?;
@@ -192,7 +193,7 @@ impl Delegator {
             task: Some(task),
             extra_tools,
             background: false,
-            records_spawn: false,
+            stage: Some(stage),
         };
         let session_id = shot.spec.session_id.clone();
         let (text, end) = self.run_delegate(admission, shot).await;
@@ -228,7 +229,7 @@ impl Delegator {
             task: None,
             extra_tools: Vec::new(),
             background: false,
-            records_spawn: true,
+            stage: None,
         };
         let (text, end) = self.run_delegate(admission, shot).await;
         Ok(Delegated::Finished(DelegateOutcome {

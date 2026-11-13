@@ -42,8 +42,8 @@ pub(crate) struct OneShot {
     /// Already on a task of its own, with its steering inbox open; otherwise
     /// the caller awaits it and it runs on a task it is aborted with.
     pub(crate) background: bool,
-    /// The team coordinator records a stage member's spawn itself.
-    pub(crate) records_spawn: bool,
+    /// The team stage it is a member of, named in its spawn telemetry.
+    pub(crate) stage: Option<String>,
 }
 
 impl Delegator {
@@ -140,7 +140,7 @@ impl Delegator {
             task,
             extra_tools,
             background,
-            records_spawn,
+            stage,
         } = shot;
         let tools = self.delegate_tools(spec.agent_type.as_deref(), &spec.tools);
         for t in extra_tools {
@@ -176,10 +176,15 @@ impl Delegator {
         // after a sub-agent must not be skipped just because it errored.
         self.fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
             .await;
-        let spawned = records_spawn.then(|| {
-            let model = &settings.model.model_name;
-            SpawnTelemetry::start(self, called_from, &sid, agent_type, model, background)
-        });
+        let spawned = SpawnTelemetry::start(
+            self,
+            called_from,
+            &sid,
+            agent_type,
+            &settings.model.model_name,
+            background,
+            stage,
+        );
         let (text, end) = if background {
             open_inbox(task.as_deref(), &agent);
             let ran = run_one_turn(
@@ -207,9 +212,7 @@ impl Delegator {
             )
             .await
         };
-        if let Some(spawned) = spawned {
-            spawned.finish(matches!(end, DelegateEnd::Failed(_)));
-        }
+        spawned.finish(matches!(end, DelegateEnd::Failed(_)));
         let stopped = payload.stopped(stop_reason_of(&end));
         self.fire_subagent_hook(hooks::HookEvent::SubagentStop, &stopped)
             .await;

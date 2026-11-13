@@ -1338,7 +1338,6 @@ fn team_dirs(project: &Path) -> Vec<PathBuf> {
 /// on the model: the team ends there, as cancelled, and its second stage is
 /// never started.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: TeamCreate goes on after an interrupt and reports success (C1)"]
 async fn an_interrupted_team_starts_no_later_stage_and_ends_cancelled() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("team-interrupted", &stub)
