@@ -65,7 +65,7 @@ fn    crates/runtime/src/turn/compact.rs                   Agent::compact_if_nee
 fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction                    206
 fn    crates/runtime/src/turn/memory_extraction.rs         extract_memories_after_turn              224
 fn    crates/runtime/src/turn/process.rs                   Agent::process_turn                      258
-fn    crates/runtime/src/turn/tool_exec.rs                 execute_tool_inner                       458
+fn    crates/runtime/src/turn/tool_exec.rs                 execute_tool_inner                       220
 fn    crates/runtime/src/turn/user_turn.rs                 Agent::run_user_turn_inner               1220
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135

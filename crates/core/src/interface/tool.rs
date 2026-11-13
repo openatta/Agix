@@ -328,6 +328,8 @@ pub struct ToolContext {
     pub from_code: bool,
     /// What the session's sandbox holds a command to.
     pub confinement: crate::interface::exec::ConfinementReport,
+    /// Whether someone can be asked about what this call does.
+    pub attendance: crate::interface::permission::Attendance,
 }
 impl ToolContext {
     pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
@@ -356,6 +358,7 @@ impl ToolContext {
             dispatch: None,
             from_code: false,
             confinement: Default::default(),
+            attendance: crate::interface::permission::Attendance::Attended,
         }
     }
     pub fn from_engine_ctx_with(
@@ -388,6 +391,7 @@ impl ToolContext {
             dispatch: None,
             from_code: false,
             confinement: Default::default(),
+            attendance: crate::interface::permission::Attendance::Attended,
         }
     }
 }

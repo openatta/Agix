@@ -13,6 +13,7 @@ mod round;
 mod token_budget;
 mod tool_env;
 mod tool_exec;
+mod tool_permission;
 mod tool_progress;
 mod tool_result;
 mod user_turn;

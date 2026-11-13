@@ -412,6 +412,20 @@ pub enum Basis {
     Person,
 }
 
+impl Basis {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rule(_) => "rule",
+            Self::Contained => "contained",
+            Self::AcceptEdits => "accept_edits",
+            Self::Bypass => "bypass",
+            Self::HookApproved(_) => "hook_approved",
+            Self::UnattendedConfined => "unattended_confined",
+            Self::Person => "person",
+        }
+    }
+}
+
 /// Who may answer a question a policy asks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -443,6 +457,27 @@ pub enum Stage {
     Configuration,
     ModeDefault,
     Attendance,
+}
+
+impl Stage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ManagedUnreadable => "managed_unreadable",
+            Self::UnknownTool => "unknown_tool",
+            Self::Credentials => "credentials",
+            Self::Hook => "hook",
+            Self::ToolRefusal => "tool_refusal",
+            Self::Rule => "rule",
+            Self::ManagedRule => "managed_rule",
+            Self::DelegateRule => "delegate_rule",
+            Self::BypassImmune => "bypass_immune",
+            Self::PlanMode => "plan_mode",
+            Self::DontAsk => "dont_ask",
+            Self::Configuration => "configuration",
+            Self::ModeDefault => "mode_default",
+            Self::Attendance => "attendance",
+        }
+    }
 }
 
 /// Why a call was refused or asked about.

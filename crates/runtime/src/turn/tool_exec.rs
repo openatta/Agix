@@ -1,8 +1,9 @@
 //! 一次工具调用的执行：权限、钩子、中间件、结果变换与遥测。
 
 use super::process::hook_permission_mode;
-use super::reporting::{record_permission_decision, telemetry_error_text};
+use super::reporting::telemetry_error_text;
 use super::tool_env::tool_context_for;
+use super::tool_permission::{authorize, pre_tool_use};
 use super::tool_progress::{CloseOnDrop, GateHandle, ProgressGate};
 use super::tool_result::{render_tool_result_content, PendingToolImage};
 use base::event::AgentEvent;
@@ -254,54 +255,11 @@ pub(super) async fn execute_tool_inner(
         .ok_or_else(|| format!("Tool not found: {name}"))?;
     let deferred = ctx.config.deferred_tools.contains(name);
 
-    // PreToolUse: can block the call outright, rewrite its input, or answer
-    // the permission question in advance.
-    let mut input = input;
-    let mut hook_approved = false;
-    if ctx.hooks.has_hooks_for(hooks::HookEvent::PreToolUse) {
-        let pre_input = hooks::HookInput {
-            hook_event_name: "PreToolUse".into(),
-            session_id: ctx.session_id.clone(),
-            cwd: ctx.cwd.display().to_string(),
-            permission_mode: hook_permission_mode(ctx.session_state.permission_mode()),
-            tool_name: Some(name.to_string()),
-            tool_input: Some(input.clone()),
-            tool_use_id: Some(ctx.tool_use_id.clone()),
-            tool_result: None,
-            is_error: None,
-            user_prompt: None,
-            ..Default::default()
-        };
-        let hook_result = ctx
-            .hooks
-            .run(hooks::HookEvent::PreToolUse, &pre_input)
-            .await;
-        if let Some(response) = hook_result.blocked() {
-            return Err(format!(
-                "Blocked by PreToolUse hook: {}",
-                response.message.as_deref().unwrap_or("no reason given")
-            ));
-        }
-        if let Some(updated) = hook_result.updated_input() {
-            input = updated.clone();
-        }
-        hook_approved = hook_result.approved().is_some();
-    }
-
-    // Permission check. `Permit` proceeds unchanged; `Deny` blocks the call outright; `Prompt`
-    // asks the host and genuinely blocks until it answers — matching
-    // conventional confirmation-prompt UX (a CLI `y/n`, `sudo`, ...), not a
-    // race against an arbitrary timeout. The one thing that can still
-    // interrupt the wait is the *session* going away: `ctx.cancel` is the
-    // same token `daemon::SessionPool::shutdown_session` fires on
-    // `session.close`/client-disconnect, threaded down through
-    // `Agent::run(cancel)` → `process_turn` → `run_user_turn`. If nobody explicitly approved the call before the
-    // session tore down, the safe default is to *not* run it.
-    // Whatever permission handler the host installed, a call whose input the
-    // tool rejects never reaches it.
-    if let base::tool::ValidationResult::Err(message, _) = tool
-        .validate_input(&input, &tool_context_for(ctx, &tool))
-        .await
+    // The hook may rewrite the input, and permission judges what will run.
+    let (input, hook) = pre_tool_use(ctx, name, input).await;
+    let tool_ctx = tool_context_for(ctx, &tool);
+    if let base::tool::ValidationResult::Err(message, _) =
+        tool.validate_input(&input, &tool_ctx).await
     {
         return Err(if deferred {
             with_schema(tool.as_ref(), &ctx.config, &message)
@@ -309,203 +267,8 @@ pub(super) async fn execute_tool_inner(
             message
         });
     }
+    let user_approved = authorize(ctx, name, &tool, &input, &tool_ctx, &hook).await?;
 
-    use base::interface::permission::{Answerable, PermissionOutcome, Reason};
-    let check_started = std::time::Instant::now();
-    let checked = ctx
-        .permission
-        .policy
-        .decide(&base::interface::permission::PermissionRequest::new(
-            name,
-            Some(&tool),
-            &input,
-            &ctx.cwd,
-            &ctx.session_id,
-            &ctx.session_state,
-        ))
-        .await;
-    record_permission_decision(ctx, &tool, name, &input, &checked, check_started);
-    // Before the unattended refusal below: a hook's approve is an answer given
-    // in advance, so nobody needs to be attending for it to count.
-    let hook_answers = hook_approved
-        && matches!(
-            checked,
-            PermissionOutcome::Prompt {
-                answerable: Answerable::HookOrPerson,
-                ..
-            }
-        );
-    let user_approved = matches!(checked, PermissionOutcome::Prompt { .. }) && !hook_answers;
-    match checked {
-        PermissionOutcome::Permit { .. } => {}
-        PermissionOutcome::Prompt { .. } if hook_answers => {}
-        PermissionOutcome::Deny {
-            reason: Reason {
-                message: reason, ..
-            },
-        } => {
-            fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {
-                i.with_tool(name, input.clone()).with_reason(reason.clone())
-            })
-            .await;
-            return Err(format!("Denied by permission: {reason}"));
-        }
-        PermissionOutcome::Prompt { message, .. } if ctx.session_state.unattended => {
-            let reason = format!(
-                "{message} — and nobody is attending this session to approve it. Work within \
-                 what is allowed; if the task needs this, report it: the instance's settings \
-                 grant it (`sandbox.additional_directories`, `sandbox.read_directories`, or a \
-                 `permission_rules` allow rule)."
-            );
-            fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {
-                i.with_tool(name, input.clone()).with_reason(reason.clone())
-            })
-            .await;
-            return Err(format!("Denied by permission: {reason}"));
-        }
-        PermissionOutcome::Prompt {
-            prompt_id,
-            message,
-            paths,
-            ..
-        } => {
-            let permission_wait_start = std::time::Instant::now();
-            fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionRequested, |i| {
-                i.with_tool(name, input.clone())
-                    .with_reason(message.clone())
-            })
-            .await;
-            // `Notification` is "fired when user attention is required
-            // (typically a permission prompt is pending)". A host that wants to
-            // ring a bell, raise a desktop notification or ping a channel
-            // when the agent is blocked on a human hooks it here.
-            fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::Notification, |i| {
-                i.with_tool(name, input.clone())
-                    .with_reason(format!("waiting for a permission decision on `{name}`"))
-            })
-            .await;
-            let ask = ctx
-                .elicitation
-                .ask(base::interface::elicitation::ElicitRequest {
-                    id: prompt_id.clone(),
-                    kind: base::interface::elicitation::ElicitKind::Authorization {
-                        tool_name: name.to_string(),
-                        paths,
-                        tool_use_id: Some(ctx.tool_use_id.clone()),
-                    },
-                    message,
-                    options: crate::elicitation::ChannelElicitation::authorization_options(),
-                });
-            tokio::pin!(ask);
-            // `0` means wait indefinitely; `tokio::select!` needs a future
-            // either way, so an unbounded wait becomes one that never
-            // resolves rather than a branch that isn't there.
-            let prompt_timeout = ctx.config.permission_prompt_timeout_secs;
-            let timeout_fut = async move {
-                if prompt_timeout == 0 {
-                    std::future::pending::<()>().await
-                } else {
-                    tokio::time::sleep(std::time::Duration::from_secs(prompt_timeout)).await
-                }
-            };
-            tokio::pin!(timeout_fut);
-            tokio::select! {
-                _ = &mut timeout_fut => {
-                    // Fail closed. An unanswered prompt is not consent, and a
-                    // host that never answers must not be able to hold a tool
-                    // call open forever. Dropping `ask` here is what discards
-                    // a late answer for this id — see `ChannelElicitation`'s
-                    // registration guard.
-                    fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {
-                        i.with_tool(name, input.clone())
-                            .with_reason("permission prompt timed out")
-                    })
-                    .await;
-                    return Err(format!(
-                        "Denied by permission: no answer to the permission prompt within {prompt_timeout}s"
-                    ));
-                }
-                outcome = &mut ask => {
-                    match outcome.answer_as::<crate::agent::PermissionDecision>() {
-                        Some(crate::agent::PermissionDecision::Permit) => {}
-                        Some(crate::agent::PermissionDecision::PermitAlways { scope }) => {
-                            // Same content derivation the rule engine itself
-                            // uses to match a tool call against a rule (see
-                            // `Policy::decide` step 3 — `RuleHit`
-                            // evaluation) — this is what makes the persisted
-                            // pattern actually match future calls the same
-                            // way the one the user just answered did.
-                            use base::interface::permission::{Grant, GrantError, GrantScope};
-                            let scope = match scope {
-                                crate::agent::PersistScope::Session => GrantScope::Session,
-                                crate::agent::PersistScope::Local => GrantScope::Project,
-                            };
-                            match ctx
-                                .permission
-                                .grants
-                                .grant(Grant::new(name, tool.permission_match_content(&input), scope))
-                                .await
-                            {
-                                Ok(()) => {}
-                                Err(GrantError::NotKept) => {
-                                    tracing::debug!(tool_name = %name, "permit-always: this session keeps no grants");
-                                }
-                                Err(e) => {
-                                    tracing::warn!(tool_name = %name, error = %e, "permit-always not kept as asked");
-                                }
-                            }
-                        }
-                        Some(crate::agent::PermissionDecision::Deny { reason }) => {
-                            // Denied by the *host's* answer to the prompt, as
-                            // opposed to the rule-engine `Deny` above. Same
-                            // event either way — a hook watching for denials
-                            // cares that the call was refused, not by whom.
-                            fire_ctx_lifecycle_hook(
-                                ctx,
-                                hooks::HookEvent::PermissionDenied,
-                                |i| i.with_tool(name, input.clone()).with_reason(reason.clone()),
-                            )
-                            .await;
-                            return Err(format!("Denied by permission: {reason}"));
-                        }
-                        // Declined, or answered with something that is not a
-                        // decision. Either way nobody authorized this call, and
-                        // the reason is the decliner's own words — a host that
-                        // cannot ask says so, and the model is told what it was
-                        // told rather than a phrase invented here.
-                        None => {
-                            let reason = outcome
-                                .decline_reason()
-                                .unwrap_or("the answer to the permission prompt was not a decision")
-                                .to_string();
-                            fire_ctx_lifecycle_hook(
-                                ctx,
-                                hooks::HookEvent::PermissionDenied,
-                                |i| i.with_tool(name, input.clone()).with_reason(reason.clone()),
-                            )
-                            .await;
-                            return Err(reason);
-                        }
-                    }
-                }
-                _ = ctx.cancel.cancelled() => {
-                    let _ = ctx.telemetry_handle.record(telemetry::TelemetryEvent::tool_cancelled(
-                        &ctx.session_id,
-                        ctx.turn_no,
-                        Some(ctx.turn_id.clone()),
-                        telemetry::ToolCancelledPayload {
-                            tool_name: name.to_string(),
-                            reason: "session_closing_during_permission_wait".into(),
-                            elapsed_ms: permission_wait_start.elapsed().as_millis() as u64,
-                        },
-                    ));
-                    return Err("permission request cancelled: session closing".into());
-                }
-            }
-        }
-    }
-
-    let tool_ctx = tool_context_for(ctx, &tool);
     let input_for_post_hook = input.clone();
     let input_json_size = serde_json::to_string(&input)
         .map(|s| s.len() as u64)

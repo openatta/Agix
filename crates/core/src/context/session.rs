@@ -84,6 +84,7 @@ pub struct SessionState {
     /// Weak: the registry's tools may hold this session.
     tools: std::sync::RwLock<Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>>,
     exec: std::sync::RwLock<Option<crate::interface::exec::ExecProviders>>,
+    confinement: std::sync::OnceLock<crate::interface::exec::ConfinementReport>,
 }
 
 /// Log namespace and event under which [`DurableState`] is recorded.
@@ -161,6 +162,7 @@ impl SessionState {
             structured_output: std::sync::Mutex::new(None),
             tools: std::sync::RwLock::new(None),
             exec: std::sync::RwLock::new(None),
+            confinement: std::sync::OnceLock::new(),
         }
     }
 
@@ -332,6 +334,7 @@ impl SessionState {
             goal_events: _,
             tools: _,
             exec: _,
+            confinement: _,
             // Already in the log, which the resume read the goal back from.
             unrecorded_goal_changes: _,
             // What the log has, which the resume read back.
@@ -869,6 +872,15 @@ impl SessionState {
     /// The providers [`bind_exec`](Self::bind_exec) bound, if any.
     pub fn exec(&self) -> Option<crate::interface::exec::ExecProviders> {
         self.exec.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// What the session's sandbox holds a command to: `probe`d the first time
+    /// it is asked, the same answer after.
+    pub fn confinement(
+        &self,
+        probe: impl FnOnce() -> crate::interface::exec::ConfinementReport,
+    ) -> crate::interface::exec::ConfinementReport {
+        *self.confinement.get_or_init(probe)
     }
 
     /// The tool this session's calls named `name` dispatch to, if a registry

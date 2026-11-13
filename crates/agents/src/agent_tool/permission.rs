@@ -201,7 +201,7 @@ impl PermissionPolicy for ParentPermission {
             req.tool.map(|t| t.as_ref()),
             req.input,
         );
-        if req.session.unattended {
+        if req.attendance == Some(base::interface::permission::Attendance::Unattended) {
             return outcome;
         }
         let PermissionOutcome::Prompt {

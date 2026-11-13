@@ -22,11 +22,22 @@ pub(super) fn record_permission_decision(
     checked: &base::interface::permission::PermissionOutcome,
     started: std::time::Instant,
 ) {
-    use base::interface::permission::PermissionOutcome;
-    let outcome = match checked {
-        PermissionOutcome::Permit { .. } => telemetry::PermissionDecisionOutcome::AutoAllow,
-        PermissionOutcome::Deny { .. } => telemetry::PermissionDecisionOutcome::Deny,
-        PermissionOutcome::Prompt { .. } => telemetry::PermissionDecisionOutcome::Ask,
+    use base::interface::permission::{Basis, PermissionOutcome};
+    use telemetry::PermissionDecisionOutcome;
+    let (outcome, basis, stage) = match checked {
+        PermissionOutcome::Permit { basis, .. } => (
+            match basis {
+                Basis::Person => PermissionDecisionOutcome::UserAllow,
+                _ => PermissionDecisionOutcome::AutoAllow,
+            },
+            Some(basis.as_str().to_string()),
+            None,
+        ),
+        PermissionOutcome::Deny { reason } | PermissionOutcome::Prompt { reason, .. } => (
+            PermissionDecisionOutcome::Deny,
+            None,
+            Some(reason.stage.as_str().to_string()),
+        ),
     };
     let _ = ctx
         .telemetry_handle
@@ -40,6 +51,8 @@ pub(super) fn record_permission_decision(
                 permission_mode: hook_permission_mode(ctx.session_state.permission_mode()),
                 destructive: tool.call_traits(input).destructive,
                 latency_ms: started.elapsed().as_millis() as u64,
+                basis,
+                stage,
             },
         ));
 }

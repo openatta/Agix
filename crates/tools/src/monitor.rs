@@ -140,14 +140,7 @@ impl Tool for MonitorTool {
         }
     }
 
-    async fn check_permissions(&self, _input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        // Unattended, nobody can answer; the OS sandbox holds the script the
-        // same way it holds a `Bash` command, under the same network condition.
-        if ctx.session.unattended && crate::bash::unattended_sandbox_allows(ctx) {
-            return PermissionDecision::Allow {
-                decision_reason: Some("sandboxed".into()),
-            };
-        }
+    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
         PermissionDecision::ask("Monitor command requires confirmation")
     }
 
@@ -508,39 +501,67 @@ mod tests {
     #[tokio::test]
     async fn unattended_monitor_runs_when_the_sandbox_holds() {
         use base::context::config::NetworkModeConfig;
+        use base::interface::permission::{
+            Attendance, PermissionPolicy, PermissionRequest, ToolFacts,
+        };
         let dir = TempDir::new().unwrap();
         let input = json!({"command": "npm run dev", "description": "dev server"});
-        let unattended = |network, requires_network_policy| {
+        let tool: Arc<dyn Tool> = Arc::new(MonitorTool);
+        let decide = |network, requires_network_policy, attendance| {
             let mut ctx = ctx_in(dir.path());
-            let mut session = SessionState::new(dir.path().to_path_buf());
-            session.unattended = true;
-            ctx.session = Arc::new(session);
             ctx.dangerously_disable_sandbox = false;
             ctx.sandbox.network_mode = network;
             ctx.sandbox.unattended_requires_network_policy = requires_network_policy;
             ctx.exec.sandbox = Arc::new(Holds);
-            ctx
+            ctx.attendance = attendance;
+            ctx.confinement = crate::bash::confinement_report(
+                &ctx.sandbox,
+                &ctx.exec,
+                false,
+                &ctx.cwd,
+                &ctx.session_id,
+            );
+            let (tool, input) = (&tool, &input);
+            async move {
+                let facts = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
+                permissions::policy::Policy::empty()
+                    .decide(
+                        &PermissionRequest::new(
+                            "Monitor",
+                            Some(tool),
+                            input,
+                            &ctx.cwd,
+                            &ctx.session_id,
+                            &ctx.session,
+                        )
+                        .with_facts(&facts)
+                        .with_ctx(&ctx)
+                        .with_attendance(attendance),
+                    )
+                    .await
+            }
         };
-        let input = &input;
-        let decide =
-            move |ctx: ToolContext| async move { MonitorTool.check_permissions(input, &ctx).await };
         for (network, requires, allowed) in [
             (NetworkModeConfig::Unrestricted, false, true),
             (NetworkModeConfig::DenyAll, false, true),
             (NetworkModeConfig::Unrestricted, true, false),
             (NetworkModeConfig::DenyAll, true, true),
         ] {
-            let d = decide(unattended(network, requires)).await;
+            let d = decide(network, requires, Attendance::Unattended).await;
             assert_eq!(
-                matches!(d, PermissionDecision::Allow { .. }),
+                d.is_permit(),
                 allowed,
                 "{network:?}, requires_network_policy={requires}: {d:?}"
             );
         }
-        assert!(matches!(
-            decide(ctx_in(dir.path())).await,
-            PermissionDecision::Ask { .. }
-        ));
+        let attended = decide(NetworkModeConfig::DenyAll, false, Attendance::Attended).await;
+        assert!(
+            matches!(
+                attended,
+                base::interface::permission::PermissionOutcome::Prompt { .. }
+            ),
+            "{attended:?}"
+        );
     }
 
     #[tokio::test]

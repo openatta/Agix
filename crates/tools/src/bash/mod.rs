@@ -21,8 +21,8 @@ pub(crate) use paths::stays_where_the_session_may_read;
 pub use base::interface::exec::SandboxMode;
 pub use platform::sandbox::sandbox_status;
 
-pub(crate) use sandbox::{confine_shell, unattended_sandbox_allows};
-pub use sandbox::{engine_exec, engine_exec_for};
+pub(crate) use sandbox::confine_shell;
+pub use sandbox::{confinement_report, engine_exec, engine_exec_for};
 
 use async_trait::async_trait;
 use base::error::ToolError;
@@ -181,13 +181,6 @@ impl Tool for BashTool {
         if self.reads_only_where_it_may(input, ctx) {
             return PermissionDecision::Allow {
                 decision_reason: Some("read_only".into()),
-            };
-        }
-        // Nobody can answer the question below, and the OS sandbox already
-        // holds the command to the directories it may write.
-        if ctx.session.unattended && unattended_sandbox_allows(ctx) {
-            return PermissionDecision::Allow {
-                decision_reason: Some("sandboxed".into()),
             };
         }
         PermissionDecision::Ask {

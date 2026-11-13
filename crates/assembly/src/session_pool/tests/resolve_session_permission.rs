@@ -58,7 +58,7 @@ fn nothing_configured_builds_a_real_asking_permission() {
 }
 
 #[tokio::test]
-async fn a_bypass_session_gets_the_hosts_permission_or_else_a_gate_that_only_validates() {
+async fn a_bypass_session_gets_the_hosts_permission_or_else_a_policy_that_consults_no_rule() {
     use base::interface::permission::PermissionOutcome;
     let mut settings = defaults();
     settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
@@ -104,13 +104,19 @@ async fn a_bypass_session_gets_the_hosts_permission_or_else_a_gate_that_only_val
         bash_says(serde_json::json!({"command": "ls"})).await,
         PermissionOutcome::Permit { .. }
     ));
-    assert!(
-        matches!(
-            bash_says(serde_json::json!({"command": "  "})).await,
-            PermissionOutcome::Deny { .. }
-        ),
-        "input validation still runs under bypass"
+    // Input validation is the runtime's, once, before the policy is asked;
+    // under bypass it still refuses what the tool rejects.
+    let blank = serde_json::json!({"command": "  "});
+    let ctx = base::tool::ToolContext::for_test_with(
+        cwd.clone(),
+        base::interface::exec::ExecProviders::in_process(),
     );
+    assert!(bash
+        .as_ref()
+        .unwrap()
+        .validate_input(&blank, &ctx)
+        .await
+        .is_err());
 }
 
 #[test]

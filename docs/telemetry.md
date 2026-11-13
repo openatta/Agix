@@ -103,7 +103,7 @@ handle 和一个后台 future,事件过滤、脱敏之后交给你给的每个 `
 | `tool_start` | 工具开始执行:PreToolUse hook、输入校验、权限都放行之后。 | 会话 | `deferred`、`destructive`、`input_json_size`、`tool_name`、`tool_use_id` |
 | `tool_execution` | 工具执行结束,成功或失败;工具自己报告的失败(如 Bash 非零退出)算失败。 | 会话 | `error_message?`、`input_json_size`、`is_error`、`latency_ms`、`outcome`(`approved` / `denied` / `succeeded` / `failed` / `timeout` / `cancelled`)、`result_content_size`、`tool_name`、`tool_use_id`、`user_approved` |
 | `tool_cancelled` | 一次工具调用在等权限回答时会话被关闭。 | 会话 | `elapsed_ms`、`reason`、`tool_name` |
-| `permission_decision` | 会话的权限检查对一次工具调用作出判定,在询问任何人之前。 | 会话 | `destructive`、`latency_ms`、`outcome`(`auto_allow` / `ask` / `deny`)、`permission_mode`、`tool_name` |
+| `permission_decision` | 会话的权限检查对一次工具调用作出判定,在询问任何人之前。 | 会话 | `basis?`、`destructive`、`latency_ms`、`outcome`(`user_allow`)、`permission_mode`、`stage?`、`tool_name` |
 | `user_prompt_submit` | 一轮开始,紧接 `turn_start`:开这一轮的用户消息,只记大小。 | 会话 | `attachment_count`、`char_count` |
 | `slash_command_used` | 开一轮的消息是斜杠命令。 | 会话 | `command`、`has_arg`、`kind` |
 | `turn_start` | 一轮开始,UserPromptSubmit hook 放行之后。 | 会话 | `is_retry`、`resumed` |

@@ -233,10 +233,14 @@ impl Policy {
     }
 
     /// The context of a call whose request brought none: the judged
-    /// session's, with this policy's sandbox settings.
+    /// session's, with this policy's sandbox settings. A session that never
+    /// had providers bound is judged in-process, and no sandbox is known to
+    /// hold its commands.
     fn context_for(&self, req: &PermissionRequest<'_>, mode: PermissionMode) -> ToolContext {
         let judged = req.judged();
-        let exec = judged.exec().unwrap_or_else(platform::local_providers);
+        let exec = judged
+            .exec()
+            .unwrap_or_else(base::interface::exec::ExecProviders::in_process);
         let mut ctx = ToolContext::from_engine_ctx_with(
             req.cwd.to_path_buf(),
             tokio_util::sync::CancellationToken::new(),
@@ -248,6 +252,9 @@ impl Policy {
         ctx.permission_mode = mode;
         ctx.additional_writable_dirs = ctx.session.additional_writable_dirs.clone();
         ctx.dangerously_disable_sandbox = ctx.session.sandbox_disabled;
+        if let Some(attendance) = req.attendance {
+            ctx.attendance = attendance;
+        }
         ctx
     }
 
@@ -340,14 +347,6 @@ impl PermissionPolicy for Policy {
                 &own_ctx
             }
         };
-        if let base::tool::ValidationResult::Err(message, code) =
-            tool.validate_input(req.input, ctx).await
-        {
-            return PermissionOutcome::deny(
-                Stage::ToolRefusal,
-                format!("permission check error: invalid input: {message} (code {code})"),
-            );
-        }
         let own_facts;
         let facts = match req.facts {
             Some(facts) => facts,

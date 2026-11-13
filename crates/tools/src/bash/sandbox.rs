@@ -232,25 +232,29 @@ pub(crate) fn confine_shell(
     Ok(confined.spec)
 }
 
-/// Whether an unattended shell-running tool may run a command nobody can be
-/// asked about: the OS sandbox fully confines its writes, and — when
-/// `sandbox.unattended_requires_network_policy` is on — the network is not
-/// left unrestricted, since the write sandbox does not cover it.
-pub(crate) fn unattended_sandbox_allows(ctx: &ToolContext) -> bool {
-    use base::context::config::NetworkModeConfig;
-    let network_ok = !ctx.sandbox.unattended_requires_network_policy
-        || !matches!(ctx.sandbox.network_mode, NetworkModeConfig::Unrestricted);
-    network_ok && sandbox_holds(ctx)
-}
-
-/// Whether a command run now would be fully confined by the OS sandbox.
-fn sandbox_holds(ctx: &ToolContext) -> bool {
-    if ctx.dangerously_disable_sandbox {
-        return false;
+/// What the session's sandbox holds a command to, for the permission policy
+/// to read: one probe command confined the way a command nobody attends is,
+/// since that is the command the answer lets run.
+pub fn confinement_report(
+    settings: &base::tool::SandboxSettings,
+    exec: &base::interface::exec::ExecProviders,
+    sandbox_disabled: bool,
+    cwd: &std::path::Path,
+    session_id: &str,
+) -> base::interface::exec::ConfinementReport {
+    use base::interface::exec::{ConfinementReport, ProcessSpec};
+    let (require, network) = (
+        settings.require_enforcement,
+        settings.unattended_requires_network_policy,
+    );
+    if sandbox_disabled {
+        return ConfinementReport::disabled(require, network);
     }
-    let policy = sandbox_policy(ctx);
-    let probe = base::interface::exec::ProcessSpec::new("bash", &ctx.cwd).args(["-c", "true"]);
-    ctx.exec.sandbox.confine(probe, &policy).enforcement == base::interface::exec::Enforcement::Full
+    let mut policy = to_sandbox_policy(settings);
+    policy.additional_writable = vec![session_temp_dir(settings, session_id)];
+    policy.deny_ipc_escapes = true;
+    let probe = ProcessSpec::new("bash", cwd).args(["-c", "true"]);
+    ConfinementReport::probe(&*exec.sandbox, probe, &policy, require, network)
 }
 
 /// How the engine starts its own git and helpers in the session `ctx`

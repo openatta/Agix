@@ -335,20 +335,26 @@ async fn a_pre_tool_use_approve_answers_the_permission_question_but_not_a_denial
         Arc::new(hooks::HookRunner::new(settings))
     };
 
+    let asking = || {
+        Arc::new(permissions::policy::Policy::new(
+            permissions::ruleset::RuleSet::new(vec![base::permission::PermissionRule {
+                source: base::permission::RuleSource::UserSettings,
+                behavior: base::permission::RuleBehavior::Ask,
+                tool_name: "Probe".into(),
+                rule_content: None,
+            }]),
+        ))
+    };
     let unanswered = test_exec_ctx_with_permission(
         tools.clone(),
         Arc::new(hooks::HookRunner::new(std::collections::HashMap::new())),
-        Arc::new(PromptTestPermission { prompt_id: "p" }),
+        asking(),
     );
     let declined = execute_tool_with_telemetry(&unanswered, "Probe", serde_json::json!({})).await;
     assert!(declined.is_err(), "nobody answered, so it does not run");
     assert!(called.lock().unwrap().is_none());
 
-    let mut approved = test_exec_ctx_with_permission(
-        tools.clone(),
-        approving(),
-        Arc::new(PromptTestPermission { prompt_id: "p" }),
-    );
+    let mut approved = test_exec_ctx_with_permission(tools.clone(), approving(), asking());
     let (result, ran) =
         recorded_tool_execution(&mut approved, "Probe", serde_json::json!({})).await;
     assert!(result.is_ok(), "{result:?}");

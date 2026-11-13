@@ -401,3 +401,34 @@ fn a_test_marker_early_in_a_file_hides_nothing_after_it() {
         store.production_lines()
     );
 }
+
+#[test]
+fn field_accesses_tell_a_write_from_a_read_and_reach_into_macros() {
+    let f = standalone(
+        "a.rs",
+        r#"
+fn f(s: &mut S) {
+    s.unattended = true;
+    let a = s.unattended;
+    assert!(s.inner.unattended, "{}", s.unattended());
+    some_macro!(s.unattended; s.other());
+}
+"#
+        .into(),
+    )
+    .unwrap();
+    let found: Vec<(String, bool, usize)> = scan::field_accesses(&f, View::Prod)
+        .into_iter()
+        .filter(|a| a.name == "unattended")
+        .map(|a| (a.name, a.write, a.hit.line))
+        .collect();
+    assert_eq!(
+        found,
+        vec![
+            ("unattended".to_string(), true, 3),
+            ("unattended".to_string(), false, 4),
+            ("unattended".to_string(), false, 5),
+            ("unattended".to_string(), false, 6),
+        ]
+    );
+}

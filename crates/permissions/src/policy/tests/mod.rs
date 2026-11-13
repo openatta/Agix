@@ -10,5 +10,6 @@ use base::tool::PermissionContentKind;
 use serde_json::Value;
 use std::sync::Arc;
 
+mod answering;
 mod judging;
 mod requests;

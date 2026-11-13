@@ -702,13 +702,51 @@ async fn expand_dynamic_context(
     out
 }
 
+/// Why the policy will not let a skill's inline command run, if it will not.
+/// Nobody can be asked about one, so its input is checked and it is judged
+/// as a call nobody can approve.
+async fn inline_command_refused(
+    permission: &dyn base::interface::permission::PermissionPolicy,
+    bash: &Arc<dyn base::tool::Tool>,
+    input: &serde_json::Value,
+    ctx: &ToolContext,
+) -> Option<String> {
+    use base::interface::permission::{Attendance, PermissionOutcome, ToolFacts};
+    if let base::tool::ValidationResult::Err(message, _) = bash.validate_input(input, ctx).await {
+        return Some(message);
+    }
+    let attendance = match ctx.attendance {
+        Attendance::Attended => Attendance::NoOneToAsk(
+            "it needs the user's approval, which a skill's inline command cannot ask for; run \
+             it with the Bash tool instead",
+        ),
+        nobody => nobody,
+    };
+    let facts = ToolFacts::gather(bash.as_ref(), input, ctx).await;
+    let request = base::interface::permission::PermissionRequest::new(
+        "Bash",
+        Some(bash),
+        input,
+        &ctx.cwd,
+        &ctx.session_id,
+        &ctx.session,
+    )
+    .with_facts(&facts)
+    .with_ctx(ctx)
+    .with_attendance(attendance);
+    match permission.decide(&request).await {
+        PermissionOutcome::Permit { .. } => None,
+        PermissionOutcome::Deny { reason } => Some(reason.message),
+        PermissionOutcome::Prompt { message, .. } => Some(message),
+    }
+}
+
 async fn run_skill_shell_command(
     command: &str,
     ctx: &ToolContext,
     refusal: Option<&str>,
     permission: Option<&dyn base::interface::permission::PermissionPolicy>,
 ) -> String {
-    use base::interface::permission::PermissionOutcome;
     if let Some(refusal) = refusal {
         return refusal.to_string();
     }
@@ -719,24 +757,7 @@ async fn run_skill_shell_command(
     };
     let refused = match permission {
         None => Some("no permission check is wired for this skill".to_string()),
-        Some(permission) => match permission
-            .decide(&base::interface::permission::PermissionRequest::new(
-                "Bash",
-                Some(&bash),
-                &input,
-                &ctx.cwd,
-                &ctx.session_id,
-                &ctx.session,
-            ))
-            .await
-        {
-            PermissionOutcome::Permit { .. } => None,
-            PermissionOutcome::Deny { reason } => Some(reason.message),
-            PermissionOutcome::Prompt { message, .. } => Some(format!(
-                "it needs the user's approval, which a skill's inline command cannot ask for \
-                 ({message}); run it with the Bash tool instead"
-            )),
-        },
+        Some(permission) => inline_command_refused(permission, &bash, &input, ctx).await,
     };
     if let Some(reason) = refused {
         tracing::warn!(command = %command, reason = %reason, "skill inline command not run");

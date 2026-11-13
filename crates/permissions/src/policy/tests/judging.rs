@@ -556,8 +556,10 @@ async fn a_deny_rules_only_gate_refuses_what_a_rule_denies_in_any_mode_and_nothi
     }
 }
 
+/// Input validation is the caller's, once, before it asks: the policy
+/// judges what the tool says about the call, not whether the call parses.
 #[tokio::test]
-async fn bypass_mode_still_rejects_invalid_input() {
+async fn the_policy_leaves_input_validation_to_its_caller() {
     let tool = FakeTool::new("Write").invalid();
     let r = Policy::empty()
         .check_with(
@@ -567,7 +569,13 @@ async fn bypass_mode_still_rejects_invalid_input() {
         )
         .await;
     assert!(
-        matches!(&r, Ok(PermissionOutcome::Deny { reason }) if reason.stage == Stage::ToolRefusal),
+        matches!(
+            &r,
+            Ok(PermissionOutcome::Permit {
+                basis: Basis::Bypass,
+                ..
+            })
+        ),
         "{r:?}"
     );
 }

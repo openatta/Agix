@@ -58,6 +58,15 @@ pub struct FnSpan {
     pub hit: Hit,
 }
 
+/// A `.name` field access.
+#[derive(Clone, Debug)]
+pub struct FieldAccess {
+    pub name: String,
+    /// The left side of an assignment.
+    pub write: bool,
+    pub hit: Hit,
+}
+
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
     pub name: Option<String>,
@@ -112,6 +121,12 @@ pub fn paths(f: &SourceFile, v: View) -> Vec<(Vec<String>, Hit)> {
 
 pub fn expr_paths(f: &SourceFile, v: View) -> Vec<(Vec<String>, Hit)> {
     collect(f, v, Want::EXPR_PATHS).expr_paths
+}
+
+/// Every named field access in `f`. In a macro body syn could not parse, a
+/// `.ident` not followed by `( .. )` counts as a read.
+pub fn field_accesses(f: &SourceFile, v: View) -> Vec<FieldAccess> {
+    collect(f, v, Want::FIELDS).fields
 }
 
 pub fn calls(f: &SourceFile, v: View) -> Vec<Call> {
@@ -287,6 +302,7 @@ struct Want {
     strings: bool,
     items: bool,
     features: bool,
+    fields: bool,
 }
 
 impl Want {
@@ -318,6 +334,10 @@ impl Want {
         features: true,
         ..Want::NONE
     };
+    const FIELDS: Want = Want {
+        fields: true,
+        ..Want::NONE
+    };
     const NONE: Want = Want {
         paths: false,
         expr_paths: false,
@@ -326,6 +346,7 @@ impl Want {
         strings: false,
         items: false,
         features: false,
+        fields: false,
     };
 }
 
@@ -343,6 +364,7 @@ struct Found {
     traits: Vec<TraitInfo>,
     impls: Vec<ImplInfo>,
     features: Vec<(String, Hit)>,
+    fields: Vec<FieldAccess>,
 }
 
 fn collect(f: &SourceFile, v: View, want: Want) -> Found {
@@ -538,6 +560,19 @@ impl Collector<'_> {
                     i += 1;
                 }
                 TokenTree::Punct(p) if p.as_char() == '.' => {
+                    if let Some(TokenTree::Ident(id)) = trees.get(i + 1) {
+                        let called = matches!(
+                            trees.get(i + 2),
+                            Some(TokenTree::Group(g)) if g.delimiter() == Delimiter::Parenthesis
+                        );
+                        if self.want.fields && !called {
+                            self.found.fields.push(FieldAccess {
+                                name: id.to_string(),
+                                write: false,
+                                hit: self.f.hit(id.span()),
+                            });
+                        }
+                    }
                     if let (Some(TokenTree::Ident(id)), Some(TokenTree::Group(g))) =
                         (trees.get(i + 1), trees.get(i + 2))
                     {
@@ -581,6 +616,16 @@ impl Collector<'_> {
                     }
                 }
             }
+        }
+    }
+
+    fn field(&mut self, e: &syn::ExprField, write: bool) {
+        if let (true, syn::Member::Named(name)) = (self.want.fields, &e.member) {
+            self.found.fields.push(FieldAccess {
+                name: name.to_string(),
+                write,
+                hit: self.f.hit(name.span()),
+            });
         }
     }
 
@@ -736,6 +781,22 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             self.found.expr_paths.push((segs, hit));
         }
         visit::visit_expr_path(self, e);
+    }
+
+    fn visit_expr_field(&mut self, e: &'ast syn::ExprField) {
+        self.field(e, false);
+        visit::visit_expr_field(self, e);
+    }
+
+    fn visit_expr_assign(&mut self, e: &'ast syn::ExprAssign) {
+        match &*e.left {
+            Expr::Field(field) => {
+                self.field(field, true);
+                visit::visit_expr(self, &field.base);
+            }
+            left => visit::visit_expr(self, left),
+        }
+        visit::visit_expr(self, &e.right);
     }
 
     fn visit_expr_struct(&mut self, e: &'ast syn::ExprStruct) {

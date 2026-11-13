@@ -98,11 +98,6 @@ const MAY_USE_PLATFORM: &[(&str, &str, &str)] = &[
         "command hooks are local processes, HTTP hooks local requests",
     ),
     (
-        "permissions",
-        "crates/permissions",
-        "the providers a permission check judges paths against when none is bound",
-    ),
-    (
         "mcp",
         "crates/mcp",
         "stdio servers are local processes; OAuth is a local HTTP client",

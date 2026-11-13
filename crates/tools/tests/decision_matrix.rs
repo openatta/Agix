@@ -1,17 +1,19 @@
 //! 权限判定的决策矩阵：每个内建工具 × 若干样例输入 × 5 种模式 × 5 种规则 ×
 //! {有人值守, 无人值守} × {无 hook, hook approve}，每格一个结论，冻结成一份 golden。
 //!
-//! 判定走 `Policy::from_settings`（生产路径），请求不带事实，由策略从工具的旧答案桥接；runtime 里
-//! `turn/tool_exec.rs` 的 R6（hook approve 只能回答非 managed 的 Prompt）和 R7
-//! （无人值守时 Prompt 转 Deny）在这里照现行逻辑复刻。判定管线重构之后，这份
-//! 快照必须逐字不变：`UPDATE_GOLDEN=1 cargo test -p tools --test integration
-//! decision_matrix::` 重新生成。
+//! 每格照 runtime 的做法走一遍：输入先校验（不合法即 Deny），再带着 hook 的回答和
+//! 在场性问 `Policy::from_settings`（生产路径）。事实取工具的旧答案（`ToolFacts::bridged`），
+//! 外加 Bash、Monitor 旧答案里无人值守时沙箱兜得住即放行的那一支——那一支已经挪进策略
+//! （S15），只在这里复刻。"raw" 是在场性起作用之前的结论：因没人可问而拒的原本是一问，
+//! hook 的 approve 也答不了的是只有人能答的一问。这份快照必须逐字不变：
+//! `UPDATE_GOLDEN=1 cargo test -p tools --test integration decision_matrix::` 重新生成。
 //!
 //! 家目录用固定的 `/home/matrix`，不读环境；沙箱用一个恒报 Full 的桩，让无人值守的
 //! Bash 放行通道不随运行机器变化。
 //!
-//! 自己声明 `permission_facts` 的工具另有一条等价断言：它的事实和从旧方法桥接推出的
-//! 事实，经同一个按中心判定顺序写的 `conclusion` 得出相同结论，且与策略对桥接事实的结论一致。
+//! 自己声明 `permission_facts` 的工具另有一条等价断言：它的事实和从旧答案推出的事实，
+//! 经同一个按中心判定顺序写的 `conclusion` 得出相同结论；策略对旧答案的结论、对它自己
+//! 声明的事实的结论，也都与之一致。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -20,8 +22,8 @@ use base::interface::exec::{
     Confined, Enforcement, ExecProviders, ProcessSpec, Sandbox, SandboxMode, SandboxPolicy,
 };
 use base::interface::permission::{
-    Answerable, Attendance, HookAnswer, ModeStance, PermissionFacts, PermissionOutcome,
-    PermissionPolicy, PermissionRequest, Reach, Stage, ToolFacts,
+    Answerable, Attendance, HookAnswer, ModeStance, PermissionOutcome, PermissionPolicy,
+    PermissionRequest, Reach, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::settings::{PermissionAction, Settings};
@@ -294,36 +296,30 @@ fn permission(tool: &str, case: RuleCase) -> Policy {
     Policy::from_settings(&settings, extra)
 }
 
-/// What `turn/tool_exec.rs` makes of the policy's outcome: R6, then R7.
-fn after_runtime(
-    outcome: &PermissionOutcome,
-    hook_approved: bool,
-    unattended: bool,
-) -> &'static str {
+fn word(outcome: &PermissionOutcome) -> &'static str {
     match outcome {
         PermissionOutcome::Permit { .. } => "Permit",
         PermissionOutcome::Deny { .. } => "Deny",
-        PermissionOutcome::Prompt { answerable, .. } => {
-            if hook_approved && *answerable == Answerable::HookOrPerson {
-                "Permit"
-            } else if unattended {
-                "Deny"
-            } else {
-                "Prompt"
-            }
-        }
+        PermissionOutcome::Prompt { .. } => "Prompt",
     }
 }
 
-fn raw(outcome: &PermissionOutcome) -> &'static str {
-    match outcome {
-        PermissionOutcome::Permit { .. } => "Permit",
-        PermissionOutcome::Deny { .. } => "Deny",
+/// What the policy concluded before the attendance was weighed, from what it
+/// concluded without a hook and with a hook's approve.
+fn raw(no_hook: &PermissionOutcome, approved: &PermissionOutcome) -> &'static str {
+    match no_hook {
+        PermissionOutcome::Deny { reason } if reason.stage == Stage::Attendance => {
+            if approved.is_permit() {
+                "Prompt"
+            } else {
+                "Prompt+managed"
+            }
+        }
         PermissionOutcome::Prompt {
             answerable: Answerable::PersonOnly,
             ..
         } => "Prompt+managed",
-        PermissionOutcome::Prompt { .. } => "Prompt",
+        other => word(other),
     }
 }
 
@@ -386,17 +382,14 @@ pub(crate) async fn render() -> (String, usize) {
             for (mode_name, mode) in MODES {
                 for (rule_name, rule) in RULES {
                     let policy = permission(tool.name(), rule);
-                    let attended = decide(&policy, tool, &sample.input, &cwd, mode, false).await;
-                    let unattended = decide(&policy, tool, &sample.input, &cwd, mode, true).await;
+                    let [a_raw, a_none, a_hook] =
+                        rendered(&policy, tool, &sample.input, &cwd, mode, false).await;
+                    let [u_raw, u_none, u_hook] =
+                        rendered(&policy, tool, &sample.input, &cwd, mode, true).await;
                     let _ = writeln!(
                         out,
-                        "{mode_name:<17} {rule_name:<11} | att {} -> {} / {} | unatt {} -> {} / {}",
-                        raw(&attended),
-                        after_runtime(&attended, false, false),
-                        after_runtime(&attended, true, false),
-                        raw(&unattended),
-                        after_runtime(&unattended, false, true),
-                        after_runtime(&unattended, true, true),
+                        "{mode_name:<17} {rule_name:<11} | att {a_raw} -> {a_none} / {a_hook} \
+                         | unatt {u_raw} -> {u_none} / {u_hook}",
                     );
                     cells += 4;
                 }
@@ -434,8 +427,8 @@ async fn every_builtin_tool_is_decided_the_same_in_every_cell() {
     }
 }
 
-/// What `Policy` hands a tool's own checks, for the same session.
-fn context_like_the_gates(session: &Arc<SessionState>, cwd: &Path) -> ToolContext {
+/// The context the runtime gives a call of `session`'s.
+fn context_like_the_runtime(session: &Arc<SessionState>, cwd: &Path) -> ToolContext {
     let settings = base::settings::LoadedSettings::new(
         Settings::defaults_for("matrix-model"),
         base::settings::PathSettings::default(),
@@ -463,7 +456,90 @@ fn context_like_the_gates(session: &Arc<SessionState>, cwd: &Path) -> ToolContex
     ctx.permission_mode = session.permission_mode();
     ctx.additional_writable_dirs = session.additional_writable_dirs.clone();
     ctx.dangerously_disable_sandbox = session.sandbox_disabled;
+    ctx.attendance = if session.unattended {
+        Attendance::Unattended
+    } else {
+        Attendance::Attended
+    };
+    ctx.confinement = tools::bash::confinement_report(
+        &ctx.sandbox,
+        &ctx.exec,
+        ctx.dangerously_disable_sandbox,
+        cwd,
+        &ctx.session_id,
+    );
     ctx
+}
+
+/// The facts the tool's old answers amount to. Bash and Monitor used to let a
+/// command run unattended wherever the sandbox held it; that allowance is the
+/// policy's now, so it is put back here, where the old answers are wanted.
+async fn old_answers(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolFacts {
+    let mut facts = ToolFacts::bridged(tool, input, ctx).await;
+    let runs = ToolFacts::gather(tool, input, ctx).await.runs.is_some();
+    if runs
+        && ctx.attendance == Attendance::Unattended
+        && ctx.confinement.holds_unattended()
+        && matches!(facts.reach, Reach::Unknown | Reach::Host { .. })
+    {
+        facts.reach = Reach::Inside;
+        facts.question = None;
+    }
+    facts
+}
+
+/// What the runtime makes of a call: `None` when its input is refused before
+/// anyone judges it, else the policy's conclusion on the call's old answers,
+/// or on what the tool states with `stated`.
+#[allow(clippy::too_many_arguments)]
+async fn concluded(
+    policy: &Policy,
+    tool: &Arc<dyn Tool>,
+    input: &Value,
+    cwd: &Path,
+    mode: PermissionMode,
+    unattended: bool,
+    hook: &HookAnswer,
+    stated: bool,
+) -> Option<PermissionOutcome> {
+    let session = session(cwd, mode, unattended);
+    let ctx = context_like_the_runtime(&session, cwd);
+    if tool.validate_input(input, &ctx).await.is_err() {
+        return None;
+    }
+    let facts = if stated {
+        ToolFacts::gather(tool.as_ref(), input, &ctx).await
+    } else {
+        old_answers(tool.as_ref(), input, &ctx).await
+    };
+    let request = PermissionRequest::new(tool.name(), Some(tool), input, cwd, "matrix", &session)
+        .with_facts(&facts)
+        .with_ctx(&ctx)
+        .with_hook(hook)
+        .with_attendance(ctx.attendance);
+    Some(policy.decide(&request).await)
+}
+
+/// One attendance of one cell, as the golden prints it.
+#[allow(clippy::too_many_arguments)]
+async fn rendered(
+    policy: &Policy,
+    tool: &Arc<dyn Tool>,
+    input: &Value,
+    cwd: &Path,
+    mode: PermissionMode,
+    unattended: bool,
+) -> [&'static str; 3] {
+    let approve = HookAnswer::Approve {
+        hook: "matrix".into(),
+    };
+    let none = HookAnswer::None;
+    let no_hook = concluded(policy, tool, input, cwd, mode, unattended, &none, false).await;
+    let hook = concluded(policy, tool, input, cwd, mode, unattended, &approve, false).await;
+    match (no_hook, hook) {
+        (Some(no_hook), Some(hook)) => [raw(&no_hook, &hook), word(&no_hook), word(&hook)],
+        _ => ["Deny"; 3],
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -556,49 +632,42 @@ fn conclusion(facts: &ToolFacts, cell: Cell) -> &'static str {
     answer(false)
 }
 
-async fn bridged(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolFacts {
-    let mut facts = ToolFacts::gather(tool, input, ctx).await;
-    let bridged = PermissionFacts::bridged(tool, input, ctx).await;
-    facts.subject = bridged.subject;
-    facts.reach = bridged.reach;
-    facts.runs = bridged.runs;
-    facts.question = bridged.question;
-    facts
-}
-
-/// One cell of one call: the conclusion the tool's own facts lead to, the one
-/// the facts bridged from its old answers lead to, and the policy's where it did
-/// not refuse the sample before reading the tool.
+/// One cell of one call: the conclusion the tool's own facts lead to and the
+/// one its old answers lead to, and — where the sample is not refused before
+/// the tool is read — the policy's on each.
 struct Compared {
     at: String,
     cell: Cell,
     stated: &'static str,
     old: &'static str,
     gate: Option<&'static str>,
+    policy: Option<&'static str>,
 }
 
 async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> Vec<Compared> {
     let registry = builtin_tools();
     let tool = registry.get(name).unwrap();
-    let refused_before_facts = matches!(
-        decide(
+    let refused_before_facts = !matches!(
+        concluded(
             &permission(name, RuleCase::None),
             &tool,
             input,
             cwd,
             PermissionMode::BypassPermissions,
             false,
+            &HookAnswer::None,
+            false,
         )
         .await,
-        PermissionOutcome::Deny { .. }
+        Some(PermissionOutcome::Permit { .. })
     );
     let mut out = Vec::new();
     for (mode_name, mode) in MODES {
         for unattended in [false, true] {
             let session = session(cwd, mode, unattended);
-            let ctx = context_like_the_gates(&session, cwd);
+            let ctx = context_like_the_runtime(&session, cwd);
             let stated = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
-            let old = bridged(tool.as_ref(), input, &ctx).await;
+            let old = old_answers(tool.as_ref(), input, &ctx).await;
             assert_eq!(stated.subject, old.subject, "{name} {input}");
             assert_eq!(stated.traits, old.traits, "{name} {input}");
             assert_eq!(stated.stance, old.stance, "{name} {input}");
@@ -610,9 +679,26 @@ async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> V
                         base::context::config::NetworkModeConfig::Unrestricted
                     ));
             for (rule_name, rule) in RULES {
-                let outcome =
-                    decide(&permission(name, rule), &tool, input, cwd, mode, unattended).await;
+                let policy = permission(name, rule);
                 for hook_approved in [false, true] {
+                    let hook = if hook_approved {
+                        HookAnswer::Approve {
+                            hook: "matrix".into(),
+                        }
+                    } else {
+                        HookAnswer::None
+                    };
+                    let on = |stated| {
+                        concluded(&policy, &tool, input, cwd, mode, unattended, &hook, stated)
+                    };
+                    let (gate, policy_said) = if refused_before_facts {
+                        (None, None)
+                    } else {
+                        (
+                            on(false).await.as_ref().map(word),
+                            on(true).await.as_ref().map(word),
+                        )
+                    };
                     let cell = Cell {
                         mode,
                         rule,
@@ -628,8 +714,8 @@ async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> V
                         cell,
                         stated: conclusion(&stated, cell),
                         old: conclusion(&old, cell),
-                        gate: (!refused_before_facts)
-                            .then(|| after_runtime(&outcome, hook_approved, unattended)),
+                        gate,
+                        policy: policy_said,
                     });
                 }
             }
@@ -646,9 +732,9 @@ fn leaves_something_behind(name: &str, input: &Value) -> bool {
 
 /// Tools that state their own facts: what those lead to must be what the facts
 /// bridged from their old answers lead to, in every cell. Where the policy does
-/// not refuse a sample before reading the tool, both must also be what the
-/// gate concludes, so the comparison is about the decisions and not only about
-/// itself. Returns how many cells were compared, and how many of those
+/// not refuse a sample before reading the tool, the policy must conclude the
+/// same on either, so the comparison is about the decisions and not only about
+/// the model. Returns how many cells were compared, and how many of those
 /// against the policy.
 async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
     let dir = tempfile::tempdir().unwrap();
@@ -662,8 +748,9 @@ async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
             for c in compare_stated_with_bridged(name, &sample.input, &cwd).await {
                 assert_eq!(c.stated, c.old, "{}", c.at);
                 compared += 1;
-                if let Some(gate) = c.gate {
+                if let (Some(gate), Some(policy)) = (c.gate, c.policy) {
                     assert_eq!(c.old, gate, "{}", c.at);
+                    assert_eq!(c.stated, policy, "{}", c.at);
                     against_the_gate += 1;
                 }
             }
@@ -738,6 +825,7 @@ async fn a_durable_cron_job_is_asked_about_where_it_used_to_run() {
     let mut changed = 0usize;
     for c in &cells {
         assert_eq!(Some(c.old), c.gate, "{}", c.at);
+        assert_eq!(Some(c.stated), c.policy, "{}", c.at);
         if c.stated == c.old {
             continue;
         }

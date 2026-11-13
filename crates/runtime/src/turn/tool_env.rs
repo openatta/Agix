@@ -198,8 +198,47 @@ impl base::interface::elicitation::Elicitation for NoAsking {
     }
 }
 
+/// Whether anyone can be asked about a call the session makes. The one place
+/// that reads `unattended` to decide it.
+pub(crate) fn attendance_of(
+    session: &base::context::SessionState,
+    from_code: bool,
+) -> base::interface::permission::Attendance {
+    use base::interface::permission::Attendance;
+    if session.unattended {
+        Attendance::Unattended
+    } else if from_code {
+        Attendance::NoOneToAsk(
+            "this call needs the user's approval, which a program cannot ask for — make this \
+             call directly instead of from code",
+        )
+    } else {
+        Attendance::Attended
+    }
+}
+
+/// What the session's sandbox holds a command to, probed the first time a
+/// call of the session asks.
+fn confinement_of(
+    session: &base::context::SessionState,
+    config: &base::context::EngineConfig,
+    exec: &base::interface::exec::ExecProviders,
+    cwd: &std::path::Path,
+    session_id: &str,
+) -> base::interface::exec::ConfinementReport {
+    session.confinement(|| {
+        tools::bash::confinement_report(
+            &sandbox_settings_from(config),
+            exec,
+            config.dangerously_disable_sandbox,
+            cwd,
+            session_id,
+        )
+    })
+}
+
 /// The context a call to `tool` runs with: the same for validating its input
-/// as for running it.
+/// and for judging it as for running it.
 pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Tool>) -> ToolContext {
     let additional_writable_dirs = ctx.session_state.additional_writable_dirs.clone();
     ToolContext {
@@ -231,7 +270,14 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
                 as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
         }),
         from_code: ctx.from_code,
-        confinement: Default::default(),
+        confinement: confinement_of(
+            &ctx.session_state,
+            &ctx.config,
+            &ctx.exec,
+            &ctx.cwd,
+            &ctx.session_id,
+        ),
+        attendance: attendance_of(&ctx.session_state, ctx.from_code),
     }
 }
 
@@ -263,7 +309,14 @@ impl Agent {
             exec: self.exec.clone(),
             dispatch: None,
             from_code: false,
-            confinement: Default::default(),
+            confinement: confinement_of(
+                &self.session_state,
+                &self.config,
+                &self.exec,
+                self.settings.paths.working_dir(),
+                &self.session.session_id,
+            ),
+            attendance: attendance_of(&self.session_state, false),
         }
     }
 }

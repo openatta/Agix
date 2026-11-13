@@ -9,7 +9,6 @@ description  = "Agix — permission engine (rule matching, mode dispatch, path s
 
 [dependencies]
 base          = { workspace = true }
-platform      = { workspace = true }
 tokio         = { workspace = true }
 tokio-util    = { workspace = true }
 async-trait   = { workspace = true }

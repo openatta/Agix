@@ -1067,15 +1067,23 @@ async fn an_unattended_sub_agent_is_handed_the_parents_question_unasked() {
     .agent_tool();
     let mut sub_session = base::context::SessionState::new("/tmp".into());
     sub_session.unattended = true;
-    let outcome = sub_decides(
-        &agent_tool.sub_permission(),
-        None,
-        "Bash",
-        &serde_json::json!({}),
-        Path::new("/tmp"),
-        &Arc::new(sub_session),
-    )
-    .await;
+    let sub_session = Arc::new(sub_session);
+    let input = serde_json::json!({});
+    let outcome = agent_tool
+        .sub_permission()
+        .policy
+        .decide(
+            &base::interface::permission::PermissionRequest::new(
+                "Bash",
+                None,
+                &input,
+                Path::new("/tmp"),
+                "sub",
+                &sub_session,
+            )
+            .with_attendance(base::interface::permission::Attendance::Unattended),
+        )
+        .await;
     assert!(
         matches!(
             outcome,

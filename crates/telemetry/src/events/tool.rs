@@ -38,9 +38,8 @@ pub struct ToolCancelledPayload {
     pub elapsed_ms: u64,
 }
 
-/// What the session's permission check said about one tool call, before
-/// anyone was asked. Whether an asked call then ran is `tool_execution`'s
-/// `user_approved`.
+/// What became of one tool call's permission: the conclusion, after whoever
+/// could answer the session's question did.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct PermissionDecisionPayload {
     pub tool_name: String,
@@ -48,6 +47,13 @@ pub struct PermissionDecisionPayload {
     pub permission_mode: String,
     pub destructive: bool,
     pub latency_ms: u64,
+    /// On whose word the call ran: `rule`, `contained`, `accept_edits`,
+    /// `bypass`, `hook_approved`, `unattended_confined` or `person`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
+    /// Where the call was refused, or asked about before a person refused it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -65,7 +71,8 @@ pub enum ToolOutcome {
 #[serde(rename_all = "snake_case")]
 pub enum PermissionDecisionOutcome {
     AutoAllow,
-    Ask,
+    /// A person approved it when asked.
+    UserAllow,
     Deny,
 }
 
@@ -91,10 +98,12 @@ mod tests {
             None,
             PermissionDecisionPayload {
                 tool_name: "bash".into(),
-                outcome: PermissionDecisionOutcome::Ask,
+                outcome: PermissionDecisionOutcome::Deny,
                 permission_mode: "default".into(),
                 destructive: true,
                 latency_ms: 4,
+                basis: None,
+                stage: Some("mode_default".into()),
             },
         );
 
@@ -102,7 +111,9 @@ mod tests {
         let value =
             serde_json::to_value(event).expect("serialization of telemetry event should not fail");
         assert_eq!(value["type"], "permission_decision");
-        assert_eq!(value["outcome"], "ask");
+        assert_eq!(value["outcome"], "deny");
+        assert_eq!(value["stage"], "mode_default");
+        assert!(value.get("basis").is_none());
         assert_eq!(value["tool_name"], "bash");
         assert_eq!(value.get("input").unwrap_or(&json!(null)), &json!(null));
         assert_eq!(value.get("prompt").unwrap_or(&json!(null)), &json!(null));
@@ -143,7 +154,7 @@ mod tests {
     fn permission_decision_all_outcomes() {
         for (outcome, expected) in [
             (PermissionDecisionOutcome::AutoAllow, "auto_allow"),
-            (PermissionDecisionOutcome::Ask, "ask"),
+            (PermissionDecisionOutcome::UserAllow, "user_allow"),
             (PermissionDecisionOutcome::Deny, "deny"),
         ] {
             let payload = PermissionDecisionPayload {
@@ -152,6 +163,8 @@ mod tests {
                 permission_mode: "default".into(),
                 destructive: false,
                 latency_ms: 3,
+                basis: None,
+                stage: None,
             };
             let event = TelemetryEvent::permission_decision("sess", 2, None, payload);
             let v = serde_json::to_value(event)

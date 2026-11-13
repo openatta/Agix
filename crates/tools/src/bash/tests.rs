@@ -153,51 +153,45 @@ fn unattended_in_a_holding_sandbox(
     ctx
 }
 
-#[tokio::test]
-async fn unattended_bash_runs_in_a_holding_sandbox_whatever_the_network_by_default() {
+fn report(ctx: &ToolContext) -> base::interface::exec::ConfinementReport {
+    super::sandbox::confinement_report(
+        &ctx.sandbox,
+        &ctx.exec,
+        ctx.dangerously_disable_sandbox,
+        &ctx.cwd,
+        &ctx.session_id,
+    )
+}
+
+#[test]
+fn a_holding_sandbox_holds_an_unattended_command_whatever_the_network_by_default() {
     use base::context::config::NetworkModeConfig;
     let dir = tempfile::tempdir().unwrap();
-    let input = json!({"command": "sh build.sh"});
     for network in [
         NetworkModeConfig::Unrestricted,
         NetworkModeConfig::DenyAll,
         NetworkModeConfig::Allowlist,
     ] {
         let ctx = unattended_in_a_holding_sandbox(dir.path(), network);
-        assert!(
-            matches!(
-                BashTool.check_permissions(&input, &ctx).await,
-                PermissionDecision::Allow { .. }
-            ),
-            "{network:?}"
-        );
+        assert!(report(&ctx).holds_unattended(), "{network:?}");
     }
+    let mut off = unattended_in_a_holding_sandbox(dir.path(), NetworkModeConfig::DenyAll);
+    off.dangerously_disable_sandbox = true;
+    assert!(!report(&off).holds_unattended());
 }
 
-#[tokio::test]
-async fn unattended_bash_with_open_network_is_not_auto_allowed_when_the_setting_says_so() {
+#[test]
+fn an_open_network_is_not_held_when_the_setting_says_so() {
     use base::context::config::NetworkModeConfig;
     let dir = tempfile::tempdir().unwrap();
-    let input = json!({"command": "sh build.sh"});
     let requiring = |network| {
         let mut ctx = unattended_in_a_holding_sandbox(dir.path(), network);
         ctx.sandbox.unattended_requires_network_policy = true;
         ctx
     };
-    assert!(matches!(
-        BashTool
-            .check_permissions(&input, &requiring(NetworkModeConfig::Unrestricted))
-            .await,
-        PermissionDecision::Ask { .. }
-    ));
+    assert!(!report(&requiring(NetworkModeConfig::Unrestricted)).holds_unattended());
     for closed in [NetworkModeConfig::DenyAll, NetworkModeConfig::Allowlist] {
-        assert!(
-            matches!(
-                BashTool.check_permissions(&input, &requiring(closed)).await,
-                PermissionDecision::Allow { .. }
-            ),
-            "{closed:?}"
-        );
+        assert!(report(&requiring(closed)).holds_unattended(), "{closed:?}");
     }
 }
 
