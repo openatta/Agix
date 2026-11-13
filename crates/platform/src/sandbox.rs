@@ -164,6 +164,8 @@ use std::sync::RwLock;
 #[cfg(feature = "sandbox")]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod mask;
+#[cfg(all(feature = "sandbox", target_os = "macos"))]
+mod patterns;
 #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
 mod read_scope;
 
@@ -753,12 +755,7 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     for p in &config_dirs {
         s.push_str(&format!("(deny file-write* (subpath \"{}\"))\n", path(p)));
     }
-    if let Some(state_root) = &roots.state_root {
-        s.push_str(&format!(
-            "(deny file-write* (regex \"{}\"))\n",
-            sandbox_escape(&state_root_scene_files_regex(state_root))
-        ));
-    }
+    s.push_str(&patterns::scene_file_write_rules(&roots));
 
     s.push_str(&read_scope::macos_rules(
         &policy.read,
@@ -779,17 +776,7 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
     }
     // After `allow_read`, which is for the user's own credential stores and
     // must not reopen the engine's.
-    for located in roots
-        .paths
-        .credential_locations(&project_agix_dirs(&roots.cwd))
-    {
-        for regex in credential_read_regexes(&located) {
-            s.push_str(&format!(
-                "(deny file-read* (regex \"{}\"))\n",
-                sandbox_escape(&regex)
-            ));
-        }
-    }
+    s.push_str(&patterns::credential_read_rules(&roots));
 
     // `launchctl submit` / `bootstrap` need no rule: launchd refuses a job
     // from a sandboxed caller.
@@ -889,79 +876,6 @@ fn spellings(path: &Path) -> Vec<PathBuf> {
     } else {
         vec![path.to_path_buf(), resolved]
     }
-}
-
-/// The paths `located` is, as regular expressions over a resolved path: one
-/// for its directories under `base`, and one for each scene linked in from
-/// elsewhere, whose files resolve outside `base`.
-#[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn credential_read_regexes(located: &base::paths::Located) -> Vec<String> {
-    let base = regex_escape(&located.base.display().to_string());
-    let under_base = if located.under_each_scene {
-        format!("^{base}/scenes/[^/]+/")
-    } else {
-        format!("^{base}/")
-    };
-    let linked = located
-        .linked_dirs_resolved()
-        .into_iter()
-        .map(|dir| format!("^{}/", regex_escape(&dir.display().to_string())));
-    std::iter::once(under_base)
-        .chain(linked)
-        .map(|dir| secret_regex(&dir, located.secret))
-        .collect()
-}
-
-/// The paths `secret` is in the directories `dir`, a regex prefix, matches.
-#[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn secret_regex(dir: &str, secret: base::paths::Secret) -> String {
-    use base::paths::{KeyFileNames, Secret};
-    match secret {
-        Secret::KeyFiles(names @ KeyFileNames::StateRoot) => {
-            format!(
-                r"{dir}\.?({})[^/]*\.json[^/]*$",
-                alternatives(names.stems())
-            )
-        }
-        Secret::KeyFiles(names @ KeyFileNames::Project) => {
-            format!(r"{dir}\.?({})[^/]*$", alternatives(names.stems()))
-        }
-        Secret::Tree(path) | Secret::DirName(path) => {
-            format!("{dir}{}(/|$)", regex_escape(path))
-        }
-    }
-}
-
-/// `base::paths::STATE_ROOT_SCENE_FILES` in `state_root` and in every scene
-/// directory under it, including one created later.
-#[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn state_root_scene_files_regex(state_root: &Path) -> String {
-    format!(
-        "^{}/(scenes/[^/]+/)?({})$",
-        regex_escape(&state_root.display().to_string()),
-        alternatives(base::paths::STATE_ROOT_SCENE_FILES)
-    )
-}
-
-#[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn alternatives(names: &[&str]) -> String {
-    names
-        .iter()
-        .map(|name| regex_escape(name))
-        .collect::<Vec<_>>()
-        .join("|")
-}
-
-#[cfg(all(feature = "sandbox", target_os = "macos"))]
-fn regex_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        if r"\.^$|?*+()[]{}".contains(c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// Where the terminal multiplexers this user runs listen. Typing into one of
@@ -1125,6 +1039,66 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
     }
 }
 
+/// The state root inside the sandbox: masked around its credentials, its
+/// working directories (or the project in it) writable again.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn expose_state_root(
+    args: &mut Vec<String>,
+    roots: &Roots,
+    secrets: &[base::paths::Located],
+    read: &read_scope::LinuxReadScope<'_>,
+) {
+    match (
+        roots.fenced_state_root(),
+        mask::holes_in_state_root(roots, secrets),
+    ) {
+        (Some(root), _) if root.is_dir() => {
+            expose_state_root_masked(args, root, secrets, &[]);
+            for dir in STATE_ROOT_WORKING_DIRS {
+                bind(args, "--bind-try", &root.join(dir));
+            }
+            for dir in roots.session_temp_dirs_in(root) {
+                bind(args, "--bind-try", dir);
+            }
+        }
+        // The project lives in the state root: the root is masked as above,
+        // the project and the writable roots inside it bound back over it.
+        (_, Some((root, holes))) => {
+            expose_state_root_masked(args, root, secrets, &holes);
+        }
+        // The project is the state root itself, or sits where a credential
+        // lies below it, or nothing but the named roots is writable: a tmpfs
+        // there would mask what has to stay writable, so the credentials are
+        // bound shut one by one. A key file the engine rewrites through a
+        // rename can slip back out from under its bind; that residual is
+        // left to these rare cases.
+        _ => {
+            if let Some(state_root) = &roots.state_root {
+                // A path the read scope leaves out is not in the sandbox at
+                // all: binding it read-only would put it there.
+                let (config_files, config_dirs) = roots.unfenced_state_root_config();
+                for file in config_files.iter().filter(|p| read.shows(p)) {
+                    bind(args, "--ro-bind-try", file);
+                }
+                for dir in config_dirs.iter().filter(|p| read.shows(p)) {
+                    read_only(args, dir);
+                }
+                for dir in std::iter::once(state_root).chain(&roots.paths.scene_dirs()) {
+                    for file in base::paths::STATE_ROOT_SCENE_FILES {
+                        let file = dir.join(file);
+                        if read.shows(&file) {
+                            bind(args, "--ro-bind-try", &file);
+                        }
+                    }
+                }
+                for p in secrets.iter().flat_map(|l| l.existing()) {
+                    hide(args, &p);
+                }
+            }
+        }
+    }
+}
+
 /// Expose the state root read-only while keeping its credentials masked
 /// against writes that land after the sandbox is set up: the mounts of
 /// [`mask::mask_plan`].
@@ -1142,11 +1116,17 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
 /// confined command reading the state root is acceptable where masking a late
 /// credential is not.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn expose_state_root_masked(args: &mut Vec<String>, root: &Path, secrets: &[base::paths::Located]) {
-    for mount in mask::mask_plan(root, secrets) {
+fn expose_state_root_masked(
+    args: &mut Vec<String>,
+    root: &Path,
+    secrets: &[base::paths::Located],
+    holes: &[PathBuf],
+) {
+    for mount in mask::mask_plan(root, secrets, holes) {
         match mount {
             mask::Mount::Tmpfs(at) => args.extend(["--tmpfs".into(), at.display().to_string()]),
             mask::Mount::RoBind(at) => bind(args, "--ro-bind", &at),
+            mask::Mount::Bind(at) => bind(args, "--bind-try", &at),
         }
     }
 }
@@ -1323,49 +1303,7 @@ fn linux_wrap(
         .credential_locations(&project_agix_dirs(&roots.cwd))
         .into_iter()
         .partition(|located| roots.state_root.as_ref() == Some(&located.base));
-    match roots.fenced_state_root() {
-        Some(root) if root.is_dir() => {
-            expose_state_root_masked(&mut args, root, &state_root_secrets);
-            for dir in STATE_ROOT_WORKING_DIRS {
-                bind(&mut args, "--bind-try", &root.join(dir));
-            }
-            for dir in roots.session_temp_dirs_in(root) {
-                bind(&mut args, "--bind-try", dir);
-            }
-        }
-        // The project lives in the state root, or nothing but the named roots
-        // is writable: a tmpfs over the whole root would mask the project too,
-        // so the credentials are bound shut one by one. A key file the engine
-        // rewrites through a rename can slip back out from under its bind —
-        // the escape the fenced branch above closes; here it is a residual,
-        // narrowed by the project living in the root being the rare case. So
-        // is a configuration file absent at wrap: the root is the project, and
-        // cannot be made read-only to keep one from being created.
-        _ => {
-            if let Some(state_root) = &roots.state_root {
-                // A path the read scope leaves out is not in the sandbox at
-                // all: binding it read-only would put it there.
-                let (config_files, config_dirs) = roots.unfenced_state_root_config();
-                for file in config_files.iter().filter(|p| read.shows(p)) {
-                    bind(&mut args, "--ro-bind-try", file);
-                }
-                for dir in config_dirs.iter().filter(|p| read.shows(p)) {
-                    read_only(&mut args, dir);
-                }
-                for dir in std::iter::once(state_root).chain(&roots.paths.scene_dirs()) {
-                    for file in base::paths::STATE_ROOT_SCENE_FILES {
-                        let file = dir.join(file);
-                        if read.shows(&file) {
-                            bind(&mut args, "--ro-bind-try", &file);
-                        }
-                    }
-                }
-                for p in state_root_secrets.iter().flat_map(|l| l.existing()) {
-                    hide(&mut args, &p);
-                }
-            }
-        }
-    }
+    expose_state_root(&mut args, &roots, &state_root_secrets, &read);
     guard_project(&mut args, &roots);
     for p in project_secrets.iter().flat_map(|l| l.existing()) {
         hide(&mut args, &p);
@@ -2345,6 +2283,34 @@ mod tests {
         ] {
             assert!(!denies(&writes, Path::new(p)), "{p}");
         }
+    }
+
+    /// A scene directory linked in from elsewhere is written through its
+    /// real path, which the pattern over the state root does not match.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_protects_a_linked_scenes_files_under_their_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap().join("state");
+        let elsewhere = dir.path().canonicalize().unwrap().join("dotfiles/scene");
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("scenes/linked")).unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let profile = build_macos_profile(Path::new("/work/project"), &[], &policy);
+        let writes = denied_patterns(&profile, "file-write*");
+        for name in ["settings.json", "scene.json", "prompt.md"] {
+            let path = elsewhere.join(name);
+            assert!(denies(&writes, &path), "{}\n{profile}", path.display());
+        }
+        assert!(!denies(&writes, &elsewhere.join("skills/x/prompt.md")));
+        assert!(!denies(
+            &writes,
+            &elsewhere.parent().unwrap().join("settings.json")
+        ));
     }
 
     /// Without a root it protects the conventional one, and with one only

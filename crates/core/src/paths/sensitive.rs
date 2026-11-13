@@ -335,14 +335,32 @@ impl Located {
 pub struct SensitivePaths {
     state_root: Option<Spellings>,
     project: Option<Spellings>,
+    /// The scene directories linked in from elsewhere, as they resolve: their
+    /// files are the scene's under that name too. Those linked at
+    /// construction.
+    linked_scenes: Vec<PathBuf>,
 }
 
 impl SensitivePaths {
     pub fn new(state_root: Option<&Path>, project: Option<&Path>) -> Self {
+        let state_root = state_root.map(Spellings::of);
+        let linked_scenes = state_root
+            .iter()
+            .flat_map(|root| scene_dirs_in(&root.real))
+            .filter(|scene| scene.resolved != scene.path)
+            .map(|scene| scene.resolved)
+            .collect();
         Self {
-            state_root: state_root.map(Spellings::of),
+            state_root,
             project: project.map(Spellings::of),
+            linked_scenes,
         }
+    }
+
+    /// The scene directories that are symbolic links, as they resolved when
+    /// these paths were made.
+    pub fn linked_scene_dirs_resolved(&self) -> &[PathBuf] {
+        &self.linked_scenes
     }
 
     /// For a session with these roots. A session without a project has no
@@ -367,6 +385,15 @@ impl SensitivePaths {
 
     fn holds(&self, credential: &Credential, components: &[String]) -> bool {
         let secret = credential.secret;
+        if credential.scope == Scope::EachSceneDir
+            && self.linked_scenes.iter().any(|scene| {
+                components
+                    .strip_prefix(lowered_components(scene).as_slice())
+                    .is_some_and(|rest| secret.holds(rest))
+            })
+        {
+            return true;
+        }
         match credential.scope {
             Scope::Anywhere => (0..components.len()).any(|i| secret.holds(&components[i..])),
             Scope::AnyAgixDir => components
@@ -854,6 +881,28 @@ mod tests {
             keys.linked_dirs_resolved(),
             vec![elsewhere.canonicalize().unwrap()]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_scenes_secrets_are_credentials_under_their_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("state");
+        let elsewhere = dir.path().join("dotfiles/scene");
+        std::fs::create_dir_all(root.join("scenes")).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("scenes/linked")).unwrap();
+        let paths = SensitivePaths::new(Some(&root), None);
+        let real = elsewhere.canonicalize().unwrap();
+        assert_eq!(
+            paths.linked_scene_dirs_resolved(),
+            std::slice::from_ref(&real)
+        );
+        assert!(paths.is_credential(&real.join("settings.json")));
+        assert!(paths.is_credential(&real.join("mcp/oauth/token.json")));
+        assert!(paths.is_credential(&root.join("scenes/linked/settings.json")));
+        assert!(!paths.is_credential(&real.join("scene.json")));
+        assert!(!paths.is_credential(&real.parent().unwrap().join("settings.json")));
     }
 
     #[test]

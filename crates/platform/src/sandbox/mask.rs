@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 pub(super) enum Mount {
     Tmpfs(PathBuf),
     RoBind(PathBuf),
+    /// Bound back writable over the masked tree.
+    Bind(PathBuf),
 }
 
 /// The credential locations below one directory, as a tree of names.
@@ -42,8 +44,71 @@ impl Node {
 /// way to one, is covered with a tmpfs; its entries that are neither are
 /// bound back over it. A credential written there later lands under the
 /// tmpfs, on no path a command can read. An entry on the way to a credential
-/// that is not a real directory stays covered.
-pub(super) fn mask_plan(root: &Path, locs: &[Located]) -> Vec<Mount> {
+/// that is not a real directory stays covered. Last, each of `holes` that
+/// [`fits_a_hole`] is bound back writable.
+pub(super) fn mask_plan(root: &Path, locs: &[Located], holes: &[PathBuf]) -> Vec<Mount> {
+    let tree = tree_of(root, locs);
+    let mut plan = Vec::new();
+    plan_dir(root, &tree, &mut plan);
+    if !plan.is_empty() {
+        plan.extend(
+            holes
+                .iter()
+                .filter(|hole| hole_fits(root, &tree, hole))
+                .map(|hole| Mount::Bind(hole.clone())),
+        );
+    }
+    plan
+}
+
+/// The state root a project lives in, and what has to stay writable in
+/// it — the project and the writable roots under the root — when the
+/// root can be masked around them: none of them is the root or a
+/// directory a credential lies in or below.
+pub(super) fn holes_in_state_root<'a>(
+    roots: &'a super::Roots,
+    secrets: &[Located],
+) -> Option<(&'a Path, Vec<PathBuf>)> {
+    let root = roots
+        .state_root
+        .as_deref()
+        .filter(|root| !roots.only_additional && roots.project_in(root) && root.is_dir())?;
+    let holes: Vec<PathBuf> = std::iter::once(&roots.cwd)
+        .chain(roots.writable.iter().filter(|p| p.starts_with(root)))
+        .cloned()
+        .collect();
+    holes
+        .iter()
+        .all(|hole| fits_a_hole(root, secrets, hole))
+        .then_some((root, holes))
+}
+
+/// Whether `hole`, under `root`, can be bound back writable over the mask
+/// of `locs`: it is below `root`, no credential lies in or below it, and it
+/// is not inside one.
+pub(super) fn fits_a_hole(root: &Path, locs: &[Located], hole: &Path) -> bool {
+    hole_fits(root, &tree_of(root, locs), hole)
+}
+
+fn hole_fits(root: &Path, tree: &Node, hole: &Path) -> bool {
+    let Ok(below) = hole.strip_prefix(root) else {
+        return false;
+    };
+    let mut node = tree;
+    for part in below.iter() {
+        let lowered = part.to_string_lossy().to_lowercase();
+        if node.is_secret(&lowered) {
+            return false;
+        }
+        match node.children.get(&lowered).or(node.each.as_deref()) {
+            Some(inner) => node = inner,
+            None => return true,
+        }
+    }
+    false
+}
+
+fn tree_of(root: &Path, locs: &[Located]) -> Node {
     let mut tree = Node::default();
     for loc in locs {
         let Ok(below) = loc.base.strip_prefix(root) else {
@@ -73,9 +138,7 @@ pub(super) fn mask_plan(root: &Path, locs: &[Located]) -> Vec<Mount> {
             }
         }
     }
-    let mut plan = Vec::new();
-    plan_dir(root, &tree, &mut plan);
-    plan
+    tree
 }
 
 fn plan_dir(dir: &Path, node: &Node, plan: &mut Vec<Mount>) {
@@ -155,7 +218,7 @@ mod tests {
             .rev()
             .find_map(|mount| match mount {
                 Mount::Tmpfs(at) if path.starts_with(at) && path != at => Some(false),
-                Mount::RoBind(at) if path.starts_with(at) => Some(true),
+                Mount::RoBind(at) | Mount::Bind(at) if path.starts_with(at) => Some(true),
                 _ => None,
             })
             .unwrap_or(true)
@@ -186,7 +249,7 @@ mod tests {
         write(&state.join("settings.json"));
         write(&state.join("settings.local.json"));
         let locs = SensitivePaths::new(Some(&state), None).credential_locations(&[]);
-        let plan = mask_plan(&state, &locs);
+        let plan = mask_plan(&state, &locs, &[]);
 
         assert_eq!(plan.first(), Some(&Mount::Tmpfs(state.clone())));
         for scene in ["code", "triage"] {
@@ -214,7 +277,7 @@ mod tests {
         write(&state.join("daemon/auth/desktop.token"));
         write(&state.join("daemon/instances.d/a.json"));
         let locs = SensitivePaths::new(Some(&state), None).credential_locations(&[]);
-        let plan = mask_plan(&state, &locs);
+        let plan = mask_plan(&state, &locs, &[]);
 
         assert!(plan.contains(&Mount::Tmpfs(state.join("mcp"))));
         assert!(plan.contains(&Mount::RoBind(state.join("mcp/servers.json"))));
@@ -233,10 +296,69 @@ mod tests {
         std::os::unix::fs::symlink(elsewhere.path(), state.join("scenes/linked")).unwrap();
         write(&state.join("scenes/notes.txt"));
         let locs = SensitivePaths::new(Some(&state), None).credential_locations(&[]);
-        let plan = mask_plan(&state, &locs);
+        let plan = mask_plan(&state, &locs, &[]);
 
         assert!(!readable(&plan, &state.join("scenes/linked/settings.json")));
         assert!(!readable(&plan, &state.join("scenes/notes.txt")));
+    }
+
+    /// A project in the state root: the root is masked as for any project,
+    /// and the project is bound back writable over it, so a key file the
+    /// engine rename-writes later is not readable.
+    #[test]
+    fn a_project_in_the_state_root_is_a_hole_in_its_mask() {
+        let (_dir, state) = state();
+        write(&state.join("settings.json"));
+        write(&state.join("scenes/code/settings.json"));
+        write(&state.join("projects/app/src/main.rs"));
+        write(&state.join("notes.md"));
+        let project = state.join("projects/app");
+        let tmp = state.join("tmp/session");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let locs = SensitivePaths::new(Some(&state), None).credential_locations(&[]);
+        assert!(fits_a_hole(&state, &locs, &project));
+        assert!(fits_a_hole(&state, &locs, &tmp));
+        let plan = mask_plan(&state, &locs, &[project.clone(), tmp.clone()]);
+
+        assert_eq!(plan.first(), Some(&Mount::Tmpfs(state.clone())));
+        assert_eq!(
+            plan[plan.len() - 2..],
+            [Mount::Bind(project.clone()), Mount::Bind(tmp)]
+        );
+        assert!(readable(&plan, &project.join("src/main.rs")));
+        assert!(readable(&plan, &state.join("notes.md")));
+        assert!(!readable(&plan, &state.join("settings.json")));
+        assert!(!readable(&plan, &state.join("settings.local.json")));
+        assert!(!readable(&plan, &state.join("scenes/code/settings.json")));
+    }
+
+    #[test]
+    fn what_holds_a_credential_or_is_one_is_no_hole() {
+        let (_dir, state) = state();
+        write(&state.join("scenes/code/settings.json"));
+        write(&state.join("daemon/auth/desktop.token"));
+        let locs = SensitivePaths::new(Some(&state), None).credential_locations(&[]);
+        for hole in [
+            state.clone(),
+            state.join("scenes"),
+            state.join("scenes/code"),
+            state.join("daemon"),
+            state.join("daemon/auth/x"),
+            state.join("scenes/code/settings.json"),
+        ] {
+            assert!(!fits_a_hole(&state, &locs, &hole), "{}", hole.display());
+        }
+        assert!(fits_a_hole(
+            &state,
+            &locs,
+            &state.join("scenes/code/skills")
+        ));
+        assert!(!fits_a_hole(&state, &locs, Path::new("/elsewhere")));
+        let plan = mask_plan(&state, &locs, &[state.join("daemon")]);
+        assert!(
+            !plan.contains(&Mount::Bind(state.join("daemon"))),
+            "{plan:?}"
+        );
     }
 
     #[test]
@@ -244,7 +366,7 @@ mod tests {
         let (_dir, state) = state();
         let missing = state.join("missing");
         let locs = SensitivePaths::new(Some(&missing), None).credential_locations(&[]);
-        assert!(mask_plan(&missing, &locs).is_empty());
+        assert!(mask_plan(&missing, &locs, &[]).is_empty());
     }
 
     /// The Linux backend masks the state root's credentials through
@@ -263,7 +385,7 @@ mod tests {
         write(&root.join("skills/x/SKILL.md"));
         let locs = SensitivePaths::new(Some(&root), None)
             .credential_locations(std::slice::from_ref(&agix));
-        let plan = mask_plan(&root, &locs);
+        let plan = mask_plan(&root, &locs, &[]);
         let hidden: Vec<PathBuf> = locs
             .iter()
             .filter(|l| l.base == agix)

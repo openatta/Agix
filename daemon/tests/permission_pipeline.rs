@@ -405,7 +405,6 @@ async fn a_permanent_allow_of_a_command_with_a_star_allows_only_that_command() {
 /// real name, so its settings are credentials under that name too.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D1: fix pending"]
 async fn a_linked_scenes_credentials_are_refused_under_their_real_path() {
     let daemon = Daemon::start(Setup::default(), |home, _| {
         let elsewhere = home.parent().unwrap().join("dotfiles/scene");
