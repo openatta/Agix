@@ -87,13 +87,13 @@ enum Answer {
     Cancelled { waited_ms: u64 },
 }
 
-/// A call let through: what it runs on, what is owed once it has run, and
-/// whether a person approved it.
+/// A call let through: what it runs on, what is owed once it has run, what
+/// it reaches, and whether a person approved it.
 pub(super) struct Authorized {
     pub approval: base::interface::permission::Approval,
     pub obligations: base::interface::permission::Obligations,
-    /// It keeps running after the call returns.
-    pub background: bool,
+    /// What the tool said about the call, gathered once.
+    pub facts: base::interface::permission::ToolFacts,
     pub by_person: bool,
 }
 
@@ -162,7 +162,7 @@ pub(super) async fn authorize(
                 by_person: basis == Basis::Person,
                 approval: Approval::new(basis, profile),
                 obligations,
-                background: facts.runs.is_some_and(|r| r.background),
+                facts,
             })
         }
         Answer::Decided(PermissionOutcome::Deny { reason }) if reason.stage == Stage::Hook => {

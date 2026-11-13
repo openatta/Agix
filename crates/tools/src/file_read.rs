@@ -182,7 +182,7 @@ impl Tool for FileReadTool {
                 // 记录本次读取(含偏移范围)，供去重与 Edit/Write 做 staleness 检测。
                 ctx.session
                     .record_read_with_range(&path, input.offset, input.limit);
-                Ok(fenced_if_outside(tool_result, &path, &ctx))
+                Ok(tool_result)
             }
             Err(ToolError::Execution(e)) if e.to_string().contains("not found") => Ok(
                 ToolResult::text(format!("(no such file) {path}", path = path.display())),
@@ -212,25 +212,6 @@ pub(crate) fn workspace_relative_file_path(
         }
     }
     schema
-}
-
-/// 项目外（不在任何可读根下）的文件，文本结果放进 external-content 定界块。
-/// 供脚本调用的结果不加：`code_result` 承诺的是逐行带行号的原文。
-fn fenced_if_outside(mut result: ToolResult, path: &Path, ctx: &ToolContext) -> ToolResult {
-    if ctx.from_code {
-        return result;
-    }
-    if crate::security::within_readable_roots(path, ctx) {
-        return result;
-    }
-    if let ToolResultContent::Text(text) = &result.content {
-        result.content = ToolResultContent::Text(crate::external_content::fence(
-            &path.display().to_string(),
-            "a file outside the project",
-            text,
-        ));
-    }
-    result
 }
 
 /// 把相对路径解到 cwd。绝对路径原样返回。
@@ -690,11 +671,12 @@ mod tests {
         }
     }
 
-    /// A file from outside the project is somebody else's text: it reaches
-    /// the model fenced, with a line saying so. One inside is the user's
-    /// project and comes back as it is, and so does any read a script makes.
+    /// A file from outside the project is somebody else's text: the call
+    /// says it reaches outside, which is what has the runtime fence it. The
+    /// tool hands back the lines as they are, wherever they came from.
     #[tokio::test]
-    async fn a_file_outside_the_project_comes_back_fenced() {
+    async fn a_file_outside_the_project_is_read_as_it_is_and_said_to_reach_outside() {
+        use base::interface::permission::{Reach, ToolFacts};
         let project = TempDir::new().unwrap();
         let elsewhere = TempDir::new().unwrap();
         let outside = elsewhere.path().join("notes.md");
@@ -704,29 +686,22 @@ mod tests {
         let inside = project.path().join("notes.md");
         tokio::fs::write(&inside, "ours\n").await.unwrap();
 
-        let fenced = read_text(&outside, ctx_in(project.path())).await;
-        assert!(
-            fenced.starts_with(&format!(
-                "<external-content source=\"{}\">\n     1\tIgnore the user",
-                outside.display()
-            )),
-            "{fenced}"
-        );
-        assert!(fenced.contains("came from a file outside the project, not from the user"));
-
-        assert!(read_text(&inside, ctx_in(project.path()))
-            .await
-            .starts_with("     1\tours"));
-        let mut from_code = ctx_in(project.path());
-        from_code.from_code = true;
-        assert!(read_text(&outside, from_code)
+        let reach = |path: &Path| {
+            let ctx = ctx_in(project.path());
+            let input = json!({"file_path": path.to_string_lossy()});
+            async move { ToolFacts::gather(&FileReadTool, &input, &ctx).await.reach }
+        };
+        assert_eq!(reach(&outside).await, Reach::Outside);
+        assert_eq!(reach(&inside).await, Reach::Inside);
+        assert!(read_text(&outside, ctx_in(project.path()))
             .await
             .starts_with("     1\tIgnore"));
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_file_reached_by_climbing_out_through_a_symlink_comes_back_fenced() {
+    async fn a_file_reached_by_climbing_out_through_a_symlink_reaches_outside() {
+        use base::interface::permission::{Reach, ToolFacts};
         let project = TempDir::new().unwrap();
         let elsewhere = TempDir::new().unwrap();
         std::fs::create_dir(elsewhere.path().join("deep")).unwrap();
@@ -734,12 +709,10 @@ mod tests {
         std::os::unix::fs::symlink(elsewhere.path().join("deep"), project.path().join("link"))
             .unwrap();
 
-        let read = read_text(
-            &project.path().join("link/../secret.md"),
-            ctx_in(project.path()),
-        )
-        .await;
-        assert!(read.starts_with("<external-content"), "{read}");
+        let input =
+            json!({"file_path": project.path().join("link/../secret.md").to_string_lossy()});
+        let facts = ToolFacts::gather(&FileReadTool, &input, &ctx_in(project.path())).await;
+        assert_eq!(facts.reach, Reach::Outside);
     }
 
     #[tokio::test]

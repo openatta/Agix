@@ -5,7 +5,7 @@ use super::reporting::telemetry_error_text;
 use super::tool_env::tool_context_for;
 use super::tool_permission::{authorize, pre_tool_use};
 use super::tool_progress::{CloseOnDrop, GateHandle, ProgressGate};
-use super::tool_result::{render_tool_result_content, PendingToolImage};
+use super::tool_result::{fence_external, render_tool_result_content, PendingToolImage};
 use base::event::AgentEvent;
 use std::sync::Arc;
 
@@ -321,13 +321,14 @@ pub(super) async fn execute_tool_inner(
     let latency_ms = tool_start.elapsed().as_millis() as u64;
 
     let mut outcome = answer_of(ctx, result);
+    fence_external(name, &authorized.facts, ctx.from_code, &mut outcome);
     if let Some(after) = owed {
         super::obligations::fulfil(
             ctx,
             name,
             &input_for_post_hook,
             after,
-            authorized.background,
+            authorized.facts.runs.is_some_and(|r| r.background),
             &mut outcome,
         )
         .await;

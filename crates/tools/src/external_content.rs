@@ -10,7 +10,7 @@ const CLOSE: &str = "</external-content>";
 
 /// `body` fenced as external content that came from `from` (e.g. "the web",
 /// "a file outside the project"), naming `source` (a URL, a path).
-pub(crate) fn fence(source: &str, from: &str, body: &str) -> String {
+pub fn fence(source: &str, from: &str, body: &str) -> String {
     let source = source.replace('"', "%22");
     let body = defuse_closing_tags(body);
     format!(

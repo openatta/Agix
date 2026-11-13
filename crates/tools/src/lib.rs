@@ -4,7 +4,7 @@ pub mod ask_user;
 pub mod bash;
 pub mod cancel;
 pub mod cron;
-mod external_content;
+pub mod external_content;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
