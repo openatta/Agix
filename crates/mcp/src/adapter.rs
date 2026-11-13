@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::{
     error::ToolError,
-    tool::PermissionDecision,
     tool::ProgressSender,
     tool::Tool,
     tool::ToolOrigin,
@@ -168,30 +167,12 @@ impl Tool for McpToolAdapter {
         (!full.is_empty() && full != self.description.trim()).then(|| self.full_description.clone())
     }
 
-    fn permission_match_content(&self, _: &Value) -> Option<String> {
-        None // MCP 工具的"内容"不可解释；只按 tool_name 匹配规则
-    }
-
-    /// `readOnlyHint` is the server's own word about itself, so it does not
-    /// spare a call the `acceptEdits` question; an allow rule still does.
-    fn accept_edits_allows(&self, _: &Value, _: &ToolContext) -> bool {
-        false
-    }
-
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         // 接受任意 object 输入 —— 实际 schema 校验由 server 端做
         if input.is_object() {
             ValidationResult::Ok
         } else {
             ValidationResult::err("MCP tool input must be a JSON object", 1)
-        }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 默认 Ask —— 上层 Policy 用规则（如 `mcp__github` allow）放行
-        PermissionDecision::Ask {
-            message: format!("Allow MCP tool {} ?", self.full_name),
-            decision_reason: None,
         }
     }
 
@@ -696,44 +677,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_check_permissions_is_ask() {
-        let client = Arc::new(MockMcpClient::new("test", vec![meta("x")]));
-        let adapter = McpToolAdapter::new(client, meta("x"));
-        let d = adapter.check_permissions(&json!({}), &ctx()).await;
-        assert!(matches!(d, PermissionDecision::Ask { .. }));
-    }
-
-    async fn facts_conclude_as_the_bridged_ones(
-        tool: &dyn base::tool::Tool,
-        input: serde_json::Value,
-    ) {
-        use base::interface::permission::{PermissionFacts, Reach};
-        let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
-        let stated = tool.permission_facts(&input, &ctx).await;
-        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
-        let contained = |reach: &Reach| {
-            matches!(
-                reach,
-                Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-            )
-        };
-        assert_eq!(stated.subject, old.subject, "{}", tool.name());
-        assert_eq!(stated.question, old.question, "{}", tool.name());
-        assert_eq!(stated.runs, old.runs, "{}", tool.name());
-        assert_eq!(
-            contained(&stated.reach),
-            contained(&old.reach),
-            "{}",
-            tool.name()
-        );
-    }
-
-    #[tokio::test]
-    async fn an_mcp_tool_is_a_servers_and_asks_as_before() {
+    async fn an_mcp_tool_is_its_servers() {
         let client = Arc::new(MockMcpClient::new("github", vec![]));
         let adapter = McpToolAdapter::new(client, meta("create_issue"));
         let facts = adapter.permission_facts(&json!({}), &ctx()).await;
         assert_eq!(facts.reach, base::interface::permission::Reach::Server);
-        facts_conclude_as_the_bridged_ones(&adapter, json!({})).await;
     }
 }

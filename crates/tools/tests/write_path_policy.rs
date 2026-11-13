@@ -10,7 +10,8 @@
 //! every one of those called the function directly. Nothing asked the tool.
 //! So these do.
 
-use base::interface::tool::{PermissionDecision, Tool, ToolContext};
+use base::interface::permission::Reach;
+use base::interface::tool::{Tool, ToolContext};
 use std::path::PathBuf;
 
 fn ctx_in(cwd: &std::path::Path) -> ToolContext {
@@ -19,17 +20,18 @@ fn ctx_in(cwd: &std::path::Path) -> ToolContext {
     ctx
 }
 
-async fn write_decision(ctx: &ToolContext, path: &std::path::Path) -> PermissionDecision {
+async fn write_decision(ctx: &ToolContext, path: &std::path::Path) -> Reach {
     tools::file_write::FileWriteTool
-        .check_permissions(
+        .permission_facts(
             &serde_json::json!({ "file_path": path.display().to_string(), "content": "x" }),
             ctx,
         )
         .await
+        .reach
 }
 
-fn denied(d: &PermissionDecision) -> bool {
-    matches!(d, PermissionDecision::Deny { .. })
+fn denied(d: &Reach) -> bool {
+    matches!(d, Reach::Refused(_))
 }
 
 /// The credential list, reached the way a model reaches it.
@@ -59,7 +61,7 @@ async fn an_ordinary_file_inside_the_project_is_allowed() {
     for name in ["src/main.rs", "README.md", ".editorconfig"] {
         let d = write_decision(&ctx, &dir.path().join(name)).await;
         assert!(
-            matches!(d, PermissionDecision::Allow { .. }),
+            matches!(d, Reach::Inside),
             "{name} should be an ordinary write: {d:?}"
         );
     }
@@ -78,7 +80,7 @@ async fn a_deployment_can_permit_one_of_the_defaults() {
     assert!(
         matches!(
             write_decision(&ctx, &dir.path().join(".env.example")).await,
-            PermissionDecision::Allow { .. }
+            Reach::Inside
         ),
         "the exemption has to reach the tool"
     );
@@ -102,7 +104,7 @@ async fn a_deployment_can_add_a_name_of_its_own() {
     ));
     assert!(matches!(
         write_decision(&ctx, &dir.path().join("public.yaml")).await,
-        PermissionDecision::Allow { .. }
+        Reach::Inside
     ));
 }
 
@@ -113,7 +115,7 @@ async fn writing_outside_the_project_still_asks_rather_than_refusing() {
     let dir = tempfile::tempdir().unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
     let d = write_decision(&ctx_in(dir.path()), &elsewhere.path().join("note.txt")).await;
-    assert!(matches!(d, PermissionDecision::Ask { .. }), "{d:?}");
+    assert!(matches!(d, Reach::Outside), "{d:?}");
 }
 
 /// An exemption lifts the deny rules and not the project boundary, asked
@@ -126,7 +128,7 @@ async fn an_exemption_does_not_open_a_path_outside_the_project() {
     ctx.sandbox.allow_write = vec![elsewhere.path().to_path_buf()];
     let d = write_decision(&ctx, &elsewhere.path().join(".env")).await;
     assert!(
-        matches!(d, PermissionDecision::Ask { .. }),
+        matches!(d, Reach::Outside),
         "still outside the project, so still a question for a person: {d:?}"
     );
 }
@@ -140,7 +142,7 @@ async fn edit_and_notebook_refuse_the_same_files() {
     let target = dir.path().join(".env");
 
     let edit = tools::file_edit::FileEditTool
-        .check_permissions(
+        .permission_facts(
             &serde_json::json!({
                 "file_path": target.display().to_string(),
                 "old_string": "a",
@@ -148,11 +150,12 @@ async fn edit_and_notebook_refuse_the_same_files() {
             }),
             &ctx,
         )
-        .await;
+        .await
+        .reach;
     assert!(denied(&edit), "{edit:?}");
 
     let notebook = tools::notebook_edit::NotebookEditTool
-        .check_permissions(
+        .permission_facts(
             &serde_json::json!({
                 "file_path": dir.path().join(".env.ipynb").display().to_string(),
                 "mode": "edit",
@@ -161,7 +164,8 @@ async fn edit_and_notebook_refuse_the_same_files() {
             }),
             &ctx,
         )
-        .await;
+        .await
+        .reach;
     assert!(denied(&notebook), "{notebook:?}");
 }
 
@@ -181,16 +185,18 @@ async fn a_project_reached_through_a_symlink_is_still_the_project() {
 
     let d = write_decision(&ctx_in(&link), &link.join("src/main.rs")).await;
     assert!(
-        matches!(d, PermissionDecision::Allow { .. }),
+        matches!(d, Reach::Inside),
         "both sides have to be resolved by the same filesystem: {d:?}"
     );
 }
 
-// Everything above builds its own `ToolContext`. Production does not: the
-// permission gate builds one, and the control list configured in settings
-// has to reach it, not stop one call short of the decision it governs.
+// Everything above hands the tool a context directly. Production judges the
+// call with the context the runtime builds from the settings, so the control
+// list configured there has to reach the policy's decision too.
 
-use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
+use base::interface::permission::{
+    PermissionOutcome, PermissionPolicy, PermissionRequest, ToolFacts,
+};
 
 fn settings_allowing(paths: Vec<PathBuf>) -> base::settings::LoadedSettings {
     let mut s = base::settings::Settings::defaults_for("test-model");
@@ -207,12 +213,18 @@ async fn gate_decision(
         std::sync::Arc::new(tools::file_write::FileWriteTool);
     let gate = permissions::policy::Policy::from_settings(settings, []);
     let session = std::sync::Arc::new(base::context::SessionState::for_tests(cwd.to_path_buf()));
+    let mut ctx = ctx_in(cwd);
+    ctx.session = session.clone();
+    ctx.sandbox.allow_write = settings.values.sandbox.allow_write.clone();
+    ctx.sandbox.deny_write = settings.values.sandbox.deny_write.clone();
+    let input = serde_json::json!({ "file_path": path.display().to_string(), "content": "x" });
+    let facts = ToolFacts::gather(write.as_ref(), &input, &ctx).await;
     gate.decide(&PermissionRequest::new(
         "Write",
         Some(&write),
-        &serde_json::json!({ "file_path": path.display().to_string(), "content": "x" }),
-        cwd,
-        "s1",
+        &input,
+        &facts,
+        &ctx,
         &session,
     ))
     .await
@@ -265,7 +277,7 @@ async fn a_sub_agent_can_write_inside_its_worktree() {
 
     let d = write_decision(&ctx_in(&worktree), &worktree.join("src/main.rs")).await;
     assert!(
-        matches!(d, PermissionDecision::Allow { .. }),
+        matches!(d, Reach::Inside),
         "the worktree is the sub-agent's project: {d:?}"
     );
 }
@@ -288,7 +300,7 @@ async fn the_engines_own_settings_stay_guarded() {
     // A file that merely lives beside them is not the settings.
     assert!(matches!(
         write_decision(&ctx_in(repo.path()), &repo.path().join(".agix/notes.md")).await,
-        PermissionDecision::Allow { .. }
+        Reach::Inside
     ));
 }
 
@@ -319,7 +331,7 @@ async fn a_file_whose_name_is_decomposed_on_disk_is_still_editable() {
 
     let d = write_decision(&ctx_in(dir.path()), &composed).await;
     assert!(
-        matches!(d, PermissionDecision::Allow { .. }),
+        matches!(d, Reach::Inside),
         "an ordinary file the user asked to edit: {d:?}"
     );
 }

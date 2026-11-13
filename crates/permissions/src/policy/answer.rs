@@ -19,18 +19,18 @@ impl Policy {
         &self,
         verdict: Verdict,
         facts: &ToolFacts,
-        ctx: Option<&ToolContext>,
+        ctx: &ToolContext,
         hook: &HookAnswer,
-        attendance: Option<Attendance>,
+        attendance: Attendance,
     ) -> PermissionOutcome {
-        let confinement = ctx.map(|c| c.confinement).unwrap_or_default();
+        let confinement = ctx.confinement;
         let (reason, answerable) = match verdict {
             Verdict::Permit(basis) => return permit(basis, facts, attendance),
             Verdict::Deny(reason) => return PermissionOutcome::Deny { reason },
             Verdict::Ask { reason, answerable } => (reason, answerable),
         };
         if reason.stage == Stage::ModeDefault
-            && attendance == Some(Attendance::Unattended)
+            && attendance == Attendance::Unattended
             && facts.runs.is_some()
             && matches!(facts.reach, Reach::Unknown | Reach::Inside)
             && confinement.holds_unattended()
@@ -41,7 +41,7 @@ impl Policy {
             return permit(Basis::HookApproved(hook.clone()), facts, attendance);
         }
         match attendance {
-            Some(Attendance::Unattended) => PermissionOutcome::Deny {
+            Attendance::Unattended => PermissionOutcome::Deny {
                 reason: Reason::new(
                     Stage::Attendance,
                     format!(
@@ -53,7 +53,7 @@ impl Policy {
                     ),
                 ),
             },
-            Some(Attendance::NoOneToAsk(why)) => PermissionOutcome::Deny {
+            Attendance::NoOneToAsk(why) => PermissionOutcome::Deny {
                 reason: Reason::new(Stage::Attendance, format!("{} — {why}", reason.message)),
             },
             _ => PermissionOutcome::Prompt {
@@ -67,7 +67,7 @@ impl Policy {
     }
 }
 
-fn permit(basis: Basis, facts: &ToolFacts, attendance: Option<Attendance>) -> PermissionOutcome {
+fn permit(basis: Basis, facts: &ToolFacts, attendance: Attendance) -> PermissionOutcome {
     let profile = ExecProfile::for_permit(&basis, facts.runs, attendance);
     let obligations = Obligations::after(facts.runs, profile);
     PermissionOutcome::Permit {

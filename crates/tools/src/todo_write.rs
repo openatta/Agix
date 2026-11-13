@@ -8,8 +8,8 @@ use base::context::TodoStatus;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -85,11 +85,6 @@ impl Tool for TodoWriteTool {
             }
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 改 session 内部状态；不需用户确认
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -291,7 +286,7 @@ mod tests {
     #[tokio::test]
     async fn permissions_allow() {
         let tool = TodoWriteTool;
-        let r = tool.check_permissions(&Value::Null, &ctx()).await;
-        assert!(matches!(r, PermissionDecision::Allow { .. }));
+        let r = tool.permission_facts(&Value::Null, &ctx()).await.reach;
+        assert!(matches!(r, Reach::SessionOnly));
     }
 }

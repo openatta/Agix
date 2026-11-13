@@ -728,7 +728,17 @@ async fn decided_by(
     name: &str,
     input: &serde_json::Value,
 ) -> base::interface::permission::PermissionOutcome {
+    use base::interface::permission::ToolFacts;
     let tool = agent.tooling.tools.get(name);
+    let mut ctx = base::tool::ToolContext::for_test_with(
+        "/tmp".into(),
+        base::interface::exec::ExecProviders::in_process(),
+    );
+    ctx.session = agent.session_state.clone();
+    let facts = match &tool {
+        Some(tool) => ToolFacts::gather(tool.as_ref(), input, &ctx).await,
+        None => ToolFacts::unknown_tool(),
+    };
     agent
         .permission()
         .policy
@@ -736,8 +746,8 @@ async fn decided_by(
             name,
             tool.as_ref(),
             input,
-            std::path::Path::new("/tmp"),
-            "s1",
+            &facts,
+            &ctx,
             &agent.session_state,
         ))
         .await

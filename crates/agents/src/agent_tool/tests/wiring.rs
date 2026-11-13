@@ -598,12 +598,36 @@ pub(super) async fn sub_decides(
     cwd: &Path,
     session: &Arc<base::context::SessionState>,
 ) -> base::interface::permission::PermissionOutcome {
+    let (ctx, facts) = context_and_facts(tool, input, cwd, session).await;
     permission
         .policy
         .decide(&base::interface::permission::PermissionRequest::new(
-            name, tool, input, cwd, "sub", session,
+            name, tool, input, &facts, &ctx, session,
         ))
         .await
+}
+
+/// The context a call of `session`'s runs with, and what `tool` says about
+/// the call in it.
+pub(super) async fn context_and_facts(
+    tool: Option<&Arc<dyn base::tool::Tool>>,
+    input: &Value,
+    cwd: &Path,
+    session: &Arc<base::context::SessionState>,
+) -> (ToolContext, base::interface::permission::ToolFacts) {
+    use base::interface::permission::ToolFacts;
+    let mut ctx = platform::tool_context_for_test(cwd.to_path_buf());
+    ctx.session = session.clone();
+    ctx.attendance = if session.env().unattended {
+        base::interface::permission::Attendance::Unattended
+    } else {
+        base::interface::permission::Attendance::Attended
+    };
+    let facts = match tool {
+        Some(tool) => ToolFacts::gather(tool.as_ref(), input, &ctx).await,
+        None => ToolFacts::unknown_tool(),
+    };
+    (ctx, facts)
 }
 
 /// A sub-agent's permission checks must reach the parent's
@@ -888,15 +912,17 @@ impl base::tool::Tool for AsksAboutDeploys {
     fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::json!({"type": "object"})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
-        _: &Value,
-        _: &ToolContext,
-    ) -> base::tool::PermissionDecision {
-        base::tool::PermissionDecision::ask("deploy?")
-    }
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        input["target"].as_str().map(str::to_string)
+        input: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(
+            { input["target"].as_str().map(str::to_string) }.map_or(Subject::None, Subject::Opaque),
+            Reach::Unknown,
+        )
+        .with_question("deploy?")
     }
     async fn call(
         &self,
@@ -937,13 +963,15 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
         let (rules, parent_session, deploy) =
             (rules.clone(), parent_session.clone(), deploy.clone());
         async move {
+            let (ctx, facts) =
+                context_and_facts(Some(&deploy), &input, Path::new("/tmp"), &parent_session).await;
             rules
                 .decide(&PermissionRequest::new(
                     "Deploy",
                     Some(&deploy),
                     &input,
-                    Path::new("/tmp"),
-                    "parent",
+                    &facts,
+                    &ctx,
                     &parent_session,
                 ))
                 .await
@@ -1170,6 +1198,7 @@ async fn an_unattended_sub_agent_is_handed_the_parents_question_unasked() {
     });
     let sub_session = Arc::new(sub_session);
     let input = serde_json::json!({});
+    let (ctx, facts) = context_and_facts(None, &input, Path::new("/tmp"), &sub_session).await;
     let outcome = agent_tool
         .sub_permission()
         .policy
@@ -1178,8 +1207,8 @@ async fn an_unattended_sub_agent_is_handed_the_parents_question_unasked() {
                 "Bash",
                 None,
                 &input,
-                Path::new("/tmp"),
-                "sub",
+                &facts,
+                &ctx,
                 &sub_session,
             )
             .with_attendance(base::interface::permission::Attendance::Unattended),

@@ -3,9 +3,7 @@
 //! Rust also registers — whichever of the two the builder was handed first.
 
 use base::interface::prompt_registry::{InMemoryPromptRegistry, PromptRegistry, RegisteredBlock};
-use base::interface::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult};
 use base::interface::tool_middleware::{
     NextDispatch, ToolCall, ToolExec, ToolMiddleware, ToolOutcome,
 };
@@ -195,12 +193,13 @@ impl Tool for ScriptEcho {
             "required": ["say"]
         })
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

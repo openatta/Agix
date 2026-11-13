@@ -8,8 +8,8 @@ use super::store::CronStore;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 
 pub struct CronListTool {
@@ -50,10 +50,6 @@ impl Tool for CronListTool {
 
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {

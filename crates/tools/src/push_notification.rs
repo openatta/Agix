@@ -14,8 +14,8 @@ use base::interface::exec::capture;
 #[cfg(target_os = "macos")]
 use base::interface::exec::ProcessSpec;
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -68,10 +68,6 @@ impl Tool for PushNotificationTool {
             Ok(_) => ValidationResult::Ok,
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {

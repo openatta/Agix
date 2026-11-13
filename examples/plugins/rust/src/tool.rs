@@ -6,8 +6,7 @@ use std::sync::Arc;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::interface::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolOrigin, ToolResult,
-    ToolSpec,
+    PathStyle, ProgressSender, Tool, ToolContext, ToolOrigin, ToolResult, ToolSpec,
 };
 use serde_json::Value;
 
@@ -59,10 +58,6 @@ impl Tool for StampTool {
             "properties": {"text": {"type": "string", "description": "The text to stamp, exactly"}},
             "required": ["text"]
         })
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {

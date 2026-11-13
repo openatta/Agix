@@ -505,11 +505,14 @@ async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() 
         let input = json!({});
         let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
         Policy::empty()
-            .decide(
-                &PermissionRequest::new(tool.name(), Some(&tool), &input, &cwd, "s", &session)
-                    .with_facts(&facts)
-                    .with_ctx(&ctx),
-            )
+            .decide(&PermissionRequest::new(
+                tool.name(),
+                Some(&tool),
+                &input,
+                &facts,
+                &ctx,
+                &session,
+            ))
             .await
     };
 

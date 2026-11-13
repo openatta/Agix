@@ -647,13 +647,9 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
     );
 }
 
-/// A non-read-only tool that behaves like most real production tools do
-/// for their *general/uncertain* case (`Bash`'s own `check_permissions`
-/// returns `Allow` only for known-safe read-only commands, `Ask`
-/// otherwise) — unlike `NamedTool` above, which unconditionally reports
-/// a read-only `call_traits()` and never overrides `check_permissions()`
-/// (so it always short-circuits to `Allow`, regardless of mode — not
-/// representative of a real mutating tool for this test's purpose).
+/// A non-read-only tool that claims nothing about its call, as most real
+/// tools do for their *general/uncertain* case (`Bash` is contained only for
+/// known-safe read-only commands).
 pub(super) struct AskingWriteTool;
 #[async_trait]
 impl base::tool::Tool for AskingWriteTool {
@@ -673,12 +669,13 @@ impl base::tool::Tool for AskingWriteTool {
     fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::json!({})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
-        _: &Value,
-        _: &ToolContext,
-    ) -> base::tool::PermissionDecision {
-        base::tool::PermissionDecision::ask("write?")
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::Unknown).with_question("write?")
     }
     async fn call(
         &self,
@@ -694,11 +691,8 @@ impl base::tool::Tool for AskingWriteTool {
 /// `Policy` built for team members under the zero-config
 /// `Plan` default actually deny `SendMessage`, the way `Policy`'s
 /// bare mode-dispatch (`Plan if !read_only => Deny`) would suggest in
-/// isolation? `SendMessageTool::check_permissions()` returns `Allow`
-/// unconditionally, and `Policy::decide`'s step 2 consults the
-/// tool's own `check_permissions()` *before* falling through to mode
-/// dispatch — so the real answer depends on call-path order, not just
-/// the mode-dispatch snippet alone. `SendMessage`/`ReadMail`/`ListPeers`
+/// isolation? `SendMessage` is a session-only call with the coordination
+/// stance, which spares it plan mode. `SendMessage`/`ReadMail`/`ListPeers`
 /// are exempt from mode-based restriction by design.
 #[tokio::test]
 async fn plan_mode_permits_send_message_despite_not_being_read_only() {
@@ -745,8 +739,8 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
             send_outcome,
             base::interface::permission::PermissionOutcome::Permit { .. }
         ),
-        "SendMessage must be permitted under Plan mode (via its own \
-         check_permissions(), not the read-only mode dispatch) — got {send_outcome:?}"
+        "SendMessage must be permitted under Plan mode (via its coordination \
+         stance, not the read-only mode dispatch) — got {send_outcome:?}"
     );
 
     // Sanity check the other half of the claim: Plan mode still denies

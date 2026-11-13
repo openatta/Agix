@@ -116,14 +116,11 @@ pub(super) async fn authorize(
         name,
         Some(tool),
         input,
-        &ctx.cwd,
-        &ctx.session_id,
+        &facts,
+        tool_ctx,
         &ctx.session_state,
     )
-    .with_facts(&facts)
-    .with_ctx(tool_ctx)
-    .with_hook(hook)
-    .with_attendance(tool_ctx.attendance);
+    .with_hook(hook);
     let answer = match ctx.permission.policy.decide(&request).await {
         PermissionOutcome::Prompt {
             prompt_id,
@@ -138,7 +135,7 @@ pub(super) async fn authorize(
                 paths,
                 reason,
             };
-            ask(ctx, name, tool, input, &facts, tool_ctx, asked).await
+            ask(ctx, name, input, &facts, tool_ctx, asked).await
         }
         decided => Answer::Decided(decided),
     };
@@ -212,7 +209,6 @@ struct Asked {
 async fn ask(
     ctx: &ToolExecCtx,
     name: &str,
-    tool: &Arc<dyn base::tool::Tool>,
     input: &serde_json::Value,
     facts: &base::interface::permission::ToolFacts,
     tool_ctx: &base::tool::ToolContext,
@@ -280,7 +276,7 @@ async fn ask(
             return Answer::Cancelled { waited_ms: waited.elapsed().as_millis() as u64 };
         }
     };
-    let profile = ExecProfile::for_permit(&Basis::Person, facts.runs, Some(tool_ctx.attendance));
+    let profile = ExecProfile::for_permit(&Basis::Person, facts.runs, tool_ctx.attendance);
     let permitted = Answer::Decided(PermissionOutcome::Permit {
         basis: Basis::Person,
         profile,
@@ -289,7 +285,7 @@ async fn ask(
     match outcome.answer_as::<crate::agent::PermissionDecision>() {
         Some(crate::agent::PermissionDecision::Permit) => permitted,
         Some(crate::agent::PermissionDecision::PermitAlways { scope }) => {
-            grant_always(ctx, name, tool, input, scope).await;
+            grant_always(ctx, name, facts.subject.content(), scope).await;
             permitted
         }
         Some(crate::agent::PermissionDecision::Deny { reason }) => refused(Refusal::denied(reason)),
@@ -312,8 +308,7 @@ async fn ask(
 async fn grant_always(
     ctx: &ToolExecCtx,
     name: &str,
-    tool: &Arc<dyn base::tool::Tool>,
-    input: &serde_json::Value,
+    content: Option<&str>,
     scope: crate::agent::PersistScope,
 ) {
     use base::interface::permission::{Grant, GrantScope};
@@ -329,7 +324,7 @@ async fn grant_always(
         crate::agent::PersistScope::Session => GrantScope::Session,
         crate::agent::PersistScope::Local => GrantScope::Project,
     };
-    let grant = Grant::new(name, tool.permission_match_content(input), scope);
+    let grant = Grant::new(name, content.map(str::to_string), scope);
     if let Err(e) = grants.grant(grant).await {
         tracing::warn!(tool_name = %name, error = %e, "permit-always not kept as asked");
     }

@@ -7,7 +7,9 @@
 //! here goes in through `PermissionPolicy::decide` with the built-in tool the
 //! model would actually call.
 
-use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
+use base::interface::permission::{
+    PermissionOutcome, PermissionPolicy, PermissionRequest, ToolFacts,
+};
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use permissions::policy::Policy;
 use permissions::ruleset::RuleSet;
@@ -24,12 +26,13 @@ fn rule(behavior: RuleBehavior, tool: &str, content: impl Into<String>) -> Permi
     }
 }
 
-/// The rules, the built-in tools they are asked about, and the mode the
-/// session runs in.
+/// The rules, the built-in tools they are asked about, the mode the session
+/// runs in and the sandbox settings its calls run with.
 struct Judged {
     rules: Policy,
     tools: Arc<base::tool::InMemoryToolRegistry>,
     mode: PermissionMode,
+    sandbox: base::tool::SandboxSettings,
 }
 
 fn permission(rules: Vec<PermissionRule>, mode: PermissionMode) -> Judged {
@@ -39,12 +42,14 @@ fn permission(rules: Vec<PermissionRule>, mode: PermissionMode) -> Judged {
         rules: Policy::new(RuleSet::new(rules)),
         tools,
         mode,
+        sandbox: Default::default(),
     }
 }
 
 impl Judged {
     fn with_sandbox(mut self, sandbox: base::tool::SandboxSettings) -> Self {
-        self.rules = self.rules.with_sandbox(sandbox);
+        self.rules = self.rules.with_sandbox(sandbox.clone());
+        self.sandbox = sandbox;
         self
     }
 }
@@ -54,13 +59,21 @@ async fn check(perm: &Judged, tool: &str, input: Value, cwd: &Path) -> Permissio
         base::context::SessionState::for_tests(cwd.to_path_buf()).with_permission_mode(perm.mode),
     );
     let found = perm.tools.get(tool);
+    let mut ctx = platform::tool_context_for_test(cwd.to_path_buf());
+    ctx.session = session.clone();
+    ctx.permission_mode = perm.mode;
+    ctx.sandbox = perm.sandbox.clone();
+    let facts = match &found {
+        Some(found) => ToolFacts::gather(found.as_ref(), &input, &ctx).await,
+        None => ToolFacts::unknown_tool(),
+    };
     perm.rules
         .decide(&PermissionRequest::new(
             tool,
             found.as_ref(),
             &input,
-            cwd,
-            "s",
+            &facts,
+            &ctx,
             &session,
         ))
         .await

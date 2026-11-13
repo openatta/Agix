@@ -1065,7 +1065,7 @@ async fn permission_prompt_answered_deny_blocks_the_call() {
     assert!(called.lock().unwrap().is_none());
 }
 
-/// Like `ProbeTool`, but overrides `permission_match_content`, so an "always
+/// Like `ProbeTool`, but names a subject in its facts, so an "always
 /// allow" answer has content to scope its grant by.
 struct ContentProbeTool {
     called: std::sync::Arc<std::sync::Mutex<Option<serde_json::Value>>>,
@@ -1086,8 +1086,13 @@ impl base::tool::Tool for ContentProbeTool {
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
-    fn permission_match_content(&self, _input: &serde_json::Value) -> Option<String> {
-        Some("git status".into())
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::Opaque("git status".into()), Reach::SessionOnly)
     }
     async fn call(
         &self,

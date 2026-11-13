@@ -10,8 +10,8 @@
 use crate::dangerous::{detect_dangerous_rules, log_dangerous_warnings};
 use crate::path_rule::{self, ResolvedPath};
 use crate::shadow::{detect_shadowed_rules, log_shadow_warnings};
+use base::interface::permission::Subject;
 use base::permission::{PermissionRule, RuleBehavior};
-use base::tool::PermissionContentKind;
 use std::path::Path;
 
 /// Tools whose rule content is a path.
@@ -21,13 +21,14 @@ pub(crate) const PATH_RULE_TOOLS: &[&str] =
 /// Tools whose rule content is a URL, matched as `base::url_rule` reads one.
 pub(crate) const URL_RULE_TOOLS: &[&str] = &["WebFetch", "Ping"];
 
-/// The rule tool name whose path rules also govern every tool of `kind`:
-/// `Read(...)` covers whatever reads a file, `Edit(...)` whatever writes one.
-pub fn path_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
-    match kind {
-        PermissionContentKind::ReadPath => Some("Read"),
-        PermissionContentKind::WritePath => Some("Edit"),
-        PermissionContentKind::Opaque | PermissionContentKind::ShellCommand => None,
+/// The rule tool name whose path rules also govern every call naming
+/// `subject`: `Read(...)` covers whatever reads a file, `Edit(...)` whatever
+/// writes one.
+pub fn path_rule_group(subject: &Subject) -> Option<&'static str> {
+    match subject {
+        Subject::ReadPath(_) => Some("Read"),
+        Subject::WritePath(_) => Some("Edit"),
+        _ => None,
     }
 }
 
@@ -35,8 +36,8 @@ pub fn path_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
 /// shell-running tool: a `Bash(rm:*)` deny holds for `Monitor` too, the same
 /// way `Read(...)` reaches `Grep`. An allow on the group does not widen — a
 /// tool runs a command only when its own rules, or the whole line, allow it.
-pub fn shell_rule_group(kind: PermissionContentKind) -> Option<&'static str> {
-    matches!(kind, PermissionContentKind::ShellCommand).then_some("Bash")
+pub fn shell_rule_group(subject: &Subject) -> Option<&'static str> {
+    matches!(subject, Subject::Shell(_)).then_some("Bash")
 }
 
 /// 规则匹配结果。
@@ -158,7 +159,7 @@ impl RuleSet {
 
     /// 给定工具名 + 可选匹配内容，返回裁决（见模块头）。
     ///
-    /// `content` 是 `Tool::permission_match_content(input)` 的结果（如 Bash 命令、
+    /// `content` 是调用事实里 `Subject` 的内容（如 Bash 命令、
     /// Read 文件路径），原样比对。`None` 表示工具没提供匹配内容；此时只按工具名
     /// （无 content 限定的）规则匹配。
     pub fn evaluate(&self, tool_name: &str, content: Option<&str>) -> RuleHit {

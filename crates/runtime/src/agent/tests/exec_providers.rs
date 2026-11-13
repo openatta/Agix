@@ -28,17 +28,18 @@ impl base::tool::Tool for ExecProbe {
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _input: &serde_json::Value,
         ctx: &base::tool::ToolContext,
-    ) -> base::tool::PermissionDecision {
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
         self.0
             .lock()
             .unwrap()
             .judged
             .push((ctx.exec.filesystem.clone(), ctx.exec.sandbox.clone()));
-        base::tool::PermissionDecision::allow()
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

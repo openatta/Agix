@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
-    ToolResultContent, ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -89,10 +89,6 @@ impl Tool for TaskWaitTool {
             Ok(_) => ValidationResult::Ok,
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {

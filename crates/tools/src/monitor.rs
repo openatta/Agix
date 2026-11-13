@@ -21,8 +21,8 @@ use base::error::ToolError;
 use base::interface::exec::{OutputStream, ProcessHandle};
 use base::interface::permission::{PermissionFacts, Reach, Runs, Subject};
 use base::tool::{
-    CallTraits, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
-    ToolResult, ToolSpec, ValidationResult,
+    CallTraits, PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use futures::StreamExt;
 use schemars::JsonSchema;
@@ -107,20 +107,8 @@ impl Tool for MonitorTool {
         self.spec().traits.read_only(read_only)
     }
 
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        self.reads_only_where_it_may(input, ctx)
-    }
-
     fn spec(&self) -> ToolSpec {
-        ToolSpec::new()
-            .concurrency_safe(true)
-            .permission_content(base::tool::PermissionContentKind::ShellCommand)
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<MonitorInput>(input.clone())
-            .ok()
-            .map(|p| p.command)
+        ToolSpec::new().concurrency_safe(true)
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -140,13 +128,9 @@ impl Tool for MonitorTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::ask("Monitor command requires confirmation")
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
         let subject = self
-            .permission_match_content(input)
+            .subject_content(input)
             .map_or(Subject::None, Subject::Shell);
         let reach = if self.reads_only_where_it_may(input, ctx) {
             Reach::Inside
@@ -214,6 +198,14 @@ impl Tool for MonitorTool {
              Stop it with TaskStop (task_id {task_id}); read everything it printed with \
              TaskOutput."
         )))
+    }
+}
+
+impl MonitorTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<MonitorInput>(input.clone())
+            .ok()
+            .map(|p| p.command)
     }
 }
 
@@ -529,12 +521,10 @@ mod tests {
                             "Monitor",
                             Some(tool),
                             input,
-                            &ctx.cwd,
-                            &ctx.session_id,
+                            &facts,
+                            &ctx,
                             &ctx.session,
                         )
-                        .with_facts(&facts)
-                        .with_ctx(&ctx)
                         .with_attendance(attendance),
                     )
                     .await
@@ -837,17 +827,8 @@ mod tests {
         let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
         let outcome = permissions::policy::Policy::empty()
             .decide(
-                &PermissionRequest::new(
-                    "Monitor",
-                    Some(&tool),
-                    &input,
-                    &ctx.cwd,
-                    &ctx.session_id,
-                    &ctx.session,
-                )
-                .with_facts(&facts)
-                .with_ctx(&ctx)
-                .with_attendance(ctx.attendance),
+                &PermissionRequest::new("Monitor", Some(&tool), &input, &facts, &ctx, &ctx.session)
+                    .with_attendance(ctx.attendance),
             )
             .await;
         let PermissionOutcome::Deny { reason } = outcome else {

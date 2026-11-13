@@ -16,8 +16,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, ToolContext, ToolResult,
-    ToolResultContent, ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -305,8 +305,7 @@ impl base::tool::Tool for SendMessageTool {
         // default (see `team::coordinator`), and plan mode exists to stop the
         // agent mutating the workspace before the user has approved a plan; a
         // member that cannot report back to its coordinator is simply broken.
-        // See `ToolPermissionSpec::self_allow_overrides_mode`.
-        ToolSpec::new().self_allow_overrides_mode(true)
+        ToolSpec::new().stance(base::interface::permission::ModeStance::Coordination)
     }
 
     fn input_schema(&self, _: PathStyle) -> Value {
@@ -343,10 +342,6 @@ impl base::tool::Tool for SendMessageTool {
             },
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -445,10 +440,6 @@ impl base::tool::Tool for ReadMailTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
-
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
@@ -537,10 +528,6 @@ impl base::tool::Tool for ListPeersTool {
 
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -905,44 +892,30 @@ mod tests {
         assert_eq!(msgs[1].content, "m3");
     }
 
-    async fn facts_conclude_as_the_bridged_ones(
-        tool: &dyn base::tool::Tool,
-        input: serde_json::Value,
-    ) {
-        use base::interface::permission::{PermissionFacts, Reach};
+    async fn states_a_contained_call(tool: &dyn base::tool::Tool, input: serde_json::Value) {
+        use base::interface::permission::Reach;
         let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
         let stated = tool.permission_facts(&input, &ctx).await;
-        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
-        let contained = |reach: &Reach| {
+        assert!(
             matches!(
-                reach,
+                stated.reach,
                 Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-            )
-        };
-        assert_eq!(stated.subject, old.subject, "{}", tool.name());
-        assert_eq!(stated.question, old.question, "{}", tool.name());
-        assert_eq!(stated.runs, old.runs, "{}", tool.name());
-        assert_eq!(
-            contained(&stated.reach),
-            contained(&old.reach),
-            "{}",
+            ),
+            "{}: {stated:?}",
             tool.name()
         );
+        assert_eq!(stated.runs, None, "{}", tool.name());
     }
 
     #[tokio::test]
     async fn the_mailbox_tools_touch_only_the_session() {
         let mb = Arc::new(MailboxStore::new(vec!["a".into(), "b".into()]));
-        facts_conclude_as_the_bridged_ones(
+        states_a_contained_call(
             &SendMessageTool::new(mb.clone(), "a"),
             serde_json::json!({ "to": "b", "message": "hi" }),
         )
         .await;
-        facts_conclude_as_the_bridged_ones(
-            &ReadMailTool::new(mb.clone(), "a"),
-            serde_json::json!({}),
-        )
-        .await;
-        facts_conclude_as_the_bridged_ones(&ListPeersTool::new(mb), serde_json::json!({})).await;
+        states_a_contained_call(&ReadMailTool::new(mb.clone(), "a"), serde_json::json!({})).await;
+        states_a_contained_call(&ListPeersTool::new(mb), serde_json::json!({})).await;
     }
 }

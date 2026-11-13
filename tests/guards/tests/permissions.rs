@@ -1,5 +1,9 @@
 //! The permission pipeline's guards (D1 PERM-*).
 //!
+//! PERM-1 (with D5 A1): a tool answers the permission engine with one set of
+//! facts per call; the trait has nothing else on its permission surface, and
+//! no production code keeps a function by the names of the answers it
+//! replaced.
 //! PERM-2: a call is decided by the engine's policy, or relayed to a parent's
 //! by a delegate; no other policy stands between a call and the rules.
 //! PERM-3: a call is let through by the policy, or by the person the runtime
@@ -37,6 +41,63 @@ fn place(f: &SourceFile, hit: &Hit) -> String {
     }
 }
 
+const TOOL_TRAIT: &str = "crates/core/src/interface/tool.rs";
+
+const TOOL_METHODS: &[&str] = &[
+    "name",
+    "description",
+    "spec",
+    "input_schema",
+    "guide",
+    "call_traits",
+    "permission_facts",
+    "validate_input",
+    "call",
+];
+
+const REPLACED_BY_FACTS: &[&str] = &[
+    "check_permissions",
+    "accept_edits_allows",
+    "permission_match_content",
+];
+
+#[test]
+fn the_tool_trait_is_exactly_its_nine_methods() {
+    let tool = scan::traits(ws().file(TOOL_TRAIT), View::Prod)
+        .into_iter()
+        .find(|t| t.name == "Tool")
+        .unwrap_or_else(|| panic!("[permissions::PERM-1] no `trait Tool` in {TOOL_TRAIT}"));
+    let mut actual = tool.items.clone();
+    actual.sort();
+    let mut expected: Vec<String> = TOOL_METHODS.iter().map(|m| m.to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        actual, expected,
+        "[permissions::PERM-1] `trait Tool` must have exactly D1 §2.1's nine methods: what a \
+         call means to the permission engine is `permission_facts`, nothing beside it"
+    );
+}
+
+#[test]
+fn no_production_code_keeps_the_answers_facts_replaced() {
+    let found: Vec<String> = par_flat_map(ws().production(), |f| {
+        scan::fns(f, View::Prod)
+            .into_iter()
+            .filter(|func| {
+                let name = func.qual.rsplit("::").next().unwrap_or(&func.qual);
+                REPLACED_BY_FACTS.contains(&name)
+            })
+            .map(|func| format!("{}: {}", func.hit, func.qual))
+            .collect()
+    });
+    assert!(
+        found.is_empty(),
+        "[permissions::PERM-1] functions named after the answers `permission_facts` replaced — \
+         state the call's subject and reach there instead:\n{}",
+        found.join("\n")
+    );
+}
+
 const POLICIES: &[(&str, &str)] = &[
     (
         "crates/permissions/src/policy/mod.rs::Policy",
@@ -72,10 +133,7 @@ fn only_the_policy_and_the_delegate_relay_decide_a_call() {
     );
 }
 
-const MAKES_A_CONTEXT: &[(&str, &str)] = &[(
-    "crates/permissions/src/policy/mod.rs::Policy::context_for",
-    "a request that brought no context; D1-4 makes the context a required field",
-)];
+const MAKES_A_CONTEXT: &[(&str, &str)] = &[];
 
 #[test]
 fn the_policy_and_the_relay_judge_with_the_calls_own_context() {

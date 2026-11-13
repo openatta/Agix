@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -109,12 +109,6 @@ impl Tool for WebSearchTool {
         Some(prompt.replace("{currentMonthYear}", &current_month_year))
     }
 
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<WebSearchInput>(input.clone())
-            .ok()
-            .map(|i| i.query)
-    }
-
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         match serde_json::from_value::<WebSearchInput>(input.clone()) {
             Ok(i) if i.query.trim().is_empty() => {
@@ -131,15 +125,9 @@ impl Tool for WebSearchTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::Allow {
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, _: &ToolContext) -> PermissionFacts {
         let subject = self
-            .permission_match_content(input)
+            .subject_content(input)
             .map_or(Subject::None, Subject::Opaque);
         PermissionFacts::new(subject, Reach::Operator)
     }
@@ -179,6 +167,14 @@ impl Tool for WebSearchTool {
         } else {
             Ok(ToolResult::text(format_results(&input.query, &items)))
         }
+    }
+}
+
+impl WebSearchTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<WebSearchInput>(input.clone())
+            .ok()
+            .map(|i| i.query)
     }
 }
 
@@ -422,10 +418,11 @@ mod tests {
     async fn permissions_default_allow() {
         let tool = WebSearchTool::new(Box::new(MockProvider(vec![])));
         let r = tool
-            .check_permissions(&json!({"query": "x"}), &ctx_in(Path::new("/tmp")))
-            .await;
+            .permission_facts(&json!({"query": "x"}), &ctx_in(Path::new("/tmp")))
+            .await
+            .reach;
         assert!(
-            matches!(r, PermissionDecision::Allow { .. }),
+            matches!(r, Reach::Operator),
             "WebSearch should auto-allow, matching TS passthrough behavior"
         );
     }

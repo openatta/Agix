@@ -9,8 +9,8 @@ use base::error::ToolError;
 use base::interface::exec::{ExecError, FileSystem};
 use base::interface::permission::PermissionFacts;
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -93,10 +93,7 @@ pub struct FileEditTool;
 #[async_trait]
 impl Tool for FileEditTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec::new()
-            .callable_from_code(true)
-            .destructive(true)
-            .permission_content(base::tool::PermissionContentKind::WritePath)
+        ToolSpec::new().callable_from_code(true).destructive(true)
     }
     fn name(&self) -> &str {
         "Edit"
@@ -116,12 +113,6 @@ impl Tool for FileEditTool {
 
     async fn guide(&self, _: &PromptContext) -> Option<String> {
         Some(include_str!("prompts/coding/file_edit.prompt.md").to_string())
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<FileEditInput>(input.clone())
-            .ok()
-            .map(|i| i.file_path)
     }
 
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {
@@ -188,13 +179,8 @@ impl Tool for FileEditTool {
         }
     }
 
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        let file_path = self.permission_match_content(input);
-        crate::security::check_write_permission(self.name(), file_path.as_deref(), ctx).await
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        let file_path = self.permission_match_content(input);
+        let file_path = self.subject_content(input);
         crate::security::write_facts(self.name(), file_path.as_deref(), ctx).await
     }
 
@@ -232,6 +218,14 @@ impl Tool for FileEditTool {
         let mut result = ToolResult::text(outcome.summary);
         result.structured_content = structured;
         Ok(result)
+    }
+}
+
+impl FileEditTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<FileEditInput>(input.clone())
+            .ok()
+            .map(|i| i.file_path)
     }
 }
 
@@ -466,6 +460,7 @@ fn parse_pair(s: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
     use base::interface::exec::{DirEntry, Metadata};
+    use base::interface::permission::Reach;
     use base::tool::ToolResultContent;
     use platform::LocalFileSystem;
     use serde_json::json;
@@ -833,9 +828,10 @@ mod tests {
         let tool = FileEditTool;
         let dir = TempDir::new().unwrap();
         let d = tool
-            .check_permissions(&json!({}), &ctx_in(dir.path()))
-            .await;
-        assert!(matches!(d, PermissionDecision::Ask { .. }));
+            .permission_facts(&json!({}), &ctx_in(dir.path()))
+            .await
+            .reach;
+        assert!(matches!(d, Reach::Outside | Reach::Unknown));
     }
 
     #[cfg(unix)]
@@ -851,12 +847,15 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("sub"), proj.join("link")).unwrap();
         let input = json!({"file_path": "link/../x", "old_string": "a", "new_string": "b"});
 
-        let decision = FileEditTool.check_permissions(&input, &ctx_in(&proj)).await;
+        let decision = FileEditTool
+            .permission_facts(&input, &ctx_in(&proj))
+            .await
+            .reach;
         assert!(
-            matches!(decision, PermissionDecision::Ask { .. }),
+            matches!(decision, Reach::Outside | Reach::Unknown),
             "{decision:?}"
         );
-        if matches!(decision, PermissionDecision::Allow { .. }) {
+        if matches!(decision, Reach::Inside) {
             let _ = FileEditTool
                 .call(input, ctx_in(&proj), ProgressSender::noop("t"))
                 .await;
@@ -871,15 +870,16 @@ mod tests {
         let outside = TempDir::new().unwrap();
 
         let inside = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": "a.txt", "old_string": "a", "new_string": "b"}),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(inside, PermissionDecision::Allow { .. }));
+            .await
+            .reach;
+        assert!(matches!(inside, Reach::Inside));
 
         let outside = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({
                     "file_path": outside.path().join("a.txt").to_string_lossy(),
                     "old_string": "a",
@@ -887,16 +887,18 @@ mod tests {
                 }),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(outside, PermissionDecision::Ask { .. }));
+            .await
+            .reach;
+        assert!(matches!(outside, Reach::Outside | Reach::Unknown));
 
         let sensitive = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": ".env", "old_string": "a", "new_string": "b"}),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(sensitive, PermissionDecision::Deny { .. }));
+            .await
+            .reach;
+        assert!(matches!(sensitive, Reach::Refused(_)));
     }
 
     #[tokio::test]

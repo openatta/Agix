@@ -11,8 +11,8 @@ use crate::client::{McpClientHandle, McpContent};
 use async_trait::async_trait;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::{
-    error::ToolError, tool::PermissionDecision, tool::ProgressSender, tool::PromptContext,
-    tool::Tool, tool::ToolContext, tool::ToolResult, tool::ToolSpec, tool::ValidationResult,
+    error::ToolError, tool::ProgressSender, tool::PromptContext, tool::Tool, tool::ToolContext,
+    tool::ToolResult, tool::ToolSpec, tool::ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -60,9 +60,6 @@ impl Tool for ListMcpResourcesTool {
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -176,10 +173,6 @@ impl Tool for ReadMcpResourceTool {
             Ok(_) => ValidationResult::Ok,
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 2),
         }
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // MCP resource 是 server 暴露的；可能很大但本身是只读
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -322,9 +315,6 @@ impl Tool for DispatchMcpTool {
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -562,29 +552,19 @@ mod tests {
         }
     }
 
-    async fn facts_conclude_as_the_bridged_ones(
-        tool: &dyn base::tool::Tool,
-        input: serde_json::Value,
-    ) {
-        use base::interface::permission::{PermissionFacts, Reach};
+    async fn states_a_contained_call(tool: &dyn base::tool::Tool, input: serde_json::Value) {
+        use base::interface::permission::Reach;
         let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
         let stated = tool.permission_facts(&input, &ctx).await;
-        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
-        let contained = |reach: &Reach| {
+        assert!(
             matches!(
-                reach,
+                stated.reach,
                 Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-            )
-        };
-        assert_eq!(stated.subject, old.subject, "{}", tool.name());
-        assert_eq!(stated.question, old.question, "{}", tool.name());
-        assert_eq!(stated.runs, old.runs, "{}", tool.name());
-        assert_eq!(
-            contained(&stated.reach),
-            contained(&old.reach),
-            "{}",
+            ),
+            "{}: {stated:?}",
             tool.name()
         );
+        assert_eq!(stated.runs, None, "{}", tool.name());
     }
 
     #[tokio::test]
@@ -603,7 +583,7 @@ mod tests {
             let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
             let facts = tool.permission_facts(&input, &ctx).await;
             assert_eq!(facts.reach, base::interface::permission::Reach::Operator);
-            facts_conclude_as_the_bridged_ones(tool.as_ref(), input).await;
+            states_a_contained_call(tool.as_ref(), input).await;
         }
     }
 }

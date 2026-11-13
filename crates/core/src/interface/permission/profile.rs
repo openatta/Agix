@@ -42,11 +42,11 @@ impl ExecProfile {
     /// let through: on a command's own word it is held tighter than one a
     /// person (or a rule, a hook, bypass) let through, and nobody attending
     /// tightens it too.
-    pub fn for_permit(basis: &Basis, runs: Option<Runs>, attendance: Option<Attendance>) -> Self {
+    pub fn for_permit(basis: &Basis, runs: Option<Runs>, attendance: Attendance) -> Self {
         match (basis, runs) {
             (Basis::Contained | Basis::AcceptEdits, Some(_)) => Self::Strict,
             (Basis::UnattendedConfined, _) => Self::Unattended,
-            _ if attendance == Some(Attendance::Unattended) => Self::Unattended,
+            _ if attendance == Attendance::Unattended => Self::Unattended,
             _ => Self::Session,
         }
     }

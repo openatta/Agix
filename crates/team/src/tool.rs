@@ -9,7 +9,7 @@ use base::interface::model::Model;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::PromptContext;
 use base::tool::ToolContext;
-use base::tool::{PathStyle, PermissionDecision, ToolSpec, ValidationResult};
+use base::tool::{PathStyle, ToolSpec, ValidationResult};
 use base::tool::{ProgressSender, ToolResult};
 
 use schemars::JsonSchema;
@@ -140,9 +140,6 @@ impl base::tool::Tool for TeamCreateTool {
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 2),
         }
     }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::new(Subject::None, Reach::SessionOnly)
@@ -235,9 +232,6 @@ impl base::tool::Tool for TeamDeleteTool {
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
     }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::new(Subject::None, Reach::SessionOnly)
@@ -304,9 +298,6 @@ impl base::tool::Tool for TeamListTool {
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -506,34 +497,24 @@ mod tests {
         }
     }
 
-    async fn facts_conclude_as_the_bridged_ones(
-        tool: &dyn base::tool::Tool,
-        input: serde_json::Value,
-    ) {
-        use base::interface::permission::{PermissionFacts, Reach};
+    async fn states_a_contained_call(tool: &dyn base::tool::Tool, input: serde_json::Value) {
+        use base::interface::permission::Reach;
         let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
         let stated = tool.permission_facts(&input, &ctx).await;
-        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
-        let contained = |reach: &Reach| {
+        assert!(
             matches!(
-                reach,
+                stated.reach,
                 Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-            )
-        };
-        assert_eq!(stated.subject, old.subject, "{}", tool.name());
-        assert_eq!(stated.question, old.question, "{}", tool.name());
-        assert_eq!(stated.runs, old.runs, "{}", tool.name());
-        assert_eq!(
-            contained(&stated.reach),
-            contained(&old.reach),
-            "{}",
+            ),
+            "{}: {stated:?}",
             tool.name()
         );
+        assert_eq!(stated.runs, None, "{}", tool.name());
     }
 
     #[tokio::test]
     async fn team_list_touches_only_the_session() {
         let tool = TeamListTool::new(Arc::new(TeamRegistry::new()));
-        facts_conclude_as_the_bridged_ones(&tool, serde_json::json!({})).await;
+        states_a_contained_call(&tool, serde_json::json!({})).await;
     }
 }

@@ -729,12 +729,10 @@ async fn inline_command_approval(
         "Bash",
         Some(bash),
         input,
-        &ctx.cwd,
-        &ctx.session_id,
+        &facts,
+        ctx,
         &ctx.session,
     )
-    .with_facts(&facts)
-    .with_ctx(ctx)
     .with_attendance(attendance);
     match permission.decide(&request).await {
         PermissionOutcome::Permit { basis, profile, .. } => Ok(Approval::new(basis, profile)),
@@ -1289,21 +1287,14 @@ mod tests {
             async fn guide(&self, _: &PromptContext) -> Option<String> {
                 Some("fake bash".into())
             }
-            async fn check_permissions(
+            async fn permission_facts(
                 &self,
                 _: &Value,
                 _: &ToolContext,
-            ) -> base::tool::PermissionDecision {
-                // Default `Tool::check_permissions` is `allow()`, which would
-                // short-circuit `Policy::decide` before it ever
-                // reaches rule/mode dispatch — defeating the point of this
-                // test. A real `Bash`-shaped tool defers to the gate.
-                base::tool::PermissionDecision::ask("run?")
-            }
-            fn permission_match_content(&self, _: &Value) -> Option<String> {
-                // What a real `BashTool` derives from its input — the thing a
-                // scoped rule is matched against.
-                Some("cargo test".to_string())
+            ) -> base::interface::permission::PermissionFacts {
+                use base::interface::permission::{PermissionFacts, Reach, Subject};
+                PermissionFacts::new(Subject::Opaque("cargo test".into()), Reach::Unknown)
+                    .with_question("run?")
             }
             async fn call(
                 &self,
@@ -1506,13 +1497,6 @@ mod tests {
             async fn guide(&self, _: &PromptContext) -> Option<String> {
                 Some("fake bash".into())
             }
-            async fn check_permissions(
-                &self,
-                _: &Value,
-                _: &ToolContext,
-            ) -> base::tool::PermissionDecision {
-                base::tool::PermissionDecision::ask("run?")
-            }
             async fn call(
                 &self,
                 _: Value,
@@ -1549,13 +1533,17 @@ mod tests {
     ) -> base::interface::permission::PermissionOutcome {
         let input = serde_json::json!({});
         let session = Arc::new(base::context::SessionState::for_tests("/tmp".into()));
+        let mut ctx = platform::tool_context_for_test("/tmp".into());
+        ctx.session = session.clone();
+        let facts =
+            base::interface::permission::ToolFacts::gather(bash.as_ref(), &input, &ctx).await;
         policy
             .decide(&base::interface::permission::PermissionRequest::new(
                 "Bash",
                 Some(bash),
                 &input,
-                std::path::Path::new("/tmp"),
-                "s1",
+                &facts,
+                &ctx,
                 &session,
             ))
             .await
@@ -2091,39 +2079,29 @@ mod tests {
         );
     }
 
-    async fn facts_conclude_as_the_bridged_ones(
-        tool: &dyn base::tool::Tool,
-        input: serde_json::Value,
-    ) {
-        use base::interface::permission::{PermissionFacts, Reach};
+    async fn states_a_contained_call(tool: &dyn base::tool::Tool, input: serde_json::Value) {
+        use base::interface::permission::Reach;
         let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
         let stated = tool.permission_facts(&input, &ctx).await;
-        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
-        let contained = |reach: &Reach| {
+        assert!(
             matches!(
-                reach,
+                stated.reach,
                 Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-            )
-        };
-        assert_eq!(stated.subject, old.subject, "{}", tool.name());
-        assert_eq!(stated.question, old.question, "{}", tool.name());
-        assert_eq!(stated.runs, old.runs, "{}", tool.name());
-        assert_eq!(
-            contained(&stated.reach),
-            contained(&old.reach),
-            "{}",
+            ),
+            "{}: {stated:?}",
             tool.name()
         );
+        assert_eq!(stated.runs, None, "{}", tool.name());
     }
 
     #[tokio::test]
-    async fn a_skill_delegates_and_runs_as_before() {
+    async fn a_skill_delegates() {
         let mgr = Arc::new(crate::manager::SkillManager::new());
         let tool = SkillTool::new(mgr);
         let input = serde_json::json!({ "skill": "anything" });
         let ctx = platform::tool_context_for_test(std::env::temp_dir());
         let facts = tool.permission_facts(&input, &ctx).await;
         assert_eq!(facts.reach, base::interface::permission::Reach::Delegates);
-        facts_conclude_as_the_bridged_ones(&tool, input).await;
+        states_a_contained_call(&tool, input).await;
     }
 }

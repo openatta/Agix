@@ -488,7 +488,7 @@ async fn compaction_triggers_and_is_logged() {
     check(case).await;
 }
 
-/// A tool whose `check_permissions` returns `Ask`, in a session that is not
+/// A tool that claims nothing about its call, in a session that is not
 /// bypassing permissions. The prompt must reach the host and the approval must
 /// let the call proceed.
 #[tokio::test]

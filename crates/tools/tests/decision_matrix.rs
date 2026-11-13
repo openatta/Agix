@@ -2,19 +2,14 @@
 //! {有人值守, 无人值守} × {无 hook, hook approve}，每格一个结论，冻结成一份 golden。
 //!
 //! 每格照 runtime 的做法走一遍：输入先校验（不合法即 Deny），再带着 hook 的回答和
-//! 在场性问 `Policy::from_settings`（生产路径）。事实取工具的旧答案（`ToolFacts::bridged`），
-//! 外加 Bash、Monitor 旧答案里无人值守时沙箱兜得住即放行的那一支——那一支已经挪进策略
-//! （S15），只在这里复刻。"raw" 是在场性起作用之前的结论：因没人可问而拒的原本是一问，
+//! 在场性问 `Policy::from_settings`（生产路径），事实是工具自己声明的
+//! （`ToolFacts::gather`）。"raw" 是在场性起作用之前的结论：因没人可问而拒的原本是一问，
 //! hook 的 approve 也答不了的是只有人能答的一问。这份快照必须逐字不变：
 //! `UPDATE_GOLDEN=1 cargo test -p tools --test integration decision_matrix::` 重新生成。
 //!
 //! 家目录用固定的 `/home/matrix`，不读环境；沙箱用一个恒报 Full 的桩，让无人值守的
 //! Bash 放行通道不随运行机器变化。快照末尾另有一节：`sandbox.require_enforcement` 打开、
-//! 沙箱只兑现一部分时 Bash 和 Monitor 的结论，按工具自己声明的事实判。
-//!
-//! 自己声明 `permission_facts` 的工具另有一条等价断言：它的事实和从旧答案推出的事实，
-//! 经同一个按中心判定顺序写的 `conclusion` 得出相同结论；策略对旧答案的结论、对它自己
-//! 声明的事实的结论，也都与之一致。
+//! 沙箱只兑现一部分时 Bash 和 Monitor 的结论。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -23,8 +18,8 @@ use base::interface::exec::{
     Confined, Enforcement, ExecProviders, ProcessSpec, Sandbox, SandboxMode, SandboxPolicy,
 };
 use base::interface::permission::{
-    Answerable, Attendance, Delegate, HookAnswer, ModeStance, PermissionOutcome, PermissionPolicy,
-    PermissionRequest, Reach, Stage, ToolFacts,
+    Answerable, Attendance, Delegate, HookAnswer, PermissionOutcome, PermissionPolicy,
+    PermissionRequest, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::settings::{PermissionAction, Settings};
@@ -375,16 +370,26 @@ async fn decide(
     unattended: bool,
 ) -> PermissionOutcome {
     let session = session(cwd, mode, unattended);
+    let ctx = context_like_the_runtime(&session, cwd);
+    let facts = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
     policy
         .decide(&PermissionRequest::new(
             tool.name(),
             Some(tool),
             input,
-            cwd,
-            "matrix",
+            &facts,
+            &ctx,
             &session,
         ))
         .await
+}
+
+/// The facts of a call to `tool`, or of a name nothing answers to.
+async fn facts_of(tool: Option<&Arc<dyn Tool>>, input: &Value, ctx: &ToolContext) -> ToolFacts {
+    match tool {
+        Some(tool) => ToolFacts::gather(tool.as_ref(), input, ctx).await,
+        None => ToolFacts::unknown_tool(),
+    }
 }
 
 pub(crate) async fn render() -> (String, usize) {
@@ -596,26 +601,8 @@ fn context_like_the_runtime(session: &Arc<SessionState>, cwd: &Path) -> ToolCont
     ctx
 }
 
-/// The facts the tool's old answers amount to. Bash and Monitor used to let a
-/// command run unattended wherever the sandbox held it; that allowance is the
-/// policy's now, so it is put back here, where the old answers are wanted.
-async fn old_answers(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolFacts {
-    let mut facts = ToolFacts::bridged(tool, input, ctx).await;
-    let runs = ToolFacts::gather(tool, input, ctx).await.runs.is_some();
-    if runs
-        && ctx.attendance == Attendance::Unattended
-        && ctx.confinement.holds_unattended()
-        && matches!(facts.reach, Reach::Unknown | Reach::Host { .. })
-    {
-        facts.reach = Reach::Inside;
-        facts.question = None;
-    }
-    facts
-}
-
 /// What the runtime makes of a call: `None` when its input is refused before
-/// anyone judges it, else the policy's conclusion on the call's old answers,
-/// or on what the tool states with `stated`.
+/// anyone judges it, else the policy's conclusion on what the tool states.
 async fn concluded(
     policy: &Policy,
     tool: &Arc<dyn Tool>,
@@ -623,21 +610,14 @@ async fn concluded(
     cwd: &Path,
     setup: Setup,
     hook: &HookAnswer,
-    stated: bool,
 ) -> Option<PermissionOutcome> {
     let session = setup.session(cwd);
     let ctx = setup.context(&session, cwd);
     if tool.validate_input(input, &ctx).await.is_err() {
         return None;
     }
-    let facts = if stated {
-        ToolFacts::gather(tool.as_ref(), input, &ctx).await
-    } else {
-        old_answers(tool.as_ref(), input, &ctx).await
-    };
-    let request = PermissionRequest::new(tool.name(), Some(tool), input, cwd, "matrix", &session)
-        .with_facts(&facts)
-        .with_ctx(&ctx)
+    let facts = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
+    let request = PermissionRequest::new(tool.name(), Some(tool), input, &facts, &ctx, &session)
         .with_hook(hook)
         .with_attendance(ctx.attendance);
     Some(policy.decide(&request).await)
@@ -655,337 +635,39 @@ async fn rendered(
         hook: "matrix".into(),
     };
     let none = HookAnswer::None;
-    // Whether a command runs in the sandbox at all is a fact only a tool's own
-    // answer states.
-    let stated = matches!(setup.sandboxing, Sandboxing::HoldsPartlyAsDemanded);
-    let no_hook = concluded(policy, tool, input, cwd, setup, &none, stated).await;
-    let hook = concluded(policy, tool, input, cwd, setup, &approve, stated).await;
+    let no_hook = concluded(policy, tool, input, cwd, setup, &none).await;
+    let hook = concluded(policy, tool, input, cwd, setup, &approve).await;
     match (no_hook, hook) {
         (Some(no_hook), Some(hook)) => [raw(&no_hook, &hook), word(&no_hook), word(&hook)],
         _ => ["Deny"; 3],
     }
 }
 
-#[derive(Clone, Copy)]
-struct Cell {
-    mode: PermissionMode,
-    rule: RuleCase,
-    unattended: bool,
-    hook_approved: bool,
-    /// The session's sandbox fully holds a command, under the network
-    /// condition `sandbox.unattended_requires_network_policy` sets.
-    confined: bool,
-}
-
-/// The final conclusion a call's facts lead to, weighed in the order the
-/// central policy weighs them. Credentials, an unreadable managed layer and
-/// the bypass-immune paths are judged on the subject before any of this and
-/// are left out.
-fn conclusion(facts: &ToolFacts, cell: Cell) -> &'static str {
-    use PermissionMode::*;
-    let answer = |person_only: bool| {
-        if cell.hook_approved && !person_only {
-            "Permit"
-        } else if cell.unattended {
-            "Deny"
-        } else {
-            "Prompt"
+/// F-8: a durable cron job outlives the session and acts on its own, so it is
+/// asked about where a session-only one runs.
+#[tokio::test]
+async fn a_durable_cron_job_is_asked_about_where_a_session_only_one_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let cron = builtin_tools().get("CronCreate").unwrap();
+    let policy = permission("CronCreate", RuleCase::None);
+    let job =
+        |durable: bool| json!({ "cron": "0 9 * * *", "prompt": "report", "durable": durable });
+    let at = |unattended| Setup::holding(PermissionMode::Default, unattended);
+    let none = HookAnswer::None;
+    let outcome = |input: Value, unattended| {
+        let (policy, cron, cwd, none) = (&policy, &cron, &cwd, &none);
+        async move {
+            word(
+                &concluded(policy, cron, &input, cwd, at(unattended), none)
+                    .await
+                    .unwrap(),
+            )
         }
     };
-    let managed = cell.rule == RuleCase::ManagedAsk;
-    if cell.mode == BypassPermissions {
-        return if managed { answer(true) } else { "Permit" };
-    }
-    if matches!(facts.reach, Reach::Refused(_)) || cell.rule == RuleCase::Deny {
-        return "Deny";
-    }
-    let contained = matches!(
-        facts.reach,
-        Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-    );
-    let spared = contained && facts.stance == ModeStance::Coordination;
-    if cell.mode == Plan
-        && !facts.traits.read_only
-        && facts.stance != ModeStance::LeavesPlan
-        && !spared
-    {
-        return "Deny";
-    }
-    if cell.mode == DontAsk && cell.rule != RuleCase::Allow && !spared {
-        return "Deny";
-    }
-    if matches!(cell.rule, RuleCase::Ask | RuleCase::ManagedAsk) {
-        return if cell.mode == DontAsk {
-            "Deny"
-        } else {
-            answer(managed)
-        };
-    }
-    let writes_configuration = !facts.traits.read_only
-        && facts.subject.content().is_some_and(|s| {
-            s.split_whitespace()
-                .any(base::paths::SensitivePaths::names_configuration)
-        });
-    let background = facts.runs.is_some_and(|r| r.background);
-    if contained && !background && !writes_configuration {
-        return "Permit";
-    }
-    if cell.rule == RuleCase::Allow {
-        return "Permit";
-    }
-    if cell.mode == AcceptEdits
-        && facts.traits.read_only
-        && matches!(
-            facts.reach,
-            Reach::SessionOnly | Reach::Inside | Reach::Host { listed: true }
-        )
-    {
-        return "Permit";
-    }
-    // `Inside` as well as `Unknown`: a background command that stays where the
-    // session may read is no further-reaching than one nobody vouched for, and
-    // unattended it runs today.
-    if cell.unattended
-        && cell.confined
-        && facts.runs.is_some()
-        && matches!(facts.reach, Reach::Unknown | Reach::Inside)
-        && !writes_configuration
-    {
-        return "Permit";
-    }
-    answer(false)
-}
-
-/// One cell of one call: the conclusion the tool's own facts lead to and the
-/// one its old answers lead to, and — where the sample is not refused before
-/// the tool is read — the policy's on each.
-struct Compared {
-    at: String,
-    cell: Cell,
-    stated: &'static str,
-    old: &'static str,
-    gate: Option<&'static str>,
-    policy: Option<&'static str>,
-}
-
-async fn compare_stated_with_bridged(name: &str, input: &Value, cwd: &Path) -> Vec<Compared> {
-    let registry = builtin_tools();
-    let tool = registry.get(name).unwrap();
-    let refused_before_facts = !matches!(
-        concluded(
-            &permission(name, RuleCase::None),
-            &tool,
-            input,
-            cwd,
-            Setup::holding(PermissionMode::BypassPermissions, false),
-            &HookAnswer::None,
-            false,
-        )
-        .await,
-        Some(PermissionOutcome::Permit { .. })
-    );
-    let mut out = Vec::new();
-    for (mode_name, mode) in MODES {
-        for unattended in [false, true] {
-            let session = session(cwd, mode, unattended);
-            let ctx = context_like_the_runtime(&session, cwd);
-            let stated = ToolFacts::gather(tool.as_ref(), input, &ctx).await;
-            let old = old_answers(tool.as_ref(), input, &ctx).await;
-            assert_eq!(stated.subject, old.subject, "{name} {input}");
-            assert_eq!(stated.traits, old.traits, "{name} {input}");
-            assert_eq!(stated.stance, old.stance, "{name} {input}");
-            assert_eq!(stated.origin, old.origin, "{name} {input}");
-            let confined = !ctx.config.dangerously_disable_sandbox
-                && (!ctx.sandbox.unattended_requires_network_policy
-                    || !matches!(
-                        ctx.sandbox.network_mode,
-                        base::context::config::NetworkModeConfig::Unrestricted
-                    ));
-            for (rule_name, rule) in RULES {
-                let policy = permission(name, rule);
-                for hook_approved in [false, true] {
-                    let hook = if hook_approved {
-                        HookAnswer::Approve {
-                            hook: "matrix".into(),
-                        }
-                    } else {
-                        HookAnswer::None
-                    };
-                    let on = |stated| {
-                        concluded(
-                            &policy,
-                            &tool,
-                            input,
-                            cwd,
-                            Setup::holding(mode, unattended),
-                            &hook,
-                            stated,
-                        )
-                    };
-                    let (gate, policy_said) = if refused_before_facts {
-                        (None, None)
-                    } else {
-                        (
-                            on(false).await.as_ref().map(word),
-                            on(true).await.as_ref().map(word),
-                        )
-                    };
-                    let cell = Cell {
-                        mode,
-                        rule,
-                        unattended,
-                        hook_approved,
-                        confined,
-                    };
-                    out.push(Compared {
-                        at: format!(
-                            "{name} {input} {mode_name} {rule_name} unattended={unattended} \
-                             hook={hook_approved}: stated {stated:?}, bridged {old:?}"
-                        ),
-                        cell,
-                        stated: conclusion(&stated, cell),
-                        old: conclusion(&old, cell),
-                        gate,
-                        policy: policy_said,
-                    });
-                }
-            }
-        }
-    }
-    out
-}
-
-/// A durable cron job outlives the session and acts on its own, which is the
-/// one thing a tool's facts make asked about that its old answer let through.
-fn leaves_something_behind(name: &str, input: &Value) -> bool {
-    name == "CronCreate" && input["durable"] == json!(true)
-}
-
-/// Tools that state their own facts: what those lead to must be what the facts
-/// bridged from their old answers lead to, in every cell. Where the policy does
-/// not refuse a sample before reading the tool, the policy must conclude the
-/// same on either, so the comparison is about the decisions and not only about
-/// the model. Returns how many cells were compared, and how many of those
-/// against the policy.
-async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
-    let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap();
-    let (mut compared, mut against_the_gate) = (0usize, 0usize);
-    for name in names {
-        for sample in samples(name, &cwd, "/home/matrix") {
-            if leaves_something_behind(name, &sample.input) {
-                continue;
-            }
-            for c in compare_stated_with_bridged(name, &sample.input, &cwd).await {
-                assert_eq!(c.stated, c.old, "{}", c.at);
-                compared += 1;
-                if let (Some(gate), Some(policy)) = (c.gate, c.policy) {
-                    assert_eq!(c.old, gate, "{}", c.at);
-                    assert_eq!(c.stated, policy, "{}", c.at);
-                    against_the_gate += 1;
-                }
-            }
-        }
-    }
-    (compared, against_the_gate)
-}
-
-#[tokio::test]
-async fn bash_and_monitor_facts_conclude_as_their_bridged_ones() {
-    let (compared, against_the_gate) = assert_facts_conclude_as_bridged(&["Bash", "Monitor"]).await;
-    assert_eq!(compared, (12 + 4) * 5 * 2 * 5 * 2);
-    assert_eq!(against_the_gate, (9 + 4) * 5 * 2 * 5 * 2);
-}
-
-#[tokio::test]
-async fn file_tools_facts_conclude_as_their_bridged_ones() {
-    let (compared, against_the_gate) = assert_facts_conclude_as_bridged(&[
-        "Read",
-        "Write",
-        "Edit",
-        "NotebookEdit",
-        "Grep",
-        "Glob",
-    ])
-    .await;
-    assert_eq!(compared, (3 + 4 + 2 + 2 + 2 + 2) * 5 * 2 * 5 * 2);
-    assert!(against_the_gate > 0);
-}
-
-#[tokio::test]
-async fn the_remaining_tools_facts_conclude_as_their_bridged_ones() {
-    let (compared, against_the_gate) = assert_facts_conclude_as_bridged(&[
-        "WebFetch",
-        "Ping",
-        "WebSearch",
-        "CronCreate",
-        "CronDelete",
-        "CronList",
-        "EnterWorktree",
-        "ExitWorktree",
-        "EnterPlanMode",
-        "ExitPlanMode",
-        "AskUserQuestion",
-        "GoalCreate",
-        "GoalGet",
-        "GoalUpdate",
-        "PushNotification",
-        "Sleep",
-        "StructuredOutput",
-        "TaskMessage",
-        "TaskOutput",
-        "TaskStop",
-        "TaskWait",
-        "TodoWrite",
-        "ToolSearch",
-    ])
-    .await;
-    // 25 samples, less the durable cron one.
-    assert_eq!(compared, 24 * 5 * 2 * 5 * 2);
-    assert!(against_the_gate > 0);
-}
-
-/// F-8: a durable cron job is `Persists`, so it is asked about where its old
-/// answer let it run. Every other cell is concluded as before.
-#[tokio::test]
-async fn a_durable_cron_job_is_asked_about_where_it_used_to_run() {
-    let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path().canonicalize().unwrap();
-    let durable = json!({ "cron": "0 9 * * *", "prompt": "report", "durable": true });
-    let cells = compare_stated_with_bridged("CronCreate", &durable, &cwd).await;
-    let mut changed = 0usize;
-    for c in &cells {
-        assert_eq!(Some(c.old), c.gate, "{}", c.at);
-        assert_eq!(Some(c.stated), c.policy, "{}", c.at);
-        if c.stated == c.old {
-            continue;
-        }
-        changed += 1;
-        assert_eq!(c.old, "Permit", "{}", c.at);
-        assert_eq!(
-            c.stated,
-            if c.cell.unattended { "Deny" } else { "Prompt" },
-            "{}",
-            c.at
-        );
-        assert!(!c.cell.hook_approved, "{}", c.at);
-        assert_ne!(c.cell.mode, PermissionMode::BypassPermissions, "{}", c.at);
-        assert!(c.cell.rule != RuleCase::Allow, "{}", c.at);
-    }
-    assert!(changed > 0);
-    let attended_default = cells
-        .iter()
-        .find(|c| {
-            c.cell.mode == PermissionMode::Default
-                && c.cell.rule == RuleCase::None
-                && !c.cell.unattended
-                && !c.cell.hook_approved
-        })
-        .unwrap();
-    assert_eq!(
-        (attended_default.old, attended_default.stated),
-        ("Permit", "Prompt")
-    );
+    assert_eq!(outcome(job(false), false).await, "Permit");
+    assert_eq!(outcome(job(true), false).await, "Prompt");
+    assert_eq!(outcome(job(true), true).await, "Deny");
 }
 
 fn stage_of(outcome: &PermissionOutcome) -> Option<Stage> {
@@ -1008,12 +690,14 @@ async fn stage_with(
     let session = session(cwd, PermissionMode::Default, false);
     let registry = builtin_tools();
     let tool = name.and_then(|n| registry.get(n));
+    let ctx = context_like_the_runtime(&session, cwd);
+    let facts = facts_of(tool.as_ref(), input, &ctx).await;
     let request = PermissionRequest::new(
         name.unwrap_or("Nope"),
         tool.as_ref(),
         input,
-        cwd,
-        "matrix",
+        &facts,
+        &ctx,
         &session,
     )
     .with_hook(hook)
@@ -1032,7 +716,9 @@ async fn delegated(
     let parent = session(cwd, PermissionMode::Default, false);
     let delegate = session(cwd, PermissionMode::Default, false);
     let tool = builtin_tools().get(name);
-    let request = PermissionRequest::new(name, tool.as_ref(), input, cwd, "matrix", &parent)
+    let ctx = context_like_the_runtime(&delegate, cwd);
+    let facts = facts_of(tool.as_ref(), input, &ctx).await;
+    let request = PermissionRequest::new(name, tool.as_ref(), input, &facts, &ctx, &parent)
         .for_delegate(Delegate::new(&delegate, PermissionMode::Default, rules));
     stage_of(&policy.decide(&request).await)
 }
@@ -1146,7 +832,6 @@ async fn every_stage_of_the_policy_is_reached() {
                     sandboxing: Sandboxing::HoldsPartlyAsDemanded,
                 },
                 &no_hook,
-                true,
             )
             .await
             .as_ref()

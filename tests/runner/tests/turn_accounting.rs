@@ -16,8 +16,7 @@
 
 use base::interface::model::{Model, Usage};
 use base::interface::tool::{
-    InMemoryToolRegistry, PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext,
-    ToolResult,
+    InMemoryToolRegistry, PathStyle, ProgressSender, Tool, ToolContext, ToolResult,
 };
 use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use runtime::agent::Builder;
@@ -176,12 +175,13 @@ impl Tool for Echo {
             "required": ["say"]
         })
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

@@ -53,17 +53,8 @@ async fn decided(
     let facts = ToolFacts::gather(tool.as_ref(), &input, ctx).await;
     permissions::policy::Policy::empty()
         .decide(
-            &PermissionRequest::new(
-                "Bash",
-                Some(&tool),
-                &input,
-                &ctx.cwd,
-                &ctx.session_id,
-                &ctx.session,
-            )
-            .with_facts(&facts)
-            .with_ctx(ctx)
-            .with_attendance(ctx.attendance),
+            &PermissionRequest::new("Bash", Some(&tool), &input, &facts, ctx, &ctx.session)
+                .with_attendance(ctx.attendance),
         )
         .await
 }

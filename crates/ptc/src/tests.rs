@@ -691,16 +691,13 @@ async fn the_description_lists_call_shapes_and_the_guide_says_the_rest() {
 }
 
 #[tokio::test]
-async fn run_code_delegates_and_runs_as_before() {
-    use base::interface::permission::{PermissionFacts, Reach};
+async fn run_code_delegates() {
+    use base::interface::permission::{PermissionFacts, Reach, Subject};
     let tool = RunCodeTool::new(&[], limits());
     let input = json!({ "code": "1", "description": "x" });
     let ctx = platform::tool_context_for_test("/tmp".into());
-    let stated = tool.permission_facts(&input, &ctx).await;
-    let old = PermissionFacts::bridged(&tool, &input, &ctx).await;
-    assert_eq!(stated.reach, Reach::Delegates);
-    assert_eq!(old.reach, Reach::SessionOnly);
-    assert_eq!(stated.subject, old.subject);
-    assert_eq!(stated.question, old.question);
-    assert_eq!(stated.runs, old.runs);
+    assert_eq!(
+        tool.permission_facts(&input, &ctx).await,
+        PermissionFacts::new(Subject::None, Reach::Delegates)
+    );
 }

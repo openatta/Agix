@@ -15,8 +15,8 @@ use base::interface::permission::{PermissionFacts, Reach, Subject};
 pub use base::memory::{scan_for_secrets, SecretPattern};
 use base::memory::{DurableMemory, MemoryError, MemoryStore, MemoryType};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -346,10 +346,6 @@ impl Tool for TeamMemorySaveTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
-
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
@@ -358,7 +354,7 @@ impl Tool for TeamMemorySaveTool {
     // persists; plan-mode members must still be able to contribute.
 
     fn spec(&self) -> ToolSpec {
-        ToolSpec::new().self_allow_overrides_mode(true)
+        ToolSpec::new().stance(base::interface::permission::ModeStance::Coordination)
     }
 
     async fn call(
@@ -438,10 +434,6 @@ impl Tool for TeamMemoryReadTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).read_only(true)
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -873,41 +865,30 @@ mod tests {
         assert!(store.load_team_memories().is_empty());
     }
 
-    async fn facts_conclude_as_the_bridged_ones(
-        tool: &dyn base::tool::Tool,
-        input: serde_json::Value,
-    ) {
-        use base::interface::permission::{PermissionFacts, Reach};
+    async fn states_a_contained_call(tool: &dyn base::tool::Tool, input: serde_json::Value) {
+        use base::interface::permission::Reach;
         let ctx = platform::tool_context_for_test(std::path::PathBuf::from("/tmp"));
         let stated = tool.permission_facts(&input, &ctx).await;
-        let old = PermissionFacts::bridged(tool, &input, &ctx).await;
-        let contained = |reach: &Reach| {
+        assert!(
             matches!(
-                reach,
+                stated.reach,
                 Reach::SessionOnly | Reach::Delegates | Reach::Operator | Reach::Inside
-            )
-        };
-        assert_eq!(stated.subject, old.subject, "{}", tool.name());
-        assert_eq!(stated.question, old.question, "{}", tool.name());
-        assert_eq!(stated.runs, old.runs, "{}", tool.name());
-        assert_eq!(
-            contained(&stated.reach),
-            contained(&old.reach),
-            "{}",
+            ),
+            "{}: {stated:?}",
             tool.name()
         );
+        assert_eq!(stated.runs, None, "{}", tool.name());
     }
 
     #[tokio::test]
     async fn the_team_memory_tools_touch_only_the_session() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(TeamMemoryStore::with_dir(tmp.path().join("memory")));
-        facts_conclude_as_the_bridged_ones(
+        states_a_contained_call(
             &TeamMemorySaveTool::new(store.clone(), "t/a"),
             serde_json::json!({}),
         )
         .await;
-        facts_conclude_as_the_bridged_ones(&TeamMemoryReadTool::new(store), serde_json::json!({}))
-            .await;
+        states_a_contained_call(&TeamMemoryReadTool::new(store), serde_json::json!({})).await;
     }
 }

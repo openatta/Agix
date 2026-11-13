@@ -176,12 +176,13 @@ impl base::interface::tool::Tool for Echo {
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {"say": {"type": "string"}}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &base::interface::tool::ToolContext,
-    ) -> base::interface::tool::PermissionDecision {
-        base::interface::tool::PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

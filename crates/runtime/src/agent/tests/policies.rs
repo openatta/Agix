@@ -286,6 +286,16 @@ async fn a_result_transformer_is_the_last_thing_to_touch_a_tool_result() {
         fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
+        async fn permission_facts(
+            &self,
+            _: &serde_json::Value,
+            _: &base::tool::ToolContext,
+        ) -> base::interface::permission::PermissionFacts {
+            base::interface::permission::PermissionFacts::new(
+                base::interface::permission::Subject::None,
+                base::interface::permission::Reach::SessionOnly,
+            )
+        }
         async fn call(
             &self,
             _input: serde_json::Value,
@@ -720,6 +730,16 @@ async fn the_egress_policy_reaches_the_tool_that_has_to_obey_it() {
 
         fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
+        }
+        async fn permission_facts(
+            &self,
+            _: &serde_json::Value,
+            _: &base::tool::ToolContext,
+        ) -> base::interface::permission::PermissionFacts {
+            base::interface::permission::PermissionFacts::new(
+                base::interface::permission::Subject::None,
+                base::interface::permission::Reach::SessionOnly,
+            )
         }
         async fn call(
             &self,

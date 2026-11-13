@@ -19,15 +19,9 @@ impl CheckWith for Policy {
         ctx: &ToolContext,
     ) -> Result<PermissionOutcome, std::convert::Infallible> {
         let tool: Arc<dyn Tool> = Arc::new(tool.clone());
-        let req = PermissionRequest::new(
-            tool.name(),
-            Some(&tool),
-            input,
-            &ctx.cwd,
-            &ctx.session_id,
-            &ctx.session,
-        )
-        .with_ctx(ctx);
+        let facts = ToolFacts::gather(tool.as_ref(), input, ctx).await;
+        let req =
+            PermissionRequest::new(tool.name(), Some(&tool), input, &facts, ctx, &ctx.session);
         Ok(self.decide(&req).await)
     }
 }
@@ -109,11 +103,20 @@ fn a_plugin_allow_never_overrides_a_deny_from_any_source() {
 struct FakeTool {
     name: &'static str,
     read_only: bool,
-    own_decision: Option<base::tool::PermissionDecision>,
+    own: Own,
     match_content: Option<String>,
     invalid: bool,
     leaves_plan: bool,
-    kind: PermissionContentKind,
+    shell: bool,
+}
+
+/// What the tool says about its own call.
+#[derive(Clone)]
+enum Own {
+    Contained,
+    ListedHost,
+    Refused(&'static str),
+    Unknown,
 }
 
 impl FakeTool {
@@ -121,11 +124,11 @@ impl FakeTool {
         Self {
             name,
             read_only: false,
-            own_decision: None,
+            own: Own::Unknown,
             match_content: None,
             invalid: false,
             leaves_plan: false,
-            kind: PermissionContentKind::Opaque,
+            shell: false,
         }
     }
     fn leaves_plan(mut self) -> Self {
@@ -140,8 +143,16 @@ impl FakeTool {
         self.read_only = true;
         self
     }
-    fn own(mut self, d: base::tool::PermissionDecision) -> Self {
-        self.own_decision = Some(d);
+    fn contained(mut self) -> Self {
+        self.own = Own::Contained;
+        self
+    }
+    fn listed_host(mut self) -> Self {
+        self.own = Own::ListedHost;
+        self
+    }
+    fn refused(mut self, reason: &'static str) -> Self {
+        self.own = Own::Refused(reason);
         self
     }
     fn matches(mut self, c: &str) -> Self {
@@ -149,7 +160,7 @@ impl FakeTool {
         self
     }
     fn shell(mut self) -> Self {
-        self.kind = PermissionContentKind::ShellCommand;
+        self.shell = true;
         self
     }
 }
@@ -160,10 +171,14 @@ impl Tool for FakeTool {
         self.name
     }
     fn spec(&self) -> base::tool::ToolSpec {
+        let stance = if self.leaves_plan {
+            ModeStance::LeavesPlan
+        } else {
+            ModeStance::Normal
+        };
         base::tool::ToolSpec::new()
-            .permission_content(self.kind)
             .read_only(self.read_only)
-            .leaves_plan_mode(self.leaves_plan)
+            .stance(stance)
     }
 
     fn description(&self) -> &str {
@@ -187,17 +202,21 @@ impl Tool for FakeTool {
             base::tool::ValidationResult::Ok
         }
     }
-    async fn check_permissions(
-        &self,
-        _: &Value,
-        _: &base::tool::ToolContext,
-    ) -> base::tool::PermissionDecision {
-        self.own_decision
-            .clone()
-            .unwrap_or(base::tool::PermissionDecision::ask("?"))
-    }
-    fn permission_match_content(&self, _: &Value) -> Option<String> {
-        self.match_content.clone()
+    async fn permission_facts(&self, _: &Value, _: &base::tool::ToolContext) -> PermissionFacts {
+        let subject = match (&self.match_content, self.shell) {
+            (None, _) => Subject::None,
+            (Some(c), true) => Subject::Shell(c.clone()),
+            (Some(c), false) => Subject::Opaque(c.clone()),
+        };
+        match &self.own {
+            Own::Contained if self.shell => PermissionFacts::new(subject, Reach::Inside),
+            Own::Contained => PermissionFacts::new(subject, Reach::SessionOnly),
+            Own::ListedHost => PermissionFacts::new(subject, Reach::Host { listed: true }),
+            Own::Refused(reason) => {
+                PermissionFacts::new(subject, Reach::Refused(reason.to_string()))
+            }
+            Own::Unknown => PermissionFacts::new(subject, Reach::Unknown).with_question("?"),
+        }
     }
     async fn call(
         &self,
@@ -277,7 +296,7 @@ async fn an_ask_the_managed_layer_makes_is_reported_as_its_own() {
 async fn tool_own_allow_is_honoured_when_nothing_else_objects() {
     // 工具自判 Allow 仍然是"不弹窗"的快速通道 —— 只是不再短路：这里没有
     // deny 规则、没踩 bypass-immune 路径、模式也是 Default，所以兑现。
-    let tool = FakeTool::new("X").own(base::tool::PermissionDecision::allow());
+    let tool = FakeTool::new("X").contained();
     let gate = Policy::empty();
     let d = gate
         .check_with(&tool, &json!({}), &ctx_with_mode(PermissionMode::Default))
@@ -293,7 +312,7 @@ async fn tool_own_allow_is_honoured_when_nothing_else_objects() {
 #[tokio::test]
 async fn deny_rule_beats_self_allowing_tool() {
     let tool = FakeTool::new("Write")
-        .own(base::tool::PermissionDecision::allow())
+        .contained()
         .matches("/repo/secrets.env");
     let rules = RuleSet::new(vec![PermissionRule {
         source: base::permission::RuleSource::UserSettings,
@@ -316,7 +335,7 @@ async fn deny_rule_beats_self_allowing_tool() {
 /// `Write` / `Edit`）。
 #[tokio::test]
 async fn plan_mode_denies_self_allowing_non_readonly_tool() {
-    let tool = FakeTool::new("Write").own(base::tool::PermissionDecision::allow());
+    let tool = FakeTool::new("Write").contained();
     let gate = Policy::empty();
     let d = gate
         .check_with(&tool, &json!({}), &ctx_with_mode(PermissionMode::Plan))
@@ -334,7 +353,7 @@ async fn plan_mode_denies_self_allowing_non_readonly_tool() {
 async fn bypass_immune_path_beats_self_allowing_tool() {
     let tool = FakeTool::new("Read")
         .read_only()
-        .own(base::tool::PermissionDecision::allow())
+        .contained()
         .matches("~/.ssh/id_rsa");
     let gate = Policy::empty();
     let d = gate
@@ -380,7 +399,7 @@ async fn credentials_are_refused_in_every_mode() {
     ] {
         let tool = FakeTool::new("Read")
             .read_only()
-            .own(base::tool::PermissionDecision::allow())
+            .contained()
             .matches(&content);
         let tool = if shell { tool.shell() } else { tool };
         let mut ctx = ctx_with_mode(mode);
@@ -404,7 +423,7 @@ async fn the_rest_of_the_state_root_is_not_a_credential() {
     let state = tempfile::tempdir().unwrap();
     let tool = FakeTool::new("Read")
         .read_only()
-        .own(base::tool::PermissionDecision::allow())
+        .contained()
         .matches(&state.path().join("skills/x/SKILL.md").display().to_string());
     let mut ctx = ctx_with_mode(PermissionMode::Default);
     ctx.sandbox.paths = std::sync::Arc::new(SensitivePaths::new(Some(state.path()), None));
@@ -418,7 +437,7 @@ async fn the_rest_of_the_state_root_is_not_a_credential() {
 /// `DontAsk` 是"没有规则就拒绝"，自判 Allow 不该把它变成"什么都放行"。
 #[tokio::test]
 async fn dontask_mode_denies_self_allowing_tool_without_rule() {
-    let tool = FakeTool::new("Write").own(base::tool::PermissionDecision::allow());
+    let tool = FakeTool::new("Write").contained();
     let gate = Policy::empty();
     let d = gate
         .check_with(&tool, &json!({}), &ctx_with_mode(PermissionMode::DontAsk))
@@ -429,10 +448,7 @@ async fn dontask_mode_denies_self_allowing_tool_without_rule() {
 
 #[tokio::test]
 async fn tool_own_deny_short_circuits() {
-    let tool = FakeTool::new("X").own(base::tool::PermissionDecision::Deny {
-        reason: Some("no".into()),
-        decision_reason: None,
-    });
+    let tool = FakeTool::new("X").refused("no");
     let gate = Policy::empty();
     let d = gate
         .check_with(&tool, &json!({}), &ctx_with_mode(PermissionMode::Default))
@@ -499,10 +515,7 @@ async fn bypass_spelling_consults_nothing(spelling: &str) {
         FakeTool::new("Bash").matches("rm -rf /"),
         FakeTool::new("Write")
             .matches("/repo/.agix/settings.json")
-            .own(base::tool::PermissionDecision::Deny {
-                reason: Some("guarded".into()),
-                decision_reason: None,
-            }),
+            .refused("guarded"),
     ];
     for tool in cases {
         let d = Policy::new(deny_bash())
@@ -539,15 +552,9 @@ async fn a_delegations_deny_rules_refuse_its_calls_in_any_mode_and_nothing_else(
         let ctx = ctx_with_mode(mode);
         let delegate =
             Arc::new(SessionState::for_tests(PathBuf::from("/tmp")).with_permission_mode(mode));
-        let request = PermissionRequest::new(
-            "Bash",
-            Some(&bash),
-            &input,
-            &ctx.cwd,
-            &ctx.session_id,
-            &ctx.session,
-        )
-        .with_ctx(&ctx);
+        let facts = ToolFacts::gather(bash.as_ref(), &input, &ctx).await;
+        let request =
+            PermissionRequest::new("Bash", Some(&bash), &input, &facts, &ctx, &ctx.session);
         let delegated = request.for_delegate(base::interface::permission::Delegate::new(
             &delegate, mode, &deny_bash,
         ));
@@ -668,7 +675,7 @@ async fn plan_mode_asks_for_a_read_outside_the_project_as_default_mode_does() {
     let inside = FakeTool::new("Read")
         .read_only()
         .matches("/tmp/a.txt")
-        .own(base::tool::PermissionDecision::allow());
+        .contained();
     let outside = FakeTool::new("Read")
         .read_only()
         .matches("/elsewhere/a.txt");
@@ -691,9 +698,7 @@ async fn plan_mode_asks_for_a_read_outside_the_project_as_default_mode_does() {
 #[tokio::test]
 async fn accept_edits_allows_a_write_the_tool_allowed_and_asks_for_one_it_did_not() {
     let ctx = ctx_with_mode(PermissionMode::AcceptEdits);
-    let inside = FakeTool::new("Write")
-        .matches("/tmp/a.txt")
-        .own(base::tool::PermissionDecision::allow());
+    let inside = FakeTool::new("Write").matches("/tmp/a.txt").contained();
     let d = Policy::empty()
         .check_with(&inside, &json!({}), &ctx)
         .await
@@ -705,7 +710,7 @@ async fn accept_edits_allows_a_write_the_tool_allowed_and_asks_for_one_it_did_no
         FakeTool::new("Edit").matches("/elsewhere/a.txt"),
         FakeTool::new("Write")
             .matches("/tmp/.agix/hooks/x.sh")
-            .own(base::tool::PermissionDecision::allow()),
+            .contained(),
     ] {
         let d = Policy::empty()
             .check_with(&tool, &json!({}), &ctx)
@@ -719,20 +724,29 @@ async fn accept_edits_allows_a_write_the_tool_allowed_and_asks_for_one_it_did_no
     }
 }
 
+/// A read that reaches only a host the settings list is let through; a
+/// read that claims nothing is asked about (SEC F-6).
 #[tokio::test]
-async fn accept_edits_allows_a_read_only_tool() {
-    let tool = FakeTool::new("Read")
+async fn accept_edits_allows_a_read_to_a_listed_host_but_not_one_that_claims_nothing() {
+    let ctx = ctx_with_mode(PermissionMode::AcceptEdits);
+    let listed = FakeTool::new("WebFetch")
         .read_only()
-        .matches("/elsewhere/a.txt");
+        .matches("https://docs.rs")
+        .listed_host();
     let d = Policy::empty()
-        .check_with(
-            &tool,
-            &json!({}),
-            &ctx_with_mode(PermissionMode::AcceptEdits),
-        )
+        .check_with(&listed, &json!({}), &ctx)
         .await
         .unwrap();
     assert!(matches!(d, PermissionOutcome::Permit { .. }), "{d:?}");
+
+    let silent = FakeTool::new("Read")
+        .read_only()
+        .matches("/elsewhere/a.txt");
+    let d = Policy::empty()
+        .check_with(&silent, &json!({}), &ctx)
+        .await
+        .unwrap();
+    assert!(matches!(d, PermissionOutcome::Prompt { .. }), "{d:?}");
 }
 
 #[tokio::test]
@@ -801,16 +815,9 @@ async fn delegates_call_with(
     let delegate =
         Arc::new(SessionState::for_tests(PathBuf::from("/tmp")).with_permission_mode(mode));
     let input = json!({});
-    let request = PermissionRequest::new(
-        "X",
-        Some(&tool),
-        &input,
-        &ctx.cwd,
-        &ctx.session_id,
-        &ctx.session,
-    )
-    .with_ctx(&ctx)
-    .with_attendance(attendance);
+    let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
+    let request = PermissionRequest::new("X", Some(&tool), &input, &facts, &ctx, &ctx.session)
+        .with_attendance(attendance);
     match rules {
         Some(rules) => {
             let delegated = request.for_delegate(base::interface::permission::Delegate::new(

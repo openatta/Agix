@@ -16,8 +16,8 @@ use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Network, Origin};
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -123,17 +123,6 @@ impl Tool for WebFetchTool {
         })
     }
 
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        serde_json::from_value::<WebFetchInput>(input.clone())
-            .is_ok_and(|i| crate::security::allowed_domains_name(&i.url, ctx))
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<WebFetchInput>(input.clone())
-            .ok()
-            .map(|i| i.url)
-    }
-
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<WebFetchInput, _> = serde_json::from_value(input.clone());
         match parsed {
@@ -146,18 +135,9 @@ impl Tool for WebFetchTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 网络访问默认 Ask；上层 Policy 用 `WebFetch(https://example.com/**)`
-        // 之类的规则放行
-        PermissionDecision::Ask {
-            message: "WebFetch requires confirmation".into(),
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
         let subject = self
-            .permission_match_content(input)
+            .subject_content(input)
             .map_or(Subject::None, Subject::Opaque);
         let listed = serde_json::from_value::<WebFetchInput>(input.clone())
             .ok()
@@ -200,6 +180,14 @@ impl Tool for WebFetchTool {
             ))),
             Err(FetchError::Egress(e)) => Err(e.into()),
         }
+    }
+}
+
+impl WebFetchTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<WebFetchInput>(input.clone())
+            .ok()
+            .map(|i| i.url)
     }
 }
 
@@ -380,9 +368,10 @@ mod tests {
     async fn permissions_default_ask() {
         let tool = WebFetchTool::new();
         let r = tool
-            .check_permissions(&json!({"url": "https://x.com"}), &ctx_in(Path::new("/tmp")))
-            .await;
-        assert!(matches!(r, PermissionDecision::Ask { .. }));
+            .permission_facts(&json!({"url": "https://x.com"}), &ctx_in(Path::new("/tmp")))
+            .await
+            .reach;
+        assert!(matches!(r, Reach::Host { .. }));
     }
 
     #[tokio::test]

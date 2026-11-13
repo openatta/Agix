@@ -103,17 +103,8 @@ async fn the_second_provider_does_not_pretend_to_be_a_sandbox() {
     let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
     let outcome = permissions::policy::Policy::empty()
         .decide(
-            &PermissionRequest::new(
-                "Bash",
-                Some(&tool),
-                &input,
-                &ctx.cwd,
-                &ctx.session_id,
-                &ctx.session,
-            )
-            .with_facts(&facts)
-            .with_ctx(&ctx)
-            .with_attendance(ctx.attendance),
+            &PermissionRequest::new("Bash", Some(&tool), &input, &facts, &ctx, &ctx.session)
+                .with_attendance(ctx.attendance),
         )
         .await;
     let PermissionOutcome::Deny { reason } = outcome else {

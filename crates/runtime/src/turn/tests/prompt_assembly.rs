@@ -12,8 +12,7 @@ use tokio_util::sync::CancellationToken;
 use base::error::ToolError;
 use base::interface::scene::{ExecutionParams, FixedPrompt, SceneSpec, ToolSurface};
 use base::tool::{
-    InMemoryToolRegistry, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool,
-    ToolContext, ToolResult,
+    InMemoryToolRegistry, PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
 };
 use serde_json::{json, Value};
 
@@ -41,8 +40,13 @@ impl Tool for GuidedTool {
     async fn guide(&self, _: &PromptContext) -> Option<String> {
         Some(GUIDE_BODY.to_string())
     }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

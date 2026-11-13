@@ -31,7 +31,6 @@ pub struct SandboxSettings {
 }
 pub use crate::context::config::PathStyle;
 use crate::interface::permission::{ModeStance, PermissionFacts};
-pub use crate::interface::permission::{PermissionContentKind, ToolPermissionSpec};
 pub use crate::permission::PermissionMode;
 #[derive(Debug, Clone)]
 pub struct PromptContext {
@@ -131,40 +130,6 @@ impl ProgressSender {
     }
     pub fn tool_use_id(&self) -> &str {
         &self.tool_use_id
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum PermissionDecision {
-    Allow {
-        decision_reason: Option<String>,
-    },
-    Deny {
-        reason: Option<String>,
-        decision_reason: Option<String>,
-    },
-    Ask {
-        message: String,
-        decision_reason: Option<String>,
-    },
-}
-impl PermissionDecision {
-    pub fn allow() -> Self {
-        Self::Allow {
-            decision_reason: None,
-        }
-    }
-    pub fn deny(r: impl Into<String>) -> Self {
-        Self::Deny {
-            reason: Some(r.into()),
-            decision_reason: None,
-        }
-    }
-    pub fn ask(m: impl Into<String>) -> Self {
-        Self::Ask {
-            message: m.into(),
-            decision_reason: None,
-        }
     }
 }
 
@@ -536,7 +501,6 @@ pub struct ToolSpec {
     /// Whether this tool calls other tools, and so needs
     /// [`ToolContext::dispatch`].
     pub needs_dispatch: bool,
-    pub permission: ToolPermissionSpec,
     /// How the permission modes treat this tool's calls.
     pub stance: ModeStance,
 }
@@ -581,24 +545,8 @@ impl ToolSpec {
         self.needs_dispatch = yes;
         self
     }
-    pub fn permission_content(mut self, kind: PermissionContentKind) -> Self {
-        self.permission.content_kind = kind;
-        self
-    }
-    pub fn self_allow_overrides_mode(mut self, yes: bool) -> Self {
-        self.permission.self_allow_overrides_mode = yes;
-        self.stance = self.permission.stance();
-        self
-    }
-    pub fn leaves_plan_mode(mut self, yes: bool) -> Self {
-        self.permission.leaves_plan_mode = yes;
-        self.stance = self.permission.stance();
-        self
-    }
     pub fn stance(mut self, stance: ModeStance) -> Self {
         self.stance = stance;
-        self.permission.self_allow_overrides_mode = stance == ModeStance::Coordination;
-        self.permission.leaves_plan_mode = stance == ModeStance::LeavesPlan;
         self
     }
 }
@@ -607,9 +555,9 @@ impl ToolSpec {
 ///
 /// What holds for every call is one [`spec`](Self::spec); what depends on the
 /// call's input is [`call_traits`](Self::call_traits), which defaults to the
-/// spec's answer. [`permission_facts`](Self::permission_facts) is the
-/// permission engine's view of the call; by default it is read off
-/// `check_permissions`, `permission_match_content` and `accept_edits_allows`.
+/// spec's answer. [`permission_facts`](Self::permission_facts) is what the
+/// permission engine weighs about the call; a tool that states none is asked
+/// about.
 #[async_trait]
 pub trait Tool: Send + Sync + 'static {
     fn name(&self) -> &str;
@@ -637,25 +585,8 @@ pub trait Tool: Send + Sync + 'static {
         self.spec().traits
     }
 
-    fn permission_match_content(&self, _: &Value) -> Option<String> {
-        None
-    }
-
-    /// Whether `acceptEdits` lets this call through when neither the tool
-    /// itself nor a rule did. A read does, by default. A tool whose read
-    /// reaches further than reading — a file outside the directories the
-    /// session may read, a request to a host the model chose, a program a
-    /// repository's configuration names — says no here, and the call is asked
-    /// about as under `default`.
-    fn accept_edits_allows(&self, input: &Value, _: &ToolContext) -> bool {
-        self.call_traits(input).read_only
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
-    async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        PermissionFacts::bridged(self, input, ctx).await
+    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
+        PermissionFacts::unknown()
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
@@ -1141,7 +1072,7 @@ mod spec_tests {
                 .concurrency_safe(true)
                 .destructive(true)
                 .needs_dispatch(true)
-                .leaves_plan_mode(true)
+                .stance(ModeStance::LeavesPlan)
                 .short_description("short")
         }
         fn call_traits(&self, input: &Value) -> CallTraits {
@@ -1162,10 +1093,7 @@ mod spec_tests {
         assert_eq!(Plain.spec(), ToolSpec::new());
         assert_eq!(Plain.call_traits(&Value::Null), CallTraits::default());
         assert_eq!(Plain.spec().origin, ToolOrigin::Builtin);
-        assert_eq!(
-            Plain.spec().permission.content_kind,
-            PermissionContentKind::Opaque
-        );
+        assert_eq!(Plain.spec().stance, ModeStance::Normal);
         assert!(Plain.guide(&PromptContext::default()).await.is_none());
     }
 
@@ -1174,7 +1102,8 @@ mod spec_tests {
         let spec = Declared.spec();
         assert_eq!(spec.origin.mcp_server(), Some("x"));
         assert!(spec.traits.concurrency_safe && spec.traits.destructive);
-        assert!(spec.needs_dispatch && spec.permission.leaves_plan_mode);
+        assert!(spec.needs_dispatch);
+        assert_eq!(spec.stance, ModeStance::LeavesPlan);
         assert!(!spec.callable_from_code);
         assert_eq!(spec.short_description.as_deref(), Some("short"));
     }
@@ -1188,12 +1117,6 @@ mod spec_tests {
                 .read_only
         );
         assert!(!Declared.call_traits(&serde_json::json!({})).read_only);
-        let ctx = ToolContext::for_test_with(
-            PathBuf::from("/tmp"),
-            crate::interface::exec::ExecProviders::in_process(),
-        );
-        assert!(Declared.accept_edits_allows(&serde_json::json!({"peek": 1}), &ctx));
-        assert!(!Declared.accept_edits_allows(&serde_json::json!({}), &ctx));
     }
 }
 

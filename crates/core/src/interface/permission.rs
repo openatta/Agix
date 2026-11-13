@@ -5,87 +5,15 @@
 
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::context::SessionState;
-use crate::interface::tool::{CallTraits, PermissionDecision, Tool, ToolContext, ToolOrigin};
+use crate::interface::tool::{CallTraits, Tool, ToolContext, ToolOrigin};
 use crate::permission::{PermissionMode, PermissionRule};
 
 mod profile;
 pub use profile::{Approval, ExecProfile, Obligations};
-
-/// What a tool's permission match content is, which decides how rules are
-/// matched against it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionContentKind {
-    /// Compared to rule patterns verbatim.
-    Opaque,
-    /// A path the tool reads. Resolved against the session's cwd before
-    /// matching, and `Read(...)` rules apply to it as well as the tool's own.
-    ReadPath,
-    /// A path the tool writes. Resolved like `ReadPath`; `Edit(...)` rules
-    /// apply to it as well as the tool's own.
-    WritePath,
-    /// A shell command line, matched one simple command at a time.
-    ShellCommand,
-}
-
-/// What the permission engine reads off a tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct ToolPermissionSpec {
-    /// How the permission engine reads [`Tool::permission_match_content`].
-    pub content_kind: PermissionContentKind,
-    /// Does this tool's own `Allow` from [`Tool::check_permissions`] survive a
-    /// *mode-level* denial (`Plan`, `DontAsk`)?
-    ///
-    /// `false` by default, which is what makes plan mode mean anything:
-    /// `Write` and `Edit` allow themselves for any in-project path, and that
-    /// verdict is a statement about *path safety*, not a claim that writing
-    /// files is fine while the user asked for a plan.
-    ///
-    /// `true` only when the self-`Allow` is a statement about the tool's own
-    /// nature rather than about its arguments — a coordination primitive that
-    /// touches no file, no shell and no network. The team mailbox's
-    /// `SendMessage` is the case in point: team members run under `Plan` by
-    /// default, and a plan-mode member that cannot talk to its coordinator is
-    /// a broken one.
-    ///
-    /// Rule-based denials and the bypass-immune path list are **not**
-    /// affected: an explicit `deny` always wins.
-    pub self_allow_overrides_mode: bool,
-    /// Is this the call that takes the session out of plan mode?
-    ///
-    /// Plan mode refuses every tool that is not read-only, and leaving plan
-    /// mode changes the session's state, so the way out would be refused too.
-    /// A tool that says yes is spared that one refusal and is decided as in
-    /// any mode that asks: a matching rule, else the host's answer.
-    pub leaves_plan_mode: bool,
-}
-
-impl Default for ToolPermissionSpec {
-    fn default() -> Self {
-        Self {
-            content_kind: PermissionContentKind::Opaque,
-            self_allow_overrides_mode: false,
-            leaves_plan_mode: false,
-        }
-    }
-}
-
-impl ToolPermissionSpec {
-    /// The [`ModeStance`] these two flags amount to.
-    pub fn stance(&self) -> ModeStance {
-        if self.leaves_plan_mode {
-            ModeStance::LeavesPlan
-        } else if self.self_allow_overrides_mode {
-            ModeStance::Coordination
-        } else {
-            ModeStance::Normal
-        }
-    }
-}
 
 /// How the permission modes treat a tool's calls: `ToolSpec::stance`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,18 +47,6 @@ pub enum Subject {
 }
 
 impl Subject {
-    pub fn of(kind: PermissionContentKind, content: Option<String>) -> Self {
-        let Some(content) = content else {
-            return Self::None;
-        };
-        match kind {
-            PermissionContentKind::Opaque => Self::Opaque(content),
-            PermissionContentKind::ReadPath => Self::ReadPath(content),
-            PermissionContentKind::WritePath => Self::WritePath(content),
-            PermissionContentKind::ShellCommand => Self::Shell(content),
-        }
-    }
-
     pub fn content(&self) -> Option<&str> {
         match self {
             Self::None => None,
@@ -224,47 +140,6 @@ impl PermissionFacts {
         self.question = Some(question.into());
         self
     }
-
-    /// The facts a tool's `check_permissions`, `permission_match_content`,
-    /// `accept_edits_allows` and `spec().permission` amount to, so that a tool
-    /// written against those is judged as before it stated facts of its own.
-    ///
-    /// - `Deny` is [`Reach::Refused`] with its reason.
-    /// - `Allow` is contained: [`Reach::Inside`] when the subject is a path or
-    ///   a command line, [`Reach::SessionOnly`] otherwise.
-    /// - `Ask` is [`Reach::Unknown`], with its message as the question —
-    ///   unless `accept_edits_allows` says yes, which makes it
-    ///   `Host { listed: true }`: the one reach `acceptEdits` lets through
-    ///   that is not contained.
-    ///
-    /// `runs` stays `None`: whatever a tool's own allow made of the sandbox is
-    /// already in its answer.
-    pub async fn bridged<T: Tool + ?Sized>(tool: &T, input: &Value, ctx: &ToolContext) -> Self {
-        let subject = Subject::of(
-            tool.spec().permission.content_kind,
-            tool.permission_match_content(input),
-        );
-        match tool.check_permissions(input, ctx).await {
-            PermissionDecision::Deny { reason, .. } => {
-                Self::new(subject, Reach::Refused(reason.unwrap_or_default()))
-            }
-            PermissionDecision::Allow { .. } => {
-                let reach = match subject {
-                    Subject::None | Subject::Opaque(_) => Reach::SessionOnly,
-                    _ => Reach::Inside,
-                };
-                Self::new(subject, reach)
-            }
-            PermissionDecision::Ask { message, .. } => {
-                let reach = if tool.accept_edits_allows(input, ctx) {
-                    Reach::Host { listed: true }
-                } else {
-                    Reach::Unknown
-                };
-                Self::new(subject, reach).with_question(message)
-            }
-        }
-    }
 }
 
 /// Everything the permission policy reads about one call: the tool's spec,
@@ -287,22 +162,6 @@ impl ToolFacts {
     pub async fn gather(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Self {
         let spec = tool.spec();
         let facts = tool.permission_facts(input, ctx).await;
-        Self {
-            subject: facts.subject,
-            traits: tool.call_traits(input),
-            stance: spec.stance,
-            origin: spec.origin,
-            reach: facts.reach,
-            runs: facts.runs,
-            question: facts.question,
-        }
-    }
-
-    /// [`Self::gather`] with what the tool's old answers amount to
-    /// ([`PermissionFacts::bridged`]) in place of what it states.
-    pub async fn bridged(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Self {
-        let spec = tool.spec();
-        let facts = PermissionFacts::bridged(tool, input, ctx).await;
         Self {
             subject: facts.subject,
             traits: tool.call_traits(input),
@@ -526,43 +385,42 @@ pub struct PermissionRequest<'a> {
     /// uses. `None` is a name nothing answers to.
     pub tool: Option<&'a Arc<dyn Tool>>,
     pub input: &'a serde_json::Value,
-    pub cwd: &'a Path,
-    pub session_id: &'a str,
+    /// What the tool says about the call, gathered with `ctx`.
+    pub facts: &'a ToolFacts,
+    /// The context the call runs with: the judged session's.
+    pub ctx: &'a ToolContext,
     /// The live state of the session the policy belongs to: its permission
     /// mode as it is now, what it has read.
     pub session: &'a Arc<SessionState>,
     /// Set when the call is a delegate's — a sub-agent's, a team member's —
     /// relayed to this session's policy.
     pub delegate: Option<Delegate<'a>>,
-    /// What the tool says about the call, gathered with `ctx`.
-    pub facts: Option<&'a ToolFacts>,
-    /// The context the call runs with: the judged session's.
-    pub ctx: Option<&'a ToolContext>,
-    pub hook: Option<&'a HookAnswer>,
-    pub attendance: Option<Attendance>,
+    pub hook: &'a HookAnswer,
+    pub attendance: Attendance,
 }
 
+const NO_HOOK: &HookAnswer = &HookAnswer::None;
+
 impl<'a> PermissionRequest<'a> {
+    /// A call no hook answered, as attended as `ctx` says.
     pub fn new(
         tool_name: &'a str,
         tool: Option<&'a Arc<dyn Tool>>,
         input: &'a serde_json::Value,
-        cwd: &'a Path,
-        session_id: &'a str,
+        facts: &'a ToolFacts,
+        ctx: &'a ToolContext,
         session: &'a Arc<SessionState>,
     ) -> Self {
         Self {
             tool_name,
             tool,
             input,
-            cwd,
-            session_id,
+            facts,
+            ctx,
             session,
             delegate: None,
-            facts: None,
-            ctx: None,
-            hook: None,
-            attendance: None,
+            hook: NO_HOOK,
+            attendance: ctx.attendance,
         }
     }
 
@@ -571,23 +429,13 @@ impl<'a> PermissionRequest<'a> {
         self
     }
 
-    pub fn with_facts(mut self, facts: &'a ToolFacts) -> Self {
-        self.facts = Some(facts);
-        self
-    }
-
-    pub fn with_ctx(mut self, ctx: &'a ToolContext) -> Self {
-        self.ctx = Some(ctx);
-        self
-    }
-
     pub fn with_hook(mut self, hook: &'a HookAnswer) -> Self {
-        self.hook = Some(hook);
+        self.hook = hook;
         self
     }
 
     pub fn with_attendance(mut self, attendance: Attendance) -> Self {
-        self.attendance = Some(attendance);
+        self.attendance = attendance;
         self
     }
 
@@ -770,58 +618,21 @@ mod facts_tests {
     use crate::interface::tool::{PathStyle, ProgressSender, ToolResult, ToolSpec};
     use serde_json::json;
 
-    struct Probe {
-        spec: ToolSpec,
-        content: Option<&'static str>,
-        decision: PermissionDecision,
-        accept_edits: bool,
-    }
-
-    impl Probe {
-        fn says(decision: PermissionDecision) -> Self {
-            Self {
-                spec: ToolSpec::new(),
-                content: None,
-                decision,
-                accept_edits: false,
-            }
-        }
-        fn names(mut self, kind: PermissionContentKind, content: &'static str) -> Self {
-            self.spec = self.spec.permission_content(kind);
-            self.content = Some(content);
-            self
-        }
-        fn accept_edits(mut self) -> Self {
-            self.accept_edits = true;
-            self
-        }
-    }
+    struct Silent;
 
     #[async_trait]
-    impl Tool for Probe {
+    impl Tool for Silent {
         fn name(&self) -> &str {
-            "Probe"
+            "Silent"
         }
         fn description(&self) -> &str {
-            "answers what it is told to"
+            "states nothing about its calls"
         }
         fn spec(&self) -> ToolSpec {
-            self.spec.clone()
+            ToolSpec::new().read_only(true)
         }
         fn input_schema(&self, _: PathStyle) -> Value {
             json!({"type": "object"})
-        }
-        fn call_traits(&self, input: &Value) -> CallTraits {
-            self.spec.traits.read_only(input.get("peek").is_some())
-        }
-        fn permission_match_content(&self, _: &Value) -> Option<String> {
-            self.content.map(str::to_string)
-        }
-        fn accept_edits_allows(&self, _: &Value, _: &ToolContext) -> bool {
-            self.accept_edits
-        }
-        async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-            self.decision.clone()
         }
         async fn call(
             &self,
@@ -833,7 +644,19 @@ mod facts_tests {
         }
     }
 
-    struct Declares(PermissionFacts);
+    struct Declares {
+        spec: ToolSpec,
+        facts: PermissionFacts,
+    }
+
+    impl Declares {
+        fn stating(facts: PermissionFacts) -> Self {
+            Self {
+                spec: ToolSpec::new().origin(ToolOrigin::plugin("p")),
+                facts,
+            }
+        }
+    }
 
     #[async_trait]
     impl Tool for Declares {
@@ -844,13 +667,16 @@ mod facts_tests {
             "states its own facts"
         }
         fn spec(&self) -> ToolSpec {
-            ToolSpec::new().origin(ToolOrigin::plugin("p"))
+            self.spec.clone()
         }
         fn input_schema(&self, _: PathStyle) -> Value {
             json!({"type": "object"})
         }
+        fn call_traits(&self, input: &Value) -> CallTraits {
+            self.spec.traits.read_only(input.get("peek").is_some())
+        }
         async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
-            self.0.clone()
+            self.facts.clone()
         }
         async fn call(
             &self,
@@ -869,89 +695,29 @@ mod facts_tests {
         )
     }
 
-    async fn facts_of(tool: &dyn Tool) -> PermissionFacts {
-        tool.permission_facts(&json!({}), &ctx()).await
-    }
-
+    /// SEC F-6: a tool that says nothing about a call is asked about, even
+    /// one that only reads.
     #[tokio::test]
-    async fn a_tool_that_allows_itself_is_contained() {
-        let shell = Probe::says(PermissionDecision::allow())
-            .names(PermissionContentKind::ShellCommand, "ls");
+    async fn a_tool_that_states_nothing_claims_nothing() {
         assert_eq!(
-            facts_of(&shell).await,
-            PermissionFacts::new(Subject::Shell("ls".into()), Reach::Inside)
+            Silent.permission_facts(&json!({}), &ctx()).await,
+            PermissionFacts::unknown()
         );
-        let path = Probe::says(PermissionDecision::allow())
-            .names(PermissionContentKind::WritePath, "a.txt");
-        assert_eq!(facts_of(&path).await.reach, Reach::Inside);
-
-        let opaque = Probe::says(PermissionDecision::allow())
-            .names(PermissionContentKind::Opaque, "anything");
-        assert_eq!(
-            facts_of(&opaque).await,
-            PermissionFacts::new(Subject::Opaque("anything".into()), Reach::SessionOnly)
-        );
-        let bare = Probe::says(PermissionDecision::allow());
-        assert_eq!(facts_of(&bare).await.reach, Reach::SessionOnly);
-    }
-
-    #[tokio::test]
-    async fn a_tool_that_denies_itself_refuses_with_its_reason() {
-        let tool = Probe::says(PermissionDecision::deny("system path"))
-            .names(PermissionContentKind::WritePath, "/etc/x");
-        assert_eq!(
-            facts_of(&tool).await,
-            PermissionFacts::new(
-                Subject::WritePath("/etc/x".into()),
-                Reach::Refused("system path".into())
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn a_tool_that_asks_is_unknown_unless_accept_edits_lets_it_through() {
-        let asks = Probe::says(PermissionDecision::ask("Probe?"))
-            .names(PermissionContentKind::ReadPath, "/elsewhere");
-        let facts = facts_of(&asks).await;
-        assert_eq!(facts.subject, Subject::ReadPath("/elsewhere".into()));
+        let facts = ToolFacts::gather(&Silent, &json!({}), &ctx()).await;
         assert_eq!(facts.reach, Reach::Unknown);
-        assert_eq!(facts.question.as_deref(), Some("Probe?"));
-        assert_eq!(facts.runs, None);
-
-        let listed = Probe::says(PermissionDecision::ask("Probe?")).accept_edits();
-        assert_eq!(
-            facts_of(&listed).await,
-            PermissionFacts::new(Subject::None, Reach::Host { listed: true })
-                .with_question("Probe?")
-        );
-    }
-
-    #[tokio::test]
-    async fn the_default_facts_are_the_bridged_ones() {
-        let tool = Probe::says(PermissionDecision::ask("Probe?"))
-            .names(PermissionContentKind::ShellCommand, "make");
-        let ctx = ctx();
-        let input = json!({});
-        assert_eq!(
-            tool.permission_facts(&input, &ctx).await,
-            PermissionFacts::bridged(&tool, &input, &ctx).await
-        );
-        let as_dyn: &dyn Tool = &tool;
-        assert_eq!(
-            PermissionFacts::bridged(as_dyn, &input, &ctx).await,
-            PermissionFacts::bridged(&tool, &input, &ctx).await
-        );
+        assert_eq!(facts.subject, Subject::None);
+        assert!(facts.traits.read_only);
     }
 
     #[tokio::test]
     async fn gathered_facts_carry_the_spec_and_the_traits_of_this_input() {
-        let mut tool = Probe::says(PermissionDecision::allow())
-            .names(PermissionContentKind::ReadPath, "src/lib.rs");
-        tool.spec = tool
-            .spec
-            .clone()
+        let mut tool = Declares::stating(PermissionFacts::new(
+            Subject::ReadPath("src/lib.rs".into()),
+            Reach::Inside,
+        ));
+        tool.spec = ToolSpec::new()
             .origin(ToolOrigin::mcp("srv"))
-            .self_allow_overrides_mode(true)
+            .stance(ModeStance::Coordination)
             .concurrency_safe(true);
         let ctx = ctx();
 
@@ -971,7 +737,7 @@ mod facts_tests {
         let stated = PermissionFacts::new(Subject::Shell("tail -f log".into()), Reach::Unknown)
             .with_runs(Runs::background())
             .with_question("watch it?");
-        let facts = ToolFacts::gather(&Declares(stated.clone()), &json!({}), &ctx()).await;
+        let facts = ToolFacts::gather(&Declares::stating(stated.clone()), &json!({}), &ctx()).await;
         assert_eq!(facts.subject, stated.subject);
         assert_eq!(facts.reach, stated.reach);
         assert_eq!(facts.runs, Some(Runs { background: true }));
@@ -987,73 +753,44 @@ mod facts_tests {
         assert_eq!(facts.subject, Subject::None);
         assert!(!facts.traits.read_only);
         assert_eq!(facts.runs, None);
-        assert_eq!(PermissionFacts::unknown().reach, Reach::Unknown);
-    }
-
-    #[test]
-    fn the_stance_and_the_two_flags_agree_whichever_is_set() {
-        assert_eq!(ToolSpec::new().stance, ModeStance::Normal);
-        let coordination = ToolSpec::new().self_allow_overrides_mode(true);
-        assert_eq!(coordination.stance, ModeStance::Coordination);
-        let leaves = ToolSpec::new().leaves_plan_mode(true);
-        assert_eq!(leaves.stance, ModeStance::LeavesPlan);
-        assert_eq!(
-            ToolSpec::new().leaves_plan_mode(false).stance,
-            ModeStance::Normal
-        );
-
-        let set = ToolSpec::new().stance(ModeStance::Coordination);
-        assert!(set.permission.self_allow_overrides_mode && !set.permission.leaves_plan_mode);
-        let set = set.stance(ModeStance::LeavesPlan);
-        assert!(set.permission.leaves_plan_mode && !set.permission.self_allow_overrides_mode);
-        let set = set.stance(ModeStance::Normal);
-        assert_eq!(set.permission, ToolPermissionSpec::default());
-        assert_eq!(set, ToolSpec::new());
     }
 
     #[test]
     fn a_subject_keeps_its_content_whatever_its_kind() {
-        for kind in [
-            PermissionContentKind::Opaque,
-            PermissionContentKind::ReadPath,
-            PermissionContentKind::WritePath,
-            PermissionContentKind::ShellCommand,
+        for subject in [
+            Subject::Opaque("x".into()),
+            Subject::ReadPath("x".into()),
+            Subject::WritePath("x".into()),
+            Subject::Shell("x".into()),
+            Subject::Url("x".into()),
         ] {
-            assert_eq!(Subject::of(kind, Some("x".into())).content(), Some("x"));
-            assert_eq!(Subject::of(kind, None), Subject::None);
+            assert_eq!(subject.content(), Some("x"));
         }
-        assert_eq!(
-            Subject::Url("https://a".into()).content(),
-            Some("https://a")
-        );
+        assert_eq!(Subject::None.content(), None);
     }
 
     #[test]
-    fn a_request_carries_the_new_inputs_only_when_given() {
+    fn a_request_is_attended_as_its_context_and_unanswered_by_a_hook() {
         let session = Arc::new(SessionState::for_tests(PathBuf::from("/tmp")));
         let input = json!({});
-        let bare = PermissionRequest::new("Probe", None, &input, Path::new("/tmp"), "s", &session);
-        assert!(bare.facts.is_none() && bare.ctx.is_none());
-        assert!(bare.hook.is_none() && bare.attendance.is_none());
-
         let facts = ToolFacts::unknown_tool();
-        let ctx = ctx();
+        let mut ctx = ctx();
+        ctx.attendance = Attendance::Unattended;
+        let bare = PermissionRequest::new("Silent", None, &input, &facts, &ctx, &session);
+        assert_eq!(bare.hook, &HookAnswer::None);
+        assert_eq!(bare.attendance, Attendance::Unattended);
+        assert!(bare.delegate.is_none());
+
         let hook = HookAnswer::Approve {
             hook: "audit".into(),
         };
         let full = bare
-            .with_facts(&facts)
-            .with_ctx(&ctx)
             .with_hook(&hook)
             .with_attendance(Attendance::NoOneToAsk("a program's call"));
         let copy = full;
-        assert_eq!(copy.facts, Some(&facts));
-        assert_eq!(copy.ctx.map(|c| c.session_id.as_str()), Some("test"));
-        assert_eq!(copy.hook, Some(&hook));
-        assert_eq!(
-            copy.attendance,
-            Some(Attendance::NoOneToAsk("a program's call"))
-        );
-        assert!(full.delegate.is_none());
+        assert_eq!(copy.facts, &facts);
+        assert_eq!(copy.ctx.session_id, "test");
+        assert_eq!(copy.hook, &hook);
+        assert_eq!(copy.attendance, Attendance::NoOneToAsk("a program's call"));
     }
 }

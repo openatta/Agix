@@ -10,8 +10,8 @@ use base::error::ToolError;
 use base::interface::exec::{HttpRequest, Origin};
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,17 +55,6 @@ impl Tool for PingTool {
         ToolSpec::new().concurrency_safe(true).read_only(true)
     }
 
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        serde_json::from_value::<PingInput>(input.clone())
-            .is_ok_and(|i| crate::security::allowed_domains_name(&i.url, ctx))
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<PingInput>(input.clone())
-            .ok()
-            .map(|i| i.url)
-    }
-
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<PingInput, _> = serde_json::from_value(input.clone());
         match parsed {
@@ -78,16 +67,9 @@ impl Tool for PingTool {
         }
     }
 
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::Ask {
-            message: "Ping requires confirmation".into(),
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
         let subject = self
-            .permission_match_content(input)
+            .subject_content(input)
             .map_or(Subject::None, Subject::Opaque);
         let listed = serde_json::from_value::<PingInput>(input.clone())
             .ok()
@@ -123,6 +105,14 @@ impl Tool for PingTool {
             Ok(Err(e)) => Err(e.into()),
             Err(_elapsed) => Err(ToolError::Timeout(TIMEOUT)),
         }
+    }
+}
+
+impl PingTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<PingInput>(input.clone())
+            .ok()
+            .map(|i| i.url)
     }
 }
 

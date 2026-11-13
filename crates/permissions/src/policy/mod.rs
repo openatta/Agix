@@ -29,12 +29,11 @@ mod tests;
 use crate::ruleset::RuleSet;
 use async_trait::async_trait;
 use base::interface::permission::{
-    Answerable, Attendance, Basis, Grant, GrantError, GrantMatch, GrantScope, HookAnswer,
-    PermissionGrants, PermissionOutcome, PermissionPolicy, PermissionRequest, Reason, Stage,
-    ToolFacts,
+    Answerable, Attendance, Basis, Grant, GrantError, GrantMatch, GrantScope, PermissionGrants,
+    PermissionOutcome, PermissionPolicy, PermissionRequest, Reason, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
-use base::tool::{SandboxSettings, ToolContext};
+use base::tool::SandboxSettings;
 use delegated::Delegated;
 use host::HostSays;
 use std::path::PathBuf;
@@ -213,9 +212,9 @@ impl Policy {
 
     /// Who can be asked about the call: as the request says, unless nothing
     /// reaches a person at all. A session nobody attends stays unattended.
-    fn attendance_for(&self, req: &PermissionRequest<'_>) -> Option<Attendance> {
+    fn attendance_for(&self, req: &PermissionRequest<'_>) -> Attendance {
         match (req.attendance, self.no_one_to_ask) {
-            (None | Some(Attendance::Attended), Some(why)) => Some(Attendance::NoOneToAsk(why)),
+            (Attendance::Attended, Some(why)) => Attendance::NoOneToAsk(why),
             (attendance, _) => attendance,
         }
     }
@@ -281,37 +280,6 @@ impl Policy {
             }
             mode => mode,
         }
-    }
-
-    /// The context of a call whose request brought none: the judged
-    /// session's, with this policy's sandbox settings. A session that never
-    /// had providers bound is judged in-process, and no sandbox is known to
-    /// hold its commands.
-    fn context_for(
-        &self,
-        req: &PermissionRequest<'_>,
-        mode: PermissionMode,
-        attendance: Option<Attendance>,
-    ) -> ToolContext {
-        let judged = req.judged();
-        let exec = judged
-            .exec()
-            .unwrap_or_else(base::interface::exec::ExecProviders::in_process);
-        let mut ctx = ToolContext::from_engine_ctx_with(
-            req.cwd.to_path_buf(),
-            tokio_util::sync::CancellationToken::new(),
-            exec,
-        );
-        ctx.session_id = req.session_id.to_string();
-        ctx.sandbox = self.sandbox.clone();
-        ctx.session = judged.clone();
-        ctx.permission_mode = mode;
-        let env = ctx.session.env();
-        ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
-        if let Some(attendance) = attendance {
-            ctx.attendance = attendance;
-        }
-        ctx
     }
 
     async fn write_project_rule(
@@ -380,13 +348,13 @@ impl PermissionPolicy for Policy {
                 ),
             );
         }
-        let hook = req.hook.unwrap_or(&HookAnswer::None);
+        let hook = req.hook;
         let attendance = self.attendance_for(req);
         // Not a permit, even though dispatch's own "Tool not found" would
         // follow: a caller that asks before looking the tool up must not be
         // able to run it unchecked by naming it wrongly.
         let delegated = Delegated::of(req);
-        let Some(tool) = req.tool else {
+        if req.tool.is_none() {
             if let Some(denied) = delegated.denial_by_name(req.tool_name) {
                 return PermissionOutcome::Deny { reason: denied };
             }
@@ -406,29 +374,12 @@ impl PermissionPolicy for Policy {
                 ),
                 answerable: Answerable::HookOrPerson,
             };
-            return self.conclude(verdict, &unknown, None, hook, attendance);
-        };
+            return self.conclude(verdict, &unknown, req.ctx, hook, attendance);
+        }
 
         let mode = self.mode_for(req);
-        let own_ctx;
-        let ctx = match req.ctx {
-            Some(ctx) => ctx,
-            None => {
-                own_ctx = self.context_for(req, mode, attendance);
-                &own_ctx
-            }
-        };
-        let own_facts;
-        let facts = match req.facts {
-            Some(facts) => facts,
-            None => {
-                own_facts = ToolFacts::bridged(tool.as_ref(), req.input, ctx).await;
-                &own_facts
-            }
-        };
-        let mut weighed = req.with_ctx(ctx).with_facts(facts);
-        weighed.attendance = attendance;
-        let host = HostSays::of(self.host.as_ref(), &weighed).await;
+        let (ctx, facts) = (req.ctx, req.facts);
+        let host = HostSays::of(self.host.as_ref(), &req.with_attendance(attendance)).await;
         let call = judge::Call {
             name: req.tool_name,
             facts,
@@ -440,7 +391,7 @@ impl PermissionPolicy for Policy {
             host,
         };
         let verdict = call.delegated.granting(self.judge(&call), &call);
-        self.conclude(verdict, facts, Some(ctx), hook, attendance)
+        self.conclude(verdict, facts, ctx, hook, attendance)
     }
 }
 

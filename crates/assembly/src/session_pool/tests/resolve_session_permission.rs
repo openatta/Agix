@@ -70,19 +70,25 @@ async fn bash_says(
         base::context::SessionState::for_tests(cwd.clone()).with_permission_mode(mode.into()),
     );
     let input = serde_json::json!({ "command": command });
+    let mut ctx = platform::tool_context_for_test(cwd.clone());
+    ctx.session = session.clone();
+    ctx.permission_mode = mode.into();
+    let facts = match &bash {
+        Some(bash) => {
+            base::interface::permission::ToolFacts::gather(bash.as_ref(), &input, &ctx).await
+        }
+        None => base::interface::permission::ToolFacts::unknown_tool(),
+    };
     resolved
         .policy
-        .decide(
-            &base::interface::permission::PermissionRequest::new(
-                "Bash",
-                bash.as_ref(),
-                &input,
-                &cwd,
-                "s",
-                &session,
-            )
-            .with_attendance(base::interface::permission::Attendance::Attended),
-        )
+        .decide(&base::interface::permission::PermissionRequest::new(
+            "Bash",
+            bash.as_ref(),
+            &input,
+            &facts,
+            &ctx,
+            &session,
+        ))
         .await
 }
 

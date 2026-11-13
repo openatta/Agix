@@ -12,9 +12,7 @@
 //! tool result that becomes empty is still a visible difference.
 
 use base::event::AgentEvent;
-use base::interface::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult};
 use std::sync::Arc;
 
 /// Echoes its `say` argument. Concurrency-safe, so a batch of them exercises
@@ -43,12 +41,13 @@ impl Tool for GoldenEcho {
             "required": ["say"]
         })
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,
@@ -86,12 +85,13 @@ impl Tool for GoldenFlood {
     fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,
@@ -130,12 +130,13 @@ impl Tool for GoldenReports {
     fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,
@@ -167,12 +168,13 @@ impl Tool for GoldenBoom {
     fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,
@@ -206,15 +208,13 @@ impl Tool for GoldenAsk {
     fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
         _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::Ask {
-            message: "GoldenAsk wants to run".into(),
-            decision_reason: None,
-        }
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::Unknown).with_question("GoldenAsk wants to run")
     }
     async fn call(
         &self,
@@ -254,12 +254,13 @@ impl Tool for GoldenReadFile {
     fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

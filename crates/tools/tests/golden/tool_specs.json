@@ -3,20 +3,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -126,12 +128,8 @@
     "name": "AskUserQuestion",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -142,120 +140,132 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": false,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": false,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "ls -la"
         },
-        "permission_match_content": "ls -la",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": false,
+        "subject": "Shell(\"ls -la\")"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "cat README.md"
         },
-        "permission_match_content": "cat README.md",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": false,
+        "subject": "Shell(\"cat README.md\")"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "git status"
         },
-        "permission_match_content": "git status",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": false,
+        "subject": "Shell(\"git status\")"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "git log --oneline -5 | head -3"
         },
-        "permission_match_content": "git log --oneline -5 | head -3",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": false,
+        "subject": "Shell(\"git log --oneline -5 | head -3\")"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {
           "command": "rm -rf build"
         },
-        "permission_match_content": "rm -rf build",
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": false,
+        "subject": "Shell(\"rm -rf build\")"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {
           "command": "cargo build"
         },
-        "permission_match_content": "cargo build",
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": false,
+        "subject": "Shell(\"cargo build\")"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {
           "command": "echo hi > out.txt"
         },
-        "permission_match_content": "echo hi > out.txt",
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": false,
+        "subject": "Shell(\"echo hi > out.txt\")"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {
           "command": "curl https://example.com"
         },
-        "permission_match_content": "curl https://example.com",
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": false,
+        "subject": "Shell(\"curl https://example.com\")"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "cat /etc/passwd"
         },
-        "permission_match_content": "cat /etc/passwd",
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": false,
+        "subject": "Shell(\"cat /etc/passwd\")"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": ""
         },
-        "permission_match_content": "",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": false,
+        "subject": "Shell(\"\")"
       }
     ],
     "code_result": "{stdout, stderr, exit_code}; a non-zero exit rejects with the output",
@@ -333,12 +343,8 @@
     "name": "Bash",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "ShellCommand",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": true,
@@ -349,20 +355,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -434,12 +442,8 @@
     "name": "CronCreate",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -450,20 +454,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -505,12 +511,8 @@
     "name": "CronDelete",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -521,20 +523,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -558,12 +562,8 @@
     "name": "CronList",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -574,23 +574,24 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {
@@ -598,8 +599,10 @@
           "new_string": "b",
           "old_string": "a"
         },
-        "permission_match_content": "/work/project/a.txt",
-        "read_only": false
+        "reach": "Inside",
+        "read_only": false,
+        "runs": null,
+        "subject": "WritePath(\"/work/project/a.txt\")"
       }
     ],
     "code_result": null,
@@ -763,12 +766,8 @@
     "name": "Edit",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "WritePath",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": true,
@@ -779,20 +778,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -818,12 +819,8 @@
     "name": "EnterPlanMode",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -834,20 +831,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -889,12 +888,8 @@
     "name": "EnterWorktree",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -905,20 +900,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -1016,12 +1013,8 @@
     "name": "ExitPlanMode",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": true,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "LeavesPlan",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -1032,20 +1025,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -1105,12 +1100,8 @@
     "name": "ExitWorktree",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": true,
@@ -1121,31 +1112,34 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "path": "/work/project",
           "pattern": "**/*.rs"
         },
-        "permission_match_content": "/work/project",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": null,
+        "subject": "ReadPath(\"/work/project\")"
       }
     ],
     "code_result": "{paths: string[], more: number} — newest first; more counts what max_results cut",
@@ -1227,12 +1221,8 @@
     "name": "Glob",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "ReadPath",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -1243,20 +1233,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -1315,12 +1307,8 @@
     "name": "GoalCreate",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -1331,20 +1319,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -1365,12 +1355,8 @@
     "name": "GoalGet",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -1381,20 +1367,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -1531,12 +1519,8 @@
     "name": "GoalUpdate",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -1547,31 +1531,34 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "path": "/work/project",
           "pattern": "fn main"
         },
-        "permission_match_content": "/work/project",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": null,
+        "subject": "ReadPath(\"/work/project\")"
       }
     ],
     "code_result": "files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line",
@@ -1729,12 +1716,8 @@
     "name": "Grep",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "ReadPath",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -1745,50 +1728,55 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": true,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": true,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "tail -f log.txt"
         },
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": true,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "cargo watch"
         },
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": true,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "command": "ls"
         },
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": true,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -1870,12 +1858,8 @@
     "name": "Monitor",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "ShellCommand",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -1886,31 +1870,34 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": false,
         "input": {
           "new_source": "x",
           "notebook_path": "/work/project/n.ipynb"
         },
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2050,12 +2037,8 @@
     "name": "NotebookEdit",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "WritePath",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -2066,20 +2049,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2137,12 +2122,8 @@
     "name": "Ping",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2153,20 +2134,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2224,12 +2207,8 @@
     "name": "PushNotification",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2240,30 +2219,33 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "file_path": "/work/project/src/lib.rs"
         },
-        "permission_match_content": "/work/project/src/lib.rs",
-        "read_only": true
+        "reach": "Inside",
+        "read_only": true,
+        "runs": null,
+        "subject": "ReadPath(\"/work/project/src/lib.rs\")"
       }
     ],
     "code_result": "text, each line prefixed with its number and a tab",
@@ -2363,12 +2345,8 @@
     "name": "Read",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "ReadPath",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2379,20 +2357,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2436,12 +2416,8 @@
     "name": "Sleep",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2452,20 +2428,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2491,12 +2469,8 @@
     "name": "StructuredOutput",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2507,20 +2481,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2572,12 +2548,8 @@
     "name": "TaskMessage",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": true
-    },
     "short_description": null,
+    "stance": "Coordination",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2588,20 +2560,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2664,12 +2638,8 @@
     "name": "TaskOutput",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2680,20 +2650,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "SessionOnly",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2750,12 +2722,8 @@
     "name": "TaskStop",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2766,20 +2734,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -2881,12 +2851,8 @@
     "name": "TaskWait",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -2897,20 +2863,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": false,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": false,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -3016,12 +2984,8 @@
     "name": "TodoWrite",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": false,
@@ -3032,20 +2996,22 @@
     "callable_from_code": false,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "SessionOnly",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       }
     ],
     "code_result": null,
@@ -3107,12 +3073,8 @@
     "name": "ToolSearch",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -3123,31 +3085,34 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Unknown",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "prompt": "x",
           "url": "https://example.com"
         },
-        "permission_match_content": "https://example.com",
-        "read_only": true
+        "reach": "Host { listed: false }",
+        "read_only": true,
+        "runs": null,
+        "subject": "Opaque(\"https://example.com\")"
       }
     ],
     "code_result": null,
@@ -3205,12 +3170,8 @@
     "name": "WebFetch",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -3221,30 +3182,33 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": null,
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Operator",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {},
-        "permission_match_content": null,
-        "read_only": true
+        "reach": "Operator",
+        "read_only": true,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": true,
         "concurrency_safe": true,
         "destructive": false,
         "input": {
           "query": "rust"
         },
-        "permission_match_content": "rust",
-        "read_only": true
+        "reach": "Operator",
+        "read_only": true,
+        "runs": null,
+        "subject": "Opaque(\"rust\")"
       }
     ],
     "code_result": null,
@@ -3350,12 +3314,8 @@
     "name": "WebSearch",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "Opaque",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": true,
       "destructive": false,
@@ -3366,42 +3326,46 @@
     "callable_from_code": true,
     "calls": [
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": null,
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {},
-        "permission_match_content": null,
-        "read_only": false
+        "reach": "Unknown",
+        "read_only": false,
+        "runs": null,
+        "subject": "None"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {
           "content": "x",
           "file_path": "/work/project/a.txt"
         },
-        "permission_match_content": "/work/project/a.txt",
-        "read_only": false
+        "reach": "Inside",
+        "read_only": false,
+        "runs": null,
+        "subject": "WritePath(\"/work/project/a.txt\")"
       },
       {
-        "accept_edits_allows": false,
         "concurrency_safe": false,
         "destructive": true,
         "input": {
           "content": "x",
           "file_path": "/elsewhere/a.txt"
         },
-        "permission_match_content": "/elsewhere/a.txt",
-        "read_only": false
+        "reach": "Outside",
+        "read_only": false,
+        "runs": null,
+        "subject": "WritePath(\"/elsewhere/a.txt\")"
       }
     ],
     "code_result": null,
@@ -3453,12 +3417,8 @@
     "name": "Write",
     "needs_dispatch": false,
     "origin": "builtin",
-    "permission": {
-      "content_kind": "WritePath",
-      "leaves_plan_mode": false,
-      "self_allow_overrides_mode": false
-    },
     "short_description": null,
+    "stance": "Normal",
     "traits": {
       "concurrency_safe": false,
       "destructive": true,

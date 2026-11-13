@@ -385,12 +385,12 @@ bypassPermissions deny        | att Permit -> Permit / Permit | unatt Permit -> 
 bypassPermissions managed-ask | att Prompt+managed -> Prompt / Prompt | unatt Prompt+managed -> Deny / Deny
 
 {"cron":"0 9 * * *","durable":true,"prompt":"report"}
-default           none        | att Permit -> Permit / Permit | unatt Permit -> Permit / Permit
+default           none        | att Prompt -> Prompt / Permit | unatt Prompt -> Deny / Permit
 default           allow       | att Permit -> Permit / Permit | unatt Permit -> Permit / Permit
 default           ask         | att Prompt -> Prompt / Permit | unatt Prompt -> Deny / Permit
 default           deny        | att Deny -> Deny / Deny | unatt Deny -> Deny / Deny
 default           managed-ask | att Prompt+managed -> Prompt / Prompt | unatt Prompt+managed -> Deny / Deny
-acceptEdits       none        | att Permit -> Permit / Permit | unatt Permit -> Permit / Permit
+acceptEdits       none        | att Prompt -> Prompt / Permit | unatt Prompt -> Deny / Permit
 acceptEdits       allow       | att Permit -> Permit / Permit | unatt Permit -> Permit / Permit
 acceptEdits       ask         | att Prompt -> Prompt / Permit | unatt Prompt -> Deny / Permit
 acceptEdits       deny        | att Deny -> Deny / Deny | unatt Deny -> Deny / Deny

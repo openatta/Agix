@@ -129,30 +129,6 @@ pub async fn write_facts(
     }
 }
 
-/// What a file-writing tool decides about writing `file_path`.
-pub async fn check_write_permission(
-    tool: &str,
-    file_path: Option<&str>,
-    ctx: &base::tool::ToolContext,
-) -> base::tool::PermissionDecision {
-    use base::tool::PermissionDecision;
-
-    let facts = write_facts(tool, file_path, ctx).await;
-    match facts.reach {
-        Reach::Inside => PermissionDecision::Allow {
-            decision_reason: Some("project_write".into()),
-        },
-        Reach::Refused(reason) => PermissionDecision::Deny {
-            reason: Some(reason),
-            decision_reason: Some("path_safety".into()),
-        },
-        _ => PermissionDecision::Ask {
-            message: facts.question.unwrap_or_default(),
-            decision_reason: None,
-        },
-    }
-}
-
 /// What a read-only tool says about reading `target`: `Inside` where
 /// [`read_allowed`], `Outside` elsewhere, `Unknown` when the input named no
 /// path it could parse.

@@ -83,9 +83,7 @@ async fn outcome(
     let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
     Policy::empty()
         .decide(
-            &PermissionRequest::new("Stated", Some(&tool), &input, &ctx.cwd, "s", &ctx.session)
-                .with_facts(&facts)
-                .with_ctx(&ctx)
+            &PermissionRequest::new("Stated", Some(&tool), &input, &facts, &ctx, &ctx.session)
                 .with_hook(&hook)
                 .with_attendance(attendance),
         )
@@ -204,9 +202,10 @@ async fn a_hook_that_blocks_refuses_even_under_bypass() {
         reason: "not here".into(),
     };
     let input = json!({});
+    let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
     let d = Policy::empty()
         .decide(
-            &PermissionRequest::new("Stated", Some(&tool), &input, &ctx.cwd, "s", &ctx.session)
+            &PermissionRequest::new("Stated", Some(&tool), &input, &facts, &ctx, &ctx.session)
                 .with_hook(&block),
         )
         .await;

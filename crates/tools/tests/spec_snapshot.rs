@@ -1,5 +1,5 @@
 //! 冻结每个内建工具对自己的声明：spec、两种路径风格下的输入 schema、详细指南，
-//! 以及一组样例输入下看输入的回答（只读、并发安全、破坏性、acceptEdits、权限匹配内容）。
+//! 以及一组样例输入下看输入的回答（只读、并发安全、破坏性、权限事实）。
 //! 权限判定和请求里的工具表都读这些答案，改动必须是有意的：
 //! `UPDATE_GOLDEN=1 cargo test -p tools --test integration spec_snapshot` 重新生成。
 
@@ -104,20 +104,21 @@ async fn snapshot(tool: &dyn Tool, cwd: &Path) -> Value {
         .await
         .map(|g| json!({ "bytes": g.len(), "fnv1a": fnv1a(&g) }));
     let ctx = platform::tool_context_for_test(cwd.to_path_buf());
-    let calls: Vec<Value> = samples(tool.name())
-        .into_iter()
-        .map(|input| {
-            let traits = tool.call_traits(&input);
-            json!({
-                "input": input,
-                "read_only": traits.read_only,
-                "concurrency_safe": traits.concurrency_safe,
-                "destructive": traits.destructive,
-                "accept_edits_allows": tool.accept_edits_allows(&input, &ctx),
-                "permission_match_content": tool.permission_match_content(&input),
-            })
-        })
-        .collect();
+    let mut calls = Vec::new();
+    for input in samples(tool.name()) {
+        let traits = tool.call_traits(&input);
+        let facts = tool.permission_facts(&input, &ctx).await;
+        calls.push(json!({
+            "input": input,
+            "read_only": traits.read_only,
+            "concurrency_safe": traits.concurrency_safe,
+            "destructive": traits.destructive,
+            "subject": format!("{:?}", facts.subject),
+            "reach": format!("{:?}", facts.reach),
+            "runs": facts.runs.map(|r| r.background),
+        }));
+    }
+
     json!({
         "name": tool.name(),
         "description": tool.description(),
@@ -131,11 +132,7 @@ async fn snapshot(tool: &dyn Tool, cwd: &Path) -> Value {
         "callable_from_code": spec.callable_from_code,
         "code_result": spec.code_result,
         "needs_dispatch": spec.needs_dispatch,
-        "permission": {
-            "content_kind": format!("{:?}", spec.permission.content_kind),
-            "self_allow_overrides_mode": spec.permission.self_allow_overrides_mode,
-            "leaves_plan_mode": spec.permission.leaves_plan_mode,
-        },
+        "stance": format!("{:?}", spec.stance),
         "input_schema": {
             "absolute": tool.input_schema(PathStyle::Absolute),
             "workspace_relative": tool.input_schema(PathStyle::WorkspaceRelative),

@@ -21,7 +21,7 @@ use permissions::shell::is_dangerous_variable;
 ///
 /// # `read_only` 的语义
 ///
-/// `read_only == true` 会让 `BashTool::check_permissions` 直接返回 `Allow`，
+/// `read_only == true` 会让 `BashTool::permission_facts` 报 `Reach::Inside`，
 /// 也就是**不弹权限窗直接执行**。所以这个判定必须真的意味着"这条命令不会写
 /// 任何东西、不会执行别的程序、不会读凭据"。只拿名字去撞白名单、不看参数与
 /// 包在外面的东西，就等价于任意命令执行：

@@ -165,7 +165,7 @@ fn tool_round(tool: &str, id: &str, input: serde_json::Value) -> Vec<StreamEvent
 
 /// A turn where the model calls `Bash` with a command the classifier can't
 /// vouch for — `touch` is in neither the read-only nor the destructive list,
-/// so `BashTool::check_permissions` returns `Ask` and the gate falls through
+/// so `Bash` claims nothing about it and the policy falls through
 /// to mode dispatch, which is exactly the path the new default changes.
 fn asking_bash_rounds(marker: &str) -> Vec<Vec<StreamEvent>> {
     vec![

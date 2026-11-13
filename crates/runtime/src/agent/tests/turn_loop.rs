@@ -26,6 +26,16 @@ impl base::tool::Tool for ProbeTool {
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        base::interface::permission::PermissionFacts::new(
+            base::interface::permission::Subject::None,
+            base::interface::permission::Reach::SessionOnly,
+        )
+    }
     async fn call(
         &self,
         _input: serde_json::Value,
@@ -54,6 +64,16 @@ impl base::tool::Tool for SecondProbeTool {
 
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
+    }
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        base::interface::permission::PermissionFacts::new(
+            base::interface::permission::Subject::None,
+            base::interface::permission::Reach::SessionOnly,
+        )
     }
     async fn call(
         &self,
@@ -84,6 +104,16 @@ impl base::tool::Tool for HangingTool {
 
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
+    }
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        base::interface::permission::PermissionFacts::new(
+            base::interface::permission::Subject::None,
+            base::interface::permission::Reach::SessionOnly,
+        )
     }
     async fn call(
         &self,
@@ -284,6 +314,16 @@ impl base::tool::Tool for PanickingTool {
 
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
+    }
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        base::interface::permission::PermissionFacts::new(
+            base::interface::permission::Subject::None,
+            base::interface::permission::Reach::SessionOnly,
+        )
     }
     async fn call(
         &self,
@@ -1118,6 +1158,16 @@ async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
 
         fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
             serde_json::json!({"type": "object"})
+        }
+        async fn permission_facts(
+            &self,
+            _: &serde_json::Value,
+            _: &base::tool::ToolContext,
+        ) -> base::interface::permission::PermissionFacts {
+            base::interface::permission::PermissionFacts::new(
+                base::interface::permission::Subject::None,
+                base::interface::permission::Reach::SessionOnly,
+            )
         }
         async fn call(
             &self,

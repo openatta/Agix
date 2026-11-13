@@ -20,9 +20,7 @@
 //! a build that *has* the carrier cannot observe the build that does not.
 
 use base::interface::script::{ScriptError, ScriptOutcome};
-use base::interface::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult,
-};
+use base::interface::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult};
 use std::sync::Arc;
 use test_runner::script_session::{drive, Ran, Session};
 use test_runner::scripted_model::Reply;
@@ -646,12 +644,13 @@ impl Tool for Guarded {
     fn input_schema(&self, _: PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::ask("this tool always asks")
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::Unknown).with_question("this tool always asks")
     }
     async fn call(
         &self,
@@ -686,12 +685,13 @@ impl Tool for Echo {
             "required": ["say"]
         })
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> PermissionDecision {
-        PermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,

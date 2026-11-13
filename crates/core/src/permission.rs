@@ -1,4 +1,5 @@
-//! 权限相关类型 —— `PermissionDecision` 是权限系统**唯一**的判定结果。
+//! 权限模式与权限规则。一次调用的判定结果是
+//! `interface::permission::PermissionOutcome`。
 
 use serde::{Deserialize, Serialize};
 
@@ -71,72 +72,6 @@ impl PermissionMode {
             .for_delegate(delegate.into())
             .into()
     }
-}
-
-/// 权限闸的统一返回类型。Tool::check_permissions / 规则引擎 / Hook / mode 决策
-/// 都返回它。**没有**单独的 `PermissionResult` / `Decision` 别名 —— 不要造。
-#[derive(Debug, Clone)]
-pub enum PermissionDecision {
-    Allow {
-        /// 改写后的输入（如把路径重定向到 worktree）；None 表示不改
-        updated_input: Option<serde_json::Value>,
-        decision_reason: Option<DecisionReason>,
-    },
-    Deny {
-        message: String,
-        decision_reason: DecisionReason,
-    },
-    Ask {
-        message: String,
-        decision_reason: Option<DecisionReason>,
-    },
-}
-
-impl PermissionDecision {
-    /// Permission decision: allow this tool call.
-    pub fn allow() -> Self {
-        Self::Allow {
-            updated_input: None,
-            decision_reason: None,
-        }
-    }
-    /// Permission decision: deny with a user-visible reason.
-    pub fn deny(msg: impl Into<String>, reason: DecisionReason) -> Self {
-        Self::Deny {
-            message: msg.into(),
-            decision_reason: reason,
-        }
-    }
-    /// True if this decision is `Allow`.
-    pub fn is_allow(&self) -> bool {
-        matches!(self, Self::Allow { .. })
-    }
-    /// True if this decision is `Deny`.
-    pub fn is_deny(&self) -> bool {
-        matches!(self, Self::Deny { .. })
-    }
-    /// True if this decision is `Ask` (interactive prompt required).
-    pub fn is_ask(&self) -> bool {
-        matches!(self, Self::Ask { .. })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum DecisionReason {
-    Rule(PermissionRule),
-    Mode(PermissionMode),
-    Hook {
-        hook_name: String,
-    },
-    SubcommandResults,
-    SafetyCheck,
-    /// Tool's own check_permissions returned Allow.
-    ToolAllowed(String),
-    /// Tool's own check_permissions returned Deny.
-    ToolDenied(String),
-    /// 工具自带的判定（FileEdit 路径白名单等）
-    ToolBuiltin(String),
-    Other(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]

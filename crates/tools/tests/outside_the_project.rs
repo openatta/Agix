@@ -3,7 +3,8 @@
 //! a shell command only when the OS sandbox holds it.
 
 use base::context::{SessionEnv, SessionState};
-use base::interface::tool::{PermissionDecision, Tool, ToolContext};
+use base::interface::permission::Reach;
+use base::interface::tool::{Tool, ToolContext};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -23,40 +24,49 @@ async fn judged(
     input: &serde_json::Value,
     ctx: &ToolContext,
 ) -> base::interface::permission::PermissionOutcome {
-    use base::interface::permission::{PermissionPolicy, PermissionRequest};
+    use base::interface::permission::{PermissionPolicy, PermissionRequest, ToolFacts};
     ctx.session.set_permission_mode(ctx.permission_mode);
+    let facts = ToolFacts::gather(tool.as_ref(), input, ctx).await;
     permissions::policy::Policy::empty()
-        .decide(
-            &PermissionRequest::new(
-                tool.name(),
-                Some(&tool),
-                input,
-                &ctx.cwd,
-                &ctx.session_id,
-                &ctx.session,
-            )
-            .with_ctx(ctx),
-        )
+        .decide(&PermissionRequest::new(
+            tool.name(),
+            Some(&tool),
+            input,
+            &facts,
+            ctx,
+            &ctx.session,
+        ))
         .await
 }
 
-fn allowed(d: &PermissionDecision) -> bool {
-    matches!(d, PermissionDecision::Allow { .. })
+async fn inside(tool: &dyn Tool, input: serde_json::Value, ctx: &ToolContext) -> bool {
+    tool.permission_facts(&input, ctx).await.reach == Reach::Inside
 }
 
 async fn reads(ctx: &ToolContext, dir: &Path) -> [bool; 3] {
     let file = dir.join("notes.txt").display().to_string();
     let dir = dir.display().to_string();
-    let read = tools::file_read::FileReadTool
-        .check_permissions(&serde_json::json!({ "file_path": file }), ctx)
-        .await;
-    let glob = tools::glob::GlobTool
-        .check_permissions(&serde_json::json!({ "pattern": "*", "path": dir }), ctx)
-        .await;
-    let grep = tools::grep::GrepTool
-        .check_permissions(&serde_json::json!({ "pattern": "x", "path": dir }), ctx)
-        .await;
-    [allowed(&read), allowed(&glob), allowed(&grep)]
+    use serde_json::json;
+    [
+        inside(
+            &tools::file_read::FileReadTool,
+            json!({ "file_path": file }),
+            ctx,
+        )
+        .await,
+        inside(
+            &tools::glob::GlobTool,
+            json!({ "pattern": "*", "path": dir }),
+            ctx,
+        )
+        .await,
+        inside(
+            &tools::grep::GrepTool,
+            json!({ "pattern": "x", "path": dir }),
+            ctx,
+        )
+        .await,
+    ]
 }
 
 #[tokio::test]
@@ -86,10 +96,14 @@ async fn reading_outside_the_project_needs_a_readable_root() {
 async fn glob_and_grep_without_a_path_search_the_project() {
     let project = tempfile::tempdir().unwrap();
     let ctx = ctx_in(project.path(), |_| {});
-    let glob = tools::glob::GlobTool
-        .check_permissions(&serde_json::json!({ "pattern": "*" }), &ctx)
-        .await;
-    assert!(allowed(&glob));
+    assert!(
+        inside(
+            &tools::glob::GlobTool,
+            serde_json::json!({ "pattern": "*" }),
+            &ctx
+        )
+        .await
+    );
 }
 
 /// Whether the policy lets `python3 build.py` run with nobody attending.
@@ -109,9 +123,7 @@ async fn runs_unattended(ctx: &ToolContext) -> bool {
     let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
     permissions::policy::Policy::empty()
         .decide(
-            &PermissionRequest::new("Bash", Some(&tool), &input, &ctx.cwd, "s", &ctx.session)
-                .with_facts(&facts)
-                .with_ctx(&ctx)
+            &PermissionRequest::new("Bash", Some(&tool), &input, &facts, &ctx, &ctx.session)
                 .with_attendance(Attendance::Unattended),
         )
         .await
@@ -156,7 +168,9 @@ async fn an_unattended_command_runs_only_inside_the_sandbox() {
 
 #[tokio::test]
 async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
-    use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
+    use base::interface::permission::{
+        PermissionOutcome, PermissionPolicy, PermissionRequest, ToolFacts,
+    };
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(project.path().join(".agix/agents")).unwrap();
     std::fs::write(project.path().join(".agix/agents/a.md"), "x").unwrap();
@@ -187,12 +201,15 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
         let (gate, session, found) = (&gate, &session, registry.get(tool));
         let cwd = project.path().to_path_buf();
         async move {
+            let mut ctx = platform::tool_context_for_test(cwd);
+            ctx.session = session.clone();
+            let facts = ToolFacts::gather(found.as_deref().unwrap(), &input, &ctx).await;
             gate.decide(&PermissionRequest::new(
                 tool,
                 found.as_ref(),
                 &input,
-                &cwd,
-                "s",
+                &facts,
+                &ctx,
                 session,
             ))
             .await

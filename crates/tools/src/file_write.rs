@@ -10,8 +10,8 @@ use base::error::ToolError;
 use base::interface::exec::FileSystem;
 use base::interface::permission::PermissionFacts;
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -37,10 +37,7 @@ pub struct FileWriteTool;
 #[async_trait]
 impl Tool for FileWriteTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec::new()
-            .callable_from_code(true)
-            .destructive(true)
-            .permission_content(base::tool::PermissionContentKind::WritePath)
+        ToolSpec::new().callable_from_code(true).destructive(true)
     }
     fn name(&self) -> &str {
         "Write"
@@ -60,12 +57,6 @@ impl Tool for FileWriteTool {
 
     async fn guide(&self, _: &PromptContext) -> Option<String> {
         Some(include_str!("prompts/coding/file_write.prompt.md").to_string())
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<FileWriteInput>(input.clone())
-            .ok()
-            .map(|i| i.file_path)
     }
 
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {
@@ -103,13 +94,8 @@ impl Tool for FileWriteTool {
         }
     }
 
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        let file_path = self.permission_match_content(input);
-        crate::security::check_write_permission(self.name(), file_path.as_deref(), ctx).await
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        let file_path = self.permission_match_content(input);
+        let file_path = self.subject_content(input);
         crate::security::write_facts(self.name(), file_path.as_deref(), ctx).await
     }
 
@@ -151,6 +137,14 @@ impl Tool for FileWriteTool {
     }
 }
 
+impl FileWriteTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<FileWriteInput>(input.clone())
+            .ok()
+            .map(|i| i.file_path)
+    }
+}
+
 async fn write_file(fs: &dyn FileSystem, path: &Path, content: &str) -> Result<usize, ToolError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() && fs.metadata_following_symlinks(parent).await.is_err() {
@@ -167,6 +161,7 @@ async fn write_file(fs: &dyn FileSystem, path: &Path, content: &str) -> Result<u
 mod tests {
     use super::*;
     use base::interface::exec::{DirEntry, ExecError, Metadata};
+    use base::interface::permission::Reach;
     use base::tool::ToolResultContent;
     use platform::LocalFileSystem;
     use serde_json::json;
@@ -291,13 +286,14 @@ mod tests {
         let input = json!({"file_path": "link/../x", "content": "x"});
 
         let decision = FileWriteTool
-            .check_permissions(&input, &ctx_in(&proj))
-            .await;
+            .permission_facts(&input, &ctx_in(&proj))
+            .await
+            .reach;
         assert!(
-            matches!(decision, PermissionDecision::Ask { .. }),
+            matches!(decision, Reach::Outside | Reach::Unknown),
             "{decision:?}"
         );
-        if matches!(decision, PermissionDecision::Allow { .. }) {
+        if matches!(decision, Reach::Inside) {
             FileWriteTool
                 .call(input, ctx_in(&proj), ProgressSender::noop("t"))
                 .await
@@ -328,31 +324,34 @@ mod tests {
         let tool = FileWriteTool;
 
         let inside = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": "ok.txt", "content": "x"}),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(inside, PermissionDecision::Allow { .. }));
+            .await
+            .reach;
+        assert!(matches!(inside, Reach::Inside));
 
         let outside = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({
                     "file_path": outside.path().join("ok.txt").to_string_lossy(),
                     "content": "x"
                 }),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(outside, PermissionDecision::Ask { .. }));
+            .await
+            .reach;
+        assert!(matches!(outside, Reach::Outside | Reach::Unknown));
 
         let sensitive = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": ".env", "content": "SECRET=1"}),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(sensitive, PermissionDecision::Deny { .. }));
+            .await
+            .reach;
+        assert!(matches!(sensitive, Reach::Refused(_)));
     }
 
     #[tokio::test]
@@ -439,13 +438,14 @@ mod tests {
         });
 
         let decision = FileWriteTool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": target.to_string_lossy(), "content": "x"}),
                 &ctx,
             )
-            .await;
+            .await
+            .reach;
         assert!(
-            matches!(decision, PermissionDecision::Ask { .. }),
+            matches!(decision, Reach::Outside | Reach::Unknown),
             "a write the provider places outside the project must be asked \
              about, got {decision:?}"
         );
@@ -455,15 +455,13 @@ mod tests {
         // also pass on a tool that denied everything.
         let inside = ctx_in(&project);
         let decision = FileWriteTool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": target.to_string_lossy(), "content": "x"}),
                 &inside,
             )
-            .await;
-        assert!(
-            matches!(decision, PermissionDecision::Allow { .. }),
-            "got {decision:?}"
-        );
+            .await
+            .reach;
+        assert!(matches!(decision, Reach::Inside), "got {decision:?}");
     }
 
     /// The bytes go where the provider puts them, not where the path points.

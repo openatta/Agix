@@ -18,8 +18,8 @@ use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::permission::PermissionMode;
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -71,10 +71,6 @@ impl Tool for EnterPlanModeTool {
             Ok(_) => ValidationResult::Ok,
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 2),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -162,7 +158,7 @@ impl Tool for ExitPlanModeTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
             .concurrency_safe(true)
-            .leaves_plan_mode(true)
+            .stance(base::interface::permission::ModeStance::LeavesPlan)
     }
 
     /// Rejects if not currently in plan mode (error code 1).
@@ -176,11 +172,6 @@ impl Tool for ExitPlanModeTool {
             );
         }
         ValidationResult::Ok
-    }
-
-    /// Requires user confirmation to exit plan mode (non-teammates).
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::ask("Exit plan mode?")
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -425,13 +416,19 @@ mod tests {
         let c = ctx();
         // EnterPlanMode: always allowed.
         assert!(matches!(
-            EnterPlanModeTool.check_permissions(&Value::Null, &c).await,
-            PermissionDecision::Allow { .. }
+            EnterPlanModeTool
+                .permission_facts(&Value::Null, &c)
+                .await
+                .reach,
+            Reach::SessionOnly
         ));
         // ExitPlanMode: asks user for confirmation.
         assert!(matches!(
-            ExitPlanModeTool.check_permissions(&Value::Null, &c).await,
-            PermissionDecision::Ask { .. }
+            ExitPlanModeTool
+                .permission_facts(&Value::Null, &c)
+                .await
+                .reach,
+            Reach::Unknown
         ));
     }
 }

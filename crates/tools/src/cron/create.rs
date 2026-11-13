@@ -11,8 +11,8 @@ use super::store::CronStore;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -93,10 +93,6 @@ impl Tool for CronCreateTool {
             }
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 4),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, input: &Value, _: &ToolContext) -> PermissionFacts {

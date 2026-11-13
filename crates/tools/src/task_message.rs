@@ -8,8 +8,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec,
-    ValidationResult,
+    PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -72,7 +71,7 @@ impl Tool for TaskMessageTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
             .concurrency_safe(true)
-            .self_allow_overrides_mode(true)
+            .stance(base::interface::permission::ModeStance::Coordination)
     }
 
     // Talking to one's own sub-agent touches no file, shell or network; a
@@ -84,10 +83,6 @@ impl Tool for TaskMessageTool {
             Ok(_) => ValidationResult::Ok,
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 2),
         }
-    }
-
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {

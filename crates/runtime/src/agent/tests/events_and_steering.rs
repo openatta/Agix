@@ -234,6 +234,16 @@ impl base::tool::Tool for GateTool {
     fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
+    async fn permission_facts(
+        &self,
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        base::interface::permission::PermissionFacts::new(
+            base::interface::permission::Subject::None,
+            base::interface::permission::Reach::SessionOnly,
+        )
+    }
     async fn call(
         &self,
         _input: serde_json::Value,

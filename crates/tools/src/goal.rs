@@ -6,9 +6,7 @@ use async_trait::async_trait;
 use base::context::goal::{GoalAction, GoalError, TurnOrigin};
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
-use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec,
-};
+use base::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -98,9 +96,6 @@ impl Tool for GoalCreateTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
     }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::new(Subject::None, Reach::SessionOnly)
@@ -149,9 +144,6 @@ impl Tool for GoalGetTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().read_only(true).concurrency_safe(true)
     }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
-    }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::new(Subject::None, Reach::SessionOnly)
@@ -190,9 +182,6 @@ impl Tool for GoalUpdateTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec::new()
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::allow()
     }
 
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {

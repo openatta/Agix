@@ -10,8 +10,8 @@ use base::error::ToolError;
 use base::interface::exec::FileSystem;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use ignore::{WalkBuilder, WalkState};
 use schemars::JsonSchema;
@@ -66,17 +66,10 @@ pub struct GrepInput {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GrepTool;
 
-fn searches_within_roots(input: &Value, ctx: &ToolContext) -> bool {
-    match serde_json::from_value::<GrepInput>(input.clone()).map(|i| i.path) {
-        Ok(Some(p)) => crate::security::read_allowed(&resolve_path(&p, &ctx.cwd), ctx),
-        _ => true,
-    }
-}
-
 #[async_trait]
 impl Tool for GrepTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec::new().callable_from_code(true).code_result("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line").concurrency_safe(true).read_only(true).permission_content(base::tool::PermissionContentKind::ReadPath)
+        ToolSpec::new().callable_from_code(true).code_result("files_with_matches (default): {files: string[]}; count: {counts: {path: n}}; content: text, one 'path:line' match per line").concurrency_safe(true).read_only(true)
     }
     fn name(&self) -> &str {
         "Grep"
@@ -92,12 +85,6 @@ impl Tool for GrepTool {
 
     async fn guide(&self, _: &PromptContext) -> Option<String> {
         Some(include_str!("prompts/coding/grep.prompt.md").to_string())
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<GrepInput>(input.clone())
-            .ok()
-            .map(|i| i.path.unwrap_or_else(|| ".".into()))
     }
 
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
@@ -117,25 +104,10 @@ impl Tool for GrepTool {
         }
     }
 
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        searches_within_roots(input, ctx)
-    }
-
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        if searches_within_roots(input, ctx) {
-            return PermissionDecision::allow();
-        }
-        PermissionDecision::Ask {
-            message: "Grep outside the project requires confirmation".into(),
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        let subject = Subject::of(
-            base::tool::PermissionContentKind::ReadPath,
-            self.permission_match_content(input),
-        );
+        let subject = self
+            .subject_content(input)
+            .map_or(Subject::None, Subject::ReadPath);
         match serde_json::from_value::<GrepInput>(input.clone()).map(|i| i.path) {
             Ok(Some(path)) => crate::security::read_facts(
                 self.name(),
@@ -365,6 +337,14 @@ impl Tool for GrepTool {
         let mut result = ToolResult::text(text);
         result.structured_content = structured;
         Ok(result)
+    }
+}
+
+impl GrepTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<GrepInput>(input.clone())
+            .ok()
+            .map(|i| i.path.unwrap_or_else(|| ".".into()))
     }
 }
 

@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -47,13 +47,6 @@ fn default_true() -> bool {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GlobTool;
 
-fn searches_within_roots(input: &Value, ctx: &ToolContext) -> bool {
-    match serde_json::from_value::<GlobInput>(input.clone()).map(|i| i.path) {
-        Ok(Some(p)) => crate::security::read_allowed(&resolve_path(&p, &ctx.cwd), ctx),
-        _ => true,
-    }
-}
-
 #[async_trait]
 impl Tool for GlobTool {
     fn spec(&self) -> ToolSpec {
@@ -64,7 +57,6 @@ impl Tool for GlobTool {
             )
             .concurrency_safe(true)
             .read_only(true)
-            .permission_content(base::tool::PermissionContentKind::ReadPath)
     }
     fn name(&self) -> &str {
         "Glob"
@@ -82,12 +74,6 @@ impl Tool for GlobTool {
         Some(include_str!("prompts/coding/glob.prompt.md").to_string())
     }
 
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<GlobInput>(input.clone())
-            .ok()
-            .map(|i| i.path.unwrap_or_else(|| ".".into()))
-    }
-
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<GlobInput, _> = serde_json::from_value(input.clone());
         match parsed {
@@ -97,25 +83,10 @@ impl Tool for GlobTool {
         }
     }
 
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        searches_within_roots(input, ctx)
-    }
-
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        if searches_within_roots(input, ctx) {
-            return PermissionDecision::allow();
-        }
-        PermissionDecision::Ask {
-            message: "Glob outside the project requires confirmation".into(),
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        let subject = Subject::of(
-            base::tool::PermissionContentKind::ReadPath,
-            self.permission_match_content(input),
-        );
+        let subject = self
+            .subject_content(input)
+            .map_or(Subject::None, Subject::ReadPath);
         match serde_json::from_value::<GlobInput>(input.clone()).map(|i| i.path) {
             Ok(Some(path)) => crate::security::read_facts(
                 self.name(),
@@ -233,6 +204,14 @@ impl Tool for GlobTool {
             "more": total - paths.len(),
         }));
         Ok(result)
+    }
+}
+
+impl GlobTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<GlobInput>(input.clone())
+            .ok()
+            .map(|i| i.path.unwrap_or_else(|| ".".into()))
     }
 }
 

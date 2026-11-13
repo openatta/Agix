@@ -50,8 +50,8 @@ impl PermissionPolicy for DelegateRelay {
         let rules = [inner, &self.rules, &self.turn_grants.now()].concat();
         let mut relayed = req.for_delegate(Delegate::new(session, mode, &rules));
         relayed.session = &self.parent_session;
-        if self.asks == AskRoute::Refuse && relayed.attendance != Some(Attendance::Unattended) {
-            relayed.attendance = Some(Attendance::NoOneToAsk(NO_ONE_TO_ASK));
+        if self.asks == AskRoute::Refuse && relayed.attendance != Attendance::Unattended {
+            relayed.attendance = Attendance::NoOneToAsk(NO_ONE_TO_ASK);
         }
         self.parent.decide(&relayed).await
     }

@@ -28,8 +28,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Runs, Subject};
 use base::tool::{
-    CallTraits, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext,
-    ToolResult, ToolSpec, ValidationResult,
+    CallTraits, PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -76,7 +76,6 @@ impl Tool for BashTool {
             .callable_from_code(true)
             .code_result("{stdout, stderr, exit_code}; a non-zero exit rejects with the output")
             .destructive(true)
-            .permission_content(base::tool::PermissionContentKind::ShellCommand)
     }
     fn name(&self) -> &str {
         "Bash"
@@ -103,16 +102,6 @@ impl Tool for BashTool {
             // 解析不了的输入保守按 destructive 看
             None => CallTraits::default().destructive(true),
         }
-    }
-
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        self.reads_only_where_it_may(input, ctx)
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<BashInput>(input.clone())
-            .ok()
-            .map(|p| p.command)
     }
 
     async fn validate_input(&self, input: &Value, ctx: &ToolContext) -> ValidationResult {
@@ -165,33 +154,9 @@ impl Tool for BashTool {
         }
     }
 
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        // 已知只读命令（ls、cat、git status 等）自动允许，不弹权限窗。其余
-        // 命令走 gate 模式分派（bypass → allow，其余模式 → ask；acceptEdits
-        // 问 `accept_edits_allows`，条件与这里相同，所以也是 ask）。
-        //
-        // 这个 `Allow` 只是"待生效的快速通道"：gate 会先跑 deny 规则、
-        // bypass-immune 路径与模式级硬拒绝，都放行了才兑现（见
-        // `permissions::policy` 的判定顺序）。相应地，`call_traits` 的 `read_only`
-        // 必须真的意味着"不写、不执行别的程序、不读凭据" —— 见
-        // `classify::classify` 的说明。只读也只在项目里只读：参数指向
-        // cwd（及附加目录、read_directories）之外的路径时，和 Read 读项目外的
-        // 文件一样要确认；git 只在会话自己所在的仓库里只读，项目带来的仓库的
-        // 配置能让它拉起程序。
-        if self.reads_only_where_it_may(input, ctx) {
-            return PermissionDecision::Allow {
-                decision_reason: Some("read_only".into()),
-            };
-        }
-        PermissionDecision::Ask {
-            message: "Bash command requires confirmation".into(),
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
         let subject = self
-            .permission_match_content(input)
+            .subject_content(input)
             .map_or(Subject::None, Subject::Shell);
         let facts = if self.reads_only_where_it_may(input, ctx) {
             PermissionFacts::new(subject, Reach::Inside)
@@ -314,6 +279,14 @@ impl Tool for BashTool {
         };
         result.structured_content = Some(structured);
         Ok(result)
+    }
+}
+
+impl BashTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<BashInput>(input.clone())
+            .ok()
+            .map(|p| p.command)
     }
 }
 

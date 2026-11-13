@@ -8,11 +8,10 @@ use crate::ruleset::{path_rule_group, shell_rule_group, RuleHit, RuleSet};
 use base::interface::permission::Subject;
 use base::paths::SensitivePaths;
 use base::permission::PermissionRule;
-use base::tool::{PermissionContentKind, ToolContext};
+use base::tool::ToolContext;
 
 pub(super) struct Named {
-    kind: PermissionContentKind,
-    content: Option<String>,
+    subject: Subject,
     resolved: Option<ResolvedPath>,
     /// The content, each resolved form of its path, and for a command line
     /// each word and each assigned value.
@@ -21,42 +20,30 @@ pub(super) struct Named {
 
 impl Named {
     pub(super) fn of(subject: &Subject, ctx: &ToolContext) -> Self {
-        let (kind, content) = match subject {
-            Subject::ReadPath(s) => (PermissionContentKind::ReadPath, Some(s.clone())),
-            Subject::WritePath(s) => (PermissionContentKind::WritePath, Some(s.clone())),
-            Subject::Shell(s) => (PermissionContentKind::ShellCommand, Some(s.clone())),
-            other => (
-                PermissionContentKind::Opaque,
-                other.content().map(str::to_string),
-            ),
-        };
-        let resolved = path_rule_group(kind)
-            .zip(content.as_deref())
+        let resolved = path_rule_group(subject)
+            .zip(subject.content())
             .map(|(_, c)| ResolvedPath::new(c, &ctx.cwd));
-        let candidates = candidates(kind, content.as_deref(), resolved.as_ref());
+        let candidates = candidates(subject, resolved.as_ref());
         Self {
-            kind,
-            content,
+            subject: subject.clone(),
             resolved,
             candidates,
         }
     }
 
     pub(super) fn content(&self) -> Option<&str> {
-        self.content.as_deref()
+        self.subject.content()
     }
 
     pub(super) fn hit(&self, rules: &RuleSet, tool_name: &str, ctx: &ToolContext) -> RuleHit {
-        match (
-            path_rule_group(self.kind),
-            &self.resolved,
-            self.content.as_deref(),
-        ) {
-            (Some(group), Some(path), _) => rules.evaluate_path(tool_name, group, path, &ctx.cwd),
-            (_, _, Some(line)) if self.kind == PermissionContentKind::ShellCommand => {
-                rules.evaluate_shell(tool_name, shell_rule_group(self.kind), line)
+        if let (Some(group), Some(path)) = (path_rule_group(&self.subject), &self.resolved) {
+            return rules.evaluate_path(tool_name, group, path, &ctx.cwd);
+        }
+        match &self.subject {
+            Subject::Shell(line) => {
+                rules.evaluate_shell(tool_name, shell_rule_group(&self.subject), line)
             }
-            _ => rules.evaluate(tool_name, self.content.as_deref()),
+            _ => rules.evaluate(tool_name, self.content()),
         }
     }
 
@@ -64,7 +51,7 @@ impl Named {
     /// taken as a path from the session's cwd, as is the value of a
     /// `--flag=value`.
     pub(super) fn credential(&self, ctx: &ToolContext, also: &SensitivePaths) -> Option<&str> {
-        self.content.as_ref()?;
+        self.content()?;
         self.candidates
             .iter()
             .find(|candidate| {
@@ -94,14 +81,14 @@ impl Named {
     }
 }
 
-fn candidates(
-    kind: PermissionContentKind,
-    content: Option<&str>,
-    resolved: Option<&ResolvedPath>,
-) -> Vec<String> {
+fn candidates(subject: &Subject, resolved: Option<&ResolvedPath>) -> Vec<String> {
+    let content = subject.content();
     // The protected-path checks compare path components, which quotes
     // inside a word (`~/".ssh"/id_rsa`) would otherwise hide.
-    let shell_line = content.filter(|_| kind == PermissionContentKind::ShellCommand);
+    let shell_line = match subject {
+        Subject::Shell(line) => Some(line.as_str()),
+        _ => None,
+    };
     let unquoted = shell_line
         .into_iter()
         .flat_map(crate::shell::segments)

@@ -1,11 +1,11 @@
 use super::*;
 use crate::ruleset::RuleSet;
 use async_trait::async_trait as async_trait2;
-use base::context::{EngineAttachment, SessionEnv, SessionState};
+use base::context::SessionState;
 use base::error::ToolError;
 use base::interface::permission::Delegate;
 use base::permission::PermissionMode;
-use base::tool::{PermissionDecision as ToolPermissionDecision, Tool};
+use base::tool::Tool;
 use serde_json::json;
 use std::path::Path;
 
@@ -33,12 +33,13 @@ impl Tool for FakeTool {
     async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
         Some("fake".into())
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> ToolPermissionDecision {
-        ToolPermissionDecision::ask("?")
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::Unknown).with_question("?")
     }
     async fn call(
         &self,
@@ -54,7 +55,7 @@ fn fake(name: &'static str, read_only: bool) -> Arc<dyn Tool> {
     Arc::new(FakeTool { name, read_only })
 }
 
-/// Like `FakeTool`, but with a settable `permission_match_content` —
+/// Like `FakeTool`, but with a settable subject —
 /// a grant scoped to content only matches a tool that derives some.
 struct ContentAwareFakeTool {
     name: &'static str,
@@ -80,15 +81,17 @@ impl Tool for ContentAwareFakeTool {
     async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
         Some("fake".into())
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> ToolPermissionDecision {
-        ToolPermissionDecision::ask("?")
-    }
-    fn permission_match_content(&self, _: &serde_json::Value) -> Option<String> {
-        self.content.map(|s| s.to_string())
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(
+            { self.content.map(|s| s.to_string()) }.map_or(Subject::None, Subject::Opaque),
+            Reach::Unknown,
+        )
+        .with_question("?")
     }
     async fn call(
         &self,
@@ -121,12 +124,13 @@ async fn decide(
     session: &Arc<SessionState>,
 ) -> PermissionOutcome {
     let input = json!({});
+    let (ctx, facts) = call_in(Some(tool), &input, session).await;
     perm.decide(&PermissionRequest::new(
         tool.name(),
         Some(tool),
         &input,
-        Path::new("/tmp"),
-        "s1",
+        &facts,
+        &ctx,
         session,
     ))
     .await
@@ -135,14 +139,16 @@ async fn decide(
 #[tokio::test]
 async fn a_call_to_a_tool_nobody_looked_up_is_asked_about_not_waved_through() {
     let input = json!({});
+    let session = session(PermissionMode::BypassPermissions);
+    let (ctx, facts) = call_in(None, &input, &session).await;
     let outcome = empty()
         .decide(&PermissionRequest::new(
             "Nonexistent",
             None,
             &input,
-            Path::new("/tmp"),
-            "s1",
-            &session(PermissionMode::BypassPermissions),
+            &facts,
+            &ctx,
+            &session,
         ))
         .await;
     match outcome {
@@ -188,17 +194,13 @@ async fn a_delegate_is_judged_in_its_own_mode_held_to_plan_and_taken_along_by_by
     let delegate = Arc::new(SessionState::for_tests(std::path::PathBuf::from("/tmp")));
     let input = json!({});
     let judged = || {
-        let req = PermissionRequest::new(
-            "Write",
-            Some(&write),
-            &input,
-            Path::new("/tmp"),
-            "s1",
-            &session,
-        )
-        .for_delegate(Delegate::of(&delegate));
-        let perm = &perm;
-        async move { perm.decide(&req).await }
+        let (perm, write, input, session, delegate) = (&perm, &write, &input, &session, &delegate);
+        async move {
+            let (ctx, facts) = call_in(Some(write), input, delegate).await;
+            let req = PermissionRequest::new("Write", Some(write), input, &facts, &ctx, session)
+                .for_delegate(Delegate::of(delegate));
+            perm.decide(&req).await
+        }
     };
 
     delegate.set_permission_mode(PermissionMode::Plan);
@@ -235,12 +237,13 @@ impl Tool for HandIn {
     async fn guide(&self, _: &base::tool::PromptContext) -> Option<String> {
         Some("hand in".into())
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
         _: &serde_json::Value,
-        _: &ToolContext,
-    ) -> ToolPermissionDecision {
-        ToolPermissionDecision::allow()
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::SessionOnly)
     }
     async fn call(
         &self,
@@ -269,13 +272,14 @@ async fn a_delegates_own_tool_is_judged_under_the_sessions_rules() {
             input.clone(),
         );
         async move {
+            let (ctx, facts) = call_in(Some(&hand_in), &input, &delegate).await;
             perm.decide(
                 &PermissionRequest::new(
                     "StructuredOutput",
                     Some(&hand_in),
                     &input,
-                    Path::new("/tmp"),
-                    "s1",
+                    &facts,
+                    &ctx,
                     &own,
                 )
                 .for_delegate(Delegate::of(&delegate)),
@@ -803,81 +807,4 @@ async fn a_managed_layer_that_cannot_be_honoured_refuses_every_call() {
             );
         }
     }
-}
-
-struct FilesystemProbe(std::sync::Mutex<Vec<Arc<dyn base::interface::exec::FileSystem>>>);
-
-#[async_trait2]
-impl Tool for FilesystemProbe {
-    fn name(&self) -> &str {
-        "FilesystemProbe"
-    }
-    fn spec(&self) -> base::tool::ToolSpec {
-        base::tool::ToolSpec::new()
-    }
-
-    fn description(&self) -> &str {
-        "filesystem probe (test tool)"
-    }
-
-    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
-        json!({"type": "object"})
-    }
-    async fn check_permissions(
-        &self,
-        _: &serde_json::Value,
-        ctx: &ToolContext,
-    ) -> ToolPermissionDecision {
-        self.0.lock().unwrap().push(ctx.exec.filesystem.clone());
-        ToolPermissionDecision::allow()
-    }
-    async fn call(
-        &self,
-        _: serde_json::Value,
-        _: ToolContext,
-        _: base::tool::ProgressSender,
-    ) -> Result<base::tool::ToolResult, ToolError> {
-        Ok(base::tool::ToolResult::text("ok"))
-    }
-}
-
-/// A call is judged on the providers of the session it runs in: the
-/// session's for its own calls, the delegate's for a delegate's.
-#[tokio::test]
-async fn a_call_is_judged_on_the_providers_of_the_session_it_runs_in() {
-    let probe = Arc::new(FilesystemProbe(Default::default()));
-    let tool: Arc<dyn Tool> = probe.clone();
-    let perm = empty();
-    let own = Arc::new(SessionState::for_tests("/tmp".into()));
-    let own_exec = base::interface::exec::ExecProviders::in_process();
-    own.attach(EngineAttachment::new(
-        SessionEnv::new("/tmp".into()),
-        own_exec.clone(),
-        1,
-    ));
-    let delegate = Arc::new(SessionState::for_tests("/tmp".into()));
-    let delegate_exec = base::interface::exec::ExecProviders::in_process();
-    delegate.attach(EngineAttachment::new(
-        SessionEnv::new("/tmp".into()),
-        delegate_exec.clone(),
-        2,
-    ));
-    let input = json!({});
-    let req = PermissionRequest::new(
-        "FilesystemProbe",
-        Some(&tool),
-        &input,
-        Path::new("/tmp"),
-        "s1",
-        &own,
-    );
-
-    perm.decide(&req).await;
-    perm.decide(&req.for_delegate(Delegate::of(&delegate)))
-        .await;
-
-    let seen = probe.0.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert!(Arc::ptr_eq(&seen[0], &own_exec.filesystem));
-    assert!(Arc::ptr_eq(&seen[1], &delegate_exec.filesystem));
 }

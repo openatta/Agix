@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::PermissionFacts;
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -55,9 +55,7 @@ pub struct NotebookEditTool;
 #[async_trait]
 impl Tool for NotebookEditTool {
     fn spec(&self) -> ToolSpec {
-        ToolSpec::new()
-            .callable_from_code(true)
-            .permission_content(base::tool::PermissionContentKind::WritePath)
+        ToolSpec::new().callable_from_code(true)
     }
     fn description(&self) -> &str {
         "Edit Jupyter notebook cells (replace, insert, delete)"
@@ -71,11 +69,6 @@ impl Tool for NotebookEditTool {
     }
     async fn guide(&self, _: &PromptContext) -> Option<String> {
         Some(include_str!("prompts/coding/notebook_edit.prompt.md").to_string())
-    }
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<NotebookEditInput>(input.clone())
-            .ok()
-            .map(|i| i.file_path)
     }
     async fn validate_input(&self, input: &Value, _: &ToolContext) -> ValidationResult {
         let parsed: Result<NotebookEditInput, _> = serde_json::from_value(input.clone());
@@ -98,13 +91,9 @@ impl Tool for NotebookEditTool {
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 3),
         }
     }
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        let file_path = self.permission_match_content(input);
-        crate::security::check_write_permission(self.name(), file_path.as_deref(), ctx).await
-    }
 
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        let file_path = self.permission_match_content(input);
+        let file_path = self.subject_content(input);
         crate::security::write_facts(self.name(), file_path.as_deref(), ctx).await
     }
     async fn call(
@@ -220,6 +209,14 @@ impl Tool for NotebookEditTool {
     }
 }
 
+impl NotebookEditTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<NotebookEditInput>(input.clone())
+            .ok()
+            .map(|i| i.file_path)
+    }
+}
+
 /// 构造一个新 cell 的 JSON 对象。
 fn build_cell(ctype: NotebookCellType, source: &str) -> Value {
     let cell_type = match ctype {
@@ -258,6 +255,7 @@ fn source_to_lines(source: &str) -> Value {
 mod tests {
     use super::*;
     use base::interface::exec::{DirEntry, ExecError, FileSystem, Metadata};
+    use base::interface::permission::Reach;
     use platform::LocalFileSystem;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -293,30 +291,24 @@ mod tests {
         let input = |path: &str| json!({"file_path": path, "mode": "delete", "cell_index": 0});
         let decide = |input: Value| {
             let ctx = ctx.clone();
-            async move { NotebookEditTool.check_permissions(&input, &ctx).await }
+            async move { NotebookEditTool.permission_facts(&input, &ctx).await.reach }
         };
 
         let unparsable = decide(json!({"file_path": 7})).await;
         assert!(
-            matches!(unparsable, PermissionDecision::Ask { .. }),
+            matches!(unparsable, Reach::Outside | Reach::Unknown),
             "{unparsable:?}"
         );
         let inside = decide(input("a.ipynb")).await;
-        assert!(
-            matches!(inside, PermissionDecision::Allow { .. }),
-            "{inside:?}"
-        );
+        assert!(matches!(inside, Reach::Inside), "{inside:?}");
         let elsewhere = outside.path().join("a.ipynb");
         let beyond = decide(input(&elsewhere.to_string_lossy())).await;
         assert!(
-            matches!(beyond, PermissionDecision::Ask { .. }),
+            matches!(beyond, Reach::Outside | Reach::Unknown),
             "{beyond:?}"
         );
         let sensitive = decide(input(".ssh/a.ipynb")).await;
-        assert!(
-            matches!(sensitive, PermissionDecision::Deny { .. }),
-            "{sensitive:?}"
-        );
+        assert!(matches!(sensitive, Reach::Refused(_)), "{sensitive:?}");
     }
 
     #[tokio::test]

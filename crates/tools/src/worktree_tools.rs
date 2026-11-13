@@ -16,8 +16,8 @@ use base::engine_exec::GitAccess;
 use base::error::ToolError;
 use base::interface::permission::PermissionFacts;
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
+    ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -107,13 +107,6 @@ impl Tool for EnterWorktreeTool {
                 Err(e) => ValidationResult::err(format!("invalid slug: {e}"), 1),
             },
             Err(e) => ValidationResult::err(format!("invalid input: {e}"), 2),
-        }
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 创建 worktree 是文件系统副作用，但很受控；ask 是合理默认
-        PermissionDecision::Ask {
-            message: "EnterWorktree will create a new git worktree under .agix/worktrees/".into(),
-            decision_reason: None,
         }
     }
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
@@ -220,12 +213,6 @@ impl Tool for ExitWorktreeTool {
     }
     async fn validate_input(&self, _: &Value, _: &ToolContext) -> ValidationResult {
         ValidationResult::Ok
-    }
-    async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        PermissionDecision::Ask {
-            message: "ExitWorktree will delete the worktree directory and its branch".into(),
-            decision_reason: None,
-        }
     }
     async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
         PermissionFacts::unknown()

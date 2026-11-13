@@ -167,12 +167,13 @@ impl base::tool::Tool for AskingProbe {
     fn input_schema(&self, _: base::tool::PathStyle) -> Value {
         serde_json::json!({})
     }
-    async fn check_permissions(
+    async fn permission_facts(
         &self,
-        _input: &Value,
-        _ctx: &ToolContext,
-    ) -> base::tool::PermissionDecision {
-        base::tool::PermissionDecision::ask("run the probe?")
+        _: &serde_json::Value,
+        _: &base::tool::ToolContext,
+    ) -> base::interface::permission::PermissionFacts {
+        use base::interface::permission::{PermissionFacts, Reach, Subject};
+        PermissionFacts::new(Subject::None, Reach::Unknown).with_question("run the probe?")
     }
     async fn call(
         &self,

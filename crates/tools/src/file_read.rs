@@ -8,8 +8,8 @@ use base::error::ToolError;
 use base::interface::exec::{ExecError, FileSystem, Metadata, ProcessSpec};
 use base::interface::permission::{PermissionFacts, Subject};
 use base::tool::{
-    PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool, ToolContext, ToolResult,
-    ToolResultBlock, ToolResultContent, ToolSpec, ValidationResult,
+    PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultBlock,
+    ToolResultContent, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -42,12 +42,6 @@ pub struct FileReadInput {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FileReadTool;
 
-fn reads_within_roots(input: &Value, ctx: &ToolContext) -> bool {
-    serde_json::from_value::<FileReadInput>(input.clone()).is_ok_and(|parsed| {
-        crate::security::read_allowed(&resolve_path(&parsed.file_path, &ctx.cwd), ctx)
-    })
-}
-
 #[async_trait]
 impl Tool for FileReadTool {
     fn spec(&self) -> ToolSpec {
@@ -56,7 +50,6 @@ impl Tool for FileReadTool {
             .code_result("text, each line prefixed with its number and a tab")
             .concurrency_safe(true)
             .read_only(true)
-            .permission_content(base::tool::PermissionContentKind::ReadPath)
     }
     fn name(&self) -> &str {
         "Read"
@@ -76,12 +69,6 @@ impl Tool for FileReadTool {
             PathStyle::Absolute => guide.to_string(),
             PathStyle::WorkspaceRelative => guide.replace(ABSOLUTE_PATH_LINE, RELATIVE_PATH_LINE),
         })
-    }
-
-    fn permission_match_content(&self, input: &Value) -> Option<String> {
-        serde_json::from_value::<FileReadInput>(input.clone())
-            .ok()
-            .map(|i| i.file_path)
     }
 
     async fn validate_input(&self, input: &Value, _ctx: &ToolContext) -> ValidationResult {
@@ -114,25 +101,10 @@ impl Tool for FileReadTool {
         }
     }
 
-    fn accept_edits_allows(&self, input: &Value, ctx: &ToolContext) -> bool {
-        reads_within_roots(input, ctx)
-    }
-
-    async fn check_permissions(&self, input: &Value, ctx: &ToolContext) -> PermissionDecision {
-        if reads_within_roots(input, ctx) {
-            return PermissionDecision::allow();
-        }
-        PermissionDecision::Ask {
-            message: "Read outside the project requires confirmation".into(),
-            decision_reason: None,
-        }
-    }
-
     async fn permission_facts(&self, input: &Value, ctx: &ToolContext) -> PermissionFacts {
-        let subject = Subject::of(
-            base::tool::PermissionContentKind::ReadPath,
-            self.permission_match_content(input),
-        );
+        let subject = self
+            .subject_content(input)
+            .map_or(Subject::None, Subject::ReadPath);
         let target = serde_json::from_value::<FileReadInput>(input.clone())
             .ok()
             .map(|parsed| resolve_path(&parsed.file_path, &ctx.cwd));
@@ -189,6 +161,14 @@ impl Tool for FileReadTool {
             ),
             Err(e) => Err(e),
         }
+    }
+}
+
+impl FileReadTool {
+    fn subject_content(&self, input: &Value) -> Option<String> {
+        serde_json::from_value::<FileReadInput>(input.clone())
+            .ok()
+            .map(|i| i.file_path)
     }
 }
 
@@ -620,6 +600,7 @@ fn format_with_line_numbers(
 mod tests {
     use super::*;
     use base::interface::exec::DirEntry;
+    use base::interface::permission::Reach;
     use base::tool::ToolResultContent;
     use serde_json::json;
     use std::path::PathBuf;
@@ -852,17 +833,19 @@ mod tests {
         let tool = FileReadTool;
 
         let inside = tool
-            .check_permissions(&json!({"file_path": "a.txt"}), &ctx_in(dir.path()))
-            .await;
-        assert!(matches!(inside, PermissionDecision::Allow { .. }));
+            .permission_facts(&json!({"file_path": "a.txt"}), &ctx_in(dir.path()))
+            .await
+            .reach;
+        assert!(matches!(inside, Reach::Inside));
 
         let outside = tool
-            .check_permissions(
+            .permission_facts(
                 &json!({"file_path": outside.path().join("secret.txt")}),
                 &ctx_in(dir.path()),
             )
-            .await;
-        assert!(matches!(outside, PermissionDecision::Ask { .. }));
+            .await
+            .reach;
+        assert!(matches!(outside, Reach::Outside | Reach::Unknown));
     }
 
     #[tokio::test]
