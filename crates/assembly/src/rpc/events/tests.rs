@@ -165,7 +165,7 @@ fn agent_samples() -> Vec<(&'static str, Value)> {
         ),
         (
             "error",
-            json!({"kind": "error", "code": "overloaded", "message": "try later", "turn_id": "inner"}),
+            json!({"kind": "error", "failure": {"kind": "rate_limited", "retryable": true, "retry_after_ms": 30000, "side_effects": true, "message": "try later"}, "turn_id": "inner"}),
         ),
         ("subagent_text_delta", inner(text)),
         (

@@ -450,11 +450,8 @@ async fn send_and_collect(
                     is_error: is_error.unwrap_or(false),
                 }),
                 AgentEvent::TurnComplete { .. } => return Ok((text, tool_uses, tool_results)),
-                AgentEvent::Error { code, message, .. } => {
-                    return Err(anyhow::anyhow!(
-                        "turn {} failed: [{code}] {message}",
-                        turn.index
-                    ));
+                AgentEvent::Error { failure, .. } => {
+                    return Err(anyhow::anyhow!("turn {} failed: {failure}", turn.index));
                 }
                 _ => {}
             }

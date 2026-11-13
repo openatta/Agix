@@ -7,7 +7,9 @@
 use crate::session_pool::api::{SessionEvent, SessionFrame};
 use base::context::goal::GoalView;
 use base::context::{TaskEvent, TaskInfo};
-use base::event::{AgentEvent, ContextUsage, QueuedUserMessage, TeamStageStatus};
+use base::event::{
+    AgentEvent, ContextUsage, FailureKind, QueuedUserMessage, TeamStageStatus, TurnFailure,
+};
 use base::interface::elicitation::ElicitOption;
 use base::interface::model::Usage;
 use serde::Serialize;
@@ -144,8 +146,10 @@ pub enum SessionEventPayload {
         truncated: bool,
     },
     Error {
-        code: String,
+        code: FailureKind,
         message: String,
+        retryable: bool,
+        retry_after_ms: Option<u64>,
     },
     TaskStarted {
         task: TaskInfo,
@@ -241,6 +245,23 @@ impl SessionEventPayload {
         "subscription_dropped",
     ];
 
+    fn error(failure: &TurnFailure) -> Self {
+        let TurnFailure {
+            kind,
+            retryable,
+            retry_after_ms,
+            side_effects: _,
+            message,
+            ..
+        } = failure;
+        Self::Error {
+            code: *kind,
+            message: message.clone(),
+            retryable: *retryable,
+            retry_after_ms: *retry_after_ms,
+        }
+    }
+
     /// What goes on the wire for `event`; `None` for one that does not.
     pub fn project(event: &SessionEvent) -> Option<Self> {
         match event {
@@ -250,14 +271,14 @@ impl SessionEventPayload {
             SessionEvent::ExtensionEntry(entry) => Some(Self::ExtensionEntry {
                 entry: entry.clone(),
             }),
-            SessionEvent::EngineStopped => Some(Self::Error {
-                code: "engine_stopped".into(),
-                message: "engine stopped before the turn completed".into(),
-            }),
-            SessionEvent::Closed => Some(Self::Error {
-                code: "session_closed".into(),
-                message: "the session was closed before the turn completed".into(),
-            }),
+            SessionEvent::EngineStopped => Some(Self::error(&TurnFailure::new(
+                FailureKind::EngineStopped,
+                "engine stopped before the turn completed",
+            ))),
+            SessionEvent::Closed => Some(Self::error(&TurnFailure::new(
+                FailureKind::SessionClosed,
+                "the session was closed before the turn completed",
+            ))),
         }
     }
 
@@ -543,13 +564,9 @@ impl SessionEventPayload {
                 failed: failed.clone(),
             },
             AgentEvent::Error {
-                code,
-                message,
+                failure,
                 turn_id: _,
-            } => Self::Error {
-                code: code.clone(),
-                message: message.clone(),
-            },
+            } => Self::error(failure),
         })
     }
 }

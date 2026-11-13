@@ -1198,7 +1198,8 @@ daemon 重启后恢复)都按同一份 `options` 重建,之后的调用里再传
 的会话。跨场景的 id 不会被静默恢复(§3.4)。
 
 turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGINE_ERROR (-32002)`,
-`message` 形如 `"<引擎错误码>: <描述>"`。
+`message` 形如 `"<kind>: <描述>"`,`data` 说明是哪一类失败、能不能重发、什么时候再来、
+这一轮有没有工具已经跑过(§9.1)。
 
 #### `session.get`
 
@@ -2680,7 +2681,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?,truncated?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
-| `error` | `{code,message}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知。会话在这一轮中途被关闭或删除时 `code` 为 `session_closed` |
+| `error` | `{code,message,retryable,retry_after_ms}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知。`code`、`retryable`、`retry_after_ms` 与发起者收到的 `ENGINE_ERROR` 的 `data.kind`、`data.retryable`、`data.retry_after_ms` 相同(§9.1;字段叫 `code` 是因为帧里已经有 `kind:"error"`);会话在这一轮中途被关闭或删除时 `code` 为 `session_closed`,引擎在一轮中途退出时为 `engine_stopped` |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
 | `task_progress` | `{task_id,appended,skipped_bytes,from_byte,next_byte}` | 一件报过开始的 Shell 命令、监视器或 `RunCode` 程序新打出来的输出,`appended` 是偏移 `from_byte..next_byte` 那段(偏移同 `session.taskOutput`)。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,恒等于本帧 `from_byte` 减上一帧 `next_byte`;漏帧或跳过的用 `session.taskOutput {from_byte}` 补;`turn_id` 为 `null` |
@@ -2714,8 +2715,10 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 重试、等一会儿原样重发)时,先再发一次同 `step` 的 `step_start`,宿主应丢掉这一步已经画出来
 的文本;原样重发之前还有一帧 `model_retry`。一次调用至多恢复 4 次。不重发,这一轮就以
 `ENGINE_ERROR` 结束。请求在首字节之前就失败的(429、过载、连不上),client 已经按退避阶梯
-重试过,恢复策略不会再原样重发。回复已经要过工具的,工具已经跑了,回复连同结果写进
-transcript,这一轮以 `ENGINE_ERROR` 结束,不会重发。
+重试过,恢复策略不会再原样重发:`data.retryable` 为 `true`,服务端说了要等多久的,
+`data.retry_after_ms` 带着它(比 client 肯等的 60 秒还长也照样带出),什么时候再发由宿主决定。
+回复已经要过工具的,工具已经跑了,回复连同结果写进 transcript,这一轮以 `ENGINE_ERROR`
+结束,不会重发,`data.side_effects` 为 `true`。
 
 `prompt_type` 有两种:`"permission"` 问一次工具调用能不能跑;`"question"` 是模型用
 `AskUserQuestion` 问用户的,只发给在 `session.create` 的 `options.prompt_types` 里列了
@@ -2865,7 +2868,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | -32602 | INVALID_PARAMS | 参数缺失/类型错/取值非法 |
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |
 | -32000 | SESSION_NOT_FOUND | 会话不存在,或该方法要求它在内存里而它不在 |
-| -32002 | ENGINE_ERROR | turn 执行期错误,`message` 带引擎错误码 |
+| -32002 | ENGINE_ERROR | turn 执行期错误,或引擎没有接下、没有回答一个回合之外的请求(`session.inspectContext` / `dropMessages` / `editMessage`);`message` 形如 `"<kind>: <描述>"`,`data` 见 §9.1 |
 | -32003 | UNAUTHORIZED | TCP / WebSocket 握手缺失或失败,开了 `--unix-socket-auth` 时 Unix socket 也一样;Unix socket 上的对端是 daemon 自己起的进程(§5.1)。不需要握手的连接上发 `daemon.auth` 得到的是 `METHOD_NOT_FOUND`(-32601) |
 | -32004 | SCENE_NOT_FOUND | 场景未注册,或(`session.create`)未激活 |
 | -32006 | SCENE_MISMATCH | 会话记录的场景与这个 daemon 的不符 |
@@ -2886,9 +2889,12 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 
 ### 9.1 `error.data` 的形状
 
-**只有五个错误码带结构化 `data`**,客户端可以依赖:
+**只有六个错误码带结构化 `data`**,客户端可以依赖:
 
 ```jsonc
+// ENGINE_ERROR
+{ "kind": "rate_limited", "retryable": true, "retry_after_ms": 30000, "side_effects": false }
+
 // SESSION_BUSY
 { "session_id": "S1", "reason": "turn_running", "current_turn_id": "t1" }
 // 需要重建的调用(setPrompt、换厂商的 setModel)被后台任务挡住时,多一项
@@ -2906,6 +2912,33 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 // METHOD_NOT_FOUND
 { "module": "mcp" }   // 只在方法所属的模块没有编入这个构建时;未知方法没有 data
 ```
+
+`ENGINE_ERROR` 的四项总是都在:
+
+- `retryable`:同一个请求晚些再发可能成功。为 `false` 的(换了 key、充了值、改了请求之前)
+  再发也是同样的结果。
+- `retry_after_ms`:服务端要求等多久(毫秒),没说时为 `null`。只是下限,宿主可以等得更久。
+- `side_effects`:这一轮已经有工具跑过,结果在 transcript 里。再发这条消息是新的一轮,
+  模型可能把那些工具再调一遍。
+- `kind`:
+
+| `kind` | 什么情况 | `retryable` |
+|---|---|---|
+| `rate_limited` | 模型服务限流(429),client 的退避阶梯已用完,或服务端要求等的比阶梯肯等的长 | `true` |
+| `overloaded` | 模型服务过载(503、529),没有备用模型,或已经换过 | `true` |
+| `model_unavailable` | 连不上、超时、流中途断开,或 408、500、502、504 | `true` |
+| `context_too_long` | 请求因过长被拒,压缩之后还是不行 | `false` |
+| `model_rejected` | 请求被拒:其余 4xx、模型不存在、厂商做不了这件事 | `false` |
+| `auth` | 401、403 | `false` |
+| `billing` | 402、余额不足 | `false` |
+| `egress_denied` | 出口策略不允许连这个模型服务 | `false` |
+| `model_error` | 其余 5xx,或响应读不懂 | `false` |
+| `session_closed` | 这一轮中途会话被关闭或删除 | `false` |
+| `engine_stopped` | 引擎在一轮中途退出;会话已移出内存,下一次调用从 transcript 恢复它 | `true` |
+| `engine_unreachable` | 引擎没有接下、没有回答一个回合之外的请求 | `true` |
+| `internal` | 引擎内部错误 | `false` |
+
+以后可能增加取值;不认识的 `kind` 按 `retryable` 处理。
 
 `SESSION_BUSY` 的 `reason` 说的是会话此刻在忙什么,不是哪个方法被拒:
 

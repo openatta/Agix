@@ -885,7 +885,7 @@ async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
     let saw_error = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
             match event_rx.recv().await {
-                Some(AgentEvent::Error { message, .. }) => break message,
+                Some(AgentEvent::Error { failure, .. }) => break failure.message,
                 Some(AgentEvent::TurnComplete { stop_reason, .. }) => {
                     panic!(
                         "the turn completed with `{stop_reason}` instead of failing — \

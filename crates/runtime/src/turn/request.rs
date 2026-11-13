@@ -49,10 +49,21 @@ pub(super) fn estimate_request_overhead(
 pub(super) type ModelRequest = base::interface::model_interceptor::ModelRequestView;
 
 /// What the loop has spent on recovering one model call.
-#[derive(Default)]
 pub(super) struct RecoveringCall {
     so_far: base::interface::recovery_policy::CallRecovery,
     recoveries: u32,
+    /// A tool already ran in this turn before the call went out.
+    tools_ran: bool,
+}
+
+impl RecoveringCall {
+    pub(super) fn after(tools_ran: bool) -> Self {
+        Self {
+            so_far: Default::default(),
+            recoveries: 0,
+            tools_ran,
+        }
+    }
 }
 
 /// A model error as the recovery policy is shown it. The kind is the
@@ -481,10 +492,10 @@ impl Agent {
         let origin = failed.params.origin.clone();
         let next = match recovery {
             Recovery::Fail => {
-                return Err(super::TurnError::Model(format!(
-                    "failed to stream model response: {}",
-                    failure.error
-                )))
+                return Err(super::TurnError::Model(
+                    failure.error.clone(),
+                    call.tools_ran || !failure.resendable,
+                ))
             }
             Recovery::RetryWith { model: to } => {
                 tracing::warn!(from = %model, to = %to, error = %failure.error, "retrying against a different model");
@@ -504,7 +515,9 @@ impl Agent {
             }
             Recovery::CompactAndRetry => {
                 call.so_far.compacted = true;
-                self.compact_for_retry(&failure.error, cancel).await?;
+                self.compact_for_retry(&failure.error, cancel)
+                    .await
+                    .map_err(|e| e.after_tools(call.tools_ran))?;
                 if cancel.is_cancelled() {
                     return Ok(None);
                 }

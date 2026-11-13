@@ -371,7 +371,7 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::AgentCompleted { .. } => "AgentCompleted".to_string(),
             AgentEvent::SubagentProgress { .. } => "SubagentProgress".to_string(),
             AgentEvent::TeamProgress { .. } => "TeamProgress".to_string(),
-            AgentEvent::Error { code, .. } => format!("Error code={code}"),
+            AgentEvent::Error { failure, .. } => format!("Error code={}", failure.kind),
         };
         out.push_str(&line);
         out.push('\n');

@@ -59,8 +59,8 @@ mod tests;
 mod turn;
 
 use api::{
-    emitted_outside_turns, AskKind, Busy, EngineFailure, Initiator, PoolError, SessionEvent,
-    SessionFrame, SessionOptions, SessionWatcher, Subscribed, TurnOutcome, TurnRequest, WatcherId,
+    emitted_outside_turns, AskKind, Busy, Initiator, PoolError, SessionEvent, SessionFrame,
+    SessionOptions, SessionWatcher, Subscribed, TurnOutcome, TurnRequest, WatcherId,
 };
 use helpers::*;
 use history_rpc::*;
@@ -413,10 +413,6 @@ struct RecordedSpec {
 const SPEC_NS: &str = "agix.session";
 const ENGINE_NS_PREFIX: &str = "agix.";
 const SPEC_EVENT: &str = "spec";
-
-/// The engine error code a turn cut off by `session.close` ends with.
-const SESSION_CLOSED: &str = "session_closed";
-const SESSION_CLOSED_MESSAGE: &str = "the session was closed before the turn completed";
 
 /// Where a session's first-turn naming call goes: the session's own `title`
 /// route when its project has one, else its conversation model.

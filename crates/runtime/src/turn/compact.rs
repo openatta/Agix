@@ -587,9 +587,17 @@ impl Agent {
             .await
         {
             Ok(_) | Err(NotCompacted::Cancelled) => Ok(()),
-            Err(why) => Err(TurnError::Model(format!(
-                "{refusal}; compacting the conversation to retry {why}"
-            ))),
+            Err(why) => {
+                let mut error = refusal.clone();
+                error.message = match error.message.is_empty() {
+                    true => format!("compacting the conversation to retry {why}"),
+                    false => format!(
+                        "{}; compacting the conversation to retry {why}",
+                        error.message
+                    ),
+                };
+                Err(TurnError::Model(error, false))
+            }
         }
     }
 }

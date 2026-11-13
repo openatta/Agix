@@ -366,13 +366,148 @@ pub enum AgentEvent {
         failed: Vec<String>,
     },
 
-    /// An error occurred.
+    /// The turn ended in failure.
     Error {
-        code: String,
-        message: String,
+        failure: TurnFailure,
         turn_id: String,
     },
 }
+
+/// How a turn failed, in the terms a host decides on: whether to send it
+/// again, when, and whether doing so repeats something.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    RateLimited,
+    Overloaded,
+    /// The provider could not be reached or failed on its side; the request
+    /// itself was fine.
+    ModelUnavailable,
+    ContextTooLong,
+    /// The provider refused the request as malformed, or for a model or a
+    /// feature it does not serve.
+    ModelRejected,
+    Auth,
+    Billing,
+    EgressDenied,
+    /// The provider failed in a way sending again will not fix.
+    ModelError,
+    SessionClosed,
+    EngineStopped,
+    /// The engine did not take or answer a request.
+    EngineUnreachable,
+    PersistFailed,
+    Internal,
+}
+
+impl FailureKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimited => "rate_limited",
+            Self::Overloaded => "overloaded",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::ContextTooLong => "context_too_long",
+            Self::ModelRejected => "model_rejected",
+            Self::Auth => "auth",
+            Self::Billing => "billing",
+            Self::EgressDenied => "egress_denied",
+            Self::ModelError => "model_error",
+            Self::SessionClosed => "session_closed",
+            Self::EngineStopped => "engine_stopped",
+            Self::EngineUnreachable => "engine_unreachable",
+            Self::PersistFailed => "persist_failed",
+            Self::Internal => "internal",
+        }
+    }
+
+    /// Whether the same request, sent again later, may well succeed.
+    pub fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited
+                | Self::Overloaded
+                | Self::ModelUnavailable
+                | Self::EngineStopped
+                | Self::EngineUnreachable
+                | Self::PersistFailed
+        )
+    }
+}
+
+impl From<crate::interface::model::ModelErrorKind> for FailureKind {
+    fn from(kind: crate::interface::model::ModelErrorKind) -> Self {
+        use crate::interface::model::ModelErrorKind as M;
+        match kind {
+            M::RateLimited => Self::RateLimited,
+            M::Overloaded => Self::Overloaded,
+            M::Unavailable | M::Transport | M::Timeout | M::StreamInterrupted => {
+                Self::ModelUnavailable
+            }
+            M::ContextTooLong => Self::ContextTooLong,
+            M::InvalidRequest | M::NotFound | M::Unsupported => Self::ModelRejected,
+            M::Auth => Self::Auth,
+            M::Billing => Self::Billing,
+            M::Denied => Self::EgressDenied,
+            M::ServerError | M::Protocol | M::Cancelled | M::NotRecorded => Self::ModelError,
+        }
+    }
+}
+
+impl std::fmt::Display for FailureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A turn's failure, as the engine, the pool and the wire all carry it.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TurnFailure {
+    pub kind: FailureKind,
+    pub retryable: bool,
+    /// How long the provider asked to be left alone, when it said — also
+    /// past what the client's backoff was willing to wait.
+    pub retry_after_ms: Option<u64>,
+    /// A tool already ran in this turn, so sending it again repeats that.
+    pub side_effects: bool,
+    pub message: String,
+}
+
+impl TurnFailure {
+    pub fn new(kind: FailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            retryable: kind.retryable(),
+            retry_after_ms: None,
+            side_effects: false,
+            message: message.into(),
+        }
+    }
+
+    pub fn model(error: &crate::interface::model::ModelError, side_effects: bool) -> Self {
+        Self {
+            retry_after_ms: error
+                .retry_after
+                .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)),
+            side_effects,
+            ..Self::new(error.kind.into(), error.to_string())
+        }
+    }
+
+    pub fn with_side_effects(mut self, side_effects: bool) -> Self {
+        self.side_effects = side_effects;
+        self
+    }
+}
+
+impl std::fmt::Display for TurnFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for TurnFailure {}
 
 /// Lifecycle point a [`AgentEvent::TeamProgress`] event reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -412,5 +547,51 @@ fn serialize_progress_count<S: serde::Serializer>(
     match value {
         Some(v) => progress_count_json(*v).serialize(serializer),
         None => serializer.serialize_none(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interface::model::{ModelError, ModelErrorKind};
+
+    #[test]
+    fn a_model_failure_is_retryable_exactly_when_its_kind_is_transient() {
+        use ModelErrorKind::*;
+        for kind in [
+            RateLimited,
+            Overloaded,
+            Unavailable,
+            Transport,
+            Timeout,
+            StreamInterrupted,
+            ContextTooLong,
+            InvalidRequest,
+            NotFound,
+            Auth,
+            Billing,
+            Denied,
+            ServerError,
+            Protocol,
+            Cancelled,
+            Unsupported,
+            NotRecorded,
+        ] {
+            let failure = TurnFailure::model(&ModelError::new(kind, "m"), false);
+            assert_eq!(failure.retryable, kind.transient(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_hint_past_what_the_client_waits_for_still_reaches_the_failure() {
+        let error =
+            ModelError::rate_limited().with_retry_after(Some(std::time::Duration::from_secs(120)));
+
+        let failure = TurnFailure::model(&error, true);
+
+        assert_eq!(failure.kind, FailureKind::RateLimited);
+        assert_eq!(failure.retry_after_ms, Some(120_000));
+        assert!(failure.side_effects);
+        assert!(failure.to_string().starts_with("rate_limited: "));
     }
 }

@@ -1147,9 +1147,14 @@
       "between_turns": null,
       "case": "error",
       "event": {
-        "code": "overloaded",
+        "failure": {
+          "kind": "rate_limited",
+          "message": "try later",
+          "retry_after_ms": 30000,
+          "retryable": true,
+          "side_effects": true
+        },
         "kind": "error",
-        "message": "try later",
         "turn_id": "inner"
       },
       "in_turn": {
@@ -1157,9 +1162,11 @@
         "method": "session.event",
         "params": {
           "event": {
-            "code": "overloaded",
+            "code": "rate_limited",
             "kind": "error",
-            "message": "try later"
+            "message": "try later",
+            "retry_after_ms": 30000,
+            "retryable": true
           },
           "session_id": "s1",
           "turn_id": "t1"
@@ -1723,7 +1730,9 @@
           "event": {
             "code": "engine_stopped",
             "kind": "error",
-            "message": "engine stopped before the turn completed"
+            "message": "engine stopped before the turn completed",
+            "retry_after_ms": null,
+            "retryable": true
           },
           "session_id": "s1",
           "turn_id": "t1"
@@ -1739,7 +1748,9 @@
           "event": {
             "code": "session_closed",
             "kind": "error",
-            "message": "the session was closed before the turn completed"
+            "message": "the session was closed before the turn completed",
+            "retry_after_ms": null,
+            "retryable": false
           },
           "session_id": "s1",
           "turn_id": "t1"

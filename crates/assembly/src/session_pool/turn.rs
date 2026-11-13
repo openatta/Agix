@@ -242,6 +242,7 @@ impl SessionPool {
         };
         let api_calls;
         let ended_with;
+        let mut tools_ran = false;
         loop {
             let Some(event) = event_rx.recv().await else {
                 // The engine is gone. Dropping the entry is what lets the
@@ -273,7 +274,7 @@ impl SessionPool {
                     });
                 }
                 warn!(%sid, "engine stopped before the turn completed");
-                return Err(PoolError::EngineStopped);
+                return Err(PoolError::engine_stopped(tools_ran));
             };
             match event {
                 AgentEvent::SystemInit { .. } => continue,
@@ -298,22 +299,12 @@ impl SessionPool {
                     }
                     let last = frame_of(SessionEvent::Agent(event));
                     if !self.publish_terminal(&ticket, &last, None).await {
-                        return Err(PoolError::Engine(EngineFailure {
-                            code: SESSION_CLOSED.to_string(),
-                            message: SESSION_CLOSED_MESSAGE.to_string(),
-                        }));
+                        return Err(PoolError::session_closed(tools_ran));
                     }
                     break;
                 }
-                AgentEvent::Error {
-                    ref code,
-                    ref message,
-                    ..
-                } => {
-                    let failure = EngineFailure {
-                        code: code.clone(),
-                        message: message.clone(),
-                    };
+                AgentEvent::Error { ref failure, .. } => {
+                    let failure = failure.clone();
                     // The caller learns this from its own result; every other
                     // watcher would otherwise see a turn that never ends.
                     let last = frame_of(SessionEvent::Agent(event));
@@ -321,7 +312,10 @@ impl SessionPool {
                     self.release_turn_slot(&ticket, event_rx).await;
                     return Err(PoolError::Engine(failure));
                 }
-                event => publish_agent_event(&hub, &session_key, Some(&turn_key), event),
+                event => {
+                    tools_ran |= matches!(event, AgentEvent::ToolUse { .. });
+                    publish_agent_event(&hub, &session_key, Some(&turn_key), event)
+                }
             }
         }
 

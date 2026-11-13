@@ -858,6 +858,7 @@ async fn documented_error_data_is_what_the_errors_carry() {
     let doc = protocol_doc();
     let documented = documented_error_data(&doc);
     for code in [
+        "ENGINE_ERROR",
         "SESSION_BUSY",
         "SCENE_MISMATCH",
         "SIDECHAIN_TERMINAL",
@@ -1034,6 +1035,48 @@ async fn documented_error_data_is_what_the_errors_carry() {
             "{name} carries data, which §9.1 says it does not: {response}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_failed_turn_carries_the_documented_engine_error_data() {
+    let doc = protocol_doc();
+    let documented = documented_error_data(&doc);
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn_with_errors(vec![Err(model::error::AnthropicError::Auth(
+        "bad key".into(),
+    ))]);
+    let h = start_code(model).await;
+
+    let (_, failed) = run_turn(&h.sock, json!({"message": "hi"})).await;
+
+    assert_eq!(failed["error"]["code"], codes::ENGINE_ERROR, "{failed}");
+    assert_data_shape("ENGINE_ERROR", &documented["ENGINE_ERROR"], &failed);
+    assert_eq!(failed["error"]["data"]["kind"], "auth", "{failed}");
+    assert!(
+        failed["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("auth: ")),
+        "{failed}"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_that_fails_after_a_tool_ran_says_so() {
+    let model = scripted(vec![tool_round("Glob", "tool-1", json!({"pattern": "*"}))]);
+    model.push_turn_with_errors(vec![Err(model::error::AnthropicError::Overloaded {
+        status: 529,
+        retry_after: None,
+    })]);
+    let h = start_code(model).await;
+
+    let (_, failed) = run_turn(&h.sock, json!({"message": "look"})).await;
+
+    assert_eq!(
+        failed["error"]["data"],
+        json!({"kind": "overloaded", "retryable": true, "retry_after_ms": null,
+               "side_effects": true}),
+        "{failed}"
+    );
 }
 
 /// `METHOD_NOT_FOUND` carries `data.module` only in a build without the
@@ -1459,7 +1502,15 @@ async fn a_turn_that_fails_for_a_watcher(obs: &mut Observed) {
     )
     .await;
     assert_eq!(failed["error"]["code"], codes::ENGINE_ERROR, "{failed}");
-    watch.wait_kind("error").await;
+    let frame = watch.wait_kind("error").await;
+    assert_eq!(
+        frame["event"]["code"], failed["error"]["data"]["kind"],
+        "{frame}"
+    );
+    assert_eq!(
+        frame["event"]["retryable"], failed["error"]["data"]["retryable"],
+        "{frame}"
+    );
     obs.watched(&watch);
 }
 

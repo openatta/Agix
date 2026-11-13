@@ -227,7 +227,7 @@ async fn a_stream_that_keeps_breaking_off_fails_after_two_resends() {
 
     let failed = turn(&mut agent, CancellationToken::new()).await;
 
-    assert!(matches!(failed, Err(TurnError::Model(_))), "{failed:?}");
+    assert!(matches!(failed, Err(TurnError::Model(..))), "{failed:?}");
     assert_eq!(model.calls(), 3);
 }
 
@@ -239,7 +239,7 @@ async fn a_request_refused_before_the_first_byte_is_not_sent_again() {
 
     let failed = turn(&mut agent, CancellationToken::new()).await;
 
-    assert!(matches!(failed, Err(TurnError::Model(_))), "{failed:?}");
+    assert!(matches!(failed, Err(TurnError::Model(..))), "{failed:?}");
     assert_eq!(model.calls(), 1, "the client's ladder already retried it");
 }
 
@@ -257,7 +257,7 @@ async fn the_loop_bounds_the_recoveries_whatever_the_policy_answers() {
 
     let failed = turn(&mut agent, CancellationToken::new()).await;
 
-    assert!(matches!(failed, Err(TurnError::Model(_))), "{failed:?}");
+    assert!(matches!(failed, Err(TurnError::Model(..))), "{failed:?}");
     assert_eq!(model.calls(), 1 + MAX_RECOVERIES_PER_CALL);
 }
 

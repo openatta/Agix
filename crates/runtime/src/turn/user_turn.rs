@@ -672,7 +672,7 @@ impl Agent {
                     .unwrap_or(false)
             };
             let mut request = request;
-            let mut recovering = super::request::RecoveringCall::default();
+            let mut recovering = super::request::RecoveringCall::after(had_tool_uses_this_turn);
             let (stream_result, messages_before_step) = loop {
                 let messages_before_step = self.session.messages.len();
                 let sent = request.clone();

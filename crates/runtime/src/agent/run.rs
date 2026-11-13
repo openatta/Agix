@@ -303,8 +303,7 @@ impl Agent {
                                 }
                                 Err(e) => {
                                     let _ = self.channels.event_tx.send(AgentEvent::Error {
-                                        code: "turn_error".into(),
-                                        message: e.to_string(),
+                                        failure: e.failure(),
                                         turn_id: self.current_turn_id.clone(),
                                     });
                                 }

@@ -351,13 +351,11 @@ impl SessionPool {
                 request: request.clone(),
                 reply,
             })
-            .map_err(|_| {
-                PoolError::EngineUnreachable("the session's engine has stopped".to_string())
-            })?;
+            .map_err(|_| PoolError::engine_unreachable("the session's engine has stopped"))?;
         let result = tokio::time::timeout(Duration::from_secs(30), answer)
             .await
-            .map_err(|_| PoolError::EngineUnreachable("the engine did not answer".to_string()))?
-            .map_err(|_| PoolError::EngineUnreachable("the engine went away".to_string()))?
+            .map_err(|_| PoolError::engine_unreachable("the engine did not answer"))?
+            .map_err(|_| PoolError::engine_unreachable("the engine went away"))?
             .map_err(PoolError::InvalidRequest)?;
 
         let edits: Vec<(&str, serde_json::Value)> = match &request {

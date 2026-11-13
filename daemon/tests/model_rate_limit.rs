@@ -1,6 +1,7 @@
-//! A provider that keeps refusing with 429, seen from the RPC side: once the
-//! client's backoff gives up, the turn ends with `ENGINE_ERROR` and is not
-//! sent again on top of the ladder.
+//! A provider that keeps refusing, seen from the RPC side: once the client's
+//! backoff gives up, the turn ends with `ENGINE_ERROR`, is not sent again on
+//! top of the ladder, and `error.data` tells the host whether and when to
+//! come back.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,18 +16,55 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, UnixStream};
 use tokio_util::sync::CancellationToken;
 
-/// Every request is answered 429 with a `retry-after` past what the ladder
-/// waits for, so the client gives up on the first one instead of spending a
-/// minute on its steps.
-async fn always_rate_limited() -> (u16, Arc<AtomicUsize>) {
-    const RESPONSE: &[u8] = b"HTTP/1.1 429 Too Many Requests\r\n\
-retry-after: 120\r\n\
-content-type: application/json\r\n\
-content-length: 69\r\n\
-connection: close\r\n\
-\r\n\
-{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow\"}}";
+/// A `retry-after` past what the ladder waits for, so the client gives up on
+/// the first refusal instead of spending a minute on its steps.
+const RATE_LIMITED: Refusal = Refusal {
+    status: "429 Too Many Requests",
+    retry_after: Some(120),
+    error_type: "rate_limit_error",
+};
 
+const OVERLOADED: Refusal = Refusal {
+    status: "529 Overloaded",
+    retry_after: Some(120),
+    error_type: "overloaded_error",
+};
+
+const BAD_KEY: Refusal = Refusal {
+    status: "401 Unauthorized",
+    retry_after: None,
+    error_type: "authentication_error",
+};
+
+struct Refusal {
+    status: &'static str,
+    retry_after: Option<u64>,
+    error_type: &'static str,
+}
+
+impl Refusal {
+    fn response(&self) -> Vec<u8> {
+        let body = format!(
+            r#"{{"type":"error","error":{{"type":"{}","message":"no"}}}}"#,
+            self.error_type
+        );
+        let retry_after = self
+            .retry_after
+            .map(|secs| format!("retry-after: {secs}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "HTTP/1.1 {}\r\n{retry_after}content-type: application/json\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            self.status,
+            body.len()
+        )
+        .into_bytes()
+    }
+}
+
+/// Every request is answered with `refusal`.
+async fn always_refusing(refusal: &Refusal) -> (u16, Arc<AtomicUsize>) {
+    let response = refusal.response();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let served = Arc::new(AtomicUsize::new(0));
@@ -36,7 +74,7 @@ connection: close\r\n\
             counter.fetch_add(1, Ordering::SeqCst);
             let mut buf = vec![0u8; 65536];
             let _ = sock.read(&mut buf).await;
-            let _ = sock.write_all(RESPONSE).await;
+            let _ = sock.write_all(&response).await;
             let _ = sock.shutdown().await;
         }
     });
@@ -51,8 +89,8 @@ struct Daemon {
 }
 
 impl Daemon {
-    async fn start() -> Self {
-        let (port, served) = always_rate_limited().await;
+    async fn start(refusal: &Refusal) -> Self {
+        let (port, served) = always_refusing(refusal).await;
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("rate-limit.sock");
         let cwd = dir.path().join("work");
@@ -140,7 +178,7 @@ impl Daemon {
 
 #[tokio::test]
 async fn a_rate_limit_past_the_ladder_ends_the_turn_without_a_resend() {
-    let daemon = Daemon::start().await;
+    let daemon = Daemon::start(&RATE_LIMITED).await;
 
     let failed = daemon.failed_turn().await;
 
@@ -153,9 +191,8 @@ async fn a_rate_limit_past_the_ladder_ends_the_turn_without_a_resend() {
 }
 
 #[tokio::test]
-#[ignore = "D3 E4"]
 async fn a_rate_limit_past_the_ladder_tells_the_host_when_to_come_back() {
-    let daemon = Daemon::start().await;
+    let daemon = Daemon::start(&RATE_LIMITED).await;
 
     let failed = daemon.failed_turn().await;
 
@@ -163,4 +200,35 @@ async fn a_rate_limit_past_the_ladder_tells_the_host_when_to_come_back() {
     assert_eq!(data["kind"], "rate_limited", "{failed}");
     assert_eq!(data["retryable"], true, "{failed}");
     assert_eq!(data["retry_after_ms"], 120_000, "{failed}");
+}
+
+#[tokio::test]
+async fn an_overload_with_no_fallback_model_ends_the_turn_as_retryable() {
+    let daemon = Daemon::start(&OVERLOADED).await;
+
+    let failed = daemon.failed_turn().await;
+
+    assert_eq!(failed["error"]["code"], codes::ENGINE_ERROR, "{failed}");
+    assert_eq!(
+        failed["error"]["data"],
+        json!({"kind": "overloaded", "retryable": true, "retry_after_ms": 120_000,
+               "side_effects": false}),
+        "{failed}"
+    );
+    assert_eq!(daemon.served.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_rejected_key_ends_the_turn_as_not_retryable() {
+    let daemon = Daemon::start(&BAD_KEY).await;
+
+    let failed = daemon.failed_turn().await;
+
+    assert_eq!(failed["error"]["code"], codes::ENGINE_ERROR, "{failed}");
+    assert_eq!(
+        failed["error"]["data"],
+        json!({"kind": "auth", "retryable": false, "retry_after_ms": null,
+               "side_effects": false}),
+        "{failed}"
+    );
 }

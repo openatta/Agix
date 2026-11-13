@@ -194,10 +194,31 @@ impl TurnOutcome {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
+    /// A model call failed and was not recovered; the flag says a tool had
+    /// already run in this turn.
     #[error("model error: {0}")]
-    Model(String),
+    Model(base::interface::model::ModelError, bool),
     #[error("shutdown")]
     Shutdown,
     #[error("internal: {0}")]
     Internal(String),
+}
+
+impl TurnError {
+    pub(crate) fn after_tools(self, tools_ran: bool) -> Self {
+        match self {
+            Self::Model(error, ran) => Self::Model(error, ran || tools_ran),
+            other => other,
+        }
+    }
+
+    /// The failure as the engine reports it.
+    pub fn failure(&self) -> base::event::TurnFailure {
+        use base::event::{FailureKind, TurnFailure};
+        match self {
+            Self::Model(error, tools_ran) => TurnFailure::model(error, *tools_ran),
+            Self::Shutdown => TurnFailure::new(FailureKind::EngineStopped, "the engine shut down"),
+            Self::Internal(message) => TurnFailure::new(FailureKind::Internal, message.clone()),
+        }
+    }
 }

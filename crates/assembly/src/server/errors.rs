@@ -3,6 +3,7 @@
 
 use crate::rpc::{codes, RpcError, RpcResponse};
 use crate::session_pool::api::{Busy, PoolError};
+use base::event::TurnFailure;
 use serde_json::{json, Value};
 
 impl From<PoolError> for RpcError {
@@ -48,9 +49,7 @@ impl From<PoolError> for RpcError {
             PoolError::TaskNotFound { .. } => (codes::TASK_NOT_FOUND, None),
             PoolError::TaskLimit(_) => (codes::TASK_LIMIT, None),
             PoolError::SpawnUnsupported(_) => (codes::INVALID_REQUEST, None),
-            PoolError::Engine(_) | PoolError::EngineStopped | PoolError::EngineUnreachable(_) => {
-                (codes::ENGINE_ERROR, None)
-            }
+            PoolError::Engine(failure) => (codes::ENGINE_ERROR, Some(engine_data(failure))),
             PoolError::McpServerDenied(_) => (codes::MCP_SERVER_DENIED, None),
             PoolError::McpAuthFailed(_) => (codes::MCP_AUTH_FAILED, None),
             PoolError::PluginsDisabled { .. } => (codes::PLUGINS_DISABLED, None),
@@ -65,6 +64,15 @@ impl From<PoolError> for RpcError {
             data,
         }
     }
+}
+
+fn engine_data(failure: &TurnFailure) -> Value {
+    json!({
+        "kind": failure.kind,
+        "retryable": failure.retryable,
+        "retry_after_ms": failure.retry_after_ms,
+        "side_effects": failure.side_effects,
+    })
 }
 
 fn busy_data(busy: &Busy) -> Value {

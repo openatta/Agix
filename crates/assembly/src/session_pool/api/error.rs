@@ -2,6 +2,7 @@
 //! 错误码和 `error.data` 的形状由 `server/errors.rs` 一处决定。`Display` 就是
 //! 线上的 `message`。
 
+use base::event::{FailureKind, TurnFailure};
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
@@ -52,12 +53,7 @@ pub enum PoolError {
     #[error("{0}")]
     SpawnUnsupported(String),
     #[error("{0}")]
-    Engine(EngineFailure),
-    #[error("engine stopped before the turn completed")]
-    EngineStopped,
-    /// The engine did not take or answer a request outside a turn.
-    #[error("{0}")]
-    EngineUnreachable(String),
+    Engine(TurnFailure),
     #[error("{0}")]
     McpServerDenied(String),
     #[error("{0}")]
@@ -87,6 +83,31 @@ impl PoolError {
             session_id: session_id.to_string(),
             message: message.into(),
         }
+    }
+
+    pub(crate) fn engine_stopped(side_effects: bool) -> Self {
+        Self::Engine(
+            TurnFailure::new(
+                FailureKind::EngineStopped,
+                "engine stopped before the turn completed",
+            )
+            .with_side_effects(side_effects),
+        )
+    }
+
+    pub(crate) fn session_closed(side_effects: bool) -> Self {
+        Self::Engine(
+            TurnFailure::new(
+                FailureKind::SessionClosed,
+                "the session was closed before the turn completed",
+            )
+            .with_side_effects(side_effects),
+        )
+    }
+
+    /// The engine did not take or answer a request outside a turn.
+    pub(crate) fn engine_unreachable(message: impl Into<String>) -> Self {
+        Self::Engine(TurnFailure::new(FailureKind::EngineUnreachable, message))
     }
 }
 
@@ -151,12 +172,4 @@ impl Busy {
             )
         }
     }
-}
-
-/// A turn the engine ended with an error of its own: its code and message.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("{code}: {message}")]
-pub struct EngineFailure {
-    pub code: String,
-    pub message: String,
 }
