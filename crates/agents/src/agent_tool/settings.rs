@@ -7,30 +7,39 @@ pub(super) fn parse_effort(effort: &str) -> Option<Effort> {
     serde_json::from_value(serde_json::Value::String(effort.to_string())).ok()
 }
 
-/// Whether an agent type's `allowed_tools` / `disallowed_tools` let a tool
-/// through. No type, or a type with neither list, admits everything.
-pub(super) fn type_admits_tool(def: Option<&AgentTypeDefinition>, name: &str) -> bool {
-    def.is_none_or(|def| lists_admit_tool(&def.allowed_tools, &def.disallowed_tools, name))
-}
-
-pub(super) fn lists_admit_tool(allowed: &[String], disallowed: &[String], name: &str) -> bool {
-    let listed = |names: &[String]| names.iter().any(|n| AgentTool::tool_name_matches(name, n));
-    !listed(disallowed) && (allowed.is_empty() || listed(allowed))
-}
-
-/// What the delegate's scene and plugins contribute, held to its type's lists
-/// and its caller's selector. Their origin is not known here; none of them is
-/// an MCP server's.
-pub(super) fn contributed_tool_filter(
+/// What a delegate of type `def` may have, held to its caller's `selector`.
+///
+/// A type that lists `allowed_tools` is also allowed the servers its
+/// `mcp_servers` grants and the `extra` tools its caller hands it: naming
+/// those is how it asks for them. Its `disallowed_tools` hold for all of them.
+pub(crate) fn delegate_selector(
     def: Option<&AgentTypeDefinition>,
     selector: &ToolSelector,
-) -> runtime::agent::ToolFilter {
-    let def = def.cloned();
-    let selector = selector.clone();
-    Arc::new(move |name| {
-        type_admits_tool(def.as_ref(), name)
-            && selector.admits(name, &base::interface::tool::ToolOrigin::Builtin)
-    })
+    extra: &[Arc<dyn base::tool::Tool>],
+) -> ToolSelector {
+    let Some(def) = def else {
+        return selector.clone();
+    };
+    let parse = |list: &[String]| -> Vec<ToolPattern> {
+        list.iter().map(|p| ToolPattern::parse(p)).collect()
+    };
+    let allow = (!def.allowed_tools.is_empty()).then(|| {
+        let mut allow = parse(&def.allowed_tools);
+        allow.extend(def.mcp_servers.iter().cloned().map(ToolPattern::McpServer));
+        allow.extend(
+            extra
+                .iter()
+                .map(|t| ToolPattern::Name(t.name().to_string())),
+        );
+        allow
+    });
+    let deny = parse(&def.disallowed_tools);
+    let by_type = if allow.is_none() && deny.is_empty() {
+        ToolSelector::all()
+    } else {
+        ToolSelector::layer(allow, deny)
+    };
+    by_type.and(selector.clone())
 }
 
 /// Apply an `AgentTypeDefinition`'s `permission_mode`/`effort`/`max_turns`

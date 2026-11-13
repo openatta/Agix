@@ -10,7 +10,7 @@
 //! load user-defined types from a directory (e.g. `~/.agix/scenes/<scope>/agents/*.md`
 //! or `<project>/.agix/agents/*.md`) via `load_agent_types_from_dir()`. Each
 //! type specifies a system prompt and an allowed tool set, which
-//! `delegate_tools()` applies when spawning sub-agents.
+//! `delegate_selector()` holds a sub-agent's session to.
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use base::settings::{
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
 use base::tool::ToolResultContent;
-use base::tool::{InMemoryToolRegistry, PathStyle, ToolSpec};
+use base::tool::{PathStyle, ToolSpec};
 use history::store::HistoryStore;
 use runtime::agent::{Agent, Builder, EventReceiver, InputMessage, InputSender};
 use schemars::JsonSchema;
@@ -44,7 +44,6 @@ pub use base::agent_type::{parse_permission_mode, AgentTypeDefinition, AgentType
 
 mod build;
 mod catalog;
-mod mcp_grant;
 mod permission;
 mod resolve;
 mod settings;
@@ -61,10 +60,9 @@ use base::interface::delegate::{
     AskRoute, CallSite, DelegateEnd, DelegateError, DelegateMode, DelegateRequest, Delegated,
     MemberLifetime, StopsWith, TeamSeat, Workdir,
 };
-use base::interface::tool_selector::ToolSelector;
+use base::interface::tool_selector::{ToolPattern, ToolSelector};
 pub(crate) use build::*;
 pub use catalog::*;
-use mcp_grant::*;
 use permission::*;
 use settings::*;
 pub(crate) use spawn_meta::*;

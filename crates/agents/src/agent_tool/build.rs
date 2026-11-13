@@ -47,16 +47,22 @@ pub(crate) struct OneShot {
 }
 
 impl Delegator {
+    /// `extra_tools` join what the delegate inherits, in its registry only.
     pub(crate) async fn build_delegate(
         &self,
         spec: &Spec,
         depth: u32,
-        tools: Arc<InMemoryToolRegistry>,
+        extra_tools: Vec<Arc<dyn base::tool::Tool>>,
         permission: PermissionSet,
         extracts_memories: bool,
     ) -> Result<Delegate, base::error::ToolError> {
         let agent_type = spec.agent_type.as_deref();
         let def = agent_type.and_then(|t| self.agent_type_def(t));
+        let selector = delegate_selector(def.as_ref(), &spec.tools, &extra_tools);
+        let tools = self.pool.inherited();
+        for t in extra_tools {
+            tools.register(t);
+        }
         let model_override = spec
             .model
             .clone()
@@ -83,7 +89,7 @@ impl Delegator {
         .session_id(sid.clone())
         .lineage(parent_session_id.clone(), agent_type)
         .scene(scene)
-        .contributed_tool_filter(contributed_tool_filter(def.as_ref(), &spec.tools))
+        .tool_selector(selector)
         .model(self.model_for_subagent())
         .tools(tools)
         .settings(settings.clone())
@@ -96,7 +102,7 @@ impl Delegator {
         if let Some(seat) = spec.seat.clone() {
             builder = builder.team_seat(seat);
         }
-        if let Some(servers) = self.mcp_granted_to(def.as_ref(), &spec.tools) {
+        if let Some(servers) = self.mcp_granted_to(def.as_ref()) {
             builder = builder.mcp_servers(servers);
         }
         let history_store = self.env.host.history_store.clone();
@@ -142,10 +148,6 @@ impl Delegator {
             background,
             stage,
         } = shot;
-        let tools = self.delegate_tools(spec.agent_type.as_deref(), &spec.tools);
-        for t in extra_tools {
-            tools.register(t);
-        }
         let Delegate {
             mut agent,
             mut event_rx,
@@ -155,7 +157,7 @@ impl Delegator {
             payload,
             history_store,
         } = match self
-            .build_delegate(&spec, depth, tools, permission, false)
+            .build_delegate(&spec, depth, extra_tools, permission, false)
             .await
         {
             Ok(delegate) => delegate,

@@ -195,9 +195,8 @@ impl Delegator {
         let registry = self.members.registry.clone();
         let live = &self.members.live;
         let depth = self.limits.spawn_guard()?;
-        let tools = self.delegate_tools(spec.agent_type.as_deref(), &spec.tools);
         let delegate = self
-            .build_delegate(&spec, depth, tools, self.permission_handler(), true)
+            .build_delegate(&spec, depth, Vec::new(), self.permission_handler(), true)
             .await
             .map_err(|e| match e {
                 base::error::ToolError::Execution(e) => DelegateError::Build(e.to_string()),

@@ -186,12 +186,6 @@ impl Builder {
             )
             .map_err(EngineError::Internal)?
         };
-        let plugin_tools: Vec<String> = rust_layer
-            .tools
-            .iter()
-            .chain(&quickjs_layer.tools)
-            .map(|t| t.name().to_string())
-            .collect();
         let plugin_agent_types: Vec<base::agent_type::AgentTypeDefinition> =
             std::mem::take(&mut rust_layer.agent_types)
                 .into_iter()
@@ -363,23 +357,28 @@ impl Builder {
         // Cron tools, and — when no owner handed in a store — the scheduler
         // that drains this session's own. `~/.agix/scenes/<scope>/scheduled_tasks.json`
         // is the exact path `CronCreate`'s own prompt promises the user for
-        // `durable: true` jobs; session-only jobs never touch disk.
+        // `durable: true` jobs; session-only jobs never touch disk. A delegate
+        // gets neither: scheduled jobs belong to the session its host keeps,
+        // and a delegate's own scheduler would pop that session's durable jobs.
         //
         // Known limitation of the store-per-session case only: two concurrent
         // sessions in the same scope each load the durable file and each
         // schedule their own fire for a durable job. A session pool avoids it
         // by owning one store and one scheduler (`Builder::cron_store`).
-        let fire_jobs_here = self.cron_store.is_none();
-        let cron_store = match self.cron_store.clone() {
-            Some(store) => store,
-            None => {
+        let (cron_store, fire_jobs_here) = match (agent_depth, self.cron_store.clone()) {
+            (0, Some(store)) => (Some(store), false),
+            (0, None) => {
                 let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
-                Arc::new(tools::cron::CronStore::load_or_default(Some(
+                let store = Arc::new(tools::cron::CronStore::load_or_default(Some(
                     settings.paths.user_data_dir.join("scheduled_tasks.json"),
-                )))
+                )));
+                (Some(store), true)
             }
+            _ => (None, false),
         };
-        tools::register_cron_tools(&tools, cron_store.clone());
+        if let Some(store) = &cron_store {
+            tools::register_cron_tools(&tools, store.clone());
+        }
 
         let (primary_tx, event_rx) = mpsc::unbounded_channel();
         let event_tx = crate::event_bus::EventBus::with_sinks(primary_tx, self.event_sinks);
@@ -431,7 +430,6 @@ impl Builder {
                 session_state: &session_state,
                 depth: agent_depth,
                 host: &host,
-                plugin_tools: &plugin_tools,
                 plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
                 agent_spawner: &agent_spawner,
@@ -484,9 +482,6 @@ impl Builder {
         // (`get` returns the first match, and the engine's own instance is
         // appended after). That is precisely the shadowing this rejects.
         for t in scene.extra_tools.iter().cloned() {
-            if !admits(&self.contributed_tool_filter, t.name()) {
-                continue;
-            }
             if tools.get(t.name()).is_some() {
                 return Err(EngineError::Internal(format!(
                     "scene {:?} contributes a tool named {:?}, which is already \
@@ -504,9 +499,6 @@ impl Builder {
             .into_iter()
             .chain(std::mem::take(&mut quickjs_layer.tools));
         for t in plugin_tools {
-            if !admits(&self.contributed_tool_filter, t.name()) {
-                continue;
-            }
             match tools.get(t.name()) {
                 Some(existing) if Arc::ptr_eq(&existing, &t) => continue,
                 Some(_) => {
@@ -524,11 +516,10 @@ impl Builder {
 
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicy::new(
             &scene,
+            self.tool_selector.clone(),
             plugin_tool_owners
                 .iter()
-                .filter(|(name, owner)| {
-                    owner.admitted && admits(&self.contributed_tool_filter, name)
-                })
+                .filter(|(_, owner)| owner.admitted)
                 .map(|(name, _)| name.clone()),
         ));
 
@@ -539,7 +530,7 @@ impl Builder {
                 tools.remove("StructuredOutput");
             }
         }
-        // The scene's tool policy, applied to the registry itself rather than
+        // The tool policy, applied to the registry itself rather than
         // only to what is advertised: `ToolSearch` and dispatch read this same
         // registry, so a tool the scene excludes has to be absent from it.
         let attended = scene.interactive;
@@ -555,7 +546,7 @@ impl Builder {
                     scene = %scene.id,
                     plugin = plugin_tool_owners.get(t.name()).map(|o| o.plugin.as_str()),
                     reason = if excluded {
-                        "not permitted by the scene's tool policy"
+                        "not permitted by the session's tool policy"
                     } else {
                         "waits on a reply no one will give"
                     },
@@ -636,10 +627,12 @@ impl Builder {
         // `Handle::try_current` because `build()` is sync and reachable from
         // non-async contexts, where `tokio::spawn` would panic; there the
         // tools still create/list/delete jobs, they just never fire.
-        match tokio::runtime::Handle::try_current() {
-            Ok(_) if !fire_jobs_here => {}
-            Ok(handle) => {
-                let store = cron_store.clone();
+        match (
+            cron_store.filter(|_| fire_jobs_here),
+            tokio::runtime::Handle::try_current(),
+        ) {
+            (None, _) => {}
+            (Some(store), Ok(handle)) => {
                 let tx = input_tx.clone();
                 handle.spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -660,7 +653,7 @@ impl Builder {
                     }
                 });
             }
-            Err(_) => {
+            (Some(_), Err(_)) => {
                 tracing::debug!(
                     "no tokio runtime at Builder::build(); cron jobs will be stored but not fired"
                 );

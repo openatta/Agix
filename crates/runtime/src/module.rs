@@ -82,9 +82,6 @@ pub struct SessionContext<'a> {
     pub depth: u32,
     /// What a delegate of this session is built on, whole.
     pub host: &'a HostContracts,
-    /// The tools the session's plugins registered here. A delegate gets its
-    /// own from the plugins, not this session's copies.
-    pub plugin_tools: &'a [String],
     /// Agent types the session's plugins declare.
     pub plugin_agent_types: &'a [base::agent_type::AgentTypeDefinition],
     pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,

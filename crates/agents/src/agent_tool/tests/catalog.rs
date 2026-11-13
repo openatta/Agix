@@ -178,24 +178,6 @@ fn preload_skills_text_is_empty_when_nothing_resolves() {
 }
 
 #[test]
-fn tool_name_matches_exact_and_mcp_server_pattern() {
-    assert!(AgentTool::tool_name_matches("Read", "Read"));
-    assert!(!AgentTool::tool_name_matches("Read", "Write"));
-    assert!(AgentTool::tool_name_matches(
-        "mcp__github__list_prs",
-        "mcp__github"
-    ));
-    assert!(AgentTool::tool_name_matches(
-        "mcp__github__list_prs",
-        "mcp__github__*"
-    ));
-    assert!(!AgentTool::tool_name_matches(
-        "mcp__gitlab__list_prs",
-        "mcp__github"
-    ));
-}
-
-#[test]
 fn merge_agent_types_disk_definition_overrides_builtin_by_name() {
     let dir = std::env::temp_dir().join(format!(
         "agix-agent-types-test-{}-{}",

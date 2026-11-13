@@ -31,7 +31,6 @@ pub(super) struct TestParent {
     pub(super) mcp: Option<Arc<dyn base::interface::mcp_servers::McpServers>>,
     pub(super) skills: Arc<dyn base::interface::skill_catalog::SkillCatalog>,
     pub(super) depth: u32,
-    pub(super) plugin_tools: Vec<String>,
     pub(super) slots: SubagentSlots,
     pub(super) team_registry: Option<Arc<team::registry::TeamRegistry>>,
 }
@@ -61,7 +60,6 @@ impl TestParent {
             mcp: None,
             skills: Arc::new(base::interface::skill_catalog::NoSkills),
             depth: 0,
-            plugin_tools: Vec::new(),
             slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
             team_registry: None,
         }
@@ -125,7 +123,7 @@ impl TestParent {
             ),
         };
         let limits = crate::delegate::Limits::new(&env.config, env.depth, self.slots);
-        let pool = crate::delegate::ToolPool::new(self.template, self.tools, &self.plugin_tools);
+        let pool = crate::delegate::ToolPool::new(self.template, self.tools);
         let members = crate::delegate::PersistentMembers::new(self.team_registry);
         AgentTool::new(Delegator::new(env, catalog, pool, limits, members))
     }
@@ -153,14 +151,25 @@ impl AgentTool {
         self.delegator.sub_settings(model_name)
     }
 
+    /// What a delegate of `agent_type` is left of what it inherits, once its
+    /// tool policy holds it to its type and to a caller's `allowed` and
+    /// `disallowed`.
     pub(super) fn delegate_tools(
         &self,
         agent_type: Option<&str>,
         allowed: &[String],
         disallowed: &[String],
     ) -> Arc<InMemoryToolRegistry> {
-        self.delegator
-            .delegate_tools(agent_type, &ToolSelector::from_lists(allowed, disallowed))
+        let def = agent_type.and_then(|t| self.delegator.agent_type_def(t));
+        let caller = ToolSelector::from_lists(allowed, disallowed);
+        let selector = delegate_selector(def.as_ref(), &caller, &[]);
+        let left = InMemoryToolRegistry::new();
+        for tool in self.delegator.pool.inherited().list() {
+            if selector.admits(tool.name(), &tool.spec().origin) {
+                left.register(tool);
+            }
+        }
+        Arc::new(left)
     }
 
     pub(super) async fn delegate(&self, req: DelegateRequest) -> Result<Delegated, DelegateError> {
@@ -264,7 +273,6 @@ impl AgentTool {
     /// A persistent member's session, built and not yet run.
     pub(super) async fn build_team_member_agent(
         &self,
-        tools: Arc<InMemoryToolRegistry>,
         cwd: std::path::PathBuf,
         agent_type: Option<&str>,
         permission_mode: base::settings::PermissionMode,
@@ -284,7 +292,7 @@ impl AgentTool {
             called_from: None,
         };
         let built = d
-            .build_delegate(&spec, depth, tools, d.permission_handler(), true)
+            .build_delegate(&spec, depth, Vec::new(), d.permission_handler(), true)
             .await?;
         Ok((built.agent, built.event_rx, built.input_tx, built.payload))
     }

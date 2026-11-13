@@ -99,7 +99,7 @@ impl Module for AgentsModule {
             ),
         };
         let limits = Limits::new(&env.config, env.depth, slots);
-        let pool = ToolPool::new(template, cx.tools.clone(), cx.plugin_tools);
+        let pool = ToolPool::new(template, cx.tools.clone());
         let members = PersistentMembers::new(team_registry.clone());
         let delegator = Delegator::new(env, catalog, pool, limits, members);
         let tool = Arc::new(AgentTool::new(delegator.clone()));

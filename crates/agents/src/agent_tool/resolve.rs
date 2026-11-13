@@ -3,29 +3,6 @@
 
 use super::*;
 
-impl AgentTool {
-    /// Does `tool_name` match an `allowed_tools`/`disallowed_tools` entry?
-    /// Exact match, or an MCP server-level pattern: `mcp__<server>` or
-    /// `mcp__<server>__*` matches every tool from that server (Agix's
-    /// MCP tools are already named `mcp__<server>__<tool>`, so this is a
-    /// plain prefix check, not a general glob).
-    pub(super) fn tool_name_matches(tool_name: &str, pattern: &str) -> bool {
-        if tool_name == pattern {
-            return true;
-        }
-        if let Some(server) = pattern
-            .strip_prefix("mcp__")
-            .map(|s| s.trim_end_matches("__*"))
-        {
-            return tool_name
-                .strip_prefix("mcp__")
-                .and_then(|rest| rest.split("__").next())
-                == Some(server);
-        }
-        false
-    }
-}
-
 impl Delegator {
     /// `prompt` under the system prompt of `agent_type`, when it names one.
     pub(crate) fn build_prompt(&self, agent_type: Option<&str>, prompt: &str) -> String {
@@ -33,29 +10,6 @@ impl Delegator {
             Some(def) => format!("{}\n\nTask: {prompt}", def.system_prompt),
             None => prompt.to_string(),
         }
-    }
-
-    /// The tools a delegate of `agent_type` gets: what it inherits, narrowed
-    /// by the type's `allowed_tools` / `disallowed_tools` and then by the
-    /// caller's selector.
-    ///
-    /// MCP tools are not among them: a type's `mcp_servers` grants the
-    /// delegate those servers (`mcp_granted_to`), apart from its tools.
-    pub(crate) fn delegate_tools(
-        &self,
-        agent_type: Option<&str>,
-        selector: &ToolSelector,
-    ) -> Arc<InMemoryToolRegistry> {
-        let def = agent_type.and_then(|name| self.agent_type_def(name));
-        let registry = InMemoryToolRegistry::new();
-        for tool in self.pool.inherited() {
-            if type_admits_tool(def.as_ref(), tool.name())
-                && selector.admits(tool.name(), &tool.spec().origin)
-            {
-                registry.register(tool);
-            }
-        }
-        Arc::new(registry)
     }
 
     pub(crate) async fn fire_subagent_hook(&self, event: hooks::HookEvent, sub: &SubagentPayload) {
@@ -83,11 +37,11 @@ impl Delegator {
     }
 
     /// The MCP servers a delegate of type `def` is granted: the parent's named
-    /// in the type's `mcp_servers`, narrowed further by the caller's selector.
+    /// in the type's `mcp_servers`. Which of their tools it is offered is its
+    /// tool policy's to decide, as for every other tool.
     pub(crate) fn mcp_granted_to(
         &self,
         def: Option<&AgentTypeDefinition>,
-        selector: &ToolSelector,
     ) -> Option<Box<dyn base::interface::mcp_servers::McpServers>> {
         let def = def.filter(|d| !d.mcp_servers.is_empty())?;
         let Some(parent) = &self.env.mcp else {
@@ -97,14 +51,7 @@ impl Delegator {
             );
             return None;
         };
-        let granted = parent.granted(Some(&def.mcp_servers));
-        if *selector == ToolSelector::all() {
-            return Some(granted);
-        }
-        Some(Box::new(ListedMcp {
-            servers: granted,
-            selector: selector.clone(),
-        }))
+        Some(parent.granted(Some(&def.mcp_servers)))
     }
 
     /// The parent session's own policy, so a session's rules cannot be
@@ -189,7 +136,7 @@ impl Delegator {
                     // scene is accepted only when everything it exposes is
                     // also exposed by the parent.
                     match parent {
-                        p if !scene_is_narrower_or_equal(&requested, p) => {
+                        p if !requested.tools.selector().within(&p.tools.selector()) => {
                             tracing::warn!(
                                 scene = %name,
                                 parent_scene = %p.name,
@@ -224,11 +171,4 @@ impl Delegator {
         }
         scene::builtin(id).map(Arc::new)
     }
-}
-
-/// Does `candidate` expose a subset of `parent`'s tools, as far as their
-/// patterns can show? Decides whether an agent type's `scene:` override may
-/// be honored — see `scene_for_subagent`.
-pub(crate) fn scene_is_narrower_or_equal(candidate: &SceneSpec, parent: &SceneSpec) -> bool {
-    candidate.tools.selector().within(&parent.tools.selector())
 }

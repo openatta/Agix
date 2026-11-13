@@ -33,7 +33,7 @@ pub struct Builder {
     agent_type: Option<String>,
     skip_warmup: bool,
     output_schema: Option<serde_json::Value>,
-    contributed_tool_filter: Option<ToolFilter>,
+    tool_selector: base::interface::tool_selector::ToolSelector,
     mcp_servers: Option<Box<dyn base::interface::mcp_servers::McpServers>>,
     /// Pre-built FrozenContext — skips lazy collection on first turn.
     /// When set, the Agent uses this snapshot instead of calling
@@ -133,7 +133,7 @@ impl Builder {
             telemetry_handle_override: None,
             skip_warmup: false,
             output_schema: None,
-            contributed_tool_filter: None,
+            tool_selector: base::interface::tool_selector::ToolSelector::all(),
             mcp_servers: None,
             frozen: None,
             wake_rx: None,
@@ -655,13 +655,13 @@ impl Builder {
         self
     }
 
-    /// Which of the tools contributed at build — the scene's own
-    /// (`SceneSpec::extra_tools`) and the plugins' — this session gets; the rest
-    /// are not registered. A sub-agent narrows those with its type's tool
-    /// lists this way, as the tools it inherits from its parent are narrowed
-    /// before they reach `tools`.
-    pub fn contributed_tool_filter(mut self, admits: ToolFilter) -> Self {
-        self.contributed_tool_filter = Some(admits);
+    /// Narrows every tool this session would have to what `selector` admits,
+    /// on top of its scene: the ones it is handed, the engine's and modules',
+    /// the scene's and plugins', and its MCP servers', those connected later
+    /// included. `ToolSearch` and `StructuredOutput` are not narrowed. A
+    /// delegate is held to its type's and its caller's tool lists this way.
+    pub fn tool_selector(mut self, selector: base::interface::tool_selector::ToolSelector) -> Self {
+        self.tool_selector = selector;
         self
     }
 

@@ -1,6 +1,7 @@
 //! Tests: resolve.
 
 use super::*;
+use base::interface::tool::ToolOrigin;
 
 /// A parent on `DummyModel` with `Read` and `Bash`.
 pub(super) fn test_parent() -> TestParent {
@@ -252,7 +253,7 @@ fn a_types_mcp_servers_are_granted_as_servers_not_as_tools() {
     let def = agent_tool.delegator.agent_type_def("github-agent");
     let granted = agent_tool
         .delegator
-        .mcp_granted_to(def.as_ref(), &ToolSelector::all())
+        .mcp_granted_to(def.as_ref())
         .expect("a grant");
     let names: Vec<String> = granted
         .tools()
@@ -269,14 +270,8 @@ fn a_types_mcp_servers_are_granted_as_servers_not_as_tools() {
 fn a_type_without_mcp_servers_is_granted_none() {
     let (agent_tool, asked, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
     let def = agent_tool.delegator.agent_type_def("general-purpose");
-    assert!(agent_tool
-        .delegator
-        .mcp_granted_to(def.as_ref(), &ToolSelector::all())
-        .is_none());
-    assert!(agent_tool
-        .delegator
-        .mcp_granted_to(None, &ToolSelector::all())
-        .is_none());
+    assert!(agent_tool.delegator.mcp_granted_to(def.as_ref()).is_none());
+    assert!(agent_tool.delegator.mcp_granted_to(None).is_none());
     assert!(asked.lock().unwrap().is_empty());
 }
 
@@ -285,11 +280,38 @@ fn a_hosts_tool_lists_hold_the_granted_servers_tools() {
     let (agent_tool, _, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
     let def = agent_tool.delegator.agent_type_def("github-agent");
     let run = ToolSelector::from_lists(&[], &["mcp__github__list_prs".to_string()]);
-    let granted = agent_tool
-        .delegator
-        .mcp_granted_to(def.as_ref(), &run)
-        .unwrap();
-    assert!(granted.tools().is_empty());
+    let selector = delegate_selector(def.as_ref(), &run, &[]);
+    let granted = agent_tool.delegator.mcp_granted_to(def.as_ref()).unwrap();
+    let github = ToolOrigin::mcp("github");
+    assert!(granted
+        .tools()
+        .iter()
+        .all(|t| !selector.admits(t.name(), &github)));
+}
+
+/// A type that lists its tools is still offered what it names elsewhere: the
+/// servers its `mcp_servers` grants and the tools its caller hands it. Its
+/// `disallowed_tools` hold for both.
+#[test]
+fn a_types_allow_list_takes_in_its_granted_servers_and_handed_tools() {
+    let def = AgentTypeDefinition {
+        name: "reader".into(),
+        allowed_tools: vec!["Read".into()],
+        disallowed_tools: vec!["mcp__docs__drop".into()],
+        mcp_servers: vec!["my.docs".into(), "docs".into()],
+        ..Default::default()
+    };
+    let handed: Vec<Arc<dyn base::tool::Tool>> = vec![Arc::new(NamedTool("SendMessage"))];
+    let selector = delegate_selector(Some(&def), &ToolSelector::all(), &handed);
+    let builtin = ToolOrigin::Builtin;
+    assert!(selector.admits("Read", &builtin));
+    assert!(selector.admits("SendMessage", &builtin));
+    assert!(!selector.admits("Bash", &builtin));
+    assert!(selector.admits("mcp__my_docs__get", &ToolOrigin::mcp("my.docs")));
+    assert!(!selector.admits("mcp__docs__drop", &ToolOrigin::mcp("docs")));
+    assert!(!selector.admits("mcp__other__get", &ToolOrigin::mcp("other")));
+    let bare = delegate_selector(Some(&def), &ToolSelector::all(), &[]);
+    assert!(!bare.admits("SendMessage", &builtin));
 }
 
 #[test]

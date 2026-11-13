@@ -12,6 +12,11 @@
 //! after construction: no `SetLater`, no `RwLock<Option<…>>` field, no
 //! `set_*` on `AgentTool` or `Delegator`.
 //!
+//! DLG-5: which tools a session may have is matched in one place. Nothing in
+//! production code takes a name apart at `"mcp__"` but MCP's own naming and
+//! `ToolSelector`, which match a server on the tool's origin; the matchers
+//! that still parse names are on a ratchet that only shrinks.
+//!
 //! DLG-6: `DelegateMode` is a closed enum, and every `match` on it in
 //! production code names each mode: no `_` arm stands in for one a new mode
 //! would fall into.
@@ -81,10 +86,7 @@ const OWN: &[(&str, &str)] = &[
     ("agent_type", "its lineage"),
     ("skip_warmup", "the spawner's choice"),
     ("output_schema", "the caller's"),
-    (
-        "contributed_tool_filter",
-        "its type's and its caller's tool lists",
-    ),
+    ("tool_selector", "its type's and its caller's tool lists"),
     (
         "mcp_servers",
         "the share of its parent's servers its type is granted",
@@ -316,6 +318,79 @@ fn delegation_binds_nothing_late() {
         if !ratcheted.contains(*entry) {
             problems.push(format!(
                 "`{entry}` is no longer late-bound: take it off LATE_BOUND_RATCHET"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// Where a name may be taken apart at `"mcp__"`: `(file, why)`.
+const MCP_PREFIX_HOMES: &[(&str, &str)] = &[
+    (
+        "crates/mcp/src/naming.rs",
+        "where an MCP tool's name is made from its server's",
+    ),
+    (
+        "crates/core/src/interface/tool_selector.rs",
+        "parses a written pattern once; matches the server on the tool's origin",
+    ),
+];
+
+/// Matchers that still read a server out of a tool's name, waiting to move to
+/// `ToolPattern`: `(file, why)`. Only shrinks.
+const MCP_PREFIX_RATCHET: &[(&str, &str)] = &[
+    (
+        "crates/hooks/src/runner/matcher.rs",
+        "a hook matcher's `mcp__<server>`; to move to `ToolPattern` (D1)",
+    ),
+    (
+        "crates/plugin/src/skills.rs",
+        "refuses a skill directory named like an MCP tool; a name check, not a match",
+    ),
+];
+
+fn is_mcp_prefix(arg: &syn::Expr) -> bool {
+    matches!(
+        arg,
+        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) if s.value().starts_with("mcp__")
+    )
+}
+
+#[test]
+fn tool_names_are_taken_apart_at_mcp_only_where_tools_are_matched() {
+    let mut problems = Vec::new();
+    let mut ratcheted = BTreeSet::new();
+    let mut scanned = 0;
+    for f in ws().production() {
+        scanned += 1;
+        for call in scan::calls(f, View::Prod) {
+            let scan::Callee::Method(method) = &call.callee else {
+                continue;
+            };
+            if !matches!(method.as_str(), "strip_prefix" | "starts_with")
+                || !call.args.first().is_some_and(is_mcp_prefix)
+            {
+                continue;
+            }
+            if MCP_PREFIX_HOMES.iter().any(|(file, _)| *file == f.rel) {
+                continue;
+            }
+            if MCP_PREFIX_RATCHET.iter().any(|(file, _)| *file == f.rel) {
+                ratcheted.insert(f.rel.clone());
+                continue;
+            }
+            problems.push(format!(
+                "{}: `{method}(\"mcp__…\")` reads a server out of a tool's name; match \
+                 `ToolPattern` against the tool's origin instead",
+                call.hit
+            ));
+        }
+    }
+    guards::allow::non_vacuous("delegation::mcp_prefix_files", scanned, 100);
+    for (file, _) in MCP_PREFIX_RATCHET {
+        if !ratcheted.contains(*file) {
+            problems.push(format!(
+                "`{file}` no longer takes names apart at `mcp__`: take it off MCP_PREFIX_RATCHET"
             ));
         }
     }

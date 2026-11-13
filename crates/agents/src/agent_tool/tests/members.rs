@@ -22,7 +22,6 @@ async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
 
     let (agent, _event_rx, _input_tx, _) = agent_tool
         .build_team_member_agent(
-            Arc::new(InMemoryToolRegistry::new()),
             std::path::PathBuf::from("/tmp"),
             None,
             base::settings::PermissionMode::Plan,
@@ -47,7 +46,6 @@ async fn a_delegate_runs_its_hooks_on_the_parents_runner() {
 
     let (agent, _event_rx, _input_tx, _) = agent_tool
         .build_team_member_agent(
-            Arc::new(InMemoryToolRegistry::new()),
             std::path::PathBuf::from("/tmp"),
             None,
             base::settings::PermissionMode::Plan,

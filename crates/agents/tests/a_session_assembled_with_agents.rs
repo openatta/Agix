@@ -409,7 +409,6 @@ async fn a_hosts_tool_middleware_wraps_its_delegates_calls() {
 /// Scheduled jobs belong to the session its host keeps: a delegate is not
 /// given the tools to schedule its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D2 §7.7: a delegate registers the Cron tools and keeps its own store"]
 async fn a_delegate_is_offered_no_cron_tools() {
     let model = delegate_once(plain_delegation(), |b| b).await;
     let root = model.seen_with("ROOT-MARK");
@@ -430,7 +429,6 @@ async fn a_delegate_is_offered_no_cron_tools() {
 /// A type's tool list holds whatever the delegate's own engine and modules
 /// register, not only what it inherits: a read-only type gets none of them.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D2: a type's tool list does not reach engine and module tools (T1)"]
 async fn an_explore_delegate_is_offered_only_its_types_tools() {
     let model = delegate_once(
         serde_json::json!({

@@ -912,7 +912,6 @@ async fn the_part_of_a_page_webfetch_keeps_reaches_the_model() -> anyhow::Result
 /// `disallowed_tools` names a server as it is configured; a server whose name
 /// the tool names cannot carry is still the one taken away.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: mcp__<server> is matched against the sanitized tool name, not the server (T1)"]
 async fn a_host_agent_denied_a_dotted_server_is_offered_none_of_its_tools() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("dotted-deny", &stub)

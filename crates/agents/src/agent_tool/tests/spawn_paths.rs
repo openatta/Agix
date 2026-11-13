@@ -516,7 +516,6 @@ async fn a_delegate_is_assembled_on_its_parents_host_contracts() {
     .agent_tool();
     let _delegate = agent_tool
         .build_team_member_agent(
-            Arc::new(InMemoryToolRegistry::new()),
             std::env::temp_dir(),
             None,
             base::settings::PermissionMode::Plan,

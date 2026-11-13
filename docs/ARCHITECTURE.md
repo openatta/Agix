@@ -467,18 +467,21 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 **过滤工具名不构成约束**:`Builder::build()` 会为子会话新建注册表,子会话自己的 agents
 模块再把 `Agent` 注册进去(到顶时不注册),与父级传入的工具集无关。
 
-子会话的工具由 `AgentTool::delegate_tools` 一处解析,模型调 `Agent`(前台、后台、团队成员)、
-宿主的 `session.startAgent`、`RuntimeAgentSpawner`(Skill fork、`TeamCreate` 成员、agent hook)
-都走它:
+子会话的工具在 `Delegator::build_delegate` 一处决定,模型调 `Agent`(前台、后台、团队成员)、
+宿主的 `session.startAgent`、Skill fork、`TeamCreate` 成员、agent hook 都走它:
 
-- **只继承模板工具**:父会话建的时候传进 `Builder::tools` 的那一份
-  (`SessionContext::template_tools`),而且只要父会话还留着的,场景策略拿掉的不给。引擎、
-  模块、场景、插件在建会话时注册的(`Agent`、`Skill`、`Team*`、`Task*`、`Cron*`、MCP 适配器
-  与资源工具……)不继承,子会话建的时候注册自己的那份。`Agent` 在任何情况下都不继承。
-- **再收窄**:agent 类型的 `allowed_tools` / `disallowed_tools`,加上调用方给的 allowed /
-  disallowed(skill 的 `allowed-tools`、`session.startAgent` 的两个列表)。
-- **MCP 不在工具表里**:按 `mcp_servers` 授予(§1.1),与 agent 类型的工具列表是两条轴;
-  `session.startAgent` 的 allowed / disallowed 对授予的 MCP 工具同样生效。
+- **只继承模板里的内建工具**:父会话建的时候传进 `Builder::tools` 的那一份
+  (`SessionContext::template_tools`),只要 origin 是 `Builtin`、不是 `Agent`、父会话还留着
+  的。引擎、模块、场景、插件、MCP 在建会话时注册的不继承,子会话建的时候注册自己的那份。
+- **收窄只在子会话的 `ToolPolicy`**:agent 类型的 `allowed_tools` / `disallowed_tools`,
+  加上调用方给的 allowed / disallowed(skill 的 `allowed-tools`、`session.startAgent` 的两个
+  列表),合成一个 `ToolSelector` 经 `Builder::tool_selector` 交给子会话;它和场景的工具面
+  一起管子会话的全部工具:继承的、引擎和模块注册的、场景和插件贡献的、MCP 适配器(运行期
+  才接入的也算)。只有 `ToolSearch`、`StructuredOutput` 不受它收窄。
+- **MCP 按 server 授予**:按 `mcp_servers` 授予(§1.1);类型写了 `allowed_tools` 时,
+  授予的 server 视同列在其中。`mcp__<server>` 按工具的 `ToolOrigin::Mcp` 比对配置里的
+  server 名,不从工具名里解析。
+- **子 Agent 没有定时任务**:子会话不注册 `Cron*`,也不起调度。
 
 `build()` 结束时检查工具表没有重名(重名时分发只认第一个):测试与 debug 构建里断言失败,
 release 构建记一条 error。
