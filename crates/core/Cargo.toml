@@ -20,7 +20,6 @@ anyhow        = { workspace = true }
 tracing       = { workspace = true }
 uuid          = { workspace = true }
 time          = { workspace = true }
-hex           = { workspace = true }
 regex         = { workspace = true }
 globset       = { workspace = true }
 url           = { workspace = true }

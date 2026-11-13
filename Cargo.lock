@@ -276,7 +276,6 @@ dependencies = [
  "bs58",
  "futures",
  "globset",
- "hex",
  "jsonschema",
  "libc",
  "regex",
