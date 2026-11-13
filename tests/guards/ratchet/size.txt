@@ -52,7 +52,6 @@ fn    crates/platform/src/sandbox.rs                       linux_wrap           
 fn    crates/ptc/src/lib.rs                                RunCodeTool::call                        101
 fn    crates/ptc/src/lib.rs                                execute                                  181
 fn    crates/runtime/src/agent/run.rs                      Agent::run                               285
-fn    crates/runtime/src/streaming.rs                      execute_stream                           330
 fn    crates/runtime/src/turn/compact.rs                   Agent::compact_to_budget                 117
 fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction                    202
 fn    crates/runtime/src/turn/memory_extraction.rs         extract_memories_after_turn              224

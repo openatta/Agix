@@ -108,319 +108,446 @@ where
     Fut: Future<Output = base::interface::tool_middleware::ToolOutcome> + Send,
     G: Fn(&str, &serde_json::Value) -> bool + Send + Sync,
 {
-    use futures::StreamExt;
-    let mut stream = stream;
-    let mut ended: Option<(String, Usage)> = None;
-    let mut has_tool_uses = false;
-    let mut tool_calls: u32 = 0;
-    let mut failure: Option<ModelError> = None;
-    let mut cancelled = false;
-    let mut truncated = false;
+    let mut state = StreamState::new(
+        stream,
+        event_tx,
+        turn_id,
+        execute_tool,
+        is_concurrency_safe,
+        provenance,
+    );
+    while let Some(event) = state.next_event(&cancel).await {
+        state.on_event(event).await;
+    }
+    state.finish(session, interceptors).await
+}
+
+type ToolDone = (usize, String, base::interface::tool_middleware::ToolOutcome);
+
+struct StreamState<'a, F, G> {
+    stream: ModelStream,
+    event_tx: &'a EventSender,
+    turn_id: String,
+    execute_tool: F,
+    is_concurrency_safe: G,
+    provenance: Option<&'a str>,
+    ended: Option<(String, Usage)>,
+    has_tool_uses: bool,
+    tool_calls: u32,
+    failure: Option<ModelError>,
+    cancelled: bool,
+    truncated: bool,
     // The reply's closed blocks, in arrival order.
-    let mut reply: Vec<ModelContentBlock> = Vec::new();
-    let mut pending_text = String::new();
+    reply: Vec<ModelContentBlock>,
+    pending_text: String,
     // Text of the thinking block currently open. The Anthropic API closes a
     // block by sending its signature; providers that never sign close it by
     // moving on to anything else, so every other event closes it unsigned.
-    let mut pending_thinking = String::new();
-    let mut queued_tool_names: Vec<String> = Vec::new();
-    let mut tool_index: usize = 0;
+    pending_thinking: String,
+    queued_tool_names: Vec<String>,
+    tool_index: usize,
     // Key = "(tool_name, serialized_input)".
-    let mut seen_tool_calls: HashSet<String> = HashSet::new();
-
-    let mut batch_abort = CancellationToken::new();
-    let mut batch = futures::stream::FuturesUnordered::new();
-
+    seen_tool_calls: HashSet<String>,
+    batch_abort: CancellationToken,
+    batch: futures::stream::FuturesUnordered<futures::future::BoxFuture<'a, ToolDone>>,
     // `(submission index, block)`: concurrency-safe tools finish in completion
     // order, and the result message is part of the next request, so replay
     // needs the canonical order restored before it is written.
-    let mut pending_result_blocks: Vec<(usize, ModelContentBlock)> = Vec::new();
-    let mut pending_new_msgs: Vec<Vec<serde_json::Value>> = Vec::new();
-    let mut read_ahead = ReadAhead::default();
+    pending_result_blocks: Vec<(usize, ModelContentBlock)>,
+    pending_new_msgs: Vec<Vec<serde_json::Value>>,
+    read_ahead: ReadAhead,
+}
 
-    loop {
-        let next = match read_ahead.events.pop_front() {
-            Some(_) if cancel.is_cancelled() => {
-                cancelled = true;
-                break;
-            }
-            Some(next) => next,
-            // The batch is polled here, beside the stream, or nothing would
-            // run it until the stream ended.
-            None => tokio::select! {
-                biased;
-                _ = cancel.cancelled() => {
-                    cancelled = true;
-                    break;
+impl<'a, F, Fut, G> StreamState<'a, F, G>
+where
+    F: Fn(String, String, serde_json::Value) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = base::interface::tool_middleware::ToolOutcome> + Send + 'a,
+    G: Fn(&str, &serde_json::Value) -> bool + Send + Sync,
+{
+    fn new(
+        stream: ModelStream,
+        event_tx: &'a EventSender,
+        turn_id: String,
+        execute_tool: F,
+        is_concurrency_safe: G,
+        provenance: Option<&'a str>,
+    ) -> Self {
+        Self {
+            stream,
+            event_tx,
+            turn_id,
+            execute_tool,
+            is_concurrency_safe,
+            provenance,
+            ended: None,
+            has_tool_uses: false,
+            tool_calls: 0,
+            failure: None,
+            cancelled: false,
+            truncated: false,
+            reply: Vec::new(),
+            pending_text: String::new(),
+            pending_thinking: String::new(),
+            queued_tool_names: Vec::new(),
+            tool_index: 0,
+            seen_tool_calls: HashSet::new(),
+            batch_abort: CancellationToken::new(),
+            batch: futures::stream::FuturesUnordered::new(),
+            pending_result_blocks: Vec::new(),
+            pending_new_msgs: Vec::new(),
+            read_ahead: ReadAhead::default(),
+        }
+    }
+
+    async fn next_event(&mut self, cancel: &CancellationToken) -> Option<ModelEvent> {
+        use futures::StreamExt;
+        loop {
+            let next = match self.read_ahead.events.pop_front() {
+                Some(_) if cancel.is_cancelled() => {
+                    self.cancelled = true;
+                    return None;
                 }
-                Some(done) = batch.next(), if !batch.is_empty() => {
-                    let (idx, id, result): (usize, String, _) = done;
-                    finish_tool(
-                        idx,
-                        &id,
-                        &result,
-                        &batch_abort,
-                        &queued_tool_names,
-                        event_tx,
-                        &turn_id,
-                        &mut pending_result_blocks,
-                        &mut pending_new_msgs,
-                    );
-                    continue;
+                Some(next) => next,
+                // The batch is polled here, beside the stream, or nothing would
+                // run it until the stream ended.
+                None => tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        self.cancelled = true;
+                        return None;
+                    }
+                    Some(done) = self.batch.next(), if !self.batch.is_empty() => {
+                        self.on_tool_done(done);
+                        continue;
+                    }
+                    next = self.stream.next() => next,
+                },
+            };
+            return match next {
+                Some(Ok(event)) => Some(event),
+                Some(Err(e)) => {
+                    self.failure = Some(e);
+                    None
                 }
-                next = stream.next() => next,
-            },
-        };
-        let event = match next {
-            Some(Ok(event)) => event,
-            Some(Err(e)) => {
-                failure = Some(e);
-                break;
-            }
-            None => break,
-        };
+                None => None,
+            };
+        }
+    }
+
+    fn on_tool_done(&mut self, (idx, id, result): ToolDone) {
+        finish_tool(
+            idx,
+            &id,
+            &result,
+            &self.batch_abort,
+            &self.queued_tool_names,
+            self.event_tx,
+            &self.turn_id,
+            &mut self.pending_result_blocks,
+            &mut self.pending_new_msgs,
+        );
+    }
+
+    async fn on_event(&mut self, event: ModelEvent) {
         match event {
             ModelEvent::TextDelta { text } => {
-                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
-                pending_text.push_str(&text);
-                let _ = event_tx.send(AgentEvent::TextDelta {
+                close_thinking(
+                    &mut self.pending_thinking,
+                    &mut self.reply,
+                    None,
+                    self.provenance,
+                );
+                self.pending_text.push_str(&text);
+                let _ = self.event_tx.send(AgentEvent::TextDelta {
                     text,
-                    turn_id: turn_id.clone(),
+                    turn_id: self.turn_id.clone(),
                 });
             }
             ModelEvent::ThinkingDelta { text } => {
-                close_text(&mut pending_text, &mut reply);
-                pending_thinking.push_str(&text);
-                let _ = event_tx.send(AgentEvent::ThinkingDelta {
+                close_text(&mut self.pending_text, &mut self.reply);
+                self.pending_thinking.push_str(&text);
+                let _ = self.event_tx.send(AgentEvent::ThinkingDelta {
                     text,
-                    turn_id: turn_id.clone(),
+                    turn_id: self.turn_id.clone(),
                 });
             }
             ModelEvent::ThinkingSignature { signature } => {
                 close_thinking(
-                    &mut pending_thinking,
-                    &mut reply,
+                    &mut self.pending_thinking,
+                    &mut self.reply,
                     Some(signature),
-                    provenance,
+                    self.provenance,
                 );
             }
             ModelEvent::RedactedThinking { data } => {
-                close_text(&mut pending_text, &mut reply);
-                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
-                reply.push(ModelContentBlock::RedactedThinking {
+                close_text(&mut self.pending_text, &mut self.reply);
+                close_thinking(
+                    &mut self.pending_thinking,
+                    &mut self.reply,
+                    None,
+                    self.provenance,
+                );
+                self.reply.push(ModelContentBlock::RedactedThinking {
                     data,
-                    provider: provenance.map(str::to_owned),
+                    provider: self.provenance.map(str::to_owned),
                 });
             }
             ModelEvent::ToolUseStart { id, name } => {
-                let _ = event_tx.send(AgentEvent::ToolUseStart {
+                let _ = self.event_tx.send(AgentEvent::ToolUseStart {
                     id,
                     name,
-                    turn_id: turn_id.clone(),
+                    turn_id: self.turn_id.clone(),
                 });
             }
             ModelEvent::ToolArgsDelta { id, partial_json } => {
-                let _ = event_tx.send(AgentEvent::ToolArgsDelta {
+                let _ = self.event_tx.send(AgentEvent::ToolArgsDelta {
                     id,
                     partial_json,
-                    turn_id: turn_id.clone(),
+                    turn_id: self.turn_id.clone(),
                 });
             }
-            ModelEvent::ToolUse { id, name, input } => {
-                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
-                close_text(&mut pending_text, &mut reply);
-                has_tool_uses = true;
-                // Every ToolUse the model emitted is recorded, duplicate or
-                // not, so each result written below has its `tool_use`.
-                reply.push(ModelContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                });
-                let _ = event_tx.send(AgentEvent::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    turn_id: turn_id.clone(),
-                });
-
-                let idx = tool_index;
-                tool_index += 1;
-                let safe = is_concurrency_safe(&name, &input);
-                queued_tool_names.push(name.clone());
-
-                let dedup_key = format!("({name},{input})");
-                if !seen_tool_calls.insert(dedup_key.clone()) {
-                    tracing::warn!(
-                        tool = %name,
-                        tool_use_id = %id,
-                        "Skipping duplicate tool call"
-                    );
-                    buffer_result(
-                        event_tx,
-                        &turn_id,
-                        &mut pending_result_blocks,
-                        idx,
-                        &id,
-                        &name,
-                        "[Duplicate tool call skipped — identical call was already made this turn.]",
-                        false,
-                    );
-                    continue;
-                }
-
-                if safe {
-                    let exec = execute_tool(id.clone(), name.clone(), input);
-                    let abort = batch_abort.clone();
-                    batch.push(async move {
-                        let result = tokio::select! {
-                            _ = abort.cancelled() => Err("cancelled by sibling error".to_string()),
-                            r = exec => r,
-                        };
-                        (idx, id, result)
-                    });
-                } else {
-                    let barrier = async {
-                        drain_batch(
-                            &mut batch,
-                            &batch_abort,
-                            &queued_tool_names,
-                            event_tx,
-                            &turn_id,
-                            &mut pending_result_blocks,
-                            &mut pending_new_msgs,
-                        )
-                        .await;
-                        execute_tool(id.clone(), name.clone(), input).await
-                    };
-                    let result = read_ahead.during(barrier, &mut stream).await;
-                    let (content, new_msgs, failed) = read_outcome(&result);
-                    buffer_result(
-                        event_tx,
-                        &turn_id,
-                        &mut pending_result_blocks,
-                        idx,
-                        &id,
-                        &name,
-                        &content,
-                        failed,
-                    );
-                    if let Some(msgs) = new_msgs {
-                        pending_new_msgs.push(msgs);
-                    }
-                    batch_abort = CancellationToken::new();
-                }
-
-                tool_calls += 1;
-            }
+            ModelEvent::ToolUse { id, name, input } => self.on_tool_use(id, name, input).await,
             ModelEvent::MalformedToolUse {
                 id,
                 name,
                 raw_input,
-            } => {
-                close_thinking(&mut pending_thinking, &mut reply, None, provenance);
-                close_text(&mut pending_text, &mut reply);
-                has_tool_uses = true;
-                // The API takes only an object here; what the model actually
-                // wrote goes back to it in the result.
-                let input = serde_json::Value::Object(Default::default());
-                reply.push(ModelContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                });
-                let _ = event_tx.send(AgentEvent::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input,
-                    turn_id: turn_id.clone(),
-                });
-                let idx = tool_index;
-                tool_index += 1;
-                queued_tool_names.push(name.clone());
-                buffer_result(
-                    event_tx,
-                    &turn_id,
-                    &mut pending_result_blocks,
-                    idx,
-                    &id,
-                    &name,
-                    &malformed_call_answer(&raw_input),
-                    true,
-                );
-            }
-            ModelEvent::Truncated => truncated = true,
+            } => self.on_malformed_tool_use(id, name, raw_input),
+            ModelEvent::Truncated => self.truncated = true,
             ModelEvent::EndTurn {
                 stop_reason: sr,
                 usage: u,
             } => {
-                ended = Some((sr, u));
+                self.ended = Some((sr, u));
             }
             _ => {}
         }
     }
 
-    match (&failure, &ended) {
-        // The message had ended; what broke was only the tail of the
-        // connection after it.
-        (Some(e), Some(_)) => {
-            tracing::warn!(error = %e, "the model's stream failed after its message ended");
-            failure = None;
+    async fn on_tool_use(&mut self, id: String, name: String, input: serde_json::Value) {
+        close_thinking(
+            &mut self.pending_thinking,
+            &mut self.reply,
+            None,
+            self.provenance,
+        );
+        close_text(&mut self.pending_text, &mut self.reply);
+        self.has_tool_uses = true;
+        // Every ToolUse the model emitted is recorded, duplicate or
+        // not, so each result written below has its `tool_use`.
+        self.reply.push(ModelContentBlock::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+        });
+        let _ = self.event_tx.send(AgentEvent::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+            turn_id: self.turn_id.clone(),
+        });
+
+        let idx = self.tool_index;
+        self.tool_index += 1;
+        let safe = (self.is_concurrency_safe)(&name, &input);
+        self.queued_tool_names.push(name.clone());
+
+        let dedup_key = format!("({name},{input})");
+        if !self.seen_tool_calls.insert(dedup_key.clone()) {
+            tracing::warn!(
+                tool = %name,
+                tool_use_id = %id,
+                "Skipping duplicate tool call"
+            );
+            buffer_result(
+                self.event_tx,
+                &self.turn_id,
+                &mut self.pending_result_blocks,
+                idx,
+                &id,
+                &name,
+                "[Duplicate tool call skipped — identical call was already made this turn.]",
+                false,
+            );
+            return;
         }
-        (None, None) if !cancelled => {
-            failure = Some(ModelError::stream_interrupted(INCOMPLETE_STREAM));
+
+        if safe {
+            self.start_concurrent(idx, id, name, input);
+        } else {
+            self.run_barrier(idx, id, name, input).await;
         }
-        _ => {}
+
+        self.tool_calls += 1;
     }
-    if !has_tool_uses {
-        if let Some(error) = failure.take() {
+
+    fn start_concurrent(&mut self, idx: usize, id: String, name: String, input: serde_json::Value) {
+        let exec = (self.execute_tool)(id.clone(), name, input);
+        let abort = self.batch_abort.clone();
+        self.batch.push(Box::pin(async move {
+            let result = tokio::select! {
+                _ = abort.cancelled() => Err("cancelled by sibling error".to_string()),
+                r = exec => r,
+            };
+            (idx, id, result)
+        }));
+    }
+
+    async fn run_barrier(
+        &mut self,
+        idx: usize,
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    ) {
+        let batch = &mut self.batch;
+        let batch_abort = &self.batch_abort;
+        let queued_tool_names = &self.queued_tool_names;
+        let event_tx = self.event_tx;
+        let turn_id = &self.turn_id;
+        let pending_result_blocks = &mut self.pending_result_blocks;
+        let pending_new_msgs = &mut self.pending_new_msgs;
+        let execute_tool = &self.execute_tool;
+        let barrier = async {
+            drain_batch(
+                batch,
+                batch_abort,
+                queued_tool_names,
+                event_tx,
+                turn_id,
+                pending_result_blocks,
+                pending_new_msgs,
+            )
+            .await;
+            execute_tool(id.clone(), name.clone(), input).await
+        };
+        let result = self.read_ahead.during(barrier, &mut self.stream).await;
+        let (content, new_msgs, failed) = read_outcome(&result);
+        buffer_result(
+            self.event_tx,
+            &self.turn_id,
+            &mut self.pending_result_blocks,
+            idx,
+            &id,
+            &name,
+            &content,
+            failed,
+        );
+        if let Some(msgs) = new_msgs {
+            self.pending_new_msgs.push(msgs);
+        }
+        self.batch_abort = CancellationToken::new();
+    }
+
+    fn on_malformed_tool_use(&mut self, id: String, name: String, raw_input: String) {
+        close_thinking(
+            &mut self.pending_thinking,
+            &mut self.reply,
+            None,
+            self.provenance,
+        );
+        close_text(&mut self.pending_text, &mut self.reply);
+        self.has_tool_uses = true;
+        // The API takes only an object here; what the model actually
+        // wrote goes back to it in the result.
+        let input = serde_json::Value::Object(Default::default());
+        self.reply.push(ModelContentBlock::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+        });
+        let _ = self.event_tx.send(AgentEvent::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input,
+            turn_id: self.turn_id.clone(),
+        });
+        let idx = self.tool_index;
+        self.tool_index += 1;
+        self.queued_tool_names.push(name.clone());
+        buffer_result(
+            self.event_tx,
+            &self.turn_id,
+            &mut self.pending_result_blocks,
+            idx,
+            &id,
+            &name,
+            &malformed_call_answer(&raw_input),
+            true,
+        );
+    }
+
+    async fn finish(
+        mut self,
+        session: &mut session::session::SessionManager,
+        interceptors: &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>],
+    ) -> Result<StreamResult, StreamFailure> {
+        match (&self.failure, &self.ended) {
+            // The message had ended; what broke was only the tail of the
+            // connection after it.
+            (Some(e), Some(_)) => {
+                tracing::warn!(error = %e, "the model's stream failed after its message ended");
+                self.failure = None;
+            }
+            (None, None) if !self.cancelled => {
+                self.failure = Some(ModelError::stream_interrupted(INCOMPLETE_STREAM));
+            }
+            _ => {}
+        }
+        if !self.has_tool_uses {
+            if let Some(error) = self.failure.take() {
+                return Err(StreamFailure {
+                    error,
+                    resendable: true,
+                });
+            }
+        }
+
+        close_thinking(
+            &mut self.pending_thinking,
+            &mut self.reply,
+            None,
+            self.provenance,
+        );
+        close_text(&mut self.pending_text, &mut self.reply);
+        drain_batch(
+            &mut self.batch,
+            &self.batch_abort,
+            &self.queued_tool_names,
+            self.event_tx,
+            &self.turn_id,
+            &mut self.pending_result_blocks,
+            &mut self.pending_new_msgs,
+        )
+        .await;
+        let (stop_reason, usage) = match self.ended {
+            Some(ended) => ended,
+            None if self.cancelled => ("cancelled".to_string(), Usage::default()),
+            None => (String::new(), Usage::default()),
+        };
+        write_reply(
+            session,
+            self.reply,
+            usage,
+            self.pending_result_blocks,
+            self.pending_new_msgs,
+            interceptors,
+        );
+
+        if let Some(error) = self.failure {
             return Err(StreamFailure {
                 error,
-                resendable: true,
+                resendable: false,
             });
         }
+        Ok(StreamResult {
+            stop_reason,
+            usage,
+            has_tool_uses: self.has_tool_uses,
+            tool_calls: self.tool_calls,
+            cancelled: self.cancelled,
+            truncated: self.truncated,
+        })
     }
-
-    close_thinking(&mut pending_thinking, &mut reply, None, provenance);
-    close_text(&mut pending_text, &mut reply);
-    drain_batch(
-        &mut batch,
-        &batch_abort,
-        &queued_tool_names,
-        event_tx,
-        &turn_id,
-        &mut pending_result_blocks,
-        &mut pending_new_msgs,
-    )
-    .await;
-    let (stop_reason, usage) = match ended {
-        Some(ended) => ended,
-        None if cancelled => ("cancelled".to_string(), Usage::default()),
-        None => (String::new(), Usage::default()),
-    };
-    write_reply(
-        session,
-        reply,
-        usage,
-        pending_result_blocks,
-        pending_new_msgs,
-        interceptors,
-    );
-
-    if let Some(error) = failure {
-        return Err(StreamFailure {
-            error,
-            resendable: false,
-        });
-    }
-    Ok(StreamResult {
-        stop_reason,
-        usage,
-        has_tool_uses,
-        tool_calls,
-        cancelled,
-        truncated,
-    })
 }
 
 fn malformed_call_answer(raw_input: &str) -> String {
