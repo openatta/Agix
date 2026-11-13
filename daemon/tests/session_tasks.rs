@@ -1448,3 +1448,69 @@ async fn a_question_nobody_answers_in_time_is_withdrawn() {
     assert_eq!(resolved["prompt_id"], prompt["prompt_id"], "{resolved}");
     assert_eq!(resolved["resolution"], "withdrawn", "{resolved}");
 }
+
+/// Refuses the first call with a 401, then never answers.
+#[derive(Default)]
+struct RefusesThenHangs(std::sync::atomic::AtomicUsize);
+
+impl AnthropicClient for RefusesThenHangs {
+    fn stream_messages(&self, _req: MessagesRequest) -> EventStream {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Box::pin(futures::stream::iter([Err(
+                model::error::AnthropicError::Auth("bad key".into()),
+            )]));
+        }
+        Box::pin(futures::stream::pending())
+    }
+
+    fn count_tokens<'a>(&'a self, _req: &'a MessagesRequest) -> CountFuture<'a> {
+        Box::pin(async { Ok(0usize) })
+    }
+}
+
+/// `daemon.doctor` says what each session in memory is doing: how its last
+/// failed turn failed, and which turn it is running and for how long.
+#[tokio::test]
+async fn doctor_reports_what_each_session_in_memory_is_doing() {
+    let daemon = Arc::new(Daemon::start_with(Arc::new(RefusesThenHangs::default())).await);
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let failed = daemon
+        .call(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "hi"}),
+        )
+        .await;
+    assert_eq!(failed["error"]["data"]["kind"], "auth", "{failed}");
+
+    let doctor = daemon.ok("daemon.doctor", serde_json::json!({})).await;
+    let report = &doctor["runtime"]["sessions"][0];
+    assert_eq!(report["session_id"], session, "{doctor}");
+    assert_eq!(report["phase"], "idle", "{report}");
+    assert_eq!(report["last_failure"]["kind"], "auth", "{report}");
+    assert_eq!(report["log"]["behind"], false, "{report}");
+    assert!(report["turn"].is_null(), "{report}");
+
+    let _held = {
+        let (daemon, session) = (daemon.clone(), session.clone());
+        tokio::spawn(async move {
+            daemon
+                .call(
+                    "session.run_turn",
+                    serde_json::json!({"session_id": session, "message": "again",
+                                       "turn_id": "t2"}),
+                )
+                .await
+        })
+    };
+    let report = eventually!("the turn running in doctor's report", {
+        let doctor = daemon.ok("daemon.doctor", serde_json::json!({})).await;
+        let report = doctor["runtime"]["sessions"][0].clone();
+        (report["phase"] == "running").then_some(report)
+    });
+    assert_eq!(report["turn"]["turn_id"], "t2", "{report}");
+    assert!(report["turn"]["running_ms"].is_u64(), "{report}");
+    assert!(report["generation"].is_u64(), "{report}");
+}

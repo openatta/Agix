@@ -1224,6 +1224,9 @@
           "$ref": "#/$defs/PluginsReport"
         },
         "providers": true,
+        "runtime": {
+          "$ref": "#/$defs/RuntimeReport"
+        },
         "scene": {
           "type": "string"
         },
@@ -1241,7 +1244,8 @@
         "session_persistence",
         "plugins",
         "permission_rules_count",
-        "model"
+        "model",
+        "runtime"
       ],
       "type": "object"
     },
@@ -1558,6 +1562,57 @@
         "session_id",
         "kind",
         "entry_count"
+      ],
+      "type": "object"
+    },
+    "FailureKind": {
+      "description": "How a turn failed, in the terms a host decides on: whether to send it\nagain, when, and whether doing so repeats something.",
+      "oneOf": [
+        {
+          "enum": [
+            "rate_limited",
+            "overloaded",
+            "context_too_long",
+            "auth",
+            "billing",
+            "egress_denied",
+            "session_closed",
+            "engine_stopped",
+            "persist_failed",
+            "internal"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "model_unavailable",
+          "description": "The provider could not be reached or failed on its side; the request\nitself was fine.",
+          "type": "string"
+        },
+        {
+          "const": "model_rejected",
+          "description": "The provider refused the request as malformed, or for a model or a\nfeature it does not serve.",
+          "type": "string"
+        },
+        {
+          "const": "model_error",
+          "description": "The provider failed in a way sending again will not fix.",
+          "type": "string"
+        },
+        {
+          "const": "engine_unreachable",
+          "description": "The engine did not take or answer a request.",
+          "type": "string"
+        }
+      ]
+    },
+    "FailureReport": {
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/FailureKind"
+        }
+      },
+      "required": [
+        "kind"
       ],
       "type": "object"
     },
@@ -2169,6 +2224,18 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "LogReport": {
+      "properties": {
+        "behind": {
+          "description": "The log lacks part of what the session holds (a turn ended with\n`persisted: false` and nothing has caught it up yet).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "behind"
+      ],
       "type": "object"
     },
     "McpAuthCancelParams": {
@@ -3858,6 +3925,45 @@
       ],
       "type": "object"
     },
+    "RunningTurnReport": {
+      "properties": {
+        "running_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "turn_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "turn_id",
+        "running_ms"
+      ],
+      "type": "object"
+    },
+    "RuntimeReport": {
+      "description": "What the daemon's sessions in memory are doing right now. Numbers only:\nhow long is too long is the reader's call.",
+      "properties": {
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionRuntime"
+          },
+          "type": "array"
+        },
+        "stopping_engines": {
+          "description": "Engines of sessions that left memory and have not stopped yet.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sessions",
+        "stopping_engines"
+      ],
+      "type": "object"
+    },
     "SceneActivated": {
       "properties": {
         "active": {
@@ -4734,6 +4840,52 @@
       ],
       "type": "object"
     },
+    "SessionRuntime": {
+      "properties": {
+        "generation": {
+          "description": "Which engine the session is on; each rebuild brings up the next.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_failure": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FailureReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "log": {
+          "$ref": "#/$defs/LogReport"
+        },
+        "phase": {
+          "$ref": "#/$defs/TurnState"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunningTurnReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "phase",
+        "generation",
+        "log"
+      ],
+      "type": "object"
+    },
     "SessionStatus": {
       "enum": [
         "active",
@@ -5571,11 +5723,26 @@
       "type": "object"
     },
     "TurnState": {
-      "enum": [
-        "idle",
-        "running"
-      ],
-      "type": "string"
+      "description": "What a session in memory is doing; a session not in memory is idle.",
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "rebuilding",
+          "description": "Being rebuilt in place on its next engine.",
+          "type": "string"
+        },
+        {
+          "const": "operating",
+          "description": "Held by an operation other than a turn — a look at or a change to\nits context.",
+          "type": "string"
+        }
+      ]
     },
     "Unsubscribed": {
       "properties": {

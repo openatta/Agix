@@ -469,6 +469,7 @@ pub fn run_doctor(
             model_name: settings.values.model.model_name.clone(),
             api_type: format!("{:?}", settings.values.model.api_type),
         },
+        runtime: RuntimeReport::default(),
     }
 }
 
@@ -485,6 +486,45 @@ pub struct DoctorReport {
     pub plugins: PluginsReport,
     pub permission_rules_count: usize,
     pub model: ModelReport,
+    pub runtime: RuntimeReport,
+}
+
+/// What the daemon's sessions in memory are doing right now. Numbers only:
+/// how long is too long is the reader's call.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RuntimeReport {
+    pub sessions: Vec<SessionRuntime>,
+    /// Engines of sessions that left memory and have not stopped yet.
+    pub stopping_engines: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct SessionRuntime {
+    pub session_id: String,
+    pub phase: crate::session_pool::api::TurnState,
+    /// Which engine the session is on; each rebuild brings up the next.
+    pub generation: u64,
+    pub turn: Option<RunningTurnReport>,
+    pub log: LogReport,
+    pub last_failure: Option<FailureReport>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RunningTurnReport {
+    pub turn_id: String,
+    pub running_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct LogReport {
+    /// The log lacks part of what the session holds (a turn ended with
+    /// `persisted: false` and nothing has caught it up yet).
+    pub behind: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct FailureReport {
+    pub kind: base::event::FailureKind,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]

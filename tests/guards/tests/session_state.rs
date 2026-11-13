@@ -140,6 +140,10 @@ const FIELDS: &[(&str, &str)] = &[
         "Session: whether its log has everything it holds, whichever engine wrote it",
     ),
     (
+        "SessionCore::last_failure",
+        "Session: how its last failed turn failed, whichever engine ran it",
+    ),
+    (
         "EngineSlot::generation",
         "Engine: the number it attached to the state under",
     ),

@@ -73,6 +73,10 @@ async fn a_turn_asked_for_while_the_context_is_being_changed_is_refused_or_waits
         })
     };
     writing.await;
+    assert_eq!(
+        pool.session_detail(&sid).await.unwrap().turn_state,
+        api::TurnState::Operating
+    );
 
     match pool
         .run_turn(turn(&sid, "t2", "second", OnBusy::Reject), None)

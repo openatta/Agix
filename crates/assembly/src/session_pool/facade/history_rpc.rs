@@ -91,15 +91,13 @@ impl SessionPool {
                 if !include.sidechains {
                     lineage.sessions.truncate(1);
                 }
-                let mut live: HashMap<String, (Option<String>, Arc<base::context::SessionState>)> =
+                let mut live: HashMap<String, (api::TurnState, Arc<base::context::SessionState>)> =
                     HashMap::new();
                 for (sid, _) in &lineage.sessions {
                     let sid = sid.to_string();
                     let found = self
                         .live
-                        .with_live(&sid, |live| {
-                            (live.turn.current_turn_id(), live.core.state().clone())
-                        })
+                        .with_live(&sid, |live| (live.turn.state(), live.core.state().clone()))
                         .await;
                     if let Some(found) = found {
                         live.insert(sid, found);
@@ -138,7 +136,9 @@ impl SessionPool {
             .await
             .ok();
             let in_memory = live.get(&id).cloned();
-            let current_turn = in_memory.as_ref().and_then(|(turn, _)| turn.clone());
+            let turn_state = in_memory
+                .as_ref()
+                .map_or(api::TurnState::Idle, |(turn, _)| *turn);
             let runtime = in_memory.map(|(_, state)| {
                 serde_json::json!({
                     "durable": false,
@@ -162,7 +162,7 @@ impl SessionPool {
                 compact_count: stats.compact_count,
                 memory,
                 active: live.contains_key(&id),
-                current_turn,
+                turn_state,
                 runtime,
             });
         }

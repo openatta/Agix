@@ -390,6 +390,7 @@ impl SessionPool {
         let mut tools_ran = false;
         loop {
             let Some(event) = event_rx.recv().await else {
+                core.set_last_failure(base::event::FailureKind::EngineStopped);
                 let stopped = frame_of(SessionEvent::EngineStopped);
                 self.engine_gone_mid_turn(ticket, &stopped, initiator_id)
                     .await;
@@ -418,6 +419,7 @@ impl SessionPool {
                 }
                 AgentEvent::Error { ref failure, .. } => {
                     let failure = failure.clone();
+                    core.set_last_failure(failure.kind);
                     // The caller learns this from its own result; every other
                     // watcher would otherwise see a turn that never ends.
                     let last = frame_of(SessionEvent::Agent(event));

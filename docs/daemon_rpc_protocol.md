@@ -807,7 +807,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
   "session_persistence": { "history_store_wired":true },
   "plugins": { "status":"enabled" },
   "permission_rules_count": 0,
-  "model": { "model_name":"claude-sonnet-4-6", "api_type":"Anthropic" } }
+  "model": { "model_name":"claude-sonnet-4-6", "api_type":"Anthropic" },
+  "runtime": { "sessions":[], "stopping_engines":0 } }
 ```
 
 `health` 是 `HealthCheck` 契约(`docs/extension_points.md`)的报告:引擎自带的八项
@@ -836,6 +837,21 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 的 provider),不说明真能建出客户端,更不说明那个端点能连上 —— 缺凭据、`base_url`
 指向一个没人监听的地址,这里都仍然是 `ok: true`。这项检查从已经握着的设置立刻回
 答,不发起任何网络探测。
+
+`runtime` 是此刻内存里每个会话在做什么,只报数,不判阈值(多久算卡住由读的人定):
+
+```jsonc
+"runtime": {
+  "sessions": [                        // 按 session_id 排序
+    { "session_id":"…",
+      "phase":"running",                 // 同 session.get 的 turn_state:idle | running | rebuilding | operating
+      "generation":3,                    // 第几代引擎;每次原地重建换下一代
+      "turn":{ "turn_id":"t2", "running_ms":41250 },   // 只在 running 时有值,否则 null
+      "log":{ "behind":false },          // 上一轮 turn_complete 报了 persisted:false、还没补写上(§7.2)
+      "last_failure":{ "kind":"auth" } } // 最近一次失败的一轮,kind 同 §9.1;没失败过为 null
+  ],
+  "stopping_engines": 0 }               // 已移出内存、还没停下的引擎数
+```
 
 `plugins.status` 是这个二进制**能不能加载插件**:`enabled`、`disabled-by-policy`
 (编进来了但配置关掉了)、`compiled-out`(根本没编进来)。
@@ -1224,13 +1240,16 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
   "resumable": true,
   "scene": "code", "project_root": "…",   // null = 无项目会话,或老日志没记
   "scene_active": true,
-  "turn_state": "idle",            // idle | running
+  "turn_state": "idle",            // idle | running | rebuilding | operating
   "current_turn_id": null }
 ```
 
 比 `session.list` 的条目多 `scene_active` / `turn_state` / `current_turn_id` 三项 ——
 第一个要问 daemon 当前激活了哪些场景,后两个只有内存里的池子知道。`turn_state` 就是
-"发送按钮该不该置灰"的依据。
+"发送按钮该不该置灰"的依据:`running` 是有一轮在跑,`rebuilding` 是正在原地重建,`operating`
+是一个 `inspectContext` / `dropMessages` / `editMessage` 正独占着会话;后两种状态下
+`run_turn{on_busy:"reject"}` 报 `SESSION_BUSY`(§9.1),`current_turn_id` 为 `null`。
+不在内存里的会话是 `idle`。
 
 `scene` / `project_root` 与 `session.list` 的条目**同源**(都是那一条 `SessionInfo`),
 所以两个方法对同一个会话不会给出不同的答案。

@@ -3,7 +3,7 @@
 //! 引擎编号。阶段说了算，接收端只是放在这里；所有转换都在池的 `sessions` 锁里
 //! 同步完成，代际的比对由持有槽的 `LiveSession` 做。
 
-use crate::session_pool::api::{Busy, Initiator, WatcherId};
+use crate::session_pool::api::{Busy, Initiator, TurnState, WatcherId};
 use crate::session_pool::parts::live::SessionCore;
 use runtime::agent::EventReceiver;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,6 +53,7 @@ pub(in crate::session_pool) struct RunningTurn {
     pub(in crate::session_pool) origin: Option<WatcherId>,
     /// The turn's `turn_complete` or `error` frame has gone out.
     pub(in crate::session_pool) terminated: bool,
+    pub(in crate::session_pool) started: std::time::Instant,
 }
 
 impl RunningTurn {
@@ -66,6 +67,7 @@ impl RunningTurn {
             initiator,
             origin,
             terminated: false,
+            started: std::time::Instant::now(),
         }
     }
 }
@@ -151,6 +153,15 @@ impl TurnSlot {
 
     pub(in crate::session_pool) fn is_idle(&self) -> bool {
         matches!(self.phase, SessionPhase::Idle)
+    }
+
+    pub(in crate::session_pool) fn state(&self) -> TurnState {
+        match self.phase {
+            SessionPhase::Idle => TurnState::Idle,
+            SessionPhase::Running(_) => TurnState::Running,
+            SessionPhase::Rebuilding => TurnState::Rebuilding,
+            SessionPhase::Exclusive(_) => TurnState::Operating,
+        }
     }
 
     pub(in crate::session_pool) fn running(&self) -> Option<&RunningTurn> {

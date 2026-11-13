@@ -160,7 +160,7 @@ pub struct SessionPart {
     pub compact_count: u64,
     pub memory: Option<String>,
     pub active: bool,
-    pub current_turn: Option<String>,
+    pub turn_state: crate::session_pool::api::TurnState,
     /// What the live session holds that its log does not; `None` when it is
     /// not in memory.
     pub runtime: Option<Value>,
@@ -697,7 +697,7 @@ fn pack(
             "entry_count": part.entries.len(),
             "message_count": history.len(),
             "active": part.active,
-            "turn_state": if part.current_turn.is_some() { "running" } else { "idle" },
+            "turn_state": part.turn_state,
             "terminal": terminal,
             "transcript_sha256": transcript_sha256,
         }));

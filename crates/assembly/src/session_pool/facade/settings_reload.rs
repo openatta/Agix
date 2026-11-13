@@ -135,14 +135,42 @@ impl SessionPool {
                 .iter()
                 .cloned(),
         );
-        crate::doctor::run_doctor(
+        let mut report = crate::doctor::run_doctor(
             self.bindings.paths().as_ref(),
             self.scenes.default_id(),
             settings,
             self.directory.store().is_some(),
             self.plugins.status(),
             &base::interface::health::HealthChecks::from_vec(checks),
-        )
+        );
+        report.runtime = self.runtime_report().await;
+        report
+    }
+
+    async fn runtime_report(&self) -> crate::doctor::RuntimeReport {
+        use crate::doctor::{FailureReport, LogReport, RunningTurnReport, SessionRuntime};
+        let mut sessions = self
+            .live
+            .map_all(|live| SessionRuntime {
+                session_id: live.core.id().to_string(),
+                phase: live.turn.state(),
+                generation: live.engine.generation.get(),
+                turn: live.turn.running().map(|turn| RunningTurnReport {
+                    turn_id: turn.turn_id.clone(),
+                    running_ms: u64::try_from(turn.started.elapsed().as_millis())
+                        .unwrap_or(u64::MAX),
+                }),
+                log: LogReport {
+                    behind: live.core.log().is_behind(),
+                },
+                last_failure: live.core.last_failure().map(|kind| FailureReport { kind }),
+            })
+            .await;
+        sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        crate::doctor::RuntimeReport {
+            sessions,
+            stopping_engines: self.live.stopping_engines(),
+        }
     }
 
     async fn unattended_scene_ids(&self) -> Vec<String> {

@@ -171,28 +171,30 @@ impl SessionPool {
             Some(id) => self.scenes.is_active(id),
             None => false,
         };
-        let current_turn_id = self.current_turn_of(session_id).await;
-        let (context, health) = self
+        let (turn_state, current_turn_id, context, health) = self
             .live
             .with_live(session_id, |live| {
-                (live.core.context(), live.engine.health.clone())
+                (
+                    live.turn.state(),
+                    live.turn.current_turn_id(),
+                    live.core.context(),
+                    live.engine.health.clone(),
+                )
             })
             .await
-            .map(|(context, health)| {
+            .map(|(turn_state, current_turn_id, context, health)| {
                 (
+                    turn_state,
+                    current_turn_id,
                     context,
                     (!health.is_empty()).then(|| health.report().to_json()),
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or((api::TurnState::Idle, None, None, None));
         Ok(api::SessionDetail {
             info,
             scene_active,
-            turn_state: if current_turn_id.is_some() {
-                api::TurnState::Running
-            } else {
-                api::TurnState::Idle
-            },
+            turn_state,
             current_turn_id,
             context,
             health,

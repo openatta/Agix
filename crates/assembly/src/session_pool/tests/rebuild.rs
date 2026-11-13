@@ -632,3 +632,46 @@ async fn a_session_whose_log_fell_behind_is_neither_rebuilt_nor_evicted_until_it
     let core = pool.live.core_of(&sid).await.unwrap();
     assert!(!core.log().is_behind());
 }
+
+/// `session.get` says a session is being rebuilt while it is, and idle once
+/// the rebuild is done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_being_rebuilt_reads_as_rebuilding() {
+    let (builder, _dir, _store) = builder_with_history().await;
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let builds = Arc::new(AtomicUsize::new(0));
+    let (entered, go) = (
+        std::sync::Mutex::new(entered_tx),
+        std::sync::Mutex::new(go_rx),
+    );
+    let pool = builder
+        .session_customizer(Arc::new(move |builder, _| {
+            if builds.fetch_add(1, Ordering::SeqCst) == 1 {
+                let _ = entered.lock().unwrap().send(());
+                let _ = go.lock().unwrap().recv();
+            }
+            builder
+        }))
+        .build();
+    let sid = new_session(&pool).await;
+
+    let rebuild = {
+        let (pool, sid) = (pool.clone(), sid.clone());
+        tokio::spawn(async move { pool.set_session_prompt(&sid, append).await.is_ok() })
+    };
+    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        pool.session_detail(&sid).await.unwrap().turn_state,
+        api::TurnState::Rebuilding
+    );
+
+    go_tx.send(()).unwrap();
+    assert!(rebuild.await.unwrap(), "the rebuild went through");
+    assert_eq!(
+        pool.session_detail(&sid).await.unwrap().turn_state,
+        api::TurnState::Idle
+    );
+}

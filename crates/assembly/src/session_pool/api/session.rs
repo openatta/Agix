@@ -34,11 +34,17 @@ pub struct SessionDetail {
     pub scripts: Option<ScriptReport>,
 }
 
+/// What a session in memory is doing; a session not in memory is idle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnState {
     Idle,
     Running,
+    /// Being rebuilt in place on its next engine.
+    Rebuilding,
+    /// Held by an operation other than a turn — a look at or a change to
+    /// its context.
+    Operating,
 }
 
 /// What a session's scripts have done.

@@ -77,6 +77,8 @@ pub(in crate::session_pool) struct SessionCore {
     /// How full the context was after the last turn that called the model.
     context: Mutex<Option<ContextUsage>>,
     log: LogHealth,
+    /// How its last failed turn failed.
+    last_failure: Mutex<Option<base::event::FailureKind>>,
 }
 
 impl SessionCore {
@@ -108,6 +110,7 @@ impl SessionCore {
             naming: Mutex::new(naming),
             context: Mutex::new(None),
             log: LogHealth::default(),
+            last_failure: Mutex::new(None),
         })
     }
 
@@ -153,6 +156,14 @@ impl SessionCore {
 
     pub(in crate::session_pool) fn set_context(&self, context: ContextUsage) {
         *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some(context);
+    }
+
+    pub(in crate::session_pool) fn last_failure(&self) -> Option<base::event::FailureKind> {
+        *self.last_failure.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(in crate::session_pool) fn set_last_failure(&self, kind: base::event::FailureKind) {
+        *self.last_failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(kind);
     }
 
     pub(in crate::session_pool) fn log(&self) -> &LogHealth {
@@ -407,6 +418,16 @@ impl LiveSessions {
 
     pub(in crate::session_pool) fn idle_timeout(&self) -> Duration {
         self.idle_timeout
+    }
+
+    /// How many engines taken out of the table have not stopped yet.
+    pub(in crate::session_pool) fn stopping_engines(&self) -> usize {
+        self.stopping
+            .lock()
+            .expect("stopping is never held across a panic")
+            .values()
+            .filter(|exited| !exited.is_cancelled())
+            .count()
     }
 
     pub(in crate::session_pool) fn next_generation(&self) -> Generation {
