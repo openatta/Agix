@@ -2,9 +2,11 @@
 //! facts that are legitimate but that an operator should have seen written
 //! down — a permission mode that never asks, hooks that fail open, unattended
 //! commands with an open network, a network allowlist the OS sandbox cannot
-//! honour, a build whose panics end the process.
+//! honour, a strict profile the sandbox cannot hold, a build whose panics
+//! end the process.
 
 use base::context::config::NetworkModeConfig;
+use base::interface::exec::{ConfinementReport, Enforcement, ProcessSpec, Sandbox, SandboxPolicy};
 use base::interface::health::{CheckResult, HealthCheck};
 use base::settings::{LoadedSettings, PermissionMode};
 use hooks::{HookConfig, HookEvent, OnError};
@@ -194,6 +196,65 @@ impl HealthCheck for NetworkAllowlistCheck {
     }
 }
 
+/// A command let through without asking — the read-only lane — runs under the
+/// strict profile: no network, nothing writable but the session's `TMPDIR`,
+/// little readable. Where the sandbox cannot hold that profile the lane stays
+/// open and the command runs without it.
+pub struct StrictProfileCheck {
+    settings: Arc<LoadedSettings>,
+    sandbox: Arc<dyn Sandbox>,
+}
+
+impl StrictProfileCheck {
+    pub fn new(settings: Arc<LoadedSettings>, sandbox: Arc<dyn Sandbox>) -> Self {
+        Self { settings, sandbox }
+    }
+}
+
+impl HealthCheck for StrictProfileCheck {
+    fn name(&self) -> &str {
+        "sandbox.strict_profile"
+    }
+
+    fn check(&self) -> CheckResult {
+        let strict = if self.settings.sandbox.dangerously_disable_sandbox {
+            Enforcement::None
+        } else {
+            let dir = std::env::temp_dir();
+            let probe = ProcessSpec::new("bash", &dir).args(["-c", "true"]);
+            ConfinementReport::probe(
+                &*self.sandbox,
+                probe,
+                &SandboxPolicy::default(),
+                false,
+                false,
+            )
+            .strict
+        };
+        let details = serde_json::json!({
+            "enforcement": format!("{strict:?}").to_lowercase(),
+            "sandbox_disabled": self.settings.sandbox.dangerously_disable_sandbox,
+        });
+        if strict == Enforcement::Full {
+            return CheckResult::ok(
+                "commands let through without asking run under the strict profile",
+            )
+            .with_details(details);
+        }
+        let why = if self.settings.sandbox.dangerously_disable_sandbox {
+            "sandbox.dangerously_disable_sandbox is on"
+        } else {
+            "this build or machine has no sandbox backend that holds it"
+        };
+        CheckResult::degraded(format!(
+            "the strict profile is not enforced ({why}): read-only commands let through \
+             without asking run without it, with the network, writes and reads the \
+             session's own commands have"
+        ))
+        .with_details(details)
+    }
+}
+
 pub struct PanicStrategyCheck;
 
 impl PanicStrategyCheck {
@@ -234,6 +295,43 @@ mod tests {
             s,
             base::settings::PathSettings::default(),
         ))
+    }
+
+    /// Holds the strict profile as `0` says, and every other policy fully.
+    struct Holds(Enforcement);
+
+    impl Sandbox for Holds {
+        fn confine(
+            &self,
+            spec: ProcessSpec,
+            policy: &SandboxPolicy,
+        ) -> base::interface::exec::Confined {
+            let strict = matches!(policy.read, base::interface::exec::ReadScope::Only(_));
+            let enforcement = if strict { self.0 } else { Enforcement::Full };
+            base::interface::exec::Confined {
+                spec,
+                mode: base::interface::exec::SandboxMode::MacOSSandboxExec,
+                enforcement,
+                unmet: Vec::new(),
+            }
+        }
+    }
+
+    #[test]
+    fn a_strict_profile_the_sandbox_cannot_hold_is_degraded() {
+        let check = |settings, enforcement| {
+            StrictProfileCheck::new(settings, Arc::new(Holds(enforcement))).check()
+        };
+        let held = check(settings_with(|_| {}), Enforcement::Full);
+        assert_eq!(held.status.label(), "ok", "{held:?}");
+        let unheld = check(settings_with(|_| {}), Enforcement::None);
+        assert_eq!(unheld.status.label(), "degraded", "{unheld:?}");
+        assert!(unheld.summary.contains("no sandbox backend"), "{unheld:?}");
+        let off = check(
+            settings_with(|s| s.sandbox.dangerously_disable_sandbox = true),
+            Enforcement::Full,
+        );
+        assert_eq!(off.status.label(), "degraded", "{off:?}");
     }
 
     #[test]

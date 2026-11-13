@@ -44,6 +44,7 @@ pub struct EngineExec {
 
 /// Whether the engine's subprocesses run in the session's sandbox.
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::large_enum_variant)]
 pub enum Confinement {
     /// The session's commands are not confined, so a confined command cannot
     /// have prepared the repository.

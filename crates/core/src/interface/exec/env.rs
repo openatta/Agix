@@ -274,7 +274,52 @@ pub enum EnvPlan {
     Replace(Vec<(OsString, OsString)>),
 }
 
+/// How much of the environment a process starts from: a mark on a
+/// [`ProcessSpec`](super::ProcessSpec) a provider reads, not a list of
+/// variables, since a remote provider's environment is not this machine's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EnvScope {
+    /// What `sandbox.subprocess_env` gives every child.
+    #[default]
+    Session,
+    /// Only what a shell needs to run: `PATH HOME USER LOGNAME SHELL TERM
+    /// LANG LC_* TZ TMPDIR`. `sandbox.subprocess_env.allow` adds nothing to
+    /// it.
+    Minimal,
+}
+
+const MINIMAL: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "TZ", "TMPDIR",
+];
+
+impl EnvScope {
+    pub fn keeps_under_minimal(name: &OsStr) -> bool {
+        let name = name.to_string_lossy();
+        MINIMAL.contains(&name.as_ref()) || name.starts_with("LC_")
+    }
+}
+
 impl SubprocessEnv {
+    /// [`Self::resolve`] for a child whose spec says `scope`.
+    pub fn resolve_in(
+        &self,
+        scope: EnvScope,
+        host: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> EnvPlan {
+        match scope {
+            EnvScope::Session => self.resolve(host),
+            EnvScope::Minimal => EnvPlan::Replace(
+                host.into_iter()
+                    .filter(|(name, _)| {
+                        EnvScope::keeps_under_minimal(name)
+                            && !never_inherited(name)
+                            && !is_engine_credential(name)
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
     /// What a child starting from `host` gets, as the policy says. Applying
     /// it to a command on this machine is `platform`'s.
     pub fn resolve(&self, host: impl IntoIterator<Item = (OsString, OsString)>) -> EnvPlan {
@@ -330,6 +375,27 @@ mod tests {
         };
         names.sort();
         names
+    }
+
+    #[test]
+    fn the_minimal_scope_keeps_what_a_shell_needs_and_ignores_allow() {
+        let mut host = host();
+        host.extend([
+            ("LC_MESSAGES".into(), "C".into()),
+            ("EDITOR".into(), "vi".into()),
+        ]);
+        let policy = SubprocessEnv {
+            mode: SubprocessEnvMode::Inherit,
+            allow: vec!["GITHUB_TOKEN".into()],
+        };
+        assert_eq!(
+            names(policy.resolve_in(EnvScope::Minimal, host.clone())),
+            ["HOME", "LC_MESSAGES", "PATH"]
+        );
+        assert_eq!(
+            policy.resolve_in(EnvScope::Session, host.clone()),
+            policy.resolve(host)
+        );
     }
 
     #[test]

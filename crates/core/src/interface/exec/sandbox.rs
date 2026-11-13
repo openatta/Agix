@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::env::EnvScope;
 use super::process::ProcessSpec;
 
 /// What to constrain. The kernel's, not a backend's.
@@ -64,6 +65,68 @@ pub struct SandboxPolicy {
     /// `cfprefsd`; on Linux the host's IPC namespace and the session bus.
     /// For an unattended session, where nobody approved the command.
     pub deny_ipc_escapes: bool,
+    /// What may be read at all; `deny_read` and the engine's credentials
+    /// stay unreadable inside it.
+    pub read: ReadScope,
+    /// The environment the command starts from. The backend marks the
+    /// confined spec with it ([`ProcessSpec::env_scope`]); the process
+    /// provider applies it.
+    pub env: EnvScope,
+}
+
+/// What a confined command may read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ReadScope {
+    #[default]
+    Everything,
+    /// These roots, and those of the backend's own table: the system
+    /// directories programs load from and the user's git configuration.
+    /// Anywhere else a command sees names and metadata but no contents.
+    Only(Vec<PathBuf>),
+}
+
+impl ReadScope {
+    /// Whether `path` is under one of the caller's roots. The backend's own
+    /// table is not consulted.
+    pub fn names(&self, path: &Path) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Only(roots) => roots.iter().any(|root| path.starts_with(root)),
+        }
+    }
+}
+
+impl SandboxPolicy {
+    /// The policy for a command let through on its own word
+    /// (`ExecProfile::Strict`): no network, nothing writable but `tmpdir`,
+    /// nothing readable but `readable` and `tmpdir`, the minimal
+    /// environment, and the IPC routes out refused. What this policy keeps
+    /// from being read stays unreadable under the strict one.
+    pub fn strict(
+        &self,
+        readable: impl IntoIterator<Item = PathBuf>,
+        tmpdir: Option<PathBuf>,
+    ) -> Self {
+        let writable: Vec<PathBuf> = tmpdir.into_iter().collect();
+        Self {
+            allow_read: self.allow_read.clone(),
+            deny_read: self.deny_read.clone(),
+            network_mode: NetworkMode::DenyAll,
+            allowed_domains: Vec::new(),
+            egress: None,
+            read: ReadScope::Only(
+                readable
+                    .into_iter()
+                    .chain(writable.iter().cloned())
+                    .collect(),
+            ),
+            additional_writable: writable,
+            only_additional_writable: true,
+            state_root: self.state_root.clone(),
+            deny_ipc_escapes: true,
+            env: EnvScope::Minimal,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -170,6 +233,8 @@ pub trait Sandbox: Send + Sync {
 pub struct ConfinementReport {
     /// How much of the session's policy holds a command.
     pub session: Enforcement,
+    /// How much of the strict policy ([`SandboxPolicy::strict`]) holds one.
+    pub strict: Enforcement,
     /// The model cannot reach whatever host it likes.
     pub network_restricted: bool,
     pub require_enforcement: bool,
@@ -181,6 +246,7 @@ impl Default for ConfinementReport {
     fn default() -> Self {
         Self {
             session: Enforcement::None,
+            strict: Enforcement::None,
             network_restricted: false,
             require_enforcement: false,
             unattended_requires_network_policy: false,
@@ -189,7 +255,8 @@ impl Default for ConfinementReport {
 }
 
 impl ConfinementReport {
-    /// Confine a probe command under `policy` and report how much of it held.
+    /// Confine a probe command under `policy`, and under its strict
+    /// counterpart, and report how much of each held.
     pub fn probe(
         sandbox: &dyn Sandbox,
         probe: ProcessSpec,
@@ -198,6 +265,9 @@ impl ConfinementReport {
         unattended_requires_network_policy: bool,
     ) -> Self {
         Self {
+            strict: sandbox
+                .confine(probe.clone(), &policy.strict(Vec::new(), None))
+                .enforcement,
             session: sandbox.confine(probe, policy).enforcement,
             network_restricted: !matches!(policy.network_mode, NetworkMode::Unrestricted),
             require_enforcement,

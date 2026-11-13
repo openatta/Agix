@@ -150,7 +150,7 @@ impl Process for LocalProcess {
             } else {
                 Stdio::null()
             });
-        crate::env::apply_subprocess_env(&self.env, &mut cmd);
+        crate::env::apply_subprocess_env_in(&self.env, spec.env_scope, &mut cmd);
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
@@ -399,6 +399,22 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&first.bytes).trim(), "first");
         h.kill().await;
+    }
+
+    #[tokio::test]
+    async fn a_minimal_spec_starts_from_what_a_shell_needs_and_its_own_variables() {
+        if std::env::var_os("CARGO_MANIFEST_DIR").is_none() {
+            return;
+        }
+        let mut spec = sh(
+            "printenv CARGO_MANIFEST_DIR; printenv PATH >/dev/null && echo has-path; printenv OWN",
+        );
+        spec.env_scope = base::interface::exec::EnvScope::Minimal;
+        spec.env.push(("OWN".into(), "mine".into()));
+        let (out, _, _) = run(spec).await;
+        assert!(!out.contains(env!("CARGO_MANIFEST_DIR")), "{out}");
+        assert!(out.contains("has-path"), "{out}");
+        assert!(out.contains("mine"), "{out}");
     }
 
     #[tokio::test]

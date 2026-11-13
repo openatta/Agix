@@ -35,7 +35,7 @@ pub mod sandbox;
 
 pub use capture::{capture, Captured};
 pub use egress::{AllowedHosts, EgressHandle, EgressProxy, ProxyEndpoint};
-pub use env::{EnvPlan, SubprocessEnv, SubprocessEnvMode};
+pub use env::{EnvPlan, EnvScope, SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::{DirEntry, FileSystem, Metadata};
 pub use network::{
     domains_name_host, is_internal_address, names_loopback, HttpRequest, HttpResponse, HttpStream,
@@ -47,7 +47,7 @@ pub use process::{
 };
 pub use sandbox::{
     default_deny_read, default_deny_read_in, Confined, ConfinementReport, Enforcement, NetworkMode,
-    Sandbox, SandboxMode, SandboxPolicy,
+    ReadScope, Sandbox, SandboxMode, SandboxPolicy,
 };
 
 /// The four providers a tool reaches the machine through.

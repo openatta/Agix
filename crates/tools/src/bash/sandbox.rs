@@ -46,29 +46,48 @@ pub(super) fn to_sandbox_policy(settings: &base::tool::SandboxSettings) -> sandb
         additional_writable: Vec::new(),
         only_additional_writable: false,
         deny_ipc_escapes: false,
+        read: sandbox::ReadScope::Everything,
+        env: sandbox::EnvScope::Session,
     }
 }
 
 pub(super) fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
     let mut policy = to_sandbox_policy(&ctx.sandbox);
+    policy.additional_writable = ctx
+        .additional_writable_dirs
+        .iter()
+        .cloned()
+        .chain(cache_directories(ctx))
+        .chain([session_temp_dir(&ctx.sandbox, &ctx.session_id)])
+        .collect();
+    policy.deny_ipc_escapes = ctx.session.env().unattended;
+    policy
+}
+
+/// The policy a command let through on its own word runs under
+/// (`ExecProfile::Strict`): it reads the session's readable roots and its
+/// cache directories, writes only the session's `TMPDIR`.
+pub fn strict_sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
+    let readable = crate::security::readable_roots(ctx)
+        .into_iter()
+        .chain(cache_directories(ctx));
+    to_sandbox_policy(&ctx.sandbox).strict(
+        readable,
+        Some(session_temp_dir(&ctx.sandbox, &ctx.session_id)),
+    )
+}
+
+fn cache_directories(ctx: &ToolContext) -> Vec<std::path::PathBuf> {
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let env = ctx.session.env();
-    let caches = env
+    ctx.session
+        .env()
         .cache_directories
         .iter()
         .filter_map(|dir| match dir.strip_prefix("~") {
             Ok(rest) => home.as_ref().map(|h| h.join(rest)),
             Err(_) => Some(dir.clone()),
-        });
-    policy.additional_writable = ctx
-        .additional_writable_dirs
-        .iter()
-        .cloned()
-        .chain(caches)
-        .chain([session_temp_dir(&ctx.sandbox, &ctx.session_id)])
-        .collect();
-    policy.deny_ipc_escapes = env.unattended;
-    policy
+        })
+        .collect()
 }
 
 /// The session's own temporary directory: a sandboxed command's `TMPDIR`,

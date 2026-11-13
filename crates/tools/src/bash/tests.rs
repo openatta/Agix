@@ -437,6 +437,50 @@ fn to_sandbox_policy_maps_each_network_mode_variant() {
 }
 
 #[test]
+fn the_strict_policy_reads_the_sessions_roots_and_writes_only_its_tmpdir() {
+    use base::interface::exec::{EnvScope, ReadScope};
+    let dir = tempfile::tempdir().unwrap();
+    let mut ctx = ctx_in(dir.path());
+    ctx.additional_writable_dirs = vec![PathBuf::from("/elsewhere")];
+    let session = base::context::SessionState::for_tests_in(base::context::SessionEnv {
+        cache_directories: vec![PathBuf::from("/caches/cargo")],
+        ..base::context::SessionEnv::new(dir.path().to_path_buf())
+    });
+    ctx.session = std::sync::Arc::new(session);
+    ctx.sandbox.network_mode = base::context::config::NetworkModeConfig::Unrestricted;
+    ctx.sandbox.allowed_domains = vec!["example.com".into()];
+
+    let policy = super::sandbox::strict_sandbox_policy(&ctx);
+    let tmp = super::sandbox::sandbox_policy(&ctx)
+        .additional_writable
+        .last()
+        .cloned()
+        .unwrap();
+    assert_eq!(policy.network_mode, sandbox::NetworkMode::DenyAll);
+    assert!(policy.allowed_domains.is_empty());
+    assert!(policy.only_additional_writable);
+    assert_eq!(policy.additional_writable, vec![tmp.clone()]);
+    assert!(policy.deny_ipc_escapes);
+    assert_eq!(policy.env, EnvScope::Minimal);
+    let ReadScope::Only(roots) = &policy.read else {
+        panic!("{:?}", policy.read);
+    };
+    for root in [
+        dir.path().to_path_buf(),
+        PathBuf::from("/elsewhere"),
+        PathBuf::from("/caches/cargo"),
+        tmp,
+    ] {
+        assert!(
+            roots.contains(&root),
+            "{} is not readable: {roots:?}",
+            root.display()
+        );
+    }
+    assert!(!policy.deny_read.is_empty(), "the credential defaults stay");
+}
+
+#[test]
 fn to_sandbox_policy_carries_deny_read_and_allowed_domains_through() {
     let settings = base::tool::SandboxSettings {
         allow_read: Vec::new(),

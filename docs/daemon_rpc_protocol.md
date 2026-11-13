@@ -779,7 +779,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 ```jsonc
 { "scene": "code",
   "health": {
-    "status": "ok",                   // ok | degraded | failing,取所有检查里最差的一项
+    "status": "…",                    // ok | degraded | failing,取所有检查里最差的一项
     "checks": [                       // 每项的 details 与下面同名的顶层字段是同一份数据
       { "name":"settings.tiers",     "status":"ok", "summary":"every settings.json present parses" },
       { "name":"settings.providers", "status":"ok", "summary":"provider routing resolves" },
@@ -791,7 +791,8 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
       { "name":"settings.hooks_fail_open",  "status":"ok", "summary":"no hooks configured" },
       { "name":"sandbox.network_allowlist", "status":"ok", "summary":"sandbox.network_mode is not allowlist" },
       { "name":"build.panic",               "status":"ok", "summary":"…",
-        "details": { "panic":"…" } } ] },
+        "details": { "panic":"…" } },
+      { "name":"sandbox.strict_profile",    "status":"…",  "summary":"…" } ] },
   "settings_tiers": [
     { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
     { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
@@ -920,6 +921,11 @@ daemon 自己的会话池还有一项 `sandbox.unattended_network`:这个 daemon
 `ARCHITECTURE.md` §6.3);`sandbox.require_enforcement` 开着时 `summary` 另外说明每条沙箱命令都会
 被拒。其余情况是 `ok`。`details` 是 `{"unreachable_from_the_sandbox": [...], "require_enforcement": false}`,
 不是 `allowlist` 时 `details` 为 `null`。
+
+`sandbox.strict_profile`:自动放行的命令(只读通道)跑在严格 profile 里——断网、只能写会话的
+`TMPDIR`、只能读可读根和系统目录、只带最小环境变量。这台机器的沙箱兑现不了它(没有后端、Linux 上没有
+bwrap,或 `sandbox.dangerously_disable_sandbox` 开着)时是 `degraded`:通道照常放行,命令按会话自己的
+约束跑。`details` 是 `{"enforcement": "full" | "partial" | "none", "sandbox_disabled": false}`。
 
 #### `daemon.subscribeEvents`
 

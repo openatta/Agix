@@ -19,6 +19,8 @@ pub struct ProcessSpec {
     /// Added to whatever the provider's own environment is. Not a replacement:
     /// a remote provider's environment is not this machine's to dictate.
     pub env: Vec<(String, String)>,
+    /// How much of the provider's own environment the process starts from.
+    pub env_scope: super::env::EnvScope,
     pub stdin: Option<Vec<u8>>,
 }
 
@@ -29,6 +31,7 @@ impl ProcessSpec {
             args: Vec::new(),
             cwd: cwd.into(),
             env: Vec::new(),
+            env_scope: super::env::EnvScope::Session,
             stdin: None,
         }
     }

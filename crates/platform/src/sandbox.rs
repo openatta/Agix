@@ -69,6 +69,9 @@
 //! the state root with the mounts of `mask::mask_plan` and hides each of the
 //! project's key files.
 //!
+//! A policy whose `read` is `ReadScope::Only` narrows that further
+//! (`read_scope`).
+//!
 //! # What a confined command may not connect to
 //!
 //! The daemon it runs under: a command connected to the daemon's socket would
@@ -150,8 +153,8 @@
 //! `LocalProcess` starts it in a session of its own.
 
 pub use base::interface::exec::{
-    default_deny_read, default_deny_read_in, Confined, Enforcement, NetworkMode, ProcessSpec,
-    Sandbox, SandboxMode, SandboxPolicy,
+    default_deny_read, default_deny_read_in, Confined, Enforcement, EnvScope, NetworkMode,
+    ProcessSpec, ReadScope, Sandbox, SandboxMode, SandboxPolicy,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -161,6 +164,8 @@ use std::sync::RwLock;
 #[cfg(feature = "sandbox")]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod mask;
+#[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+mod read_scope;
 
 /// What this process serves its clients on, one entry per live [`Fence`].
 static SERVED: RwLock<Vec<(u64, Served)>> = RwLock::new(Vec::new());
@@ -270,7 +275,12 @@ fn state_root_of(policy: &SandboxPolicy) -> Option<PathBuf> {
     policy
         .state_root
         .clone()
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".agix")))
+        .or_else(|| home_dir().map(|h| h.join(".agix")))
+}
+
+#[cfg(feature = "sandbox")]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 /// The project's `.agix`, as given and as the kernel sees it.
@@ -750,11 +760,20 @@ fn build_macos_profile(cwd: &Path, additional: &[PathBuf], policy: &SandboxPolic
         ));
     }
 
+    s.push_str(&read_scope::macos_rules(
+        &policy.read,
+        home_dir().as_deref(),
+    ));
     if !policy.deny_read.is_empty() {
         for p in policy.deny_read.iter().flat_map(|p| spellings(p)) {
             s.push_str(&format!("(deny file-read* (subpath \"{}\"))\n", path(&p)));
         }
-        for p in policy.allow_read.iter().flat_map(|p| spellings(p)) {
+        for p in policy
+            .allow_read
+            .iter()
+            .filter(|p| policy.read.names(p))
+            .flat_map(|p| spellings(p))
+        {
             s.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", path(&p)));
         }
     }
@@ -1267,7 +1286,9 @@ fn linux_wrap(
     let roots = Roots::resolve(cwd, additional_writable, policy);
     // bwrap applies mounts in argument order, so each one below lands on top
     // of the ones before it.
-    let mut args: Vec<String> = vec!["--ro-bind".into(), "/".into(), "/".into()];
+    let read = read_scope::LinuxReadScope::new(&policy.read, home_dir());
+    let mut args: Vec<String> = Vec::new();
+    read.base_mounts(&mut args);
     args.extend(
         [
             "--tmpfs",
@@ -1290,6 +1311,7 @@ fn linux_wrap(
         .map(String::from),
     );
     // After the `/tmp` tmpfs, or a project under `/tmp` is hidden by it.
+    read.scope_mounts(&mut args);
     if !roots.only_additional {
         bind(&mut args, "--bind", &roots.cwd);
     }
@@ -1321,16 +1343,21 @@ fn linux_wrap(
         // cannot be made read-only to keep one from being created.
         _ => {
             if let Some(state_root) = &roots.state_root {
+                // A path the read scope leaves out is not in the sandbox at
+                // all: binding it read-only would put it there.
                 let (config_files, config_dirs) = roots.unfenced_state_root_config();
-                for file in &config_files {
+                for file in config_files.iter().filter(|p| read.shows(p)) {
                     bind(&mut args, "--ro-bind-try", file);
                 }
-                for dir in &config_dirs {
+                for dir in config_dirs.iter().filter(|p| read.shows(p)) {
                     read_only(&mut args, dir);
                 }
                 for dir in std::iter::once(state_root).chain(&roots.paths.scene_dirs()) {
                     for file in base::paths::STATE_ROOT_SCENE_FILES {
-                        bind(&mut args, "--ro-bind-try", &dir.join(file));
+                        let file = dir.join(file);
+                        if read.shows(&file) {
+                            bind(&mut args, "--ro-bind-try", &file);
+                        }
                     }
                 }
                 for p in state_root_secrets.iter().flat_map(|l| l.existing()) {
@@ -1438,12 +1465,17 @@ impl Sandbox for PlatformSandbox {
             args,
             cwd,
             env,
+            env_scope,
             stdin,
         } = spec;
         let inner = ProcessSpec::new(program, Path::new(".")).args(args);
         let mut confined = wrap_program(inner, &cwd, &policy.additional_writable, policy);
         confined.spec.cwd = cwd;
         confined.spec.env = env;
+        confined.spec.env_scope = match policy.env {
+            EnvScope::Minimal => EnvScope::Minimal,
+            EnvScope::Session => env_scope,
+        };
         confined.spec.stdin = stdin;
         confined
     }
@@ -1990,6 +2022,40 @@ mod tests {
             return; // bwrap not installed in this environment
         }
         assert!(cmd.spec.args.iter().any(|a| a == "--unshare-net"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_a_read_scope_binds_its_roots_one_by_one() {
+        let project = PathBuf::from("/tmp/work");
+        let policy = SandboxPolicy::default().strict([project.clone()], None);
+        let cmd = wrap(SandboxOptions {
+            command: "ls",
+            cwd: &project,
+            additional_writable: &[],
+            disable: false,
+            policy,
+        });
+        if cmd.mode != SandboxMode::LinuxBwrap {
+            return;
+        }
+        let args = &cmd.spec.args;
+        let at = |triple: [&str; 3]| args.windows(3).position(|w| w == triple);
+        assert_eq!(at(["--ro-bind", "/", "/"]), None, "{args:?}");
+        assert!(at(["--ro-bind-try", "/usr", "/usr"]).is_some(), "{args:?}");
+        let tmpfs = args
+            .windows(2)
+            .position(|w| w == ["--tmpfs", "/tmp"])
+            .unwrap();
+        let bound = at(["--ro-bind-try", "/tmp/work", "/tmp/work"]).unwrap();
+        assert!(
+            tmpfs < bound,
+            "the project is hidden under /tmp's tmpfs: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "--unshare-net"));
+        assert!(!args
+            .windows(3)
+            .any(|w| w[0] == "--bind" && w[1] == "/tmp/work"));
     }
 
     #[cfg(target_os = "linux")]
@@ -2845,6 +2911,147 @@ mod tests {
         }
         assert!(!runs("git", &["add", "a"]));
         assert!(!s.project.join(".git").join("index").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_a_read_scope_denies_everything_else_before_the_deny_list() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/Users/me".into()));
+        let project = PathBuf::from("/tmp/work");
+        let policy = SandboxPolicy {
+            deny_read: vec![home.join(".ssh")],
+            allow_read: vec![home.join(".npmrc"), project.join("vendored")],
+            ..Default::default()
+        }
+        .strict([project.clone()], Some(PathBuf::from("/tmp/session-tmp")));
+        let cmd = wrap(SandboxOptions {
+            command: "true",
+            cwd: &project,
+            additional_writable: &policy.additional_writable.clone(),
+            disable: false,
+            policy,
+        });
+        let profile = &cmd.spec.args[1];
+        let scoped = profile
+            .find("(deny file-read*)\n(allow file-read-metadata)\n")
+            .unwrap_or_else(|| panic!("no read scope:\n{profile}"));
+        let ssh = profile
+            .find(&format!(
+                "(deny file-read* (subpath \"{}",
+                home.join(".ssh").display()
+            ))
+            .unwrap_or_else(|| panic!("no deny_read rule:\n{profile}"));
+        assert!(scoped < ssh, "the deny list would be reopened:\n{profile}");
+        for root in [
+            "/usr",
+            "/System",
+            "/private/tmp/work",
+            "/private/tmp/session-tmp",
+        ] {
+            assert!(
+                profile.contains(&format!("(subpath \"{root}\")")),
+                "{root} is not readable:\n{profile}"
+            );
+        }
+        assert!(
+            !profile.contains(".npmrc"),
+            "an allow_read outside the scope reopened it:\n{profile}"
+        );
+        assert!(profile.contains("vendored"), "{profile}");
+        assert_eq!(profile.matches('(').count(), profile.matches(')').count());
+    }
+
+    /// The strict profile on this machine: the commands the read-only lane
+    /// lets through — `ls`, `cat`, git through the xcrun shim and directly —
+    /// run; reading outside the project, writing in it and starting from the
+    /// daemon's environment do not.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_strict_command_reads_the_project_and_the_system_and_nothing_else() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        let commit = std::process::Command::new("git")
+            .args(["-c", "core.hooksPath=/dev/null", "add", "a"])
+            .current_dir(&s.project)
+            .status()
+            .unwrap()
+            .success()
+            && std::process::Command::new("git")
+                .args(["-c", "core.hooksPath=/dev/null", "commit", "-qm", "a"])
+                .current_dir(&s.project)
+                .status()
+                .unwrap()
+                .success();
+        assert!(commit);
+        std::fs::write(s.elsewhere.join("secret"), "s3cret").unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(s.state_root.clone()),
+            ..Default::default()
+        }
+        .strict([s.project.clone()], Some(s.tmp.clone()));
+        let run = |command: &str| {
+            let confined = PlatformSandbox.confine(
+                ProcessSpec::new("bash", &s.project).args(["-c", command]),
+                &policy,
+            );
+            assert_eq!(
+                confined.enforcement,
+                Enforcement::Full,
+                "{:?}",
+                confined.unmet
+            );
+            assert_eq!(confined.spec.env_scope, EnvScope::Minimal);
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .current_dir(&s.project)
+                .output()
+                .unwrap()
+        };
+        let tmp = s.tmp.display().to_string();
+        for command in [
+            "ls".to_string(),
+            "ls -la /".to_string(),
+            "cat a".to_string(),
+            "head -1 a && wc -l a && grep -r a . >/dev/null".to_string(),
+            "date".to_string(),
+            "git status --short".to_string(),
+            "git log --oneline -1".to_string(),
+            "git diff HEAD".to_string(),
+            "/usr/bin/git rev-parse HEAD".to_string(),
+            "/usr/bin/xcrun --find git".to_string(),
+            format!("echo x > '{tmp}/f' && cat '{tmp}/f'"),
+        ] {
+            let out = run(&command);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "`{command}` failed: {stderr}");
+            assert!(
+                !stderr.contains("unable to access") && !stderr.contains("xcrun_db"),
+                "`{command}`: {stderr}"
+            );
+        }
+        let developer = std::process::Command::new("xcode-select")
+            .arg("-p")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        if let Some(dir) = developer {
+            let out = run(&format!("'{dir}/usr/bin/git' status --short"));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        for command in [
+            format!("cat '{}/secret'", s.elsewhere.display()),
+            format!("ls '{}'", s.state_root.display()),
+            "echo x > a".to_string(),
+            "git add a".to_string(),
+        ] {
+            assert!(!run(&command).status.success(), "`{command}` was allowed");
+        }
     }
 
     /// A unix socket that answers every connection and hangs up.
