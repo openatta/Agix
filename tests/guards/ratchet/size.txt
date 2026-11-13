@@ -42,7 +42,6 @@ fn    crates/core/src/context/goal.rs                      GoalSlot::update     
 fn    crates/core/src/frozen/mod.rs                        FrozenContext::collect_with_options      104
 fn    crates/script-host/src/adapters/prompt_assembly.rs   PromptAssemblyScript::on_assemble_async  145
 fn    crates/core/src/memory.rs                            select_memories_from                     193
-fn    crates/core/src/project_trust.rs                     gate_sandbox                             112
 fn    crates/core/src/prompt.rs                            assemble_prompt_with                     150
 fn    crates/core/src/settings/loaded.rs                   LoadedSettings::load_from                198
 fn    crates/hooks/src/catalog.rs                          HookEvent::spec                          179

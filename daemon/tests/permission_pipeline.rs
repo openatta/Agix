@@ -1,5 +1,5 @@
 //! 权限管线里已知还没修的缺陷，各自从宿主这一侧的 socket 或装配入口复现。
-//! 全部 `#[ignore]`，对应的修复落地时去掉；它们同时是那些修复的回归用例。
+//! 还没修的带 `#[ignore]`，对应的修复落地时去掉；它们同时是那些修复的回归用例。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -439,11 +439,13 @@ async fn a_linked_scenes_credentials_are_refused_under_their_real_path() {
 /// An untrusted project's own settings take no key that loosens the
 /// instance, not only the ones a deny-list happens to name.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D1: fix pending"]
 async fn an_untrusted_project_cannot_turn_off_reaping_or_telemetry() {
     let daemon = Daemon::start(
         Setup {
-            global: json!({"project_trust": {"default": "untrusted"}}),
+            global: json!({
+                "project_trust": {"default": "untrusted"},
+                "sandbox": {"reap_process_groups": true},
+            }),
             project: json!({
                 "sandbox": {"reap_process_groups": false},
                 "telemetry_enabled": false,

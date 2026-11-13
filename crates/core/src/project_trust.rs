@@ -7,7 +7,8 @@
 //! root and lives in the global tier (`project_trust`), so nothing inside the
 //! project can grant it. An untrusted project tier may add and tighten, never
 //! loosen — the same rule the engine already applies to what arrives with a
-//! plugin. [`gate_layer`] applies it to a settings file; agent types, skill
+//! plugin. [`gate_layer`] applies it to a settings file key by key through
+//! [`PROJECT_TIER`], a list every settings key must be in; agent types, skill
 //! commands and the hooks search path read [`ProjectTrust`] off
 //! `LoadedSettings::trust`.
 
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::context::config::NetworkModeConfig;
+use crate::interface::exec::env::SubprocessEnvMode;
 use crate::settings::PermissionMode;
 
 /// What a project no `trusted` pattern names is.
@@ -223,281 +225,272 @@ fn expand_home(pattern: &str) -> String {
     }
 }
 
-/// Inspect one project-tier settings file for what only a trusted project
-/// may set, judged against `lower` — everything merged beneath it. Returns
-/// what it found as dotted keys; with `withhold` set, also removes it from
-/// `layer`, so what is left can only add or tighten.
+/// What an untrusted project tier may do with one settings key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectKey {
+    Free,
+    /// Kept when the value is at least as tight as what is merged beneath it.
+    Tighten(Order),
+    Withheld,
+}
+
+/// How to tell whether a value is at least as tight as the one beneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    TrueTighter,
+    FalseTighter,
+    /// `PermissionMode::permissiveness`.
+    Mode,
+    /// `deny_all` < `allowlist` < `unrestricted`.
+    NetworkMode,
+    /// `allowlist` < `inherit`.
+    EnvMode,
+    Subset,
+    /// A subset, where an empty list admits everything.
+    SubsetEmptyIsAll,
+    Superset,
+    /// An empty list means the built-in credential list; a non-empty one
+    /// replaces that list rather than adding to it.
+    DenyRead,
+    /// A number, where `null` is no limit.
+    Lower,
+    /// A number, where `0` is no limit.
+    LowerZeroIsWidest,
+    /// Names, or is, a provider the tiers beneath already define.
+    ProviderDefinedBelow,
+}
+
+/// Every key a project-tier settings file may hold, dotted, with `*` for one
+/// map key. A key is governed by the longest entry it starts with; a key with
+/// no entry is withheld. An entry shorter than the keys it governs is always
+/// `Withheld`, so a field added beneath it later cannot pass unclassified.
 ///
-/// `permission_rules` are not looked at here: the loader holds them apart
-/// from the merge and drops the `allow` ones itself.
+/// `permission_rules` is `Free` here because the loader drops the `allow`
+/// rules itself.
+pub const PROJECT_TIER: &[(&str, ProjectKey)] = {
+    use Order::*;
+    use ProjectKey::{Free, Tighten, Withheld};
+    &[
+        ("$schema", Free),
+        ("allow_client_permission_override", Tighten(FalseTighter)),
+        ("compaction.cached_microcompact", Free),
+        ("compaction.keep_recent", Free),
+        ("compaction.reactive", Free),
+        ("compaction.threshold_tokens", Free),
+        ("default_provider", Tighten(ProviderDefinedBelow)),
+        ("disable_skill_shell_execution", Tighten(TrueTighter)),
+        ("execution.max_agent_depth", Tighten(Lower)),
+        ("execution.max_api_calls_per_turn", Tighten(Lower)),
+        ("execution.max_budget_tokens", Tighten(Lower)),
+        ("execution.max_concurrent_subagents", Tighten(Lower)),
+        ("execution.max_parallelism", Tighten(Lower)),
+        (
+            "execution.permission_prompt_timeout_secs",
+            Tighten(LowerZeroIsWidest),
+        ),
+        ("execution.team_enabled", Tighten(FalseTighter)),
+        ("execution.team_max_persistent_members", Tighten(Lower)),
+        ("execution.team_member_idle_timeout_secs", Tighten(Lower)),
+        ("execution.team_stage_concurrency", Tighten(Lower)),
+        ("hooks_config", Withheld),
+        ("instruction_file", Withheld),
+        ("language", Free),
+        ("mcp_servers.*", Withheld),
+        ("memory_enabled", Free),
+        ("model.api_type", Withheld),
+        ("model.auth_token", Withheld),
+        ("model.base_url", Withheld),
+        ("model.effort", Free),
+        ("model.fallback_model", Free),
+        ("model.max_tokens", Free),
+        ("model.model_name", Free),
+        ("model.thinking_mode", Free),
+        ("path_style", Free),
+        ("permission_mode", Tighten(Mode)),
+        ("permission_rules", Free),
+        ("plugins.allow", Tighten(SubsetEmptyIsAll)),
+        ("plugins.enable_on_install", Tighten(FalseTighter)),
+        ("plugins.enabled", Tighten(FalseTighter)),
+        ("project_trust", Withheld),
+        ("prompt_append", Free),
+        ("prompt_override", Withheld),
+        ("providers.*", Withheld),
+        ("recorder", Withheld),
+        ("sandbox.additional_directories", Tighten(Subset)),
+        ("sandbox.allow_read", Tighten(Subset)),
+        ("sandbox.allow_write", Tighten(Subset)),
+        ("sandbox.allowed_domains", Tighten(Subset)),
+        ("sandbox.cache_directories.*", Tighten(Subset)),
+        ("sandbox.dangerously_disable_sandbox", Tighten(FalseTighter)),
+        ("sandbox.deny_read", Tighten(DenyRead)),
+        ("sandbox.deny_write", Tighten(Superset)),
+        ("sandbox.network_mode", Tighten(NetworkMode)),
+        ("sandbox.read_anywhere", Tighten(FalseTighter)),
+        ("sandbox.read_directories", Tighten(Subset)),
+        ("sandbox.reap_process_groups", Tighten(TrueTighter)),
+        ("sandbox.require_enforcement", Tighten(TrueTighter)),
+        ("sandbox.subprocess_env.allow", Tighten(Subset)),
+        ("sandbox.subprocess_env.mode", Tighten(EnvMode)),
+        (
+            "sandbox.unattended_requires_network_policy",
+            Tighten(TrueTighter),
+        ),
+        ("scripts", Withheld),
+        ("task_models.*", Tighten(ProviderDefinedBelow)),
+        ("telemetry_enabled", Tighten(TrueTighter)),
+        ("telemetry_url", Withheld),
+    ]
+};
+
+fn entries() -> impl Iterator<Item = (Vec<&'static str>, &'static ProjectKey)> {
+    PROJECT_TIER
+        .iter()
+        .map(|(pattern, key)| (pattern.split('.').collect(), key))
+}
+
+fn agrees(pattern: &[&str], path: &[&str]) -> bool {
+    pattern.iter().zip(path).all(|(p, k)| *p == "*" || p == k)
+}
+
+/// The entry governing `path`: the longest one `path` starts with.
+fn governing_entry(path: &[&str]) -> Option<(Vec<&'static str>, &'static ProjectKey)> {
+    entries()
+        .filter(|(pattern, _)| pattern.len() <= path.len() && agrees(pattern, path))
+        .max_by_key(|(pattern, _)| pattern.len())
+}
+
+/// Whether some entry names a key beneath `path`, so `path` is a section to
+/// look into rather than a value to judge whole.
+fn has_entries_beneath(path: &[&str]) -> bool {
+    entries().any(|(pattern, _)| pattern.len() > path.len() && agrees(&pattern, path))
+}
+
+/// Inspect one project-tier settings file for what only a trusted project
+/// may set, judged key by key against [`PROJECT_TIER`] and `lower` —
+/// everything merged beneath it. Returns what it found as dotted keys; with
+/// `withhold` set, also removes it from `layer`, so what is left can only
+/// add or tighten.
 pub fn gate_layer(layer: &mut Map<String, Value>, lower: &Value, withhold: bool) -> Vec<String> {
     let mut found = Vec::new();
-
-    if layer.get("hooks_config").is_some_and(|v| !v.is_null()) {
-        found.push("hooks_config".to_string());
-        if withhold {
-            layer.remove("hooks_config");
-        }
-    }
-    if layer
-        .get("scripts")
-        .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
-    {
-        found.push("scripts".to_string());
-        if withhold {
-            layer.remove("scripts");
-        }
-    }
-    if let Some(servers) = layer.get("mcp_servers").and_then(Value::as_object) {
-        found.extend(servers.keys().map(|name| format!("mcp_servers.{name}")));
-        if withhold {
-            layer.remove("mcp_servers");
-        }
-    }
-
-    found.extend(gate_destinations(layer, lower, withhold));
-
-    if let Some(mode) = layer.get("permission_mode") {
-        let parse = |v: &Value| serde_json::from_value::<PermissionMode>(v.clone()).ok();
-        let below = lower
-            .get("permission_mode")
-            .and_then(parse)
-            .unwrap_or_default();
-        if parse(mode).is_some_and(|m| m.permissiveness() > below.permissiveness()) {
-            found.push("permission_mode".to_string());
-            if withhold {
-                layer.remove("permission_mode");
-            }
-        }
-    }
-    for (key, loose) in [
-        ("allow_client_permission_override", true),
-        ("disable_skill_shell_execution", false),
-    ] {
-        if loosens_bool(layer, lower, key, loose) {
-            found.push(key.to_string());
-            if withhold {
-                layer.remove(key);
-            }
-        }
-    }
-
-    if let Some(Value::Object(sandbox)) = layer.get_mut("sandbox") {
-        let below = lower.get("sandbox").cloned().unwrap_or(Value::Null);
-        for key in gate_sandbox(sandbox, &below, withhold) {
-            found.push(format!("sandbox.{key}"));
-        }
-    }
-
+    gate_section(layer, &mut Vec::new(), lower, withhold, &mut found);
     found
 }
 
-/// What chooses where the conversation, a credential or telemetry is sent,
-/// or which file of the user's is read into the prompt: providers, and a
-/// `default_provider` or `task_models` entry naming one of the project's own;
-/// `model.base_url` / `auth_token`; `telemetry_url`; `recorder`;
-/// `instruction_file`; and `plugins` set looser than beneath it.
-fn gate_destinations(layer: &mut Map<String, Value>, lower: &Value, withhold: bool) -> Vec<String> {
-    let mut found = Vec::new();
-    let defined_below = |name: &str| {
-        lower
-            .get("providers")
-            .and_then(|providers| providers.get(name))
-            .is_some()
-    };
-
-    if let Some(providers) = layer.get("providers").and_then(Value::as_object) {
-        found.extend(providers.keys().map(|name| format!("providers.{name}")));
-        if withhold {
-            layer.remove("providers");
-        }
-    }
-    if layer
-        .get("default_provider")
-        .and_then(Value::as_str)
-        .is_some_and(|name| !defined_below(name))
-    {
-        found.push("default_provider".to_string());
-        if withhold {
-            layer.remove("default_provider");
-        }
-    }
-    if let Some(Value::Object(tasks)) = layer.get_mut("task_models") {
-        let provider_of = |entry: &Value| match entry {
-            Value::String(name) => Some(name.clone()),
-            other => other.get("provider")?.as_str().map(str::to_string),
-        };
-        let foreign: Vec<String> = tasks
-            .iter()
-            .filter(|(_, entry)| provider_of(entry).is_some_and(|p| !defined_below(&p)))
-            .map(|(task, _)| task.clone())
-            .collect();
-        for task in foreign {
-            found.push(format!("task_models.{task}"));
+fn gate_section(
+    section: &mut Map<String, Value>,
+    path: &mut Vec<String>,
+    lower: &Value,
+    withhold: bool,
+    found: &mut Vec<String>,
+) {
+    let keys: Vec<String> = section.keys().cloned().collect();
+    for key in keys {
+        path.push(key.clone());
+        let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+        let value = &section[&key];
+        if value.is_object() && has_entries_beneath(&segments) {
+            if let Some(Value::Object(inner)) = section.get_mut(&key) {
+                gate_section(inner, path, lower, withhold, found);
+            }
+        } else if !keeps(value, &segments, lower) {
+            found.push(path.join("."));
             if withhold {
-                tasks.remove(&task);
+                section.remove(&key);
             }
         }
+        path.pop();
     }
-    if let Some(Value::Object(model)) = layer.get_mut("model") {
-        for key in ["base_url", "auth_token"] {
-            if model.contains_key(key) {
-                found.push(format!("model.{key}"));
-                if withhold {
-                    model.remove(key);
+}
+
+fn keeps(value: &Value, path: &[&str], lower: &Value) -> bool {
+    match governing_entry(path).map(|(_, key)| *key) {
+        Some(ProjectKey::Free) => true,
+        Some(ProjectKey::Tighten(order)) => {
+            let below = path
+                .iter()
+                .try_fold(lower, |node, segment| node.get(segment))
+                .unwrap_or(&Value::Null);
+            order.keeps(value, below, lower)
+        }
+        Some(ProjectKey::Withheld) | None => false,
+    }
+}
+
+impl Order {
+    /// Whether `value` lets through no more than `below`. `lower` is the
+    /// whole of what is merged beneath, for an order that looks elsewhere in
+    /// it.
+    ///
+    /// A scalar of the wrong type is kept: the merge refuses it as not
+    /// fitting its setting and reports it among the ignored values, where a
+    /// typo belongs — trusting the project would not make it take effect.
+    /// A list that is not a list is not kept: what it would do is unknown.
+    fn keeps(self, value: &Value, below: &Value, lower: &Value) -> bool {
+        match self {
+            Self::TrueTighter => value.as_bool() != Some(false) || below.as_bool() == Some(false),
+            Self::FalseTighter => value.as_bool() != Some(true) || below.as_bool() == Some(true),
+            Self::Mode => {
+                let parse = |v: &Value| serde_json::from_value::<PermissionMode>(v.clone()).ok();
+                let below = parse(below).unwrap_or_default();
+                parse(value).is_none_or(|m| m.permissiveness() <= below.permissiveness())
+            }
+            Self::NetworkMode => {
+                let rank = |v: &Value| {
+                    serde_json::from_value::<NetworkModeConfig>(v.clone())
+                        .ok()
+                        .map(|m| match m {
+                            NetworkModeConfig::DenyAll => 0,
+                            NetworkModeConfig::Allowlist => 1,
+                            NetworkModeConfig::Unrestricted => 2,
+                        })
+                };
+                let below = rank(below).unwrap_or(2);
+                rank(value).is_none_or(|r| r <= below)
+            }
+            Self::EnvMode => {
+                let parse = |v: &Value| serde_json::from_value::<SubprocessEnvMode>(v.clone()).ok();
+                parse(value) != Some(SubprocessEnvMode::Inherit)
+                    || parse(below).unwrap_or_default() == SubprocessEnvMode::Inherit
+            }
+            Self::Subset => is_subset(value, Some(below)),
+            Self::SubsetEmptyIsAll => {
+                is_empty_list(below) || (!is_empty_list(value) && is_subset(value, Some(below)))
+            }
+            Self::Superset => is_subset(below, Some(value)),
+            Self::DenyRead => {
+                if is_empty_list(below) {
+                    is_empty_list(value)
+                } else {
+                    is_subset(below, Some(value))
+                }
+            }
+            Self::Lower => match (value, below.as_f64()) {
+                (Value::Null, _) => below.is_null(),
+                (Value::Number(n), Some(b)) => n.as_f64().is_none_or(|v| v <= b),
+                _ => true,
+            },
+            Self::LowerZeroIsWidest => match (value.as_u64(), below.as_u64().unwrap_or(0)) {
+                (Some(_), 0) | (None, _) => true,
+                (Some(v), b) => v != 0 && v <= b,
+            },
+            Self::ProviderDefinedBelow => {
+                let defined_below = |name: &str| {
+                    lower
+                        .get("providers")
+                        .and_then(|providers| providers.get(name))
+                        .is_some()
+                };
+                match value {
+                    Value::String(name) => defined_below(name),
+                    Value::Object(entry) => entry
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .is_none_or(defined_below),
+                    _ => true,
                 }
             }
         }
     }
-    for key in ["telemetry_url", "recorder", "instruction_file"] {
-        if layer.get(key).is_some_and(|v| !v.is_null()) {
-            found.push(key.to_string());
-            if withhold {
-                layer.remove(key);
-            }
-        }
-    }
-
-    if let Some(Value::Object(plugins)) = layer.get_mut("plugins") {
-        let below = lower.get("plugins").cloned().unwrap_or(Value::Null);
-        if loosens_bool(plugins, &below, "enabled", true) {
-            found.push("plugins.enabled".to_string());
-            if withhold {
-                plugins.remove("enabled");
-            }
-        }
-        let below_allow = below.get("allow").unwrap_or(&Value::Null);
-        if plugins.get("allow").is_some_and(|listed| {
-            !is_empty_list(below_allow)
-                && (is_empty_list(listed) || !is_subset(listed, Some(below_allow)))
-        }) {
-            found.push("plugins.allow".to_string());
-            if withhold {
-                plugins.remove("allow");
-            }
-        }
-    }
-
-    found
-}
-
-fn gate_sandbox(sandbox: &mut Map<String, Value>, lower: &Value, withhold: bool) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut flag = |sandbox: &mut Map<String, Value>, key: String, remove: &str| {
-        found.push(key);
-        if withhold {
-            sandbox.remove(remove);
-        }
-    };
-
-    for (key, loose) in [
-        ("dangerously_disable_sandbox", true),
-        ("read_anywhere", true),
-        ("require_enforcement", false),
-        ("unattended_requires_network_policy", false),
-    ] {
-        if loosens_bool(sandbox, lower, key, loose) {
-            flag(sandbox, key.to_string(), key);
-        }
-    }
-
-    for key in [
-        "additional_directories",
-        "read_directories",
-        "allow_read",
-        "allow_write",
-        "allowed_domains",
-    ] {
-        if let Some(listed) = sandbox.get(key) {
-            if !is_subset(listed, lower.get(key)) {
-                flag(sandbox, key.to_string(), key);
-            }
-        }
-    }
-
-    if let Some(listed) = sandbox.get("deny_write") {
-        if !is_subset(
-            lower.get("deny_write").unwrap_or(&Value::Null),
-            Some(listed),
-        ) {
-            flag(sandbox, "deny_write".to_string(), "deny_write");
-        }
-    }
-    // An empty `deny_read` means the built-in credential list; any non-empty
-    // one replaces that list rather than adding to it.
-    if let Some(listed) = sandbox.get("deny_read") {
-        let below = lower.get("deny_read").unwrap_or(&Value::Null);
-        let keeps = if is_empty_list(below) {
-            is_empty_list(listed)
-        } else {
-            is_subset(below, Some(listed))
-        };
-        if !keeps {
-            flag(sandbox, "deny_read".to_string(), "deny_read");
-        }
-    }
-
-    if let Some(mode) = sandbox.get("network_mode") {
-        let rank = |v: &Value| {
-            serde_json::from_value::<NetworkModeConfig>(v.clone())
-                .ok()
-                .map(|m| match m {
-                    NetworkModeConfig::DenyAll => 0,
-                    NetworkModeConfig::Allowlist => 1,
-                    NetworkModeConfig::Unrestricted => 2,
-                })
-        };
-        let below = lower.get("network_mode").and_then(rank).unwrap_or(2);
-        if rank(mode).is_some_and(|r| r > below) {
-            flag(sandbox, "network_mode".to_string(), "network_mode");
-        }
-    }
-
-    if let Some(Value::Object(groups)) = sandbox.get_mut("cache_directories") {
-        let below = lower.get("cache_directories");
-        let widened: Vec<String> = groups
-            .iter()
-            .filter(|(group, dirs)| !is_subset(dirs, below.and_then(|b| b.get(group.as_str()))))
-            .map(|(group, _)| group.clone())
-            .collect();
-        for group in widened {
-            found.push(format!("cache_directories.{group}"));
-            if withhold {
-                groups.remove(&group);
-            }
-        }
-    }
-
-    if let Some(Value::Object(env)) = sandbox.get_mut("subprocess_env") {
-        let below = lower.get("subprocess_env");
-        let below_mode = below
-            .and_then(|b| b.get("mode"))
-            .and_then(Value::as_str)
-            .unwrap_or("inherit");
-        if env.get("mode").and_then(Value::as_str) == Some("inherit") && below_mode == "allowlist" {
-            found.push("subprocess_env.mode".to_string());
-            if withhold {
-                env.remove("mode");
-            }
-        }
-        if env
-            .get("allow")
-            .is_some_and(|allow| !is_subset(allow, below.and_then(|b| b.get("allow"))))
-        {
-            found.push("subprocess_env.allow".to_string());
-            if withhold {
-                env.remove("allow");
-            }
-        }
-    }
-
-    found
-}
-
-/// Whether `layer` sets `key` to its `loose` value where `lower` did not.
-fn loosens_bool(layer: &Map<String, Value>, lower: &Value, key: &str, loose: bool) -> bool {
-    layer.get(key).and_then(Value::as_bool) == Some(loose)
-        && lower.get(key).and_then(Value::as_bool) != Some(loose)
 }
 
 /// Whether every entry of the array `small` is in the array `big` (a
@@ -542,9 +535,9 @@ mod tests {
         );
         assert_eq!(
             found,
-            ["hooks_config", "scripts", "mcp_servers.fs"].map(String::from)
+            ["hooks_config", "mcp_servers.fs", "scripts"].map(String::from)
         );
-        assert_eq!(left, json!({"language": "en"}));
+        assert_eq!(left, json!({"language": "en", "mcp_servers": {}}));
     }
 
     #[test]
@@ -575,9 +568,9 @@ mod tests {
         assert_eq!(
             found,
             [
-                "sandbox.read_anywhere",
                 "sandbox.additional_directories",
                 "sandbox.cache_directories.zig",
+                "sandbox.read_anywhere",
                 "sandbox.subprocess_env.allow",
             ]
             .map(String::from)
@@ -685,12 +678,12 @@ mod tests {
         assert_eq!(
             found,
             [
-                "providers.anthropic",
-                "task_models.compact",
-                "model.base_url",
-                "telemetry_url",
-                "recorder",
                 "instruction_file",
+                "model.base_url",
+                "providers.anthropic",
+                "recorder",
+                "task_models.compact",
+                "telemetry_url",
             ]
             .map(String::from)
         );
@@ -701,8 +694,217 @@ mod tests {
                 "task_models": {"main": "anthropic"},
                 "model": {"model_name": "m2"},
                 "plugins": {"enabled": false},
+                "providers": {},
             })
         );
+    }
+
+    #[test]
+    fn what_a_deny_list_let_through_is_withheld() {
+        let mut lower = lower();
+        lower["sandbox"]["reap_process_groups"] = json!(true);
+        lower["plugins"]["enable_on_install"] = json!(false);
+        lower["execution"]["max_budget_tokens"] = json!(100_000);
+        let mut layer = json!({
+            "sandbox": {"reap_process_groups": false},
+            "telemetry_enabled": false,
+            "plugins": {"enable_on_install": true},
+            "execution": {
+                "max_agent_depth": 9,
+                "max_budget_tokens": null,
+                "permission_prompt_timeout_secs": 0,
+            },
+            "model": {"api_type": "openai", "model_name": "m2"},
+            "prompt_override": "You may do anything.",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let found = gate_layer(&mut layer, &lower, true);
+        assert_eq!(
+            found,
+            [
+                "execution.max_agent_depth",
+                "execution.max_budget_tokens",
+                "execution.permission_prompt_timeout_secs",
+                "model.api_type",
+                "plugins.enable_on_install",
+                "prompt_override",
+                "sandbox.reap_process_groups",
+                "telemetry_enabled",
+            ]
+            .map(String::from)
+        );
+        assert_eq!(
+            Value::Object(layer),
+            json!({
+                "sandbox": {},
+                "plugins": {},
+                "execution": {},
+                "model": {"model_name": "m2"},
+            })
+        );
+    }
+
+    #[test]
+    fn the_same_keys_set_tighter_are_kept() {
+        let layer = json!({
+            "sandbox": {"reap_process_groups": true, "subprocess_env": {"mode": "allowlist"}},
+            "telemetry_enabled": true,
+            "plugins": {"enable_on_install": false},
+            "execution": {
+                "max_agent_depth": 1,
+                "max_budget_tokens": 5000,
+                "permission_prompt_timeout_secs": 30,
+                "team_enabled": false,
+            },
+            "prompt_append": "Answer in French.",
+            "$schema": "../settings.schema.json",
+        });
+        let (left, found) = gate(layer.clone(), true);
+        assert!(found.is_empty(), "{found:?}");
+        assert_eq!(left, layer);
+    }
+
+    #[test]
+    fn a_limit_of_none_or_zero_is_the_widest() {
+        let mut lower = lower();
+        lower["execution"]["max_budget_tokens"] = json!(1000);
+        lower["execution"]["permission_prompt_timeout_secs"] = json!(0);
+        let mut layer = json!({"execution": {
+            "max_budget_tokens": 1001,
+            "permission_prompt_timeout_secs": 999_999,
+        }})
+        .as_object()
+        .unwrap()
+        .clone();
+        let found = gate_layer(&mut layer, &lower, true);
+        assert_eq!(found, ["execution.max_budget_tokens"]);
+        assert_eq!(
+            Value::Object(layer),
+            json!({"execution": {"permission_prompt_timeout_secs": 999_999}})
+        );
+    }
+
+    #[test]
+    fn a_key_no_entry_names_is_withheld() {
+        let (left, found) = gate(
+            json!({
+                "langauge": "fr",
+                "sandbox": {"read_everywhere": true, "network_mode": "deny_all"},
+                "execution": "unlimited",
+            }),
+            true,
+        );
+        assert_eq!(
+            found,
+            ["execution", "langauge", "sandbox.read_everywhere"].map(String::from)
+        );
+        assert_eq!(left, json!({"sandbox": {"network_mode": "deny_all"}}));
+    }
+
+    #[test]
+    fn a_scalar_of_the_wrong_type_is_left_for_the_merge_to_refuse() {
+        let layer = json!({
+            "permission_mode": "careful",
+            "telemetry_enabled": "yes",
+            "execution": {"max_agent_depth": "2", "permission_prompt_timeout_secs": -1},
+            "default_provider": 7,
+        });
+        let (left, found) = gate(layer.clone(), true);
+        assert!(found.is_empty(), "{found:?}");
+        assert_eq!(left, layer);
+    }
+
+    /// The settings keys a file can hold, read off the published schema:
+    /// an object with properties, or a map, is looked into; anything else —
+    /// including a value that may be an object or something else — is one key.
+    fn schema_keys(root: &Value) -> Vec<Vec<String>> {
+        fn resolve<'a>(root: &'a Value, mut node: &'a Value) -> &'a Value {
+            while let Some(target) = node.get("$ref").and_then(Value::as_str) {
+                node = root.pointer(target.trim_start_matches('#')).unwrap();
+            }
+            node
+        }
+        fn walk(root: &Value, node: &Value, path: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+            let node = resolve(root, node);
+            let branches: Vec<&Value> = ["anyOf", "oneOf", "allOf"]
+                .iter()
+                .flat_map(|b| node.get(*b).and_then(Value::as_array).into_iter().flatten())
+                .map(|b| resolve(root, b))
+                .filter(|b| b.get("type") != Some(&json!("null")))
+                .collect();
+            let alternatives = if branches.is_empty() {
+                vec![node]
+            } else {
+                branches
+            };
+            let is_section = |a: &&Value| {
+                a.get("properties").is_some() || a.get("additionalProperties").is_some()
+            };
+            if !alternatives.iter().all(is_section) {
+                out.push(path.clone());
+                return;
+            }
+            for alternative in alternatives {
+                for (key, inner) in alternative
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flatten()
+                {
+                    path.push(key.clone());
+                    walk(root, inner, path, out);
+                    path.pop();
+                }
+                match alternative.get("additionalProperties") {
+                    Some(inner @ Value::Object(_)) => {
+                        path.push("*".into());
+                        walk(root, inner, path, out);
+                        path.pop();
+                    }
+                    Some(Value::Bool(true)) => {
+                        path.push("*".into());
+                        out.push(path.clone());
+                        path.pop();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut Vec::new(), &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// A settings field added without a line in `PROJECT_TIER` fails here,
+    /// rather than passing through an untrusted project unexamined.
+    #[test]
+    fn every_settings_key_has_an_entry() {
+        let keys = schema_keys(&crate::settings::settings_json_schema());
+        assert!(keys.len() > 50, "{keys:?}");
+        let mut used = std::collections::HashSet::new();
+        for key in &keys {
+            let segments: Vec<&str> = key.iter().map(String::as_str).collect();
+            let dotted = key.join(".");
+            let Some((pattern, tier)) = governing_entry(&segments) else {
+                panic!("`{dotted}` has no entry in PROJECT_TIER");
+            };
+            let pattern = pattern.join(".");
+            assert!(
+                pattern.split('.').count() == key.len() || *tier == ProjectKey::Withheld,
+                "`{dotted}` is governed by the shorter `{pattern}`, which is not Withheld"
+            );
+            used.insert(pattern);
+        }
+        for (pattern, _) in PROJECT_TIER {
+            assert!(
+                pattern.starts_with('$') || used.contains(*pattern),
+                "PROJECT_TIER entry `{pattern}` names no settings key"
+            );
+        }
     }
 
     #[test]

@@ -2354,15 +2354,15 @@ mod tests {
             assert_eq!(
                 settings.requires_trust(),
                 [
+                    "default_provider",
+                    "instruction_file",
+                    "model.auth_token",
+                    "model.base_url",
                     "providers.anthropic",
                     "providers.x",
-                    "default_provider",
-                    "task_models.compact",
-                    "model.base_url",
-                    "model.auth_token",
-                    "telemetry_url",
                     "recorder",
-                    "instruction_file",
+                    "task_models.compact",
+                    "telemetry_url",
                 ]
             );
         }
