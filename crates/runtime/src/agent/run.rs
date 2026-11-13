@@ -41,6 +41,12 @@ impl Agent {
         self.tooling.agent_spawner.clone()
     }
 
+    /// How this session delegates, for a host that starts a sub-agent itself
+    /// (`DelegateMode::Host`). Refuses when no module provided one.
+    pub fn delegator(&self) -> Arc<dyn base::interface::delegate::Delegator> {
+        self.tooling.delegator.clone()
+    }
+
     /// The slash commands this session will actually resolve.
     ///
     /// For a host rendering a completion popup or a command palette: this is

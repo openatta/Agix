@@ -3,7 +3,7 @@
 //! A session assembled with [`SkillsModule`] lists its skills to the model,
 //! expands `/<skill>` commands, and can invoke skills through `Skill`.
 //! Assemble it after the agents module for `context: fork` skills to fork;
-//! without a spawner they run inline.
+//! without a delegator they run inline.
 
 use std::sync::Arc;
 
@@ -77,7 +77,7 @@ impl Module for SkillsModule {
             cx.tools,
             manager,
             admission,
-            cx.agent_spawner(),
+            cx.delegator(),
             cx.host.permission.clone(),
         );
         Ok(())

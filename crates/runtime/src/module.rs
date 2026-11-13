@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use base::context::{EngineConfig, SessionState};
 use base::frozen::SkillEntry;
 use base::interface::agent_spawner::AgentSpawner;
+use base::interface::delegate::{DelegateError, DelegateRequest, Delegated, Delegator, TeamSeat};
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
 use base::interface::scene::SceneSpec;
@@ -88,6 +89,7 @@ pub struct SessionContext<'a> {
     pub plugin_agent_types: &'a [base::agent_type::AgentTypeDefinition],
     pub(crate) mcp: &'a mut Option<Box<dyn McpServers>>,
     pub(crate) agent_spawner: &'a LateAgentSpawner,
+    pub(crate) delegator: &'a LateDelegator,
     pub(crate) skill_catalog: &'a LateSkillCatalog,
     pub(crate) session_ended: &'a CancellationToken,
 }
@@ -97,6 +99,17 @@ impl SessionContext<'_> {
     /// hooks, forked skills, and any module after this one.
     pub fn provide_agent_spawner(&mut self, spawner: Arc<dyn AgentSpawner>) {
         self.agent_spawner.set(spawner);
+    }
+
+    /// Makes `delegator` the session's way to delegate — for forked skills,
+    /// a host's `startAgent`, and any module after this one.
+    pub fn provide_delegator(&mut self, delegator: Arc<dyn Delegator>) {
+        self.delegator.set(delegator);
+    }
+
+    /// The session's delegator if a module earlier in the list provided one.
+    pub fn delegator(&self) -> Option<Arc<dyn Delegator>> {
+        self.delegator.get()
     }
 
     /// Cancelled when the session ends: what a module keeps running past a
@@ -249,6 +262,41 @@ impl AgentSpawner for LateAgentSpawner {
     async fn stop_team_member(&self, team_name: &str, member_name: &str) {
         if let Some(spawner) = self.get() {
             spawner.stop_team_member(team_name, member_name).await;
+        }
+    }
+}
+
+/// A [`Delegator`] provided after the things holding it were built: the
+/// agent, and the host through it, hold this before the module that
+/// delegates has run. Until one is provided — or in a session assembled
+/// without one — every request is refused.
+#[derive(Default, Clone)]
+pub(crate) struct LateDelegator(Arc<OnceLock<Arc<dyn Delegator>>>);
+
+impl LateDelegator {
+    fn set(&self, delegator: Arc<dyn Delegator>) {
+        let _ = self.0.set(delegator);
+    }
+
+    fn get(&self) -> Option<Arc<dyn Delegator>> {
+        self.0.get().cloned()
+    }
+}
+
+#[async_trait]
+impl Delegator for LateDelegator {
+    async fn delegate(&self, req: DelegateRequest) -> Result<Delegated, DelegateError> {
+        match self.get() {
+            Some(delegator) => delegator.delegate(req).await,
+            None => Err(DelegateError::Unsupported(
+                "this session was assembled without sub-agents".into(),
+            )),
+        }
+    }
+
+    async fn stop_member(&self, seat: &TeamSeat) {
+        if let Some(delegator) = self.get() {
+            delegator.stop_member(seat).await;
         }
     }
 }

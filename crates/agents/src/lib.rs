@@ -2,10 +2,10 @@
 //! `Team*` tools built on top of it.
 //!
 //! A session assembled with [`AgentsModule`] can delegate: it gets the `Agent`
-//! tool (withheld at the depth limit), provides the session's agent spawner
-//! to `"agent"` hooks and forked skills, and — when `execution.team_enabled`
-//! and the scene does teamwork — the team tools. Each delegate it spawns is
-//! assembled with the same modules as its parent.
+//! tool (withheld at the depth limit), provides the session's delegator to
+//! forked skills and the host, and its agent spawner to `"agent"` hooks, and —
+//! when `execution.team_enabled` and the scene does teamwork — the team tools.
+//! Each delegate it spawns is assembled with the same modules as its parent.
 
 pub mod agent_tool;
 mod delegate;
@@ -107,6 +107,8 @@ impl Module for AgentsModule {
         let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
             Arc::new(RuntimeAgentSpawner::new(delegator.clone()));
         cx.provide_agent_spawner(spawner);
+        let delegator: Arc<dyn base::interface::delegate::Delegator> = delegator;
+        cx.provide_delegator(delegator.clone());
 
         // Withheld at the depth limit, so the deepest agents are never even
         // offered it.
@@ -115,7 +117,6 @@ impl Module for AgentsModule {
         }
 
         if let Some(registry) = team_registry {
-            let delegator: Arc<dyn base::interface::delegate::Delegator> = delegator;
             let coordinator =
                 team::coordinator::DefaultCoordinator::with_delegator(delegator.clone())
                     .with_registry(registry.clone())

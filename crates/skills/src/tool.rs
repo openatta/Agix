@@ -1,14 +1,17 @@
-//! SkillTool — invokes user-invocable skills by name, dispatching skill files
-//! as expanded prompts.
-//! v4: Returns expanded skill content via new_messages (injected as user messages),
-//!     checks disable_model_invocation, uses full expand_skill_vars substitution.
-//!     Supports forked execution via AgentSpawner when skill.context = "fork".
+//! SkillTool — invokes user-invocable skills by name. A skill's expanded body
+//! is injected into the conversation as a user message, or, for a
+//! `context: fork` skill, delegated to a sub-agent that waits or runs in the
+//! background.
 
 use async_trait::async_trait;
 use base::error::ToolError;
-use base::interface::agent_spawner::{AgentSpawner, SpawnMode, SpawnRequest};
-use base::interface::permission::{PermissionFacts, Reach, Subject};
+use base::interface::delegate::{
+    AskRoute, CallSite, DelegateEnd, DelegateMode, DelegateRequest, Delegated, Delegator,
+    StopsWith, Workdir,
+};
+use base::interface::permission::{Grant, GrantScope, PermissionFacts, Reach, Subject};
 use base::interface::skill_catalog::SkillExpansion;
+use base::interface::tool_selector::ToolSelector;
 use base::tool::{
     PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultContent,
     ToolSpec,
@@ -33,16 +36,17 @@ pub struct SkillTool {
     /// The built-in skills this session's scene lists; the others are not
     /// found here either.
     admission: crate::catalog::BundledAdmission,
-    /// Agent spawner for forked skill execution (context: "fork").
-    spawner: Option<Arc<dyn AgentSpawner>>,
+    /// What a `context: fork` skill is delegated through; without one it
+    /// runs inline.
+    delegator: Option<Arc<dyn Delegator>>,
     /// The session's permission — held here (not read off `ToolContext`,
     /// which has no `permission` field and would mean threading it through
     /// all ~30 other `ToolContext` construction sites workspace-wide for a
     /// field only this one tool needs): its policy judges a body's inline
     /// commands, its grants keep `allowed_tools` for the turn. `None` when
-    /// not wired up (mirrors `spawner`'s `None` default) — no inline command
+    /// not wired up (mirrors `delegator`'s `None` default) — no inline command
     /// runs and `allowed_tools` grants nothing, same as `context: fork`
-    /// silently staying inline without a spawner.
+    /// silently staying inline without a delegator.
     permission: Option<base::interface::permission::PermissionSet>,
     /// Per-session set of already-injected `(skill_name, rendered content)`
     /// hashes — when a re-invocation's rendered content exactly matches one
@@ -60,7 +64,7 @@ impl SkillTool {
         Self {
             skill_manager,
             admission: Default::default(),
-            spawner: None,
+            delegator: None,
             permission: None,
             already_injected: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -71,9 +75,8 @@ impl SkillTool {
         self
     }
 
-    /// Set the agent spawner for forked skill execution.
-    pub fn with_spawner(mut self, spawner: Arc<dyn AgentSpawner>) -> Self {
-        self.spawner = Some(spawner);
+    pub fn with_delegator(mut self, delegator: Arc<dyn Delegator>) -> Self {
+        self.delegator = Some(delegator);
         self
     }
 
@@ -167,61 +170,18 @@ impl Tool for SkillTool {
             }
         };
 
-        // A forked skill's sub-agent gets its own permission, never this
-        // one, so its `allowed-tools` grant nothing there; they only narrow
-        // the tools it is offered.
+        // The fork's `allowed-tools` narrow what it is offered. Its Turn
+        // grants go with the request, for its own session; they are not
+        // kept by this one.
         if info.context.as_deref() == Some("fork") {
-            if let Some(ref spawner) = self.spawner {
-                let request =
-                    SpawnRequest::new(expansion.text, ctx.cwd.clone(), ctx.cancel.clone())
-                        .agent_type(info.agent.clone())
-                        .allowed_tools(allowed_tool_names(&info));
-                if info.background == Some(true) {
-                    let request = request.mode(SpawnMode::Background {
-                        session: ctx.session.clone(),
-                    });
-                    return match spawner.spawn(request).await {
-                        Ok(task_id) => {
-                            self.skill_manager.record_invocation(skill_name);
-                            Ok(ToolResult {
-                                content: ToolResultContent::Text(format!(
-                                    "Skill '{skill_name}' forked in the background \
-                                     (task_id: {task_id}, status: spawned). Use TaskOutput \
-                                     to check on it."
-                                )),
-                                is_error: false,
-                                ..Default::default()
-                            })
-                        }
-                        Err(e) => Ok(ToolResult {
-                            content: ToolResultContent::Text(format!(
-                                "Skill '{skill_name}' background fork failed: {e}"
-                            )),
-                            is_error: true,
-                            ..Default::default()
-                        }),
-                    };
+            if let Some(delegator) = &self.delegator {
+                let result = self
+                    .fork(delegator.as_ref(), skill_name, &info, expansion, &ctx)
+                    .await;
+                if !result.is_error {
+                    self.skill_manager.record_invocation(skill_name);
                 }
-
-                return match spawner.spawn(request).await {
-                    Ok(output) => {
-                        self.skill_manager.record_invocation(skill_name);
-                        Ok(ToolResult {
-                            content: ToolResultContent::Text(format!(
-                                "Skill '{skill_name}' executed in forked agent.\n\n{output}"
-                            )),
-                            is_error: false,
-                            ..Default::default()
-                        })
-                    }
-                    Err(e) => Ok(ToolResult {
-                        content: ToolResultContent::Text(format!(
-                            "Skill '{skill_name}' fork failed: {e}"
-                        )),
-                        is_error: true,
-                        ..Default::default()
-                    }),
-                };
+                return Ok(result);
             }
         }
 
@@ -277,6 +237,80 @@ impl Tool for SkillTool {
             })]),
             ..Default::default()
         })
+    }
+}
+
+impl SkillTool {
+    async fn fork(
+        &self,
+        delegator: &dyn Delegator,
+        skill_name: &str,
+        info: &crate::manager::SkillInfo,
+        expansion: SkillExpansion,
+        ctx: &ToolContext,
+    ) -> ToolResult {
+        let background = info.background == Some(true);
+        let mode = if background {
+            DelegateMode::Background {
+                notify_parent: true,
+            }
+        } else {
+            DelegateMode::Wait
+        };
+        let mut req =
+            DelegateRequest::new(expansion.text, mode, StopsWith::Call(ctx.cancel.clone()));
+        req.agent_type = info.agent.clone();
+        req.tools = ToolSelector::from_lists(&allowed_tool_names(info), &[]);
+        req.grants = expansion
+            .grants
+            .into_iter()
+            .map(|(tool, content)| Grant::new(tool, content, GrantScope::Turn))
+            .collect();
+        req.workdir = Workdir::At(ctx.cwd.clone());
+        req.called_from = Some(CallSite {
+            turn: ctx.turn_no,
+            tool_use_id: ctx.tool_use_id.clone(),
+        });
+        if ctx.from_code {
+            req.asks = AskRoute::Refuse;
+        }
+        let (text, is_error) = match delegator.delegate(req).await {
+            Ok(Delegated::Started(started)) => (
+                format!(
+                    "Skill '{skill_name}' forked in the background \
+                     (task_id: {}, status: spawned). Use TaskOutput to check on it.",
+                    started.task_id
+                ),
+                false,
+            ),
+            Ok(Delegated::Finished(outcome)) => match outcome.end {
+                DelegateEnd::Completed | DelegateEnd::CutShort(_) => (
+                    format!(
+                        "Skill '{skill_name}' executed in forked agent.\n\n{}",
+                        outcome.text
+                    ),
+                    false,
+                ),
+                DelegateEnd::Cancelled => (
+                    format!(
+                        "Skill '{skill_name}' fork was stopped before it finished.\n\n{}",
+                        outcome.text
+                    ),
+                    true,
+                ),
+                DelegateEnd::Failed(e) => (format!("Skill '{skill_name}' fork failed: {e}"), true),
+            },
+            Err(e) if background => (
+                format!("Skill '{skill_name}' background fork failed: {e}"),
+                true,
+            ),
+            Err(e) => (format!("Skill '{skill_name}' fork failed: {e}"), true),
+        };
+        ToolResult {
+            content: ToolResultContent::Text(text),
+            is_error,
+            ..Default::default()
+        }
     }
 }
 
@@ -730,14 +764,14 @@ pub fn register(
     r: &base::tool::InMemoryToolRegistry,
     m: std::sync::Arc<crate::manager::SkillManager>,
     admission: crate::catalog::BundledAdmission,
-    spawner: Option<std::sync::Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
+    delegator: Option<Arc<dyn Delegator>>,
     permission: base::interface::permission::PermissionSet,
 ) {
     let mut tool = SkillTool::new(m)
         .with_admission(admission)
         .with_permission(permission);
-    if let Some(spawner) = spawner {
-        tool = tool.with_spawner(spawner);
+    if let Some(delegator) = delegator {
+        tool = tool.with_delegator(delegator);
     }
     r.register(std::sync::Arc::new(tool));
 }
@@ -960,19 +994,34 @@ mod dynamic_context_tests {
     #[derive(Default)]
     struct Forks(std::sync::Mutex<Vec<String>>);
 
+    pub(super) fn finished(
+        text: &str,
+    ) -> Result<Delegated, base::interface::delegate::DelegateError> {
+        Ok(Delegated::Finished(
+            base::interface::delegate::DelegateOutcome {
+                text: text.into(),
+                end: DelegateEnd::Completed,
+                structured: None,
+                session_id: "fork-session".into(),
+            },
+        ))
+    }
+
     #[async_trait]
-    impl AgentSpawner for Forks {
-        async fn spawn(
+    impl Delegator for Forks {
+        async fn delegate(
             &self,
-            request: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
+            request: DelegateRequest,
+        ) -> Result<Delegated, base::interface::delegate::DelegateError> {
             assert!(
-                matches!(request.mode, SpawnMode::Wait),
+                matches!(request.mode, DelegateMode::Wait),
                 "no skill here forks in the background"
             );
             self.0.lock().unwrap().push(request.prompt);
-            Ok("done".into())
+            finished("done")
         }
+
+        async fn stop_member(&self, _: &base::interface::delegate::TeamSeat) {}
     }
 
     /// The `Skill` tool inline, a forked skill and a `/name` command (which
@@ -1005,7 +1054,7 @@ mod dynamic_context_tests {
             .with_permission(base::interface::permission::PermissionSet::without_grants(
                 Arc::new(Permits),
             ))
-            .with_spawner(forks.clone());
+            .with_delegator(forks.clone());
 
         let inline = tool
             .call(
@@ -1086,35 +1135,62 @@ mod tests {
         });
     }
 
-    /// Records the `agent_type` it was called with, so the fork path's
-    /// `agent:` frontmatter wiring can be asserted end to end. Also records
-    /// whether the background variant was invoked, for the `background:
-    /// true` test.
-    struct MockSpawner {
-        last_agent_type: std::sync::Mutex<Option<Option<String>>>,
-        background_calls: std::sync::Mutex<u32>,
+    /// What a fork's request carried.
+    struct Forked {
+        agent_type: Option<String>,
+        background: bool,
+        called_from: Option<CallSite>,
+        grants: Vec<Grant>,
+        stops_with_the_call: bool,
     }
-    impl MockSpawner {
-        fn new() -> Self {
-            Self {
-                last_agent_type: std::sync::Mutex::new(None),
-                background_calls: std::sync::Mutex::new(0),
-            }
+
+    /// Records the request it was called with, so the fork path's wiring
+    /// can be asserted end to end; a background fork is started as
+    /// `mock-task-id-1`.
+    #[derive(Default)]
+    struct MockDelegator {
+        last: std::sync::Mutex<Option<Forked>>,
+    }
+
+    impl MockDelegator {
+        fn last<T>(&self, f: impl FnOnce(&Forked) -> T) -> T {
+            f(self.last.lock().unwrap().as_ref().expect("a fork"))
         }
     }
+
     #[async_trait]
-    impl base::interface::agent_spawner::AgentSpawner for MockSpawner {
-        async fn spawn(
+    impl Delegator for MockDelegator {
+        async fn delegate(
             &self,
-            request: SpawnRequest,
-        ) -> Result<String, Box<dyn std::error::Error + Send>> {
-            *self.last_agent_type.lock().unwrap() = Some(request.agent_type);
-            if matches!(request.mode, SpawnMode::Background { .. }) {
-                *self.background_calls.lock().unwrap() += 1;
-                return Ok("mock-task-id-1".to_string());
+            request: DelegateRequest,
+        ) -> Result<Delegated, base::interface::delegate::DelegateError> {
+            let background = match request.mode {
+                DelegateMode::Wait => false,
+                DelegateMode::Background { notify_parent } => {
+                    assert!(notify_parent);
+                    true
+                }
+                _ => panic!("a fork waits or runs in the background"),
+            };
+            *self.last.lock().unwrap() = Some(Forked {
+                agent_type: request.agent_type,
+                background,
+                called_from: request.called_from,
+                grants: request.grants,
+                stops_with_the_call: matches!(request.stops_with, StopsWith::Call(_)),
+            });
+            if background {
+                return Ok(Delegated::Started(
+                    base::interface::delegate::StartedAgent {
+                        task_id: "mock-task-id-1".into(),
+                        agent_session_id: "fork-session".into(),
+                    },
+                ));
             }
-            Ok("forked output".to_string())
+            super::dynamic_context_tests::finished("forked output")
         }
+
+        async fn stop_member(&self, _: &base::interface::delegate::TeamSeat) {}
     }
 
     /// A project-defined skill (e.g. loaded from `.agents/skills/`) is
@@ -1590,10 +1666,10 @@ mod tests {
     }
 
     /// `context: fork` skills pass their `agent:` frontmatter through to
-    /// the spawner as `agent_type` — the field that selects which subagent
+    /// the delegator as `agent_type` — the field that selects which subagent
     /// type to fork into.
     #[tokio::test]
-    async fn fork_context_passes_agent_field_to_spawner() {
+    async fn fork_context_passes_agent_field_to_delegator() {
         let mgr = Arc::new(crate::manager::SkillManager::new());
         register_test_skill_with(
             &mgr,
@@ -1603,8 +1679,8 @@ mod tests {
             Some("fork"),
             Some("Explore"),
         );
-        let spawner = Arc::new(MockSpawner::new());
-        let tool = SkillTool::new(mgr).with_spawner(spawner.clone());
+        let delegator = Arc::new(MockDelegator::default());
+        let tool = SkillTool::new(mgr).with_delegator(delegator.clone());
 
         let result = tool
             .call(
@@ -1617,17 +1693,16 @@ mod tests {
 
         assert!(!result.is_error);
         assert_eq!(
-            *spawner.last_agent_type.lock().unwrap(),
-            Some(Some("Explore".to_string())),
-            "the skill's agent: field must reach the spawner"
+            delegator.last(|f| f.agent_type.clone()),
+            Some("Explore".to_string()),
+            "the skill's agent: field must reach the delegator"
         );
     }
 
     /// `context: fork` + `background: true` must return a task id
-    /// immediately via a background `spawn`, not block on
-    /// a waiting one's result.
+    /// immediately, not block on a waiting one's result.
     #[tokio::test]
-    async fn fork_context_with_background_true_uses_the_background_spawner_method() {
+    async fn fork_context_with_background_true_is_started_in_the_background() {
         let mgr = Arc::new(crate::manager::SkillManager::new());
         let dir = tempfile::tempdir().unwrap();
         let path = dir.keep().join("bg-research.md");
@@ -1641,8 +1716,8 @@ mod tests {
             background: Some(true),
             ..Default::default()
         });
-        let spawner = Arc::new(MockSpawner::new());
-        let tool = SkillTool::new(mgr).with_spawner(spawner.clone());
+        let delegator = Arc::new(MockDelegator::default());
+        let tool = SkillTool::new(mgr).with_delegator(delegator.clone());
 
         let result = tool
             .call(
@@ -1654,7 +1729,7 @@ mod tests {
             .expect("call should not error");
 
         assert!(!result.is_error);
-        assert_eq!(*spawner.background_calls.lock().unwrap(), 1);
+        assert!(delegator.last(|f| f.background));
         let ToolResultContent::Text(text) = result.content else {
             panic!("expected text content");
         };
@@ -1665,7 +1740,7 @@ mod tests {
     }
 
     /// A `context: fork` skill with no `agent:` field passes `None` through
-    /// — the spawner (and ultimately `Delegator::delegate`) decides the
+    /// — `Delegator::delegate` decides the
     /// default (general-purpose), this tool doesn't hardcode one.
     #[tokio::test]
     async fn fork_context_without_agent_field_passes_none() {
@@ -1678,8 +1753,8 @@ mod tests {
             Some("fork"),
             None,
         );
-        let spawner = Arc::new(MockSpawner::new());
-        let tool = SkillTool::new(mgr).with_spawner(spawner.clone());
+        let delegator = Arc::new(MockDelegator::default());
+        let tool = SkillTool::new(mgr).with_delegator(delegator.clone());
 
         tool.call(
             serde_json::json!({"skill": "pr-summary"}),
@@ -1689,7 +1764,61 @@ mod tests {
         .await
         .expect("call should not error");
 
-        assert_eq!(*spawner.last_agent_type.lock().unwrap(), Some(None));
+        assert_eq!(delegator.last(|f| f.agent_type.clone()), None);
+    }
+
+    /// A fork carries the call it came from and the skill's `allowed-tools`
+    /// as Turn grants for its own session, and stops with the call — whether
+    /// it waits or runs in the background.
+    #[tokio::test]
+    async fn a_fork_carries_its_call_site_and_its_turn_grants() {
+        for background in [false, true] {
+            let mgr = Arc::new(crate::manager::SkillManager::new());
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("echo.md");
+            std::fs::write(&path, "Say hi.").unwrap();
+            mgr.register_bundled(SkillEntry {
+                name: "echo".into(),
+                description: "echo".into(),
+                source: FrozenSkillSource::User,
+                path,
+                context: Some("fork".into()),
+                background: Some(background),
+                allowed_tools: Some(vec!["Bash(echo hi)".into()]),
+                ..Default::default()
+            });
+            let delegator = Arc::new(MockDelegator::default());
+            let tool = SkillTool::new(mgr).with_delegator(delegator.clone());
+            let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+            ctx.turn_no = 3;
+            ctx.tool_use_id = "toolu_skill".into();
+
+            let result = tool
+                .call(
+                    serde_json::json!({"skill": "echo"}),
+                    ctx,
+                    ProgressSender::noop("t"),
+                )
+                .await
+                .unwrap();
+
+            assert!(!result.is_error, "{:?}", result.content);
+            delegator.last(|f| {
+                assert_eq!(f.background, background);
+                assert_eq!(
+                    f.called_from,
+                    Some(CallSite {
+                        turn: 3,
+                        tool_use_id: "toolu_skill".into(),
+                    })
+                );
+                assert_eq!(
+                    f.grants,
+                    [Grant::new("Bash", Some("echo hi".into()), GrantScope::Turn)]
+                );
+                assert!(f.stops_with_the_call);
+            });
+        }
     }
 
     /// A skill's own `disable_model_invocation: true` is still respected —

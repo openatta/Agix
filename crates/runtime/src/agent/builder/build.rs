@@ -195,6 +195,7 @@ impl Builder {
                 .chain(std::mem::take(&mut quickjs_layer.agent_types))
                 .collect();
         let agent_spawner = crate::module::LateAgentSpawner::default();
+        let delegator = crate::module::LateDelegator::default();
         let session_ended = CancellationToken::new();
         let own_runner = self.hooks.is_none();
         let hooks = self.hooks.unwrap_or_else(|| {
@@ -431,6 +432,7 @@ impl Builder {
                 plugin_agent_types: &plugin_agent_types,
                 mcp: &mut mcp_slot,
                 agent_spawner: &agent_spawner,
+                delegator: &delegator,
                 skill_catalog: &skill_catalog,
                 session_ended: &session_ended,
             };
@@ -809,6 +811,7 @@ impl Builder {
                     commands: command_registry,
                     mcp,
                     agent_spawner: Arc::new(agent_spawner),
+                    delegator: Arc::new(delegator),
                     tool_middleware: Arc::new(tool_middleware),
                     result_transformers: Arc::new(result_transformers),
                     mcp_shadow_warned: std::collections::HashSet::new(),

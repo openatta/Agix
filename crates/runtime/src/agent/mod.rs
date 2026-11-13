@@ -124,6 +124,7 @@ pub(crate) struct Tooling {
     pub(crate) commands: std::sync::Arc<crate::commands::CommandRegistry>,
     pub(crate) mcp: Box<dyn base::interface::mcp_servers::McpServers>,
     agent_spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner>,
+    delegator: Arc<dyn base::interface::delegate::Delegator>,
     pub(crate) tool_middleware: Arc<Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>>,
     pub(crate) result_transformers:
         Arc<Vec<Arc<dyn base::interface::tool_result::ToolResultTransformer>>>,
