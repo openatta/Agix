@@ -73,6 +73,7 @@ pub(crate) struct ToolExecCtx {
     /// The session's event stream, for what dispatch reports on a tool's
     /// behalf (a `PushNotification`). `None` where nobody is listening.
     pub events: Option<crate::agent::EventSender>,
+    pub turn: Arc<base::tool::TurnScope>,
 }
 
 /// Deliver a host's answer to the `execute_tool_inner` call awaiting it.

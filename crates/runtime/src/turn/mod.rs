@@ -41,6 +41,18 @@ pub(crate) struct TurnState {
     pub(crate) pending_input: Option<(u64, Vec<base::interface::model::InputSpan>)>,
     pub(crate) last_call_usage: Option<Usage>,
     pub(crate) truncated: bool,
+    pub(crate) scope: std::sync::Arc<base::tool::TurnScope>,
+}
+
+impl TurnState {
+    pub(crate) fn opening(turn_id: &str) -> Self {
+        Self {
+            scope: std::sync::Arc::new(base::tool::TurnScope::new(
+                base::context::goal::TurnOrigin::from_turn_id(turn_id),
+            )),
+            ..Self::default()
+        }
+    }
 }
 
 /// Why a compaction runs.

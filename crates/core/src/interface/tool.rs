@@ -330,7 +330,41 @@ pub struct ToolContext {
     pub confinement: crate::interface::exec::ConfinementReport,
     /// Whether someone can be asked about what this call does.
     pub attendance: crate::interface::permission::Attendance,
+    pub turn: Arc<TurnScope>,
 }
+
+/// What belongs to the one turn a call is made in, and ends with it.
+#[derive(Debug, Default)]
+pub struct TurnScope {
+    /// Who started the turn, which decides what goal operations it may perform.
+    pub origin: crate::context::goal::TurnOrigin,
+    structured_output: std::sync::Mutex<Option<Value>>,
+}
+
+impl TurnScope {
+    pub fn new(origin: crate::context::goal::TurnOrigin) -> Self {
+        Self {
+            origin,
+            structured_output: Default::default(),
+        }
+    }
+
+    /// Record what `StructuredOutput` accepted; a later call replaces it.
+    pub fn set_structured_output(&self, value: Value) {
+        *self
+            .structured_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(value);
+    }
+
+    pub fn take_structured_output(&self) -> Option<Value> {
+        self.structured_output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+}
+
 impl ToolContext {
     pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
         Self {
@@ -359,6 +393,7 @@ impl ToolContext {
             from_code: false,
             confinement: Default::default(),
             attendance: crate::interface::permission::Attendance::Attended,
+            turn: Arc::default(),
         }
     }
     pub fn from_engine_ctx_with(
@@ -392,6 +427,7 @@ impl ToolContext {
             from_code: false,
             confinement: Default::default(),
             attendance: crate::interface::permission::Attendance::Attended,
+            turn: Arc::default(),
         }
     }
 }

@@ -63,9 +63,6 @@ pub struct SessionState {
     unrecorded_goal_changes: std::sync::Mutex<Vec<Option<super::goal::Goal>>>,
     goal_recording: std::sync::Arc<tokio::sync::Mutex<()>>,
     goal_events: broadcast::Sender<Option<GoalView>>,
-    /// Who started the turn now running, which decides what goal operations
-    /// it may perform.
-    turn_origin: std::sync::Mutex<super::goal::TurnOrigin>,
     /// What the session's own agent should read at its next step boundary,
     /// each under the key it can be retracted by — see
     /// [`SessionState::post_notice`].
@@ -76,8 +73,6 @@ pub struct SessionState {
     read_cache: std::sync::Mutex<HashMap<PathBuf, FileReadEntry>>,
     /// 最近一次读取的文件路径，用于连续重复读取检测。
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
-    /// What `StructuredOutput` last accepted in the current turn.
-    structured_output: std::sync::Mutex<Option<serde_json::Value>>,
     /// Weak: the registry's tools may hold this session.
     tools: std::sync::RwLock<Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>>,
     exec: std::sync::RwLock<Option<crate::interface::exec::ExecProviders>>,
@@ -151,10 +146,8 @@ impl SessionState {
             unrecorded_goal_changes: std::sync::Mutex::new(Vec::new()),
             goal_recording: Default::default(),
             goal_events: tokio::sync::broadcast::channel(64).0,
-            turn_origin: std::sync::Mutex::new(super::goal::TurnOrigin::default()),
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
-            structured_output: std::sync::Mutex::new(None),
             tools: std::sync::RwLock::new(None),
             exec: std::sync::RwLock::new(None),
             confinement: std::sync::OnceLock::new(),
@@ -332,9 +325,6 @@ impl SessionState {
             unrecorded_goal_changes: _,
             // What the log has, which the resume read back.
             recorded_durable: _,
-            // A turn's own, and a rebuild happens between turns.
-            turn_origin: _,
-            structured_output: _,
             permission_mode,
             todos,
             activated_tools,
@@ -423,14 +413,6 @@ impl SessionState {
     /// Its tasks' events as they happen.
     pub fn subscribe_tasks(&self) -> broadcast::Receiver<TaskEvent> {
         self.task_events.subscribe()
-    }
-
-    pub fn set_turn_origin(&self, origin: super::goal::TurnOrigin) {
-        *lock(&self.turn_origin) = origin;
-    }
-
-    pub fn turn_origin(&self) -> super::goal::TurnOrigin {
-        *lock(&self.turn_origin)
     }
 
     /// The goal as hosts and the model see it.
@@ -831,20 +813,6 @@ impl SessionState {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         last.as_ref().is_some_and(|p| p == path)
-    }
-
-    pub fn set_structured_output(&self, value: serde_json::Value) {
-        *self
-            .structured_output
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(value);
-    }
-
-    pub fn take_structured_output(&self) -> Option<serde_json::Value> {
-        self.structured_output
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
     }
 
     /// Bind the registry this session's tool calls dispatch against, so that

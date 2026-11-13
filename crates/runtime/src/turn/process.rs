@@ -89,8 +89,6 @@ impl Agent {
                 attachments,
                 turn_id,
             } => {
-                self.session_state
-                    .set_turn_origin(base::context::goal::TurnOrigin::from_turn_id(&turn_id));
                 self.current_turn_id = turn_id;
                 self.session.set_turn_id(Some(self.current_turn_id.clone()));
                 let _ = self.channels.event_tx.send(AgentEvent::TurnStart {
@@ -398,8 +396,7 @@ impl Agent {
         cancel: CancellationToken,
         origin: history::entry::MessageOrigin,
     ) -> Result<TurnOutcome, TurnError> {
-        self.turn = super::TurnState::default();
-        self.session_state.take_structured_output();
+        self.turn = super::TurnState::opening(&self.current_turn_id);
         crate::steering::lock(&self.channels.steering).open();
         let outcome = self
             .run_user_turn_inner(content, attachments, cancel, origin)
@@ -647,7 +644,7 @@ impl Agent {
                 message: o.message.clone(),
                 last_call_usage: self.turn.last_call_usage.unwrap_or_default(),
                 context: self.turn.last_call_usage.map(|u| self.context_usage(u)),
-                structured_output: self.session_state.take_structured_output(),
+                structured_output: self.turn.scope.take_structured_output(),
                 seq: self.session.messages.len() as u64,
                 truncated: self.turn.truncated,
             });

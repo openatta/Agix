@@ -62,7 +62,7 @@ fn origin(ctx: &ToolContext) -> Result<TurnOrigin, ToolResult> {
             "goals belong to the top-level session; a sub-agent cannot read or change them",
         ));
     }
-    Ok(ctx.session.turn_origin())
+    Ok(ctx.turn.origin)
 }
 
 fn refused(e: GoalError) -> ToolResult {
@@ -308,11 +308,12 @@ mod tests {
 
     #[tokio::test]
     async fn an_automatic_round_cannot_pause() {
-        let ctx = platform::tool_context_for_test("/tmp".into());
+        let mut ctx = platform::tool_context_for_test("/tmp".into());
         call(&GoalCreateTool, json!({"objective": "x"}), &ctx).await;
         let round = ctx.session.goal_next_round().unwrap();
-        ctx.session
-            .set_turn_origin(TurnOrigin::from_turn_id(&round.turn_id));
+        ctx.turn = std::sync::Arc::new(base::tool::TurnScope::new(TurnOrigin::from_turn_id(
+            &round.turn_id,
+        )));
         let view = goal_json(&ctx);
         let r = call(
             &GoalUpdateTool,

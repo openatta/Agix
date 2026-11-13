@@ -632,6 +632,7 @@ impl Agent {
             let exec_providers = self.exec.clone();
             let permission_for_exec = self.gate.permission.clone();
             let session_state_for_exec = Arc::clone(&self.session_state);
+            let turn_for_exec = Arc::clone(&self.turn.scope);
             let elicitation_for_exec = Arc::clone(&self.gate.elicitation);
             let tool_middleware_for_exec = Arc::clone(&self.tooling.tool_middleware);
             let result_transformers_for_exec = Arc::clone(&self.tooling.result_transformers);
@@ -662,6 +663,7 @@ impl Agent {
                         images: Arc::clone(&tool_images_for_exec),
                         from_code: false,
                         events: Some(events_for_exec.clone()),
+                        turn: Arc::clone(&turn_for_exec),
                     };
                     async move { execute_tool_with_telemetry(&exec_ctx, &name, input).await }
                 };

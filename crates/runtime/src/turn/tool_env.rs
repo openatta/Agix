@@ -278,6 +278,7 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
             &ctx.session_id,
         ),
         attendance: attendance_of(&ctx.session_state, ctx.from_code),
+        turn: ctx.turn.clone(),
     }
 }
 
@@ -317,6 +318,7 @@ impl Agent {
                 &self.session.session_id,
             ),
             attendance: attendance_of(&self.session_state, false),
+            turn: self.turn.scope.clone(),
         }
     }
 }

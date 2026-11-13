@@ -169,6 +169,7 @@ fn test_exec_ctx_with_permission(
         images: Arc::new(std::sync::Mutex::new(Vec::new())),
         from_code: false,
         events: None,
+        turn: Default::default(),
     }
 }
 

@@ -129,7 +129,7 @@ impl Tool for StructuredOutputTool {
         ctx: ToolContext,
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
-        ctx.session.set_structured_output(input.clone());
+        ctx.turn.set_structured_output(input.clone());
         Ok(ToolResult {
             content: base::tool::ToolResultContent::Text(
                 "Structured output provided successfully".into(),
