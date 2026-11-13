@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 /// An aging pass already applied to the messages, not yet accounted for.
 struct PendingAging {
-    aging: compaction::compact::Aging,
+    aging: compaction::aging::Aging,
     messages: usize,
     tokens_before: usize,
     tokens_after: usize,
@@ -78,7 +78,7 @@ impl Agent {
         let tokens_before = compaction::grouping::estimate_tokens(&self.session.messages);
         let aging = compactor.age(
             &mut self.session.messages,
-            &compaction::compact::AgingInput {
+            &compaction::aging::AgingInput {
                 message_ages: &ages,
                 time_based: &self.compaction.time_based_mc_config,
                 cached_due: self.compaction.cached_mc.should_run(),

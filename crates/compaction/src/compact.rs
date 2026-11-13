@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use base::text::truncate_at_char_boundary;
 
-pub use crate::aging::{Aging, AgingInput, AgingUndo};
+use crate::aging::{Aging, AgingInput};
 use crate::grouping::{estimate_tokens, group_by_api_round, ApiRound};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
