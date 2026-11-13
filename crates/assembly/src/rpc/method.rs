@@ -79,18 +79,21 @@ fn notify_parent_by_default() -> bool {
 }
 
 impl StartAgentParams {
-    pub fn into_request(self) -> base::interface::agent_spawner::AgentRequest {
-        base::interface::agent_spawner::AgentRequest {
-            prompt: self.prompt,
-            description: self.description,
-            subagent_type: self.subagent_type,
-            model: self.model,
-            allowed_tools: self.allowed_tools,
-            disallowed_tools: self.disallowed_tools,
-            permission_rules: self.permission_rules,
-            output_schema: self.output_schema,
+    /// A task of the session, stopping when the session ends.
+    pub fn into_request(self) -> base::interface::delegate::DelegateRequest {
+        use base::interface::delegate::{DelegateMode, DelegateRequest, StopsWith};
+        use base::interface::tool_selector::ToolSelector;
+        let mode = DelegateMode::Host {
             notify_parent: self.notify_parent,
-            tag: self.tag,
-        }
+        };
+        let mut req = DelegateRequest::new(self.prompt, mode, StopsWith::Session);
+        req.description = self.description;
+        req.agent_type = self.subagent_type;
+        req.model = self.model;
+        req.tools = ToolSelector::from_lists(&self.allowed_tools, &self.disallowed_tools);
+        req.deny_rules = self.permission_rules;
+        req.output_schema = self.output_schema;
+        req.tag = self.tag;
+        req
     }
 }

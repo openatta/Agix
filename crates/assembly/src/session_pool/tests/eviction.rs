@@ -30,7 +30,7 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
         ),
         binding_stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         state: None,
-        spawner: None,
+        delegator: None,
         scripts: None,
         health: Default::default(),
         hub: Arc::new(SessionHub::active_at(last_active)),

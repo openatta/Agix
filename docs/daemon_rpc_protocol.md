@@ -2863,7 +2863,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 
 | 码 | 名称 | 含义 |
 |---|---|---|
-| -32600 | INVALID_REQUEST | 帧是合法 JSON、带着字符串或数字的 `id`,却不是合法请求(缺 `method`、字段类型不对,§1);`session.startAgent`:会话的 spawner 不支持由宿主起子 Agent(嵌入方自己给的 `AgentSpawner` 没实现 `start_agent`) |
+| -32600 | INVALID_REQUEST | 帧是合法 JSON、带着字符串或数字的 `id`,却不是合法请求(缺 `method`、字段类型不对,§1);`session.startAgent`:会话装配时没有子 Agent(没有模块提供 `Delegator`) |
 | -32601 | METHOD_NOT_FOUND | 未知方法;或方法所属的模块没有编入这个构建,此时 `data.module` 指明模块(§6.1 `daemon.ping`) |
 | -32602 | INVALID_PARAMS | 参数缺失/类型错/取值非法 |
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |

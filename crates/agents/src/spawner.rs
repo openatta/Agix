@@ -85,13 +85,10 @@ impl AgentSpawner for RuntimeAgentSpawner {
         _session: Arc<base::context::SessionState>,
         cancel: CancellationToken,
     ) -> Result<StartedAgent, StartAgentError> {
-        let prompt = self
-            .delegator
-            .build_prompt(request.subagent_type.as_deref(), &request.prompt);
         let mode = DelegateMode::Host {
             notify_parent: request.notify_parent,
         };
-        let mut req = DelegateRequest::new(prompt, mode, StopsWith::Call(cancel));
+        let mut req = DelegateRequest::new(request.prompt, mode, StopsWith::Call(cancel));
         req.description = request.description;
         req.agent_type = request.subagent_type;
         req.model = request.model;

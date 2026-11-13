@@ -713,3 +713,84 @@ async fn a_stage_member_stopped_mid_turn_ends_cancelled() {
         "{tasks:?}"
     );
 }
+
+/// Notes the text of every turn's messages.
+struct MessageTextModel {
+    seen: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl Model for MessageTextModel {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        messages: Vec<ModelMessage>,
+        _params: base::interface::model::StreamParams,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::{ModelContentBlock, ModelEvent};
+        let text: String = messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                ModelContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.seen.lock().unwrap().push(text);
+        Ok(Box::new(futures::stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                text: "done".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+            }),
+        ])))
+    }
+}
+
+/// A host names a type and gives the task alone, as the model does; the
+/// delegate is told the type's prompt ahead of it all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_started_agent_of_a_type_is_given_the_types_prompt() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent_tool = TestParent {
+        plugin_agent_types: vec![AgentTypeDefinition {
+            name: "typed".into(),
+            description: "typed".into(),
+            system_prompt: "TYPE-PROMPT".into(),
+            ..Default::default()
+        }],
+        ..TestParent::new(Arc::new(MessageTextModel { seen: seen.clone() }))
+    }
+    .agent_tool();
+    let mut req = DelegateRequest::new(
+        "HOST-TASK",
+        DelegateMode::Host {
+            notify_parent: false,
+        },
+        StopsWith::Session,
+    );
+    req.agent_type = Some("typed".into());
+    let Ok(Delegated::Started(started)) = agent_tool.delegate(req).await else {
+        panic!("a host's agent is started");
+    };
+    let task = agent_tool
+        .parent_state()
+        .find_running_task(&started.task_id)
+        .expect("its task");
+    tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+        .await
+        .expect("the agent finishes");
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen.iter()
+            .any(|t| t.contains("TYPE-PROMPT\n\nTask: HOST-TASK")),
+        "{seen:?}"
+    );
+}

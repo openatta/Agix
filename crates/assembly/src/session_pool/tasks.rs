@@ -2,6 +2,16 @@
 
 use super::*;
 
+fn delegate_error(e: base::interface::delegate::DelegateError) -> PoolError {
+    use base::interface::delegate::DelegateError;
+    match e {
+        DelegateError::Limit(m) | DelegateError::Depth(m) => PoolError::TaskLimit(m),
+        DelegateError::Unsupported(m) => PoolError::SpawnUnsupported(m),
+        DelegateError::Invalid(m) => PoolError::InvalidRequest(m),
+        DelegateError::Build(m) => PoolError::Internal(m),
+    }
+}
+
 impl SessionPool {
     /// While no turn holds `event_rx`, pass on what the engine still says: a
     /// background sub-agent's question and progress, a team stage. Woken by
@@ -237,37 +247,37 @@ impl SessionPool {
     pub async fn start_agent(
         &self,
         session_id: &str,
-        request: base::interface::agent_spawner::AgentRequest,
+        request: base::interface::delegate::DelegateRequest,
     ) -> Result<api::AgentStarted, PoolError> {
-        use base::interface::agent_spawner::StartAgentError;
+        use base::interface::delegate::{DelegateMode, Delegated};
+        if !matches!(request.mode, DelegateMode::Host { .. }) {
+            return Err(PoolError::InvalidRequest(
+                "a host starts a sub-agent as DelegateMode::Host".into(),
+            ));
+        }
         let not_found = || PoolError::no_session(session_id);
         if !self.session_exists(session_id).await {
             return Err(not_found());
         }
         self.ensure_live(session_id, None).await?;
-        let (state, spawner, cancel) = {
+        let delegator = {
             let sessions = self.sessions.lock().await;
             let live = sessions.get(session_id).ok_or_else(not_found)?;
-            (
-                live.state.clone(),
-                live.spawner.clone(),
-                live.cancel.child_token(),
-            )
+            live.delegator.clone()
         };
-        let (Some(state), Some(spawner)) = (state, spawner) else {
+        let Some(delegator) = delegator else {
             return Err(not_found());
         };
-        let started = spawner
-            .start_agent(request, state, cancel)
-            .await
-            .map_err(|e| match e {
-                StartAgentError::Limit(m) => PoolError::TaskLimit(m),
-                StartAgentError::Unsupported(m) => PoolError::SpawnUnsupported(m),
-            })?;
-        Ok(api::AgentStarted {
-            task_id: started.task_id,
-            agent_session_id: started.agent_session_id,
-        })
+        match delegator.delegate(request).await {
+            Ok(Delegated::Started(started)) => Ok(api::AgentStarted {
+                task_id: started.task_id,
+                agent_session_id: started.agent_session_id,
+            }),
+            Ok(Delegated::Finished(_)) => Err(PoolError::Internal(
+                "the sub-agent finished before it was started".into(),
+            )),
+            Err(e) => Err(delegate_error(e)),
+        }
     }
 
     /// `session.inspectContext`: what the next model call would carry.

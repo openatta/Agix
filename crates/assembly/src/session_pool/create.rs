@@ -419,7 +419,7 @@ impl SessionPool {
             .build()
             .map_err(|e| format!("build agent: {e}"))?;
         let state = agent.session_state();
-        let spawner = agent.agent_spawner();
+        let delegator = agent.delegator();
         let health = agent.health();
         // A rebuild goes on with the hub of the session it replaces.
         let hub = self
@@ -630,7 +630,7 @@ impl SessionPool {
             namer,
             binding_stale: binding.stale.clone(),
             state: Some(state.clone()),
-            spawner: Some(spawner),
+            delegator: Some(delegator),
             scripts: script_ledger,
             health,
             hub: hub.clone(),

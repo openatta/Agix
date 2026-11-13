@@ -554,8 +554,8 @@ struct LiveSession {
     binding_stale: Arc<std::sync::atomic::AtomicBool>,
     /// The engine's own session state: the tasks `session.tasks` lists.
     state: Option<Arc<base::context::SessionState>>,
-    /// How the engine starts sub-agents, for `session.startAgent`.
-    spawner: Option<Arc<dyn base::interface::agent_spawner::AgentSpawner>>,
+    /// How the engine delegates, for `session.startAgent`.
+    delegator: Option<Arc<dyn base::interface::delegate::Delegator>>,
     /// What this session's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of

@@ -124,6 +124,7 @@ impl base::interface::delegate::Delegator for Delegator {
                 self.start(spec, prompt, stop, ask, started)
             }
             DelegateMode::Host { notify_parent } => {
+                let prompt = self.build_prompt(spec.agent_type.as_deref(), &prompt);
                 let started = run::Started {
                     description,
                     tag,
