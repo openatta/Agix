@@ -42,7 +42,7 @@ pub enum SessionEvent {
 }
 
 /// Whether the engine sends `event` whether or not a turn is running — a
-/// question, a tool call's, a sub-agent's or a team's progress, changed
+/// question and its end, a tool call's, a sub-agent's or a team's progress, changed
 /// skills, a notification. Between turns only these go to the watchers.
 ///
 /// A question is not terminal: the tool call that asked waits on
@@ -54,6 +54,7 @@ pub fn emitted_outside_turns(event: &AgentEvent) -> bool {
     matches!(
         event,
         AgentEvent::PermissionPrompt { .. }
+            | AgentEvent::PromptResolved { .. }
             | AgentEvent::QuestionPrompt { .. }
             | AgentEvent::SubagentProgress { .. }
             | AgentEvent::ToolProgress { .. }

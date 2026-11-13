@@ -1100,6 +1100,52 @@ async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
     }
     assert!(task.waiting_for.lock().unwrap().is_empty());
     assert!(pending.lock().unwrap().is_empty());
+    let resolved = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|event| match event {
+        AgentEvent::PromptResolved {
+            prompt_id,
+            resolution,
+        } => Some((prompt_id, resolution)),
+        _ => None,
+    });
+    assert_eq!(
+        resolved,
+        Some((prompt_id, base::event::PromptResolution::Answered)),
+        "the parent's host hears the question is answered"
+    );
+}
+
+/// A sub-agent's question it stops waiting on is announced as withdrawn on
+/// the parent's channel, and leaves nothing registered there.
+#[tokio::test]
+async fn a_sub_agents_question_given_up_on_is_withdrawn_from_the_parents_host() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let pending: runtime::agent::PendingPermissions = Arc::default();
+    let agent_tool = TestParent {
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        pending: pending.clone(),
+        ..test_parent()
+    }
+    .agent_tool();
+    let asker = agent_tool.sub_relay(None).elicitation;
+    let asked = tokio::spawn(async move { asker.ask(authorization("p2", "run it?")).await });
+    loop {
+        if let AgentEvent::PermissionPrompt { .. } = rx.recv().await.expect("asked") {
+            break;
+        }
+    }
+    asked.abort();
+    let resolution = loop {
+        if let AgentEvent::PromptResolved {
+            prompt_id,
+            resolution,
+        } = rx.recv().await.expect("the end of the question")
+        {
+            assert_eq!(prompt_id, "p2");
+            break resolution;
+        }
+    };
+    assert_eq!(resolution, base::event::PromptResolution::Withdrawn);
+    assert!(pending.lock().unwrap().is_empty());
 }
 
 /// An unattended sub-agent is handed the parent's question as it is, for its

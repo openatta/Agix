@@ -79,6 +79,14 @@ fn agent_samples() -> Vec<(&'static str, Value)> {
             json!({"kind": "question_prompt", "prompt_id": "q2", "question": "why?", "turn_id": "inner"}),
         ),
         (
+            "prompt_resolved",
+            json!({"kind": "prompt_resolved", "prompt_id": "p1", "resolution": "answered"}),
+        ),
+        (
+            "prompt_withdrawn",
+            json!({"kind": "prompt_resolved", "prompt_id": "q2", "resolution": "withdrawn"}),
+        ),
+        (
             "turn_start",
             json!({"kind": "turn_start", "turn_id": "inner"}),
         ),

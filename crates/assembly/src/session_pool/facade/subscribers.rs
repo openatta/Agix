@@ -247,6 +247,9 @@ impl SessionPool {
         // Straight to the engine, whose input demultiplexer wakes the blocked
         // tool call. A `prompt_id` nobody is waiting on (already answered,
         // timed out, stale) is a silent no-op — the documented behaviour.
+        // The ask is forgotten when the engine says it ended
+        // (`PromptResolved`), not here: only the engine knows whether this
+        // answer was the one it took.
         let _ = input_tx.send(match answer {
             PromptAnswer::Permission(decision) => InputMessage::PermissionResponse {
                 prompt_id: prompt_id.clone(),
@@ -257,7 +260,6 @@ impl SessionPool {
                 answer,
             },
         });
-        hub.forget_ask(&prompt_id);
         Ok(())
     }
 }

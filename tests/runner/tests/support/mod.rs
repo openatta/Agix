@@ -332,6 +332,8 @@ pub fn normalize_events(events: &[AgentEvent]) -> String {
             AgentEvent::QuestionPrompt { question, .. } => {
                 format!("QuestionPrompt {:?}", first_line(question))
             }
+            // How the ask ended already shows in the `ToolResult` it led to.
+            AgentEvent::PromptResolved { .. } => continue,
             AgentEvent::TurnStart { .. } => "TurnStart".to_string(),
             AgentEvent::StepStart { step, .. } => format!("StepStart step={step}"),
             AgentEvent::ModelRetry {

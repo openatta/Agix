@@ -1345,8 +1345,8 @@ turn 期间的引擎错误不是事件,是**这次调用的错误响应**:`ENGIN
 的规矩来。
 
 `pending_prompts` 里的帧带**原来的 `prompt_id`**,所以中途打开的 tab 可以直接答那个
-还悬着的提问(权限提问与模型的提问都在里面)。一轮自己的提问在这一轮结束时清掉;后台子 Agent 的提问不属于哪一轮,
-留到被回答或它的任务结束。
+还悬着的提问(权限提问与模型的提问都在里面)。提问在引擎推出它的 `prompt_resolved`(§7)时清掉;
+一轮自己的提问最晚在这一轮结束时清掉,后台子 Agent 的提问不属于哪一轮,留到被回答或它的任务结束。
 
 #### `session.unsubscribe`
 
@@ -2093,7 +2093,9 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 
 **谁都能答,先答者生效。** 提问广播给该会话的全部订阅者,任何一条连接都可以回答,
 不必是发起 turn 的那条。`prompt_id` 未知(已超时、已被别人答掉)时**静默成功** ——
-调用方要的是"这个提问被答掉",而它确实被答掉了。
+调用方要的是"这个提问被答掉",而它确实被答掉了。引擎收下回答后推一帧
+`prompt_resolved`(`resolution: "answered"`,§7)给全部订阅者,别的 tab 据此撤下这个提问;
+超时等没人答的情况推的是 `resolution: "withdrawn"`。
 
 会话不在内存里 → `SESSION_NOT_FOUND`(这个和 `session.close` 不一样:答一个没在跑
 的会话的提问不可能是"已经完成了")。
@@ -2690,6 +2692,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `tool_progress` | `{tool_use_id,name,message,progress?,total?,dropped}` | 运行中的工具调用报的进度,`tool_use_id` 是那次 `tool_use` 的 `id`;每次调用每秒至多一帧,`dropped` 是上一帧以来合并掉的条数。不进 transcript,不保证送达(§7.3) |
 | `tool_result` | `{id,name,content,is_error}` | 工具返回 |
 | `prompt` | `permission`:`{prompt_type,prompt_id,tool_name,message,paths[],tool_use_id?}`;`question`:`{prompt_type,prompt_id,tool_use_id,question,header,options:[{key,label}]}` | 需宿主回答,用 `session.respondToPrompt`;`tool_use_id` 是被问的那次 `tool_use`(`question` 的 `prompt_id` 就是它)。`question` 的 `header` 可为 `null`,`options` 为空表示自由回答 |
+| `prompt_resolved` | `{prompt_id,resolution}` | 那一帧 `prompt` 不再悬着:`resolution` 为 `answered`(引擎收下了一个回答,不论是哪条连接答的)或 `withdrawn`(超时、这一轮被中断或结束、会话在关闭,引擎不再等)。每个 `prompt` 至多一帧,推给全部订阅者,包括答题的那条连接;收到就把这个提问从界面上撤下 |
 | `subagent_progress` | `{agent_label,agent_session_id,agent_type,parent_turn,parent_tool_use_id,task_id,event}` | 子 Agent 事件镜像,`event` 是嵌套的本表结构(同样不带 `turn_id`;子 Agent 的事件本表里没有的,整帧不发);`parent_tool_use_id` 是父会话里发起它的那次 `Agent` 调用,不知道时为 `null`;`task_id` 是它在 `session.tasks` 里的任务 |
 | `team_progress` | `{team,team_id,stage,stage_index,stage_count,status,members,failed}` | 团队阶段生命周期 |
 | `skills_changed` | `{added,removed}` | 会话可用的 skill 与它上次看到的不同:skill 文件在两轮之间增删后,下一轮开始时发一次(同一份 skill 目录上的每个会话各发各的)。缓存了 `commands.list` 的客户端该重取 |

@@ -85,6 +85,16 @@ impl SessionHub {
         deliver(&mut inner, &frame, None);
     }
 
+    /// The ask `prompt_id` is no longer open: forgotten and announced under
+    /// the same lock, so a watcher that subscribes meanwhile is handed either
+    /// the ask or the frame that ends it, never the ask alone.
+    pub(in crate::session_pool) fn publish_resolved(&self, frame: &SessionFrame, prompt_id: &str) {
+        self.touch();
+        let mut inner = self.lock();
+        inner.pending.remove(prompt_id);
+        deliver(&mut inner, frame, None);
+    }
+
     /// Start watching, and what is still being asked as of that moment.
     pub(in crate::session_pool) fn subscribe(
         &self,
@@ -108,10 +118,6 @@ impl SessionHub {
 
     pub(in crate::session_pool) fn ask_kind(&self, prompt_id: &str) -> Option<AskKind> {
         self.lock().pending.get(prompt_id).map(|ask| ask.kind)
-    }
-
-    pub(in crate::session_pool) fn forget_ask(&self, prompt_id: &str) {
-        self.lock().pending.remove(prompt_id);
     }
 
     pub(in crate::session_pool) fn forget_asks_of_task(&self, task_id: &str) {

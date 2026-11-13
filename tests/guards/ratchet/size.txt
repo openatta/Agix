@@ -23,7 +23,7 @@ fn    crates/agents/src/agent_tool/mod.rs                  AgentTool::call      
 fn    crates/agents/src/lib.rs                             AgentsModule::on_session                 111
 fn    crates/assembly/src/assemble.rs                      pool                                     137
 fn    crates/assembly/src/export.rs                        pack                                     211
-fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          270
+fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          275
 fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                      331
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::export_session              115
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::fork_session                128

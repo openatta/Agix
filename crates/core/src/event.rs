@@ -131,6 +131,14 @@ pub enum AgentEvent {
         task_id: Option<String>,
     },
 
+    /// The ask `prompt_id` — a `PermissionPrompt` or `QuestionPrompt` — is no
+    /// longer open: answered, or given up on. Emitted once per ask, by the
+    /// engine that stopped waiting on it.
+    PromptResolved {
+        prompt_id: String,
+        resolution: PromptResolution,
+    },
+
     /// A turn has started. Every `TurnStart` is followed by exactly one
     /// `TurnComplete` or `Error` with the same `turn_id`.
     TurnStart { turn_id: String },
@@ -374,6 +382,18 @@ pub enum AgentEvent {
         failure: TurnFailure,
         turn_id: String,
     },
+}
+
+/// How an ask ended (`AgentEvent::PromptResolved`).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptResolution {
+    /// An answer reached the engine and was taken.
+    Answered,
+    /// The engine stopped waiting with no answer: the prompt timed out, the
+    /// turn asking it was cancelled or ended, or the session is closing.
+    Withdrawn,
 }
 
 fn logged() -> bool {

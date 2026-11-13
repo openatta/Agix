@@ -8,7 +8,8 @@ use crate::session_pool::api::{SessionEvent, SessionFrame};
 use base::context::goal::GoalView;
 use base::context::{TaskEvent, TaskInfo};
 use base::event::{
-    AgentEvent, ContextUsage, FailureKind, QueuedUserMessage, TeamStageStatus, TurnFailure,
+    AgentEvent, ContextUsage, FailureKind, PromptResolution, QueuedUserMessage, TeamStageStatus,
+    TurnFailure,
 };
 use base::interface::elicitation::ElicitOption;
 use base::interface::model::Usage;
@@ -77,6 +78,10 @@ pub enum SessionEventPayload {
         is_error: Option<bool>,
     },
     Prompt(PromptPayload),
+    PromptResolved {
+        prompt_id: String,
+        resolution: PromptResolution,
+    },
     SubagentProgress {
         agent_label: String,
         agent_session_id: String,
@@ -227,6 +232,7 @@ impl SessionEventPayload {
         "tool_progress",
         "tool_result",
         "prompt",
+        "prompt_resolved",
         "subagent_progress",
         "team_progress",
         "skills_changed",
@@ -394,6 +400,13 @@ impl SessionEventPayload {
                 header: header.clone(),
                 options: options.clone(),
             }),
+            AgentEvent::PromptResolved {
+                prompt_id,
+                resolution,
+            } => Self::PromptResolved {
+                prompt_id: prompt_id.clone(),
+                resolution: *resolution,
+            },
             AgentEvent::TurnStart { turn_id: _ } => Self::TurnStart {},
             AgentEvent::StepStart { step, turn_id: _ } => Self::StepStart { step: *step },
             AgentEvent::ModelRetry {

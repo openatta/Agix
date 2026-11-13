@@ -49,7 +49,7 @@ pub(in crate::session_pool) fn ask_of(
 }
 
 /// Hand `event` to whoever watches the session, recording it first when it
-/// is an ask.
+/// is an ask, forgetting the ask first when it is an ask's end.
 pub(in crate::session_pool) fn publish_agent_event(
     hub: &SessionHub,
     session_id: &Arc<str>,
@@ -57,16 +57,21 @@ pub(in crate::session_pool) fn publish_agent_event(
     event: AgentEvent,
 ) {
     let ask = ask_of(&event);
+    let resolved = match &event {
+        AgentEvent::PromptResolved { prompt_id, .. } => Some(prompt_id.clone()),
+        _ => None,
+    };
     let frame = SessionFrame {
         session_id: session_id.clone(),
         turn_id: turn_id.cloned(),
         event: SessionEvent::Agent(event),
     };
-    match ask {
-        Some((prompt_id, task_id, kind)) => {
+    match (ask, resolved) {
+        (Some((prompt_id, task_id, kind)), _) => {
             hub.publish_ask(Arc::new(frame), prompt_id, task_id, kind)
         }
-        None => hub.publish(&frame),
+        (None, Some(prompt_id)) => hub.publish_resolved(&frame, &prompt_id),
+        (None, None) => hub.publish(&frame),
     }
 }
 

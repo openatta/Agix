@@ -8,8 +8,10 @@
 //! under the prompt id before the event is emitted, and dropping the ask (its
 //! timeout fired, the turn was cancelled) removes the registration, so a late
 //! answer for that id is discarded rather than waking a call that already
-//! resolved. A library embedder can replace all of this with a direct call
-//! into their own UI.
+//! resolved. However the ask ends, the same drop emits
+//! `AgentEvent::PromptResolved`, so whoever shows the prompt learns it is
+//! gone ([`OpenPrompt`]). A library embedder can replace all of this with a
+//! direct call into their own UI.
 //!
 //! # What it cannot serve
 //!
@@ -85,7 +87,7 @@ impl ChannelElicitation {
         let (tx, rx) = tokio::sync::oneshot::channel();
         // Registered before emitting, so an answer that comes back instantly
         // still finds somewhere to land.
-        let _registration = Registration::new(&request.id, &self.pending, tx);
+        let _open = OpenPrompt::register(&request.id, &self.pending, tx, self.events.clone());
         let _ = self.events.send(base::event::AgentEvent::PermissionPrompt {
             prompt_id: request.id,
             tool_name,
@@ -114,7 +116,7 @@ impl ChannelElicitation {
         tool_use_id: Option<String>,
     ) -> ElicitOutcome {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _registration = Registration::new(&request.id, questions, tx);
+        let _open = OpenPrompt::register(&request.id, questions, tx, self.events.clone());
         let _ = self.events.send(base::event::AgentEvent::QuestionPrompt {
             prompt_id: request.id,
             question: request.message,
@@ -135,17 +137,28 @@ impl ChannelElicitation {
     }
 }
 
-/// Removes a prompt registration unless the answer arrived.
+/// An ask registered under its prompt id in a table of open prompts, for as
+/// long as its asker waits.
 ///
-/// Tied to the future's lifetime, so a caller that drops the ask for a reason
+/// Tied to the waiting future's lifetime, so an ask dropped for a reason
 /// nobody has thought of yet still cannot leave a stale registration behind.
-struct Registration<T> {
+/// The drop is the one place an ask ends: an answer took the entry out of the
+/// table on its way in, anything else — a timeout, a cancelled turn, a
+/// closing session — finds it still there and takes it out here. Either way
+/// `PromptResolved` goes out, once.
+pub struct OpenPrompt<T> {
     id: String,
     pending: Waiting<T>,
+    events: EventSender,
 }
 
-impl<T> Registration<T> {
-    fn new(id: &str, pending: &Waiting<T>, tx: tokio::sync::oneshot::Sender<T>) -> Self {
+impl<T> OpenPrompt<T> {
+    pub fn register(
+        id: &str,
+        pending: &Waiting<T>,
+        tx: tokio::sync::oneshot::Sender<T>,
+        events: EventSender,
+    ) -> Self {
         pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -153,16 +166,27 @@ impl<T> Registration<T> {
         Self {
             id: id.to_string(),
             pending: pending.clone(),
+            events,
         }
     }
 }
 
-impl<T> Drop for Registration<T> {
+impl<T> Drop for OpenPrompt<T> {
     fn drop(&mut self) {
-        self.pending
+        let unanswered = self
+            .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
+            .remove(&self.id)
+            .is_some();
+        let _ = self.events.send(base::event::AgentEvent::PromptResolved {
+            prompt_id: std::mem::take(&mut self.id),
+            resolution: if unanswered {
+                base::event::PromptResolution::Withdrawn
+            } else {
+                base::event::PromptResolution::Answered
+            },
+        });
     }
 }
 
@@ -214,6 +238,7 @@ impl Elicitation for ChannelElicitation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base::event::PromptResolution::{Answered, Withdrawn};
     use base::interface::elicitation::ElicitKind;
 
     fn bus() -> (
@@ -285,13 +310,28 @@ mod tests {
             outcome.answer_as::<PermissionDecision>(),
             Some(PermissionDecision::Permit)
         ));
+        assert_eq!(resolutions(&mut rx), [("p1".to_string(), Answered)]);
+    }
+
+    fn resolutions(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<base::event::AgentEvent>,
+    ) -> Vec<(String, base::event::PromptResolution)> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                base::event::AgentEvent::PromptResolved {
+                    prompt_id,
+                    resolution,
+                } => Some((prompt_id, resolution)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The registration must not outlive the ask. A caller that gives up and
     /// drops the future leaves nothing for a late answer to wake.
     #[tokio::test]
     async fn giving_up_on_the_ask_removes_the_registration() {
-        let (events, _rx) = bus();
+        let (events, mut rx) = bus();
         let pending: Pending = Default::default();
         let asker = ChannelElicitation::new(events, pending.clone());
 
@@ -313,6 +353,7 @@ mod tests {
                 .contains_key("p2"),
             "a dropped ask must take its registration with it"
         );
+        assert_eq!(resolutions(&mut rx), [("p2".to_string(), Withdrawn)]);
     }
 
     #[tokio::test]

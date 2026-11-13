@@ -464,6 +464,10 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
   `server/watch.rs` 为连接实现 `SessionWatcher`。投递是同步入队,所以 `turn_complete`
   一定排在同一连接上 `run_turn` 的响应之前。定时任务与目标轮的 `run_turn` 不带发起订阅者
   (`Option<Arc<dyn SessionWatcher>>` 传 `None`),它们的帧照样发给全部订阅者。
+- **待答提问以引擎为准。** 引擎的待答表(`PendingPermissions` / `PendingQuestions`,子 Agent 经
+  `ParentElicitation` 用父会话的那张)由 `OpenPrompt` 登记;回答、超时、回合取消都在它的 `Drop` 里
+  一处结束,同时发 `AgentEvent::PromptResolved`。`SessionHub` 收到这个事件才把提问从待答里去掉,并在
+  同一把锁里广播 `prompt_resolved`;`respondToPrompt` 只把回答交给引擎,不自己去掉。
 - **错误是领域类型。** 池的方法返回 `PoolError`,池里不出现错误码;`server/errors.rs` 一处 `match`
   决定错误码、message 和 `data` 的形状。场景检查(`SCENE_MISMATCH`)在池里做,定时任务与目标轮不检查。
 - **`SESSION_BUSY` 带 `reason`**:`turn_running`(必带回合 id)、`rebuilding`、`background_tasks`、

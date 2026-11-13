@@ -505,6 +505,74 @@
       }
     },
     {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt_resolved",
+            "prompt_id": "p1",
+            "resolution": "answered"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "prompt_resolved",
+      "event": {
+        "kind": "prompt_resolved",
+        "prompt_id": "p1",
+        "resolution": "answered"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt_resolved",
+            "prompt_id": "p1",
+            "resolution": "answered"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt_resolved",
+            "prompt_id": "q2",
+            "resolution": "withdrawn"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "prompt_withdrawn",
+      "event": {
+        "kind": "prompt_resolved",
+        "prompt_id": "q2",
+        "resolution": "withdrawn"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt_resolved",
+            "prompt_id": "q2",
+            "resolution": "withdrawn"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
       "between_turns": null,
       "case": "turn_start",
       "event": {

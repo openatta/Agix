@@ -83,6 +83,23 @@ impl Daemon {
     }
 
     async fn start_with(model: Arc<dyn AnthropicClient>) -> Self {
+        Self::start_configured(model, |_| {}).await
+    }
+
+    /// Permission prompts are on, and go unanswered for `timeout_secs`
+    /// before they are given up on.
+    async fn start_asking(model: Arc<dyn AnthropicClient>, timeout_secs: u64) -> Self {
+        Self::start_configured(model, |settings| {
+            settings.permission_mode = base::settings::PermissionMode::Default;
+            settings.execution.permission_prompt_timeout_secs = timeout_secs;
+        })
+        .await
+    }
+
+    async fn start_configured(
+        model: Arc<dyn AnthropicClient>,
+        configure: impl FnOnce(&mut base::settings::Settings),
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("tasks.sock");
         let cwd = dir.path().join("work");
@@ -96,6 +113,7 @@ impl Daemon {
         );
         config.settings.values.memory_enabled = false;
         config.settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
+        configure(&mut config.settings.values);
         let pool = daemon::assemble::pool(
             &config,
             Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
@@ -1340,4 +1358,93 @@ async fn a_session_running_background_work_is_not_rebuilt_under_it() {
         .unwrap_or_else(|| panic!("the sub-agent is gone: {tasks}"));
     assert_eq!(task["status"], "running", "{task}");
     assert_eq!(model.abandoned.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+fn asks_to_run(command: &str) -> Arc<MockAnthropicClient> {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(tool_round(
+        "Bash",
+        "toolu_ask",
+        serde_json::json!({"command": command}),
+    ));
+    model.push_turn(text_round("done"));
+    model
+}
+
+fn first_of(frames: &Mutex<Vec<serde_json::Value>>, kind: &str) -> Option<serde_json::Value> {
+    frames
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|f| f["event"]["kind"] == kind)
+        .map(|f| f["event"].clone())
+}
+
+/// A question every watcher of the session was shown is taken back from all
+/// of them once one host answers it, and is no longer handed to a host that
+/// subscribes afterwards.
+#[tokio::test]
+async fn a_question_one_host_answers_is_withdrawn_from_every_other() {
+    let daemon = Arc::new(Daemon::start_asking(asks_to_run("touch made.txt"), 0).await);
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let other = daemon.watch(&session).await;
+    let turn = {
+        let (daemon, session) = (daemon.clone(), session.clone());
+        tokio::spawn(async move {
+            daemon
+                .call(
+                    "session.run_turn",
+                    serde_json::json!({"session_id": session, "message": "make a file"}),
+                )
+                .await
+        })
+    };
+    let prompt = eventually!("the prompt", first_of(&other, "prompt"));
+
+    daemon
+        .ok(
+            "session.respondToPrompt",
+            serde_json::json!({"session_id": session, "prompt_id": prompt["prompt_id"],
+                               "decision": {"type": "permit"}}),
+        )
+        .await;
+
+    let resolved = eventually!("the prompt's end", first_of(&other, "prompt_resolved"));
+    assert_eq!(resolved["prompt_id"], prompt["prompt_id"], "{resolved}");
+    assert_eq!(resolved["resolution"], "answered", "{resolved}");
+    let finished = turn.await.unwrap();
+    assert!(finished.get("result").is_some(), "{finished}");
+    let late = daemon
+        .ok(
+            "session.subscribe",
+            serde_json::json!({"session_id": session}),
+        )
+        .await;
+    assert_eq!(late["pending_prompts"], serde_json::json!([]), "{late}");
+}
+
+/// A question nobody answers in time is withdrawn from every watcher.
+#[tokio::test]
+async fn a_question_nobody_answers_in_time_is_withdrawn() {
+    let daemon = Arc::new(Daemon::start_asking(asks_to_run("touch made.txt"), 1).await);
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let watching = daemon.watch(&session).await;
+    let finished = daemon
+        .call(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "make a file"}),
+        )
+        .await;
+    assert!(finished.get("result").is_some(), "{finished}");
+
+    let prompt = first_of(&watching, "prompt").expect("asked");
+    let resolved = eventually!("the prompt's end", first_of(&watching, "prompt_resolved"));
+    assert_eq!(resolved["prompt_id"], prompt["prompt_id"], "{resolved}");
+    assert_eq!(resolved["resolution"], "withdrawn", "{resolved}");
 }

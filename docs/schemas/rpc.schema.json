@@ -6814,6 +6814,18 @@
           ],
           "type": "object"
         },
+        "prompt_resolved": {
+          "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §7 的 kind 表)",
+          "properties": {
+            "kind": {
+              "const": "prompt_resolved"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
         "skills_changed": {
           "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节(协议文档 §7 的 kind 表)",
           "properties": {

@@ -62,7 +62,8 @@ impl PermissionPolicy for DelegateRelay {
 /// parent's own questions use, so `session.respondToPrompt` answers them with
 /// no plumbing of their own. The parent's input demultiplexer takes the answer
 /// ahead of turn dispatch, so it lands even while the parent's turn is blocked
-/// in the call that spawned the delegate.
+/// in the call that spawned the delegate. How the question ended goes out on
+/// the parent's channel too, as the parent's own would.
 pub(crate) struct ParentElicitation {
     pub(crate) delegate_id: String,
     pub(crate) events: runtime::agent::EventSender,
@@ -116,6 +117,7 @@ impl Elicitation for ParentElicitation {
 struct OpenQuestion<'a> {
     asker: &'a ParentElicitation,
     prompt_id: &'a str,
+    _open: runtime::elicitation::OpenPrompt<runtime::agent::PermissionDecision>,
 }
 
 impl<'a> OpenQuestion<'a> {
@@ -124,25 +126,25 @@ impl<'a> OpenQuestion<'a> {
         prompt_id: &'a str,
         tx: tokio::sync::oneshot::Sender<runtime::agent::PermissionDecision>,
     ) -> Self {
-        asker
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(prompt_id.to_string(), tx);
+        let open = runtime::elicitation::OpenPrompt::register(
+            prompt_id,
+            &asker.pending,
+            tx,
+            asker.events.clone(),
+        );
         if let Some(task) = &asker.task {
             task.begin_waiting(prompt_id);
         }
-        Self { asker, prompt_id }
+        Self {
+            asker,
+            prompt_id,
+            _open: open,
+        }
     }
 }
 
 impl Drop for OpenQuestion<'_> {
     fn drop(&mut self) {
-        self.asker
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(self.prompt_id);
         if let Some(task) = &self.asker.task {
             task.end_waiting(self.prompt_id);
         }
