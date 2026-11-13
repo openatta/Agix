@@ -26,7 +26,7 @@ impl HealthCheck for PermissionModeCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let mode = self.0.permission_mode;
+        let mode = self.0.values.permission_mode;
         let details = serde_json::json!({ "permission_mode": mode });
         if mode == PermissionMode::BypassPermissions {
             CheckResult::degraded(
@@ -69,7 +69,7 @@ impl HealthCheck for HooksFailOpenCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let Some(value) = &self.0.hooks_config else {
+        let Some(value) = &self.0.values.hooks_config else {
             return CheckResult::ok("no hooks configured");
         };
         let (parsed, _) = hooks::parse_hooks_settings(value);
@@ -120,7 +120,7 @@ impl HealthCheck for UnattendedNetworkCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let sandbox = &self.settings.sandbox;
+        let sandbox = &self.settings.values.sandbox;
         let details = serde_json::json!({
             "unattended_scenes": self.unattended_scenes,
             "network_mode": sandbox.network_mode,
@@ -163,7 +163,7 @@ impl HealthCheck for NetworkAllowlistCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let sandbox = &self.0.sandbox;
+        let sandbox = &self.0.values.sandbox;
         if sandbox.network_mode != NetworkModeConfig::Allowlist {
             return CheckResult::ok("sandbox.network_mode is not allowlist");
         }
@@ -217,7 +217,7 @@ impl HealthCheck for StrictProfileCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let strict = if self.settings.sandbox.dangerously_disable_sandbox {
+        let strict = if self.settings.values.sandbox.dangerously_disable_sandbox {
             Enforcement::None
         } else {
             let dir = std::env::temp_dir();
@@ -233,7 +233,7 @@ impl HealthCheck for StrictProfileCheck {
         };
         let details = serde_json::json!({
             "enforcement": format!("{strict:?}").to_lowercase(),
-            "sandbox_disabled": self.settings.sandbox.dangerously_disable_sandbox,
+            "sandbox_disabled": self.settings.values.sandbox.dangerously_disable_sandbox,
         });
         if strict == Enforcement::Full {
             return CheckResult::ok(
@@ -241,7 +241,7 @@ impl HealthCheck for StrictProfileCheck {
             )
             .with_details(details);
         }
-        let why = if self.settings.sandbox.dangerously_disable_sandbox {
+        let why = if self.settings.values.sandbox.dangerously_disable_sandbox {
             "sandbox.dangerously_disable_sandbox is on"
         } else {
             "this build or machine has no sandbox backend that holds it"

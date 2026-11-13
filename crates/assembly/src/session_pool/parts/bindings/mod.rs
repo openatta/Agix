@@ -212,7 +212,7 @@ impl BindingCache {
         let settings = if self.is_own_pair(project_root, scene_id).await {
             self.pool_settings().await
         } else {
-            let default_model = self.settings.read().await.model.model_name.clone();
+            let default_model = self.settings.read().await.values.model.model_name.clone();
             let (global_root, scene_root, scene_id, project) = (
                 self.paths.global_root(),
                 self.scene_root(scene_id, &startup_scene),
@@ -471,7 +471,7 @@ impl BindingCache {
 
     /// Re-read this daemon's own pair's settings from disk and swap them in.
     pub(in crate::session_pool) async fn reload_own(&self, scene: &str) {
-        let default_model = self.settings.read().await.model.model_name.clone();
+        let default_model = self.settings.read().await.values.model.model_name.clone();
         let (global_root, config_root, local_dir, scene) = (
             self.paths.global_root(),
             self.paths.config_root(),

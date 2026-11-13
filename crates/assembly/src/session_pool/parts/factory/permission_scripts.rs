@@ -20,7 +20,7 @@ pub(in crate::session_pool) fn effective_permission_mode(
     settings: &base::settings::LoadedSettings,
     options: Option<&SessionOptions>,
 ) -> base::settings::PermissionMode {
-    let mode = requested_permission_mode(settings, options);
+    let mode = requested_permission_mode(&settings.values, options);
     if mode == base::settings::PermissionMode::BypassPermissions && settings.bypass_disabled() {
         warn!("the managed settings disable bypassPermissions; this session runs in default mode");
         return base::settings::PermissionMode::Default;
@@ -72,7 +72,7 @@ pub(in crate::session_pool) fn bind_scripts(
 ) {
     use script_host::bindings::{bind_into, bind_lenient, BindingSource, BoundScripts};
 
-    if settings.scripts.is_empty() && packages.is_empty() {
+    if settings.values.scripts.is_empty() && packages.is_empty() {
         return (None, Vec::new());
     }
 
@@ -135,9 +135,10 @@ pub(in crate::session_pool) fn operator_script_bindings(
     settings: &base::settings::LoadedSettings,
 ) -> Vec<base::settings::ScriptBinding> {
     if !settings.trust().is_untrusted() {
-        return settings.scripts.clone();
+        return settings.values.scripts.clone();
     }
     settings
+        .values
         .scripts
         .iter()
         .filter(|binding| {

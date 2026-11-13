@@ -145,7 +145,7 @@ impl EngineFactory {
             session_id,
             task_router.as_deref(),
             &model,
-            &settings_snapshot.model.model_name,
+            &settings_snapshot.values.model.model_name,
         );
         let permission =
             resolve_session_permission(self.host_policy.as_ref(), &settings_snapshot, options);
@@ -322,7 +322,7 @@ fn models(
     let model_name = spec.model().or_else(|| {
         provider_id
             .as_ref()
-            .and_then(|id| binding.settings.providers.get(id))
+            .and_then(|id| binding.settings.values.providers.get(id))
             .and_then(|config| config.default_model.clone())
     });
     let (model, task_router) = match recorder_config {
@@ -381,7 +381,9 @@ fn session_telemetry(
                 .then(|| dir.join("telemetry").join(format!("{session_id}.jsonl")))
         }
     };
-    if let (true, Some(telemetry_path)) = (settings_snapshot.telemetry_enabled, telemetry_path) {
+    if let (true, Some(telemetry_path)) =
+        (settings_snapshot.values.telemetry_enabled, telemetry_path)
+    {
         match FileRecorder::new(&telemetry_path) {
             Ok(rec) => {
                 let data_dir = &settings_snapshot.paths.local_data_dir;
@@ -397,7 +399,7 @@ fn session_telemetry(
                 // `OnceLock` rather than per session (see `otel_sink`).
                 let mut recorders: Vec<std::sync::Arc<dyn telemetry::TelemetryRecorder>> =
                     vec![std::sync::Arc::new(rec)];
-                if let Some(otel) = otel_sink(settings_snapshot.telemetry_url.as_deref()) {
+                if let Some(otel) = otel_sink(settings_snapshot.values.telemetry_url.as_deref()) {
                     recorders.push(otel);
                 }
                 let telemetry_config = telemetry::TelemetryConfig {

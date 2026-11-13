@@ -128,7 +128,7 @@ impl SessionPool {
             .filter(|name| !plugin_servers.contains_key(name))
             .collect();
         let mut admitted = AdmittedMcp::default();
-        for (name, v) in &self.configured_mcp_servers(settings) {
+        for (name, v) in &self.configured_mcp_servers(&settings.values) {
             let parsed = serde_json::from_value::<mcp::config::McpServerConfig>(v.clone())
                 .map_err(|e| {
                     tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
@@ -200,7 +200,7 @@ impl SessionPool {
         let pool = self.clone();
         tokio::spawn(async move {
             let settings = pool.bindings.pool_settings().await;
-            if pool.configured_mcp_servers(&settings).is_empty() {
+            if pool.configured_mcp_servers(&settings.values).is_empty() {
                 return;
             }
             let key = (Some(pool.cwd().to_path_buf()), settings.paths.scope.clone());
@@ -240,7 +240,7 @@ impl SessionPool {
         let wait = pool.as_ref().map(|_| MCP_SESSION_CONNECT_WAIT);
         let (mut manager, late) = McpManager::connect_all_within(
             admitted,
-            settings.sandbox.subprocess_env.clone(),
+            settings.values.sandbox.subprocess_env.clone(),
             Some(self.mcp.auth.clone()),
             wait,
         )
@@ -336,7 +336,7 @@ impl SessionPool {
         let wait = pool.as_ref().map(|_| MCP_SESSION_CONNECT_WAIT);
         let (manager, late) = McpManager::connect_all_within(
             admitted,
-            settings.sandbox.subprocess_env.clone(),
+            settings.values.sandbox.subprocess_env.clone(),
             Some(self.mcp.auth.clone()),
             wait,
         )
@@ -505,7 +505,7 @@ impl SessionPool {
         let target_settings = self
             .settings_for_project(target.0.as_deref(), scene_id)
             .await;
-        let env = target_settings.sandbox.subprocess_env.clone();
+        let env = target_settings.values.sandbox.subprocess_env.clone();
         let cfg = &cfg
             .clone()
             .run_in(target.0.as_deref().unwrap_or(self.cwd()));

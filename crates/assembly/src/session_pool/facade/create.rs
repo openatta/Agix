@@ -342,6 +342,7 @@ impl SessionPool {
             mcp_module,
             process_groups: binding
                 .settings
+                .values
                 .sandbox
                 .reap_process_groups
                 .then(|| core.process_groups().clone()),
@@ -350,7 +351,7 @@ impl SessionPool {
             .note_script_faults(std::mem::take(&mut built.script_faults));
 
         let settings = &built.settings;
-        let mode_name = serde_json::to_value(settings.permission_mode)
+        let mode_name = serde_json::to_value(settings.values.permission_mode)
             .ok()
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "default".to_string());
@@ -363,13 +364,13 @@ impl SessionPool {
                 None,
                 telemetry::SessionStartPayload {
                     permission_mode: mode_name,
-                    model: settings.model.model_name.clone(),
-                    max_tokens: settings.model.max_tokens,
+                    model: settings.values.model.model_name.clone(),
+                    max_tokens: settings.values.model.max_tokens,
                     thinking_mode: !matches!(
-                        settings.model.thinking_mode,
+                        settings.values.model.thinking_mode,
                         base::settings::ThinkingMode::Off
                     ),
-                    sandbox_enabled: !settings.sandbox.dangerously_disable_sandbox,
+                    sandbox_enabled: !settings.values.sandbox.dangerously_disable_sandbox,
                     resume_from: (restore != Restore::New).then(|| session_id.to_string()),
                     auth_modes: Vec::new(),
                     mcp_server_count,
@@ -397,8 +398,8 @@ impl SessionPool {
                 .clone()
                 .unwrap_or_else(|| settings.paths.global_data_dir.display().to_string()),
             started_at: store.environment().now(),
-            model: settings.model.model_name.clone(),
-            permission_mode: serde_json::to_value(settings.permission_mode)
+            model: settings.values.model.model_name.clone(),
+            permission_mode: serde_json::to_value(settings.values.permission_mode)
                 .ok()
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "default".to_string()),

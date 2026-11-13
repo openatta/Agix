@@ -14,7 +14,7 @@ pub(in crate::session_pool) fn untrusted_mcp_entries(
     settings
         .project_mcp_servers()
         .iter()
-        .filter(|(name, _)| !settings.mcp_servers.contains_key(*name))
+        .filter(|(name, _)| !settings.values.mcp_servers.contains_key(*name))
         .map(|(name, cfg)| {
             let transport = serde_json::from_value::<mcp::config::McpServerConfig>(cfg.clone())
                 .map(|c| c.transport_kind().to_string())

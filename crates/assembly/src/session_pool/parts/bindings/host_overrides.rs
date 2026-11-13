@@ -75,10 +75,10 @@ mod tests {
         other.language = Some("fr".into());
         let paths = LoadedSettings::new(disk.clone(), Default::default()).paths;
         let applied = overrides.apply(LoadedSettings::new(other, paths));
-        assert!(!applied.memory_enabled);
-        assert_eq!(applied.model.max_tokens, 7);
-        assert_eq!(applied.model.model_name, "other-model");
-        assert_eq!(applied.language.as_deref(), Some("fr"));
+        assert!(!applied.values.memory_enabled);
+        assert_eq!(applied.values.model.max_tokens, 7);
+        assert_eq!(applied.values.model.model_name, "other-model");
+        assert_eq!(applied.values.language.as_deref(), Some("fr"));
 
         assert!(HostOverrides::between(&disk, &disk).0.is_none());
     }

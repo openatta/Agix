@@ -85,7 +85,8 @@ impl ProjectBinding {
         last_good_router: Option<Arc<base::provider::TaskRouter>>,
         credentials: &Arc<dyn base::interface::credentials::CredentialSource>,
     ) -> Self {
-        let (task_router, routing) = resolve_router(&settings, last_good_router, credentials);
+        let (task_router, routing) =
+            resolve_router(&settings.values, last_good_router, credentials);
         // `task_models.main` is what points the conversation itself at a
         // configured provider; with none configured this is the plain
         // Anthropic client the daemon was started with.
@@ -158,11 +159,11 @@ impl ProjectBinding {
                     .as_ref()
                     .and_then(|r| r.provider_id_for("main").map(str::to_string))
             })
-            .or_else(|| self.settings.default_provider.clone());
+            .or_else(|| self.settings.values.default_provider.clone());
         let Some(id) = routed else {
             return Ok(());
         };
-        match self.settings.providers.get(&id) {
+        match self.settings.values.providers.get(&id) {
             Some(config)
                 if !config.models.is_empty() && !config.models.iter().any(|m| m == model) =>
             {

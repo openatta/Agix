@@ -270,7 +270,7 @@ fn project_trust_report(
         project_root: root.to_path_buf(),
         trust: settings.trust().into(),
         matched: settings.trust_pattern().map(str::to_string),
-        default: settings.project_trust.default,
+        default: settings.values.project_trust.default,
         requires_trust,
     }
 }

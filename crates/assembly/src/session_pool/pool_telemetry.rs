@@ -15,7 +15,7 @@ pub(super) fn recordings_root(
     if let Some(dir) = requested {
         return PathBuf::from(dir);
     }
-    if let Some(recorder) = &settings.recorder {
+    if let Some(recorder) = &settings.values.recorder {
         return recorder.root.clone();
     }
     base::paths::ConfigPaths::from_settings(&settings.paths).global_recordings_dir()

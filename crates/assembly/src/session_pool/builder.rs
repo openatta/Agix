@@ -133,7 +133,7 @@ impl SessionPoolBuilder {
         let paths = self.paths.clone();
         let plugins = Arc::new(crate::plugins::PluginSubsystem::new(
             paths.clone(),
-            settings.plugins.clone(),
+            settings.values.plugins.clone(),
         ));
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools::register_builtin_tools(&tools);

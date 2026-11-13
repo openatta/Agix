@@ -129,7 +129,7 @@ pub async fn pool(
 ) -> anyhow::Result<Arc<SessionPool>> {
     let (managed_path, managed) = managed_settings(config);
     let settings = Arc::new(config.settings.clone().with_managed(managed.clone()));
-    for (section, module) in crate::modules::unassembled_settings(&settings) {
+    for (section, module) in crate::modules::unassembled_settings(&settings.values) {
         tracing::warn!(
             section,
             module,
@@ -152,7 +152,7 @@ pub async fn pool(
         None => default_anthropic_client(assembly.credentials.as_deref())?,
     };
     if matches!(
-        settings.permission_mode,
+        settings.values.permission_mode,
         base::settings::PermissionMode::BypassPermissions
     ) {
         warn!(
@@ -187,7 +187,7 @@ pub async fn pool(
     .permission_prompt_timeout(assembly.permission_prompt_timeout)
     .credentials(credentials)
     .managed_settings(managed_path, managed)
-    .host_changes(&own_settings_on_disk(config), &config.settings)
+    .host_changes(&own_settings_on_disk(config), &config.settings.values)
     .plugins(assembly.plugins);
     if let Some(customize) = assembly.customize_session {
         pool = pool.session_customizer(customize);
@@ -233,10 +233,10 @@ fn own_settings_on_disk(config: &DaemonConfig) -> base::settings::Settings {
         paths.config_root(),
         paths.project_root().join(".agix"),
         &config.settings.paths.scope,
-        &config.settings.model.model_name,
+        &config.settings.values.model.model_name,
     );
-    if on_disk.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
-        on_disk.values.model.max_tokens = config.settings.model.max_tokens;
+    if on_disk.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
+        on_disk.values.model.max_tokens = config.settings.values.model.max_tokens;
     }
     on_disk.values
 }
@@ -267,13 +267,13 @@ fn validate_task_router_config(
     config: &DaemonConfig,
     credentials: &Arc<dyn CredentialSource>,
 ) -> anyhow::Result<()> {
-    if config.settings.providers.is_empty() {
+    if config.settings.values.providers.is_empty() {
         return Ok(());
     }
     let (resolved, warnings) = base::provider::resolve_task_models(
-        &config.settings.providers,
-        config.settings.default_provider.as_deref(),
-        &config.settings.task_models,
+        &config.settings.values.providers,
+        config.settings.values.default_provider.as_deref(),
+        &config.settings.values.task_models,
     )
     .map_err(|e| anyhow::anyhow!("invalid multi-provider LLM config: {e}"))?;
     for w in &warnings {
@@ -284,11 +284,12 @@ fn validate_task_router_config(
     }
     let default_provider = config
         .settings
+        .values
         .default_provider
         .as_deref()
         .expect("resolve_task_models already validated default_provider is set");
     crate::model_router::build_task_router(
-        &config.settings.providers,
+        &config.settings.values.providers,
         default_provider,
         resolved,
         credentials,

@@ -59,7 +59,7 @@ pub(in crate::session_pool) fn build_pool_telemetry(
     for name in OTLP_HEADER_VARIABLES {
         base::interface::exec::env::hold_back_credential(name);
     }
-    if !settings.telemetry_enabled {
+    if !settings.values.telemetry_enabled {
         return telemetry::TelemetryHandle::noop();
     }
     let dir = &settings.paths.local_data_dir;
@@ -82,7 +82,7 @@ pub(in crate::session_pool) fn build_pool_telemetry(
     };
     let mut recorders: Vec<std::sync::Arc<dyn telemetry::TelemetryRecorder>> =
         vec![std::sync::Arc::new(rec)];
-    if let Some(otel) = otel_sink(settings.telemetry_url.as_deref()) {
+    if let Some(otel) = otel_sink(settings.values.telemetry_url.as_deref()) {
         recorders.push(otel);
     }
     let config = telemetry::TelemetryConfig {

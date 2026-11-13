@@ -23,9 +23,9 @@ async fn each_scene_resolves_its_own_settings_tier() {
     let code = pool.settings_for_project(None, "code").await;
     let harnix = pool.settings_for_project(None, "harnix").await;
 
-    assert_eq!(harnix.model.model_name, "model-from-harnix-tier");
+    assert_eq!(harnix.values.model.model_name, "model-from-harnix-tier");
     assert_ne!(
-        code.model.model_name, harnix.model.model_name,
+        code.values.model.model_name, harnix.values.model.model_name,
         "two scenes must not share one settings entry"
     );
     assert_eq!(

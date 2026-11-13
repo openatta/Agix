@@ -24,6 +24,7 @@ impl SessionPool {
             .settings
             .clone();
         let providers = settings
+            .values
             .providers
             .iter()
             .map(|(id, cfg)| {
@@ -48,8 +49,8 @@ impl SessionPool {
             .collect();
         api::ProviderConfigView {
             providers,
-            default_provider: settings.default_provider.clone(),
-            task_models: settings.task_models.clone().into_iter().collect(),
+            default_provider: settings.values.default_provider.clone(),
+            task_models: settings.values.task_models.clone().into_iter().collect(),
         }
     }
 
@@ -340,7 +341,7 @@ impl SessionPool {
         Ok(api::ProviderSaved {
             written_to: settings_path.display().to_string(),
             secrets_written_to,
-            reloaded: settings_reloaded(&reloaded, report),
+            reloaded: settings_reloaded(&reloaded.values, report),
         })
     }
 
@@ -485,7 +486,7 @@ impl SessionPool {
         let (reloaded, report) = self
             .apply_reloaded_settings(project_root, scene_id, changed)
             .await;
-        settings_reloaded(&reloaded, report)
+        settings_reloaded(&reloaded.values, report)
     }
 
     /// Re-read the three-tier merged settings.json from disk, re-resolve

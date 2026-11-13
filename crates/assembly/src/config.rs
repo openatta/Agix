@@ -193,11 +193,11 @@ impl std::fmt::Debug for DaemonConfig {
             .field("socket_path", &self.socket_path)
             .field("lock_path", &self.lock_path)
             .field("session_cap", &self.session_cap)
-            .field("model", &self.settings.model.model_name)
-            .field("max_tokens", &self.settings.model.max_tokens)
+            .field("model", &self.settings.values.model.model_name)
+            .field("max_tokens", &self.settings.values.model.max_tokens)
             .field(
                 "mcp_servers",
-                &self.settings.mcp_servers.keys().collect::<Vec<_>>(),
+                &self.settings.values.mcp_servers.keys().collect::<Vec<_>>(),
             )
             .field("tcp_addr", &self.tcp_addr)
             .field("ws_addr", &self.ws_addr)
@@ -209,14 +209,14 @@ impl std::fmt::Debug for DaemonConfig {
             )
             .field(
                 "providers",
-                &self.settings.providers.keys().collect::<Vec<_>>(),
+                &self.settings.values.providers.keys().collect::<Vec<_>>(),
             )
-            .field("default_provider", &self.settings.default_provider)
+            .field("default_provider", &self.settings.values.default_provider)
             .field(
                 "task_models",
-                &self.settings.task_models.keys().collect::<Vec<_>>(),
+                &self.settings.values.task_models.keys().collect::<Vec<_>>(),
             )
-            .field("hooks", &self.settings.hooks_config.is_some())
+            .field("hooks", &self.settings.values.hooks_config.is_some())
             .finish()
     }
 }
@@ -269,7 +269,7 @@ pub fn load_daemon_config(
     // `--max-tokens` is a fallback (same tier as `LoadedSettings::load`'s
     // `default_model` param) — only takes effect when no settings.json
     // layer set it, which is what still holding the default means.
-    if settings.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
+    if settings.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
         settings.values.model.max_tokens = cli_max_tokens;
     }
 
@@ -397,8 +397,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
         let config = load_daemon_config("cli-model", 5000, None, "code", &paths);
-        assert_eq!(config.settings.model.model_name, "cli-model");
-        assert_eq!(config.settings.model.max_tokens, 5000);
+        assert_eq!(config.settings.values.model.model_name, "cli-model");
+        assert_eq!(config.settings.values.model.max_tokens, 5000);
     }
 
     #[test]
@@ -418,7 +418,7 @@ mod tests {
             project_dir.path().to_path_buf(),
         );
         let config = load_daemon_config("cli-model", 2000, None, "code", &paths);
-        assert_eq!(config.settings.model.model_name, "project-model");
+        assert_eq!(config.settings.values.model.model_name, "project-model");
     }
 
     #[test]
@@ -444,7 +444,7 @@ mod tests {
         .with_global(global_dir.path().to_path_buf());
 
         let config = load_daemon_config("cli-model", 2000, None, "code", &paths);
-        assert_eq!(config.settings.model.model_name, "scene-model"); // scene overrides global
+        assert_eq!(config.settings.values.model.model_name, "scene-model"); // scene overrides global
     }
 
     /// `DaemonConfig.paths.global_root()` must not fall back to
@@ -480,7 +480,7 @@ mod tests {
         let paths = StaticDaemonPaths::new(config_dir.path().to_path_buf())
             .with_global(global_dir.path().to_path_buf());
         let config = load_daemon_config("cli-model", 2000, None, "code", &paths);
-        assert_eq!(config.settings.model.model_name, "global-model");
+        assert_eq!(config.settings.values.model.model_name, "global-model");
     }
 
     #[test]
@@ -513,15 +513,15 @@ mod tests {
         );
         let config = load_daemon_config("cli-model", 2000, None, "code", &paths);
 
-        let deepseek = &config.settings.providers["deepseek"];
+        let deepseek = &config.settings.values.providers["deepseek"];
         assert_eq!(deepseek.api_key.as_deref(), Some("project-key")); // project overrides field
         assert_eq!(deepseek.default_model.as_deref(), Some("deepseek-pro")); // untouched field survives
         assert_eq!(
-            config.settings.default_provider.as_deref(),
+            config.settings.values.default_provider.as_deref(),
             Some("deepseek")
         );
         assert_eq!(
-            config.settings.task_models["subagent"],
+            config.settings.values.task_models["subagent"],
             base::provider::TaskModelOverride::ProviderOnly("deepseek".into())
         );
     }
@@ -573,7 +573,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = StaticDaemonPaths::new(dir.path().to_path_buf());
         let config = load_daemon_config("cli-model", 2000, None, "code", &paths);
-        assert!(config.settings.hooks_config.is_none());
+        assert!(config.settings.values.hooks_config.is_none());
     }
 
     #[test]
@@ -601,7 +601,7 @@ mod tests {
         let paths = Arc::new(StaticDaemonPaths::new(PathBuf::from("/tmp/test")));
         let config = DaemonConfig::minimal(paths.clone());
         assert_eq!(config.session_cap, 32);
-        assert!(config.settings.mcp_servers.is_empty());
+        assert!(config.settings.values.mcp_servers.is_empty());
         assert!(config.tcp_addr.is_none());
     }
 }

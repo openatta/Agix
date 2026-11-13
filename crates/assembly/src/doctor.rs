@@ -174,13 +174,13 @@ impl HealthCheck for ProviderRoutingCheck {
 
     fn check(&self) -> CheckResult {
         let settings = &self.0;
-        let (ok, warnings, error) = if settings.providers.is_empty() {
+        let (ok, warnings, error) = if settings.values.providers.is_empty() {
             (true, Vec::new(), None)
         } else {
             match base::provider::resolve_task_models(
-                &settings.providers,
-                settings.default_provider.as_deref(),
-                &settings.task_models,
+                &settings.values.providers,
+                settings.values.default_provider.as_deref(),
+                &settings.values.task_models,
             ) {
                 Ok((_, warnings)) => (true, warnings, None),
                 Err(e) => (false, Vec::new(), Some(e)),
@@ -188,9 +188,9 @@ impl HealthCheck for ProviderRoutingCheck {
         };
 
         let details = serde_json::json!({
-            "configured": settings.providers.keys().collect::<Vec<_>>(),
-            "default_provider": settings.default_provider,
-            "task_models": settings.task_models.keys().collect::<Vec<_>>(),
+            "configured": settings.values.providers.keys().collect::<Vec<_>>(),
+            "default_provider": settings.values.default_provider,
+            "task_models": settings.values.task_models.keys().collect::<Vec<_>>(),
             "ok": ok,
             "warnings": warnings,
             "error": error,
@@ -223,8 +223,8 @@ impl HealthCheck for HooksCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let configured = self.0.hooks_config.is_some();
-        let (ok, error) = match &self.0.hooks_config {
+        let configured = self.0.values.hooks_config.is_some();
+        let (ok, error) = match &self.0.values.hooks_config {
             None => (true, None),
             Some(v) => {
                 let (_, report) = hooks::parse_hooks_settings(v);
@@ -273,7 +273,7 @@ impl HealthCheck for MemoryCheck {
 
     fn check(&self) -> CheckResult {
         let cap = base::memory::MAX_MEMORIES;
-        if !self.0.memory_enabled {
+        if !self.0.values.memory_enabled {
             return CheckResult::ok("memory is off")
                 .with_details(serde_json::json!({ "enabled": false, "cap": cap }));
         }
@@ -466,8 +466,8 @@ pub fn run_doctor(
         },
         permission_rules_count: settings.rules.len(),
         model: ModelReport {
-            model_name: settings.model.model_name.clone(),
-            api_type: format!("{:?}", settings.model.api_type),
+            model_name: settings.values.model.model_name.clone(),
+            api_type: format!("{:?}", settings.values.model.api_type),
         },
     }
 }
