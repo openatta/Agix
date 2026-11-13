@@ -126,6 +126,10 @@ impl EnvCredentials {
 }
 
 impl CredentialSource for EnvCredentials {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "reading the key from the process environment is what this credential source is"
+    )]
     fn api_key(&self, _provider_id: &str, _config: &ProviderConfig) -> Result<Secret, String> {
         for name in &self.names {
             if let Ok(v) = std::env::var(name) {
@@ -237,6 +241,10 @@ mod tests {
     /// `PATH` stands in for a key variable: always set, so the test needs no
     /// `set_var` racing other threads.
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the expected key is whatever the environment holds"
+    )]
     fn a_provider_can_name_the_variable_its_key_is_in() {
         let cfg = ProviderConfig {
             api_key_env: Some("PATH".into()),

@@ -156,6 +156,10 @@ pub enum NetworkMode {
 /// - `bash::classify` —— 命令分类时用同一份名单判断某个参数是不是在读凭据，
 ///   避免 `cat ~/.ssh/id_rsa` 被当成"只读命令"静默放行。
 ///   两处共用一份定义，是为了不让"沙盒挡得住"和"分类器放得过"两套标准打架。
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the credential stores to hide are under this machine's home"
+)]
 pub fn default_deny_read() -> Vec<PathBuf> {
     std::env::var_os("HOME")
         .map(|home| default_deny_read_in(Path::new(&home)))

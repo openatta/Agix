@@ -1,0 +1,23 @@
+# base starts no process and reads no process state: to run a program it
+# builds a `ProcessSpec` for `&dyn Process`, and the few places that read an
+# environment variable carry `#[expect(clippy::disallowed_methods, reason)]`.
+#
+# A crate's clippy.toml replaces the root one rather than merging with it, so
+# the root's settings are repeated here.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
+disallowed-types = [
+  { path = "std::process::Command", reason = "base starts no process: build a ProcessSpec and hand it to &dyn Process" },
+  { path = "tokio::process::Command", reason = "base starts no process: build a ProcessSpec and hand it to &dyn Process" },
+]
+
+disallowed-methods = [
+  { path = "std::env::var", reason = "base reads an environment variable only where #[expect] says why" },
+  { path = "std::env::var_os", reason = "base reads an environment variable only where #[expect] says why" },
+  { path = "std::env::vars", reason = "base reads an environment variable only where #[expect] says why" },
+  { path = "std::env::vars_os", reason = "base reads an environment variable only where #[expect] says why" },
+  { path = "std::env::current_dir", reason = "base never looks at the process cwd: use the session's project root" },
+  { path = "std::env::set_var", reason = "process-wide state" },
+  { path = "std::env::remove_var", reason = "process-wide state" },
+]

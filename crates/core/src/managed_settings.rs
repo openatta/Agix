@@ -31,6 +31,10 @@ pub fn managed_settings_path() -> PathBuf {
     }
     #[cfg(windows)]
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "where Windows keeps machine-wide program data is a fact about this machine"
+        )]
         let root = std::env::var_os("ProgramData")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));

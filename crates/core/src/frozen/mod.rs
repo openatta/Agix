@@ -249,6 +249,22 @@ async fn detect_main_branch(engine: &EngineExec, cwd: &Path) -> Option<String> {
     None
 }
 
+/// The user's home directory and shell name on this machine.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the home directory and the shell are facts about the machine the prompt describes"
+)]
+fn home_and_shell() -> (Option<String>, Option<String>) {
+    let home_dir = std::env::var("HOME").ok();
+    let shell = std::env::var("SHELL").ok().map(|p| {
+        Path::new(&p)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(p)
+    });
+    (home_dir, shell)
+}
+
 async fn collect_git_fields(engine_git: &EngineExec, cwd: &Path) -> GitFields {
     match run_git_check(engine_git, cwd).await {
         Ok(true) => {}
@@ -361,15 +377,8 @@ impl FrozenContext {
         let is_git = git.is_git;
         let is_worktree = git.is_worktree;
 
-        // 平台信息走 std + 环境变量，不阻塞
         let platform = std::env::consts::OS.to_string();
-        let home_dir = std::env::var("HOME").ok();
-        let shell = std::env::var("SHELL").ok().map(|p| {
-            Path::new(&p)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or(p)
-        });
+        let (home_dir, shell) = home_and_shell();
 
         let today = environment
             .now()

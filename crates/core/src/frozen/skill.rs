@@ -476,6 +476,10 @@ pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> 
 
     // ${AGIX_SKILL_DIR} and ${AGIX_SESSION_ID}
     if out.contains("${AGIX_SKILL_DIR}") {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "known defect: the skill's directory is not the process cwd; kept until the expansion is given the skill's path"
+        )]
         let skill_dir = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| ".".to_string());
@@ -483,6 +487,10 @@ pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> 
         substituted = true;
     }
     if out.contains("${AGIX_SESSION_ID}") {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "known defect: the session id is not in the process environment; kept until the expansion is given the session id"
+        )]
         let sid = std::env::var("AGIX_SESSION_ID").unwrap_or_else(|_| "unknown".to_string());
         out = out.replace("${AGIX_SESSION_ID}", &sid);
         substituted = true;
