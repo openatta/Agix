@@ -1,6 +1,7 @@
 //! Agix — skill manager and bundled skill definitions.
 
 pub mod bundled;
+mod bundled_files;
 pub mod catalog;
 pub mod manager;
 pub mod mcp_builder;

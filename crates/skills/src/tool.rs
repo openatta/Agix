@@ -3,6 +3,7 @@
 //! `context: fork` skill, delegated to a sub-agent that waits or runs in the
 //! background.
 
+use crate::bundled_files::build_bundled_files_injection;
 use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::delegate::{
@@ -194,28 +195,9 @@ impl Tool for SkillTool {
 
         self.skill_manager.record_invocation(skill_name);
 
-        if let Some(grants) = self.permission.as_ref().and_then(|p| p.grants.as_ref()) {
-            for (tool_name, rule_content) in &expansion.grants {
-                let _ = grants
-                    .grant(base::interface::permission::Grant::new(
-                        tool_name.clone(),
-                        rule_content.clone(),
-                        base::interface::permission::GrantScope::Turn,
-                    ))
-                    .await;
-            }
-        }
+        self.grant_for_turn(&expansion.grants).await;
 
-        let content_hash = hash_skill_content(&skill_msg);
-        let already_loaded = {
-            let mut sessions = self
-                .already_injected
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let seen = sessions.entry(ctx.session_id.clone()).or_default();
-            !seen.insert(content_hash)
-        };
-        if already_loaded {
+        if !self.first_injection(&ctx.session_id, &skill_msg) {
             return Ok(ToolResult {
                 content: ToolResultContent::Text(format!(
                     "Skill '{skill_name}' is already loaded in this session with the same content — not re-injected."
@@ -240,6 +222,30 @@ impl Tool for SkillTool {
 }
 
 impl SkillTool {
+    async fn grant_for_turn(&self, grants: &[(String, Option<String>)]) {
+        let Some(store) = self.permission.as_ref().and_then(|p| p.grants.as_ref()) else {
+            return;
+        };
+        for (tool_name, rule_content) in grants {
+            let _ = store
+                .grant(base::interface::permission::Grant::new(
+                    tool_name.clone(),
+                    rule_content.clone(),
+                    base::interface::permission::GrantScope::Turn,
+                ))
+                .await;
+        }
+    }
+
+    fn first_injection(&self, session_id: &str, skill_msg: &str) -> bool {
+        let mut sessions = self
+            .already_injected
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let seen = sessions.entry(session_id.to_string()).or_default();
+        seen.insert(hash_skill_content(skill_msg))
+    }
+
     async fn fork(
         &self,
         delegator: &dyn Delegator,
@@ -411,148 +417,6 @@ pub async fn expand_for_invocation(
         text: format!("{capped}{bundled_files_text}"),
         grants,
     })
-}
-
-/// Per-file cap for bundled reference material (`files:` frontmatter) — see
-/// `build_bundled_files_injection`.
-const BUNDLED_FILE_CHAR_CAP: usize = 2000;
-/// Total cap across all of a skill's bundled files combined, separate from
-/// (and on top of) the skill body's own 8000-char cap.
-const BUNDLED_TOTAL_CHAR_CAP: usize = 6000;
-
-/// Resolves, safety-validates, reads, and budget-caps a skill's `files:`
-/// frontmatter (reference material bundled alongside SKILL.md), returning
-/// ready-to-append injection text on success.
-///
-/// `Err(message)` is returned — naming both the offending skill and the
-/// declared path — when a declared file escapes the skill's own folder
-/// (e.g. via `..`) or doesn't exist / can't be read. These are surfaced as
-/// visible tool errors by the caller, never silently skipped.
-///
-/// `skill_path` is the skill's SKILL.md path (`SkillInfo::path`). This
-/// re-reads and re-parses that file directly rather than widening
-/// `SkillManager::list()`'s `SkillInfo` projection with a `files` field:
-/// `SkillInfo` is a runtime-facing view of `SkillEntry` used across the
-/// whole `skills` crate, and `SkillEntry` (which already carries `files`,
-/// see `crates/core/src/frozen/skill.rs`) is cheaply reconstructed here with
-/// a single read-plus-parse, cheaper than a cross-crate struct change for
-/// one field only this call site needs. Bundled/MCP sentinel skills
-/// (paths like `(bundled:name)` or `(mcp:...)`) simply fail this read and
-/// fall through to "no bundled files," which is correct — those skills
-/// have no real folder to bundle files alongside.
-async fn build_bundled_files_injection(
-    skill_path: &std::path::Path,
-    skill_name: &str,
-    fs: &dyn base::interface::exec::FileSystem,
-    files: &base::paths::PromptFiles,
-) -> Result<String, String> {
-    let Ok(real_skill_path) = fs.canonicalize(skill_path).await else {
-        return Ok(String::new());
-    };
-    if files.admit(skill_path, &real_skill_path).is_err() {
-        return Ok(String::new());
-    }
-    let Ok(content) = fs.read_to_string(&real_skill_path).await else {
-        return Ok(String::new());
-    };
-    let dir_name = skill_path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let Some(entry) = base::frozen::frontmatter::parse_skill_file(
-        &content,
-        dir_name,
-        skill_path,
-        base::frozen::skill::SkillSource::Project,
-    ) else {
-        return Ok(String::new());
-    };
-
-    let declared = entry.files.clone().unwrap_or_default();
-    if declared.is_empty() {
-        return Ok(String::new());
-    }
-    let candidates = entry.resolve_bundled_files();
-
-    let Some(skill_dir) = skill_path.parent() else {
-        return Ok(String::new());
-    };
-    // Canonicalize once: the root every candidate must stay inside.
-    let Ok(canonical_skill_dir) = fs.canonicalize(skill_dir).await else {
-        return Ok(String::new());
-    };
-
-    let mut out = String::new();
-    let mut total_used = 0usize;
-    for (relative, absolute) in declared.iter().zip(candidates.iter()) {
-        if total_used >= BUNDLED_TOTAL_CHAR_CAP {
-            out.push_str(&format!(
-                "\n\n---\n## Bundled file: {relative}\n\n\
-                 [skipped: total bundled-files budget ({BUNDLED_TOTAL_CHAR_CAP} chars) \
-                 already reached by earlier files]\n"
-            ));
-            continue;
-        }
-
-        // Safety: the resolved real path must still be inside the skill's
-        // own (canonicalized) folder — this is what rejects `..` traversal.
-        // A failed canonicalize (file doesn't exist / not readable) is
-        // reported the same way: a named, visible error, not a silent skip.
-        let real_path = match fs.canonicalize(absolute).await {
-            Ok(p) => p,
-            Err(e) => {
-                return Err(format!(
-                    "Skill '{skill_name}' declares bundled file `{relative}` \
-                     (resolved to {}) which does not exist or could not be read: {e}",
-                    absolute.display()
-                ));
-            }
-        };
-        if !permissions::path_rule::is_within_root_lexical(&real_path, &canonical_skill_dir) {
-            return Err(format!(
-                "Skill '{skill_name}' declares bundled file `{relative}` which resolves \
-                 outside the skill's own folder ({}): {} — rejected.",
-                canonical_skill_dir.display(),
-                real_path.display()
-            ));
-        }
-        if let Err(why) = files.admit(absolute, &real_path) {
-            return Err(format!(
-                "Skill '{skill_name}' declares bundled file `{relative}`: {why}"
-            ));
-        }
-
-        let file_content = match fs.read_to_string(&real_path).await {
-            Ok(c) => c,
-            Err(e) => {
-                return Err(format!(
-                    "Skill '{skill_name}' declares bundled file `{relative}` \
-                     which could not be read: {e}"
-                ));
-            }
-        };
-
-        // Caps are char counts, not byte counts — slicing by raw byte index
-        // (`file_content.len()` / `&file_content[..n]`) panics on non-ASCII
-        // content whose cut point doesn't land on a UTF-8 char boundary
-        // (very reachable here: skill reference docs in this repo are
-        // routinely Chinese). `char_indices().nth(n)` finds the byte offset
-        // of the n-th character, giving a boundary-safe cut.
-        let per_file_cap = BUNDLED_FILE_CHAR_CAP.min(BUNDLED_TOTAL_CHAR_CAP - total_used);
-        let (chunk, was_truncated) = match file_content.char_indices().nth(per_file_cap) {
-            Some((byte_idx, _)) => (&file_content[..byte_idx], true),
-            None => (file_content.as_str(), false),
-        };
-        total_used += chunk.chars().count();
-
-        out.push_str(&format!("\n\n---\n## Bundled file: {relative}\n\n{chunk}"));
-        if was_truncated {
-            out.push_str("...[truncated]");
-        }
-        out.push('\n');
-    }
-    Ok(out)
 }
 
 /// Cheap, non-cryptographic hash of rendered skill content for the

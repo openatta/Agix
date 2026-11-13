@@ -47,8 +47,6 @@ fn    crates/ptc/src/lib.rs                                RunCodeTool::call    
 fn    crates/ptc/src/lib.rs                                execute                                  181
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
-fn    crates/skills/src/tool.rs                            SkillTool::call                          155
-fn    crates/skills/src/tool.rs                            build_bundled_files_injection            114
 fn    crates/team/src/coordinator.rs                       DefaultCoordinator::orchestrate          474
 fn    crates/telemetry/src/recorder/mod.rs                 RecorderModel::replay                    106
 fn    crates/telemetry/src/recorder/reader.rs              load                                     113
