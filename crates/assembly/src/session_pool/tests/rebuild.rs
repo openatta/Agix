@@ -249,6 +249,7 @@ fn turn_complete(context: base::event::ContextUsage) -> AgentEvent {
         structured_output: None,
         seq: 0,
         truncated: false,
+        persisted: true,
     }
 }
 
@@ -520,4 +521,114 @@ async fn every_engine_a_session_runs_on_works_in_the_sessions_directory() {
         "a resumed session's engine is attached"
     );
     assert_eq!(resumed.env().cwd, project);
+}
+
+/// Refuses every write while `down` is set.
+#[derive(Default)]
+struct StoreThatGoesDown {
+    inner: history::store::InMemoryHistoryStore,
+    down: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl history::store::HistoryStore for StoreThatGoesDown {
+    async fn append(
+        &self,
+        session: base::session::SessionId,
+        entry: history::entry::LogEntry,
+    ) -> Result<(), history::error::HistoryError> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(history::error::HistoryError::Io(std::io::Error::other(
+                "the disk is full",
+            )));
+        }
+        self.inner.append(session, entry).await
+    }
+
+    async fn load(
+        &self,
+        session: base::session::SessionId,
+    ) -> Result<Vec<history::entry::EnvelopedEntry>, history::error::HistoryError> {
+        self.inner.load(session).await
+    }
+
+    async fn list_sessions(
+        &self,
+    ) -> Result<Vec<base::session::SessionId>, history::error::HistoryError> {
+        self.inner.list_sessions().await
+    }
+
+    async fn delete(
+        &self,
+        session: base::session::SessionId,
+    ) -> Result<(), history::error::HistoryError> {
+        self.inner.delete(session).await
+    }
+}
+
+/// A turn whose log writes failed completes saying so. Until the log has
+/// caught up the session is the only complete copy of itself: a rebuild,
+/// which reads the session back from its log, is refused as `persist_failed`
+/// and the engine it has goes on, plan mode and all; idling past the timeout
+/// does not evict it. Once the log can be written the rebuild goes ahead.
+#[tokio::test]
+async fn a_session_whose_log_fell_behind_is_neither_rebuilt_nor_evicted_until_it_catches_up() {
+    let store = Arc::new(StoreThatGoesDown::default());
+    let (pool, _dir) = super::mcp_for_project::test_pool_with_store(Some(store.clone())).await;
+    answered_by(&pool, Arc::new(HoldsTheFirstCall::default())).await;
+    let sid = new_session(&pool).await;
+    pool.run_turn(turn(&sid, "t1", "first", OnBusy::Reject), None)
+        .await
+        .expect("a turn");
+    let (generation, state) = slot_and_state(&pool, &sid).await;
+    state.enter_plan_mode();
+
+    store.down.store(true, Ordering::SeqCst);
+    let events = AgentEvents::new(5);
+    pool.run_turn(
+        turn(&sid, "t2", "second", OnBusy::Reject),
+        Some(events.clone()),
+    )
+    .await
+    .expect("the turn completes even though its log writes failed");
+    assert!(
+        events.seen().iter().any(|e| matches!(
+            e,
+            AgentEvent::TurnComplete {
+                persisted: false,
+                ..
+            }
+        )),
+        "{:?}",
+        events.seen()
+    );
+
+    match pool.set_session_prompt(&sid, append).await {
+        Err(PoolError::Engine(failure)) => {
+            assert_eq!(failure.kind, base::event::FailureKind::PersistFailed);
+            assert!(failure.retryable);
+        }
+        Err(e) => panic!("{e}"),
+        Ok(v) => panic!("rebuilt from a log that lacks part of the session: {v:?}"),
+    }
+    assert_eq!(slot_and_state(&pool, &sid).await.0, generation);
+    assert_eq!(
+        state.permission_mode(),
+        base::permission::PermissionMode::Plan
+    );
+    let a_day_later = Instant::now() + Duration::from_secs(24 * 3600);
+    let (evicted, _) = pool.live.take_idle(a_day_later).await;
+    assert!(evicted.is_empty(), "the janitor evicted it");
+
+    store.down.store(false, Ordering::SeqCst);
+    pool.set_session_prompt(&sid, append)
+        .await
+        .expect("rebuilt once its log has caught up");
+    assert_ne!(slot_and_state(&pool, &sid).await.0, generation);
+    assert_eq!(
+        state.permission_mode(),
+        base::permission::PermissionMode::Plan
+    );
+    let core = pool.live.core_of(&sid).await.unwrap();
+    assert!(!core.log().is_behind());
 }

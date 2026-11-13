@@ -29,8 +29,9 @@ pub struct SessionState {
     permission_mode: std::sync::Mutex<ModeSlot>,
     /// 模型自己维护的 todo 列表（TodoWrite 工具更新；/tasks 命令读取）。
     todos: std::sync::Mutex<Vec<TodoItem>>,
-    /// The [`DurableState`] the session log last had.
-    recorded_durable: std::sync::Mutex<DurableState>,
+    /// The [`DurableState`] the session log last had; `None` once a write
+    /// of it failed, so the next one writes it whatever it is.
+    recorded_durable: std::sync::Mutex<Option<DurableState>>,
     /// 本会话已激活的 deferred 工具名集合。`EngineConfig::deferred_tools`
     /// 里的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
     /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
@@ -215,7 +216,7 @@ impl SessionState {
             engine: std::sync::RwLock::new(None),
             permission_mode: std::sync::Mutex::new(ModeSlot::default()),
             todos: std::sync::Mutex::new(Vec::new()),
-            recorded_durable: std::sync::Mutex::new(DurableState::default()),
+            recorded_durable: std::sync::Mutex::new(Some(DurableState::default())),
             activated_tools: std::sync::Mutex::new(HashSet::new()),
             running_tasks: std::sync::Mutex::new(HashMap::new()),
             task_events: tokio::sync::broadcast::channel(256).0,
@@ -577,6 +578,23 @@ impl SessionState {
         }
     }
 
+    /// The changes of `unrecorded` from `from` on did not reach the log: they
+    /// go back ahead of any made since, for the next writer to write first.
+    pub fn goal_changes_not_recorded(
+        &self,
+        mut unrecorded: super::goal::UnrecordedGoalChanges,
+        from: usize,
+    ) {
+        let mut queued = lock(&self.unrecorded_goal_changes);
+        let later = std::mem::take(&mut *queued);
+        queued.extend(
+            unrecorded
+                .changes
+                .drain(from.min(unrecorded.changes.len())..),
+        );
+        queued.extend(later);
+    }
+
     /// The goal's view each time it changes.
     pub fn subscribe_goal(&self) -> broadcast::Receiver<Option<GoalView>> {
         self.goal_events.subscribe()
@@ -738,11 +756,17 @@ impl SessionState {
     pub fn unrecorded_durable_state(&self) -> Option<DurableState> {
         let now = self.durable_state();
         let mut recorded = lock(&self.recorded_durable);
-        if *recorded == now {
+        if recorded.as_ref() == Some(&now) {
             return None;
         }
-        *recorded = now.clone();
+        *recorded = Some(now.clone());
         Some(now)
+    }
+
+    /// The durable state [`Self::unrecorded_durable_state`] handed out did
+    /// not reach the log: the next call hands it out again.
+    pub fn durable_state_not_recorded(&self) {
+        *lock(&self.recorded_durable) = None;
     }
 
     /// Put back what the session log recorded. Outside plan mode the session
@@ -756,7 +780,7 @@ impl SessionState {
         }
         lock(&self.todos).clone_from(&state.todos);
         self.activate_tools(state.activated_tools.iter().cloned());
-        *lock(&self.recorded_durable) = state;
+        *lock(&self.recorded_durable) = Some(state);
     }
 
     /// 读取当前 todo 列表（克隆给调用方）
@@ -1148,6 +1172,45 @@ mod tests {
         assert_eq!(after.unrecorded_durable_state(), None);
         assert_eq!(after.exit_plan_mode(), PermissionMode::AcceptEdits);
         assert!(after.unrecorded_durable_state().is_some());
+    }
+
+    #[test]
+    fn a_durable_state_the_log_did_not_take_is_handed_out_again() {
+        let state = SessionState::for_tests("/tmp".into());
+        state.enter_plan_mode();
+        let first = state.unrecorded_durable_state().expect("a change");
+        state.durable_state_not_recorded();
+        assert_eq!(state.unrecorded_durable_state(), Some(first));
+        assert_eq!(state.unrecorded_durable_state(), None);
+    }
+
+    #[tokio::test]
+    async fn goal_changes_the_log_did_not_take_go_back_ahead_of_later_ones() {
+        let goal = |objective: &str| {
+            Some(super::super::goal::Goal {
+                id: "g".into(),
+                revision: 1,
+                objective: objective.into(),
+                phase: super::super::goal::GoalPhase::Active,
+                max_rounds: 1,
+                rounds_started: 0,
+                rounds_since_armed: 0,
+                blocked_reason: None,
+            })
+        };
+        let state = SessionState::for_tests("/tmp".into());
+        lock(&state.unrecorded_goal_changes).extend([goal("a"), goal("b")]);
+        let unrecorded = state.unrecorded_goal_changes().await;
+        lock(&state.unrecorded_goal_changes).push(goal("c"));
+        state.goal_changes_not_recorded(unrecorded, 1);
+        let objectives: Vec<_> = state
+            .unrecorded_goal_changes()
+            .await
+            .changes
+            .into_iter()
+            .map(|g| g.unwrap().objective)
+            .collect();
+        assert_eq!(objectives, ["b", "c"]);
     }
 
     #[test]

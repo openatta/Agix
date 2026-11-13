@@ -75,7 +75,8 @@ impl SessionPool {
             .map(|core| core.state().clone())
     }
 
-    /// Write the goal changes `sid`'s log does not have yet.
+    /// Write the goal changes `sid`'s log does not have yet. Those a write
+    /// failed on go back to the state, for its engine's next write.
     pub(in crate::session_pool) async fn record_goal_changes(
         &self,
         sid: &str,
@@ -87,14 +88,16 @@ impl SessionPool {
         else {
             return;
         };
-        for goal in &unrecorded.changes {
+        for at in 0..unrecorded.changes.len() {
             let entry = history::entry::LogEntry::Extension {
                 ns: base::context::goal::GOAL_NS.to_string(),
                 event: base::context::goal::GOAL_EVENT.to_string(),
-                payload: serde_json::json!({ "goal": goal }),
+                payload: serde_json::json!({ "goal": unrecorded.changes[at] }),
             };
             if let Err(e) = store.append(parsed, entry).await {
                 warn!(%sid, error = %e, "failed to record a goal change");
+                state.goal_changes_not_recorded(unrecorded, at);
+                return;
             }
         }
     }

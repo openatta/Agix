@@ -628,6 +628,7 @@
           "output_tokens": 5
         },
         "message": "stopped by hook",
+        "persisted": false,
         "seq": 6,
         "stop_reason": "end_turn",
         "structured_output": {
@@ -662,6 +663,7 @@
               "output_tokens": 5
             },
             "message": "stopped by hook",
+            "persisted": false,
             "seq": 6,
             "stop_reason": "end_turn",
             "structured_output": {
@@ -711,6 +713,7 @@
               "input_tokens": 0,
               "output_tokens": 0
             },
+            "persisted": true,
             "seq": 2,
             "stop_reason": "end_turn",
             "tool_calls": 0,
@@ -1492,6 +1495,7 @@
                 "input_tokens": 0,
                 "output_tokens": 0
               },
+              "persisted": true,
               "seq": 2,
               "stop_reason": "end_turn",
               "tool_calls": 0,
@@ -1553,6 +1557,7 @@
                 "input_tokens": 0,
                 "output_tokens": 0
               },
+              "persisted": true,
               "seq": 2,
               "stop_reason": "end_turn",
               "tool_calls": 0,

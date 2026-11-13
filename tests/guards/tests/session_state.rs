@@ -136,6 +136,10 @@ const FIELDS: &[(&str, &str)] = &[
         "Session: how full the context was after the last turn",
     ),
     (
+        "SessionCore::log",
+        "Session: whether its log has everything it holds, whichever engine wrote it",
+    ),
+    (
         "EngineSlot::generation",
         "Engine: the number it attached to the state under",
     ),

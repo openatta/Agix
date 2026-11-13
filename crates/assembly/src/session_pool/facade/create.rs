@@ -232,6 +232,7 @@ impl SessionPool {
             .core_of(sid)
             .await
             .ok_or_else(|| format!("session `{sid}` left memory before it was rebuilt"))?;
+        self.catch_up_log(&core, held).await?;
         let claim = self.claim_log(sid).await?;
         let has_history = self.directory.has_history(sid).await?;
         let spec = self.specs.spec_for(sid, has_history, options).await;
@@ -295,6 +296,47 @@ impl SessionPool {
         }
         info!(%sid, generation = generation.get(), "session rebuilt");
         Ok(())
+    }
+
+    /// Have the engine `held` keeps turns off write what `core`'s log lacks,
+    /// when the last turn left it behind: the next engine reads the session
+    /// back from that log. An engine that has gone already made its last try
+    /// on the way out, and there is nothing left to ask.
+    async fn catch_up_log(&self, core: &SessionCore, held: &HeldSlot) -> Result<(), CreateError> {
+        if !core.log().is_behind() {
+            return Ok(());
+        }
+        let sid = core.id();
+        let Some(input_tx) = self
+            .live
+            .with_live(sid, |live| {
+                (live.engine.generation == held.generation).then(|| live.engine.input_tx.clone())
+            })
+            .await
+            .flatten()
+        else {
+            return Ok(());
+        };
+        let (reply, written) = tokio::sync::oneshot::channel();
+        if input_tx.send(InputMessage::Flush { reply }).is_err() {
+            return Ok(());
+        }
+        match tokio::time::timeout(LOG_CATCH_UP_WAIT, written).await {
+            Ok(Ok(Ok(()))) => {
+                core.log().set_behind(false);
+                Ok(())
+            }
+            Ok(Err(_)) => Ok(()),
+            Ok(Ok(Err(e))) => Err(CreateError::PersistFailed(format!(
+                "session `{sid}` was not rebuilt: its log lacks part of what it holds, and \
+                 writing it failed ({e}); it goes on as it was"
+            ))),
+            Err(_) => Err(CreateError::PersistFailed(format!(
+                "session `{sid}` was not rebuilt: its log lacks part of what it holds, and \
+                 its engine did not write it within {}s; it goes on as it was",
+                LOG_CATCH_UP_WAIT.as_secs()
+            ))),
+        }
     }
 
     /// Engine `generation` of `core`, on `binding` and `spec`, not yet

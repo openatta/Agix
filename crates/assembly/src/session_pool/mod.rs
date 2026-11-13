@@ -118,6 +118,10 @@ pub type SessionCustomizer = Arc<dyn Fn(Builder, &SessionCtx<'_>) -> Builder + S
 /// How long a stopping Agent gets to finish its turn and persist it.
 const AGENT_EXIT_GRACE: Duration = Duration::from_secs(5);
 
+/// How long a session's engine gets to write what its log lacks before the
+/// session is rebuilt.
+const LOG_CATCH_UP_WAIT: Duration = Duration::from_secs(30);
+
 /// How long a process group left behind by an ended session gets on
 /// `SIGTERM` before `SIGKILL`.
 const PROCESS_GROUP_GRACE: Duration = Duration::from_millis(500);
@@ -343,6 +347,9 @@ pub(super) enum CreateError {
         session_id: String,
         message: String,
     },
+    /// The session's log lacks some of what the session holds, and its engine
+    /// could not write it: rebuilding from the log would lose it.
+    PersistFailed(String),
     Failed(String),
 }
 
@@ -371,6 +378,7 @@ impl CreateError {
                 session_id,
                 message: outer(message),
             },
+            Self::PersistFailed(e) => Self::PersistFailed(outer(e)),
             Self::Failed(e) => Self::Failed(outer(e)),
         }
     }
@@ -383,6 +391,10 @@ impl From<CreateError> for PoolError {
                 session_id,
                 message,
             } => Self::SessionBusy(Busy::previous_engine(&session_id, message)),
+            CreateError::PersistFailed(e) => Self::Engine(base::event::TurnFailure::new(
+                base::event::FailureKind::PersistFailed,
+                e,
+            )),
             CreateError::Failed(e) => Self::Internal(e),
         }
     }

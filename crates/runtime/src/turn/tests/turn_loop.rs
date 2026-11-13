@@ -647,3 +647,120 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
         ]
     );
 }
+
+/// Refuses every write while `down` is set.
+#[derive(Default)]
+struct StoreThatGoesDown {
+    inner: history::store::InMemoryHistoryStore,
+    down: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl history::store::HistoryStore for StoreThatGoesDown {
+    async fn append(
+        &self,
+        session: base::session::SessionId,
+        entry: history::entry::LogEntry,
+    ) -> Result<(), history::error::HistoryError> {
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(history::error::HistoryError::Io(std::io::Error::other(
+                "the disk is full",
+            )));
+        }
+        self.inner.append(session, entry).await
+    }
+
+    async fn load(
+        &self,
+        session: base::session::SessionId,
+    ) -> Result<Vec<history::entry::EnvelopedEntry>, history::error::HistoryError> {
+        self.inner.load(session).await
+    }
+
+    async fn list_sessions(
+        &self,
+    ) -> Result<Vec<base::session::SessionId>, history::error::HistoryError> {
+        self.inner.list_sessions().await
+    }
+
+    async fn delete(
+        &self,
+        session: base::session::SessionId,
+    ) -> Result<(), history::error::HistoryError> {
+        self.inner.delete(session).await
+    }
+}
+
+fn completed_persisted(events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) -> bool {
+    std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            AgentEvent::TurnComplete { persisted, .. } => Some(persisted),
+            _ => None,
+        })
+        .expect("the turn completed")
+}
+
+/// A turn whose log writes fail still completes, saying its log lacks part of
+/// it; a flush once the store is back writes the rest — the transcript and
+/// the state the failed write left out.
+#[tokio::test]
+async fn a_turn_the_log_did_not_take_completes_unpersisted_and_a_flush_catches_the_log_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Arc::new(StoreThatGoesDown::default());
+    let sid = base::session::SessionId::new();
+    let (mut agent, mut events, _input_tx) = crate::agent::Builder::new()
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
+        .model(Arc::new(FixedUsageModel {
+            usage: Default::default(),
+        }))
+        .settings(Arc::new(recall_test_settings(tmp.path())))
+        .history_store(store.clone())
+        .session_id(sid.to_string())
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    let user = |turn_id: &str| InputMessage::User {
+        content: "hello".into(),
+        attachments: vec![],
+        turn_id: turn_id.into(),
+    };
+    let flush = || {
+        let (reply, flushed) = tokio::sync::oneshot::channel();
+        (InputMessage::Flush { reply }, flushed)
+    };
+    let cancel = tokio_util::sync::CancellationToken::new;
+
+    store.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    agent.session_state().enter_plan_mode();
+    agent.process_turn(user("t1"), cancel()).await.unwrap();
+    assert!(!completed_persisted(&mut events));
+
+    let (asked, flushed) = flush();
+    agent.process_turn(asked, cancel()).await.unwrap();
+    assert!(flushed.await.unwrap().is_err(), "the store is still down");
+
+    store.down.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (asked, flushed) = flush();
+    agent.process_turn(asked, cancel()).await.unwrap();
+    assert_eq!(flushed.await.unwrap(), Ok(()));
+    let logged = history::store::HistoryStore::load(&*store, sid)
+        .await
+        .unwrap();
+    assert!(
+        logged
+            .iter()
+            .any(|e| format!("{:?}", e.entry).contains("hello")),
+        "{logged:?}"
+    );
+    assert!(
+        logged.iter().any(|e| matches!(&e.entry,
+            history::entry::LogEntry::Extension { ns, payload, .. }
+                if ns == base::context::SESSION_STATE_NS && payload["plan"].is_object())),
+        "{logged:?}"
+    );
+
+    agent.process_turn(user("t2"), cancel()).await.unwrap();
+    assert!(completed_persisted(&mut events));
+}

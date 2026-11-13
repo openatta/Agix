@@ -196,6 +196,11 @@ pub enum AgentEvent {
         /// so the reply may be cut short.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
+        /// Everything the turn did is in the session's log. `false` when a
+        /// write failed: the session holds the only complete copy until a
+        /// later write catches the log up.
+        #[serde(default = "logged")]
+        persisted: bool,
     },
 
     /// A message the user sent while this turn was running is now part of
@@ -369,6 +374,10 @@ pub enum AgentEvent {
         failure: TurnFailure,
         turn_id: String,
     },
+}
+
+fn logged() -> bool {
+    true
 }
 
 /// How a turn failed, in the terms a host decides on: whether to send it

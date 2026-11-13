@@ -107,7 +107,8 @@ impl SessionPool {
                 // as it would the background tasks running under it; a busy
                 // session is served on the old configuration this once and
                 // checked again next time — its stamp stays behind, so
-                // nothing is missed.
+                // nothing is missed. So is a session whose log could not be
+                // caught up: the turn's own writes may well do it.
                 let stale = self
                     .live
                     .with_live(sid, |live| live.engine.binding.clone())
@@ -119,6 +120,10 @@ impl SessionPool {
                     Some(true) => match self.rebuild_idle(sid, options.as_ref()).await {
                         Ok(sid) => Ok(sid),
                         Err(Rebuild::Busy(_)) => Ok(sid.clone()),
+                        Err(Rebuild::Failed(CreateError::PersistFailed(e))) => {
+                            warn!(%sid, error = %e, "serving the turn on the engine it has");
+                            Ok(sid.clone())
+                        }
                         Err(Rebuild::NotLive) => self.ensure_live(sid, options.as_ref()).await,
                         Err(Rebuild::Failed(e)) => Err(e),
                     },
@@ -396,12 +401,14 @@ impl SessionPool {
                     ref stop_reason,
                     api_calls,
                     context,
+                    persisted,
                     ..
                 } => {
                     let ended_with = stop_reason.clone();
                     if let Some(context) = context {
                         core.set_context(context);
                     }
+                    core.log().set_behind(!persisted);
                     let last = frame_of(SessionEvent::Agent(event));
                     if !self.publish_terminal(ticket, &last, None).await {
                         ticket.settle();

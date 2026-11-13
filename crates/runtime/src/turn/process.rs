@@ -35,11 +35,12 @@ pub(crate) fn hook_permission_mode(mode: base::permission::PermissionMode) -> St
 }
 
 impl Agent {
-    /// Write the goal changes the session log does not have yet.
-    pub(crate) async fn record_goal_changes(&mut self) {
+    /// Write the goal changes the session log does not have yet. Those a
+    /// write failed on go back to the state, for the next write to try again.
+    pub(crate) async fn record_goal_changes(&mut self) -> Result<(), String> {
         let unrecorded = self.session_state.unrecorded_goal_changes().await;
-        for goal in &unrecorded.changes {
-            let payload = serde_json::json!({ "goal": goal });
+        for at in 0..unrecorded.changes.len() {
+            let payload = serde_json::json!({ "goal": unrecorded.changes[at] });
             if let Err(e) = self
                 .session
                 .record_extension(
@@ -50,30 +51,49 @@ impl Agent {
                 .await
             {
                 tracing::warn!(error = %e, "failed to record a goal change");
+                self.session_state.goal_changes_not_recorded(unrecorded, at);
+                return Err(format!("a goal change: {e}"));
             }
         }
+        Ok(())
     }
 
     /// Write the part of the session state that outlives the engine, when it
     /// changed since the log last had it.
-    pub(crate) async fn record_session_state(&mut self) {
+    pub(crate) async fn record_session_state(&mut self) -> Result<(), String> {
         let Some(state) = self.session_state.unrecorded_durable_state() else {
-            return;
+            return Ok(());
         };
-        let Ok(payload) = serde_json::to_value(&state) else {
-            return;
+        let written = match serde_json::to_value(&state) {
+            Ok(payload) => self
+                .session
+                .record_extension(
+                    base::context::SESSION_STATE_NS,
+                    base::context::SESSION_STATE_EVENT,
+                    payload,
+                )
+                .await
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
         };
-        if let Err(e) = self
-            .session
-            .record_extension(
-                base::context::SESSION_STATE_NS,
-                base::context::SESSION_STATE_EVENT,
-                payload,
-            )
-            .await
-        {
+        written.map_err(|e| {
             tracing::warn!(error = %e, "failed to record the session state");
-        }
+            self.session_state.durable_state_not_recorded();
+            format!("the session state: {e}")
+        })
+    }
+
+    /// Bring the session's log up to what the session holds: the transcript,
+    /// goal changes, the durable state. Each is written even when one before
+    /// it failed; the first failure is what comes back.
+    pub(crate) async fn flush_log(&mut self) -> Result<(), String> {
+        let transcript = self.session.persist().await.map_err(|e| {
+            tracing::warn!(error = %e, "failed to persist session");
+            format!("the transcript: {e}")
+        });
+        let goal = self.record_goal_changes().await;
+        let state = self.record_session_state().await;
+        transcript.and(goal).and(state)
     }
 
     /// Ask the next turn's model calls for the model the session's state
@@ -296,6 +316,10 @@ impl Agent {
             InputMessage::Steer { .. } => Ok(TurnOutcome::default()),
             InputMessage::Context { request, reply } => {
                 let _ = reply.send(self.handle_context(request).await);
+                Ok(TurnOutcome::default())
+            }
+            InputMessage::Flush { reply } => {
+                let _ = reply.send(self.flush_log().await);
                 Ok(TurnOutcome::default())
             }
             InputMessage::System { kind, content } => {
@@ -589,22 +613,20 @@ impl Agent {
     /// The one way a user turn ends: persist, then announce.
     ///
     /// The order is the contract a host builds on. A host treats
-    /// `TurnComplete` as "the session is idle and its transcript is on disk"
-    /// — the daemon hands the session to the next caller on it, and may
-    /// rebuild it from that transcript straight away.
+    /// `TurnComplete` as "the session is idle", and, when it says
+    /// `persisted`, "its log has all of it" — the daemon hands the session to
+    /// the next caller on it, and may rebuild it from that log straight away.
+    /// A turn whose log writes failed still completes: it ran, and reporting
+    /// it failed would have it sent again.
     pub(super) async fn finish_turn(
         &mut self,
         outcome: Result<TurnOutcome, TurnError>,
     ) -> Result<TurnOutcome, TurnError> {
-        if let Err(e) = self.session.persist().await {
-            tracing::warn!(error = %e, "failed to persist session");
-        }
         let ended_normally = matches!(&outcome, Ok(o) if ENDS_A_GOAL_ROUND_NORMALLY.contains(&o.stop_reason.as_str()));
         if !ended_normally {
             self.session_state.goal_disarm();
         }
-        self.record_goal_changes().await;
-        self.record_session_state().await;
+        let persisted = self.flush_log().await.is_ok();
         if let Some(seat) = self.identity.team_seat.clone() {
             let stop_reason = match &outcome {
                 Ok(o) => o.stop_reason.clone(),
@@ -646,6 +668,7 @@ impl Agent {
                 structured_output: self.turn.scope.take_structured_output(),
                 seq: self.session.messages.len() as u64,
                 truncated: self.turn.truncated,
+                persisted,
             });
         }
         outcome

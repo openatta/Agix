@@ -96,7 +96,7 @@ fn agent_samples() -> Vec<(&'static str, Value)> {
         ),
         (
             "turn_complete",
-            json!({"kind": "turn_complete", "stop_reason": "end_turn", "api_calls": 2, "tool_calls": 1, "usage": usage, "turn_id": "inner", "message": "stopped by hook", "last_call_usage": usage, "context": {"tokens": 100, "compact_threshold": 800, "window": 1000}, "structured_output": {"ok": true}, "seq": 6, "truncated": true}),
+            json!({"kind": "turn_complete", "stop_reason": "end_turn", "api_calls": 2, "tool_calls": 1, "usage": usage, "turn_id": "inner", "message": "stopped by hook", "last_call_usage": usage, "context": {"tokens": 100, "compact_threshold": 800, "window": 1000}, "structured_output": {"ok": true}, "seq": 6, "truncated": true, "persisted": false}),
         ),
         (
             "turn_complete_bare",

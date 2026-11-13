@@ -144,6 +144,7 @@ pub enum SessionEventPayload {
         structured_output: Option<Value>,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
+        persisted: bool,
     },
     Error {
         code: FailureKind,
@@ -433,6 +434,7 @@ impl SessionEventPayload {
                 structured_output,
                 seq,
                 truncated,
+                persisted,
             } => Self::TurnComplete {
                 stop_reason: stop_reason.clone(),
                 api_calls: *api_calls,
@@ -444,6 +446,7 @@ impl SessionEventPayload {
                 context: *context,
                 structured_output: structured_output.clone(),
                 truncated: *truncated,
+                persisted: *persisted,
             },
             AgentEvent::UserMessageDelivered {
                 message_id,

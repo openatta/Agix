@@ -139,6 +139,25 @@ fn eviction_passes_over_a_session_that_is_doing_something() {
 }
 
 #[test]
+fn eviction_passes_over_a_session_whose_log_lacks_what_it_holds() {
+    let now = Instant::now();
+    let long_ago = now.checked_sub(Duration::from_secs(600)).unwrap();
+    let mut sessions = HashMap::new();
+    let behind = dummy_live_session(long_ago);
+    behind.core.log().set_behind(true);
+    sessions.insert("behind".to_string(), behind);
+
+    assert!(idle_session_ids(&sessions, now, Duration::from_secs(300)).is_empty());
+    assert!(evict_lru(&mut sessions).is_none());
+
+    sessions["behind"].core.log().set_behind(false);
+    assert_eq!(
+        idle_session_ids(&sessions, now, Duration::from_secs(300)),
+        ["behind"]
+    );
+}
+
+#[test]
 fn evict_lru_on_empty_map_is_a_noop() {
     let mut sessions: HashMap<String, LiveSession> = HashMap::new();
     evict_lru(&mut sessions); // must not panic

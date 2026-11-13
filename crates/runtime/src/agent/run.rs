@@ -315,11 +315,7 @@ impl Agent {
         }
         // What a failed write left for the next step, and goal changes made
         // since the last one, would otherwise never reach the log.
-        if let Err(e) = self.session.persist().await {
-            tracing::warn!(error = %e, "failed to persist session");
-        }
-        self.record_goal_changes().await;
-        self.record_session_state().await;
+        let _ = self.flush_log().await;
         crate::turn::finish_within(
             &mut self.memory.extractions,
             crate::turn::MEMORY_EXTRACTION_GRACE,
@@ -473,7 +469,7 @@ impl Agent {
         } else {
             None
         };
-        self.record_goal_changes().await;
+        let _ = self.record_goal_changes().await;
         round
     }
 

@@ -242,8 +242,12 @@ transcript 不变,恢复策略重发的就是失败的那个请求;每次调用�
 
 **一轮只有一个出口。** 循环里有十几处提前结束(hook 截停、预算耗尽、取消、出错),
 落盘和宣布结束都只在 `finish_turn` 做一次,所以哪条路都跳不过。顺序本身是契约:宿主
-把 `TurnComplete` 读作"会话空闲、它的 transcript 已经在盘上"——daemon 收到它就把会话
-交给下一个调用方,并可能立刻从 transcript 重建它。每一步开始前也落一次盘,进程在
+把 `TurnComplete` 读作"会话空闲",`persisted` 为真时还是"它的日志已经有了全部"——daemon 收到它就
+把会话交给下一个调用方,并可能立刻从日志重建它。写日志失败的一轮照样以 `TurnComplete` 结束
+(它确实跑了,报失败会诱导重发),只是 `persisted` 为假:池把会话记成日志落后
+(`SessionCore` 的 `LogHealth`),落后期间不驱逐它,重建前先发 `InputMessage::Flush` 让引擎补写,
+补写失败就不重建、报 `persist_failed`;没写进去的目标变更和持久状态退回 `SessionState`,下一次写
+时再写。每一步开始前也落一次盘,进程在
 一轮中途死掉最多丢正在进行的那一步;落盘点都在 `tool_use` 与它的 `tool_result` 已经
 配对的地方。
 
@@ -425,7 +429,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 ### 3.2.4 会话池里一个会话的回合槽
 
 池里每个会话条目是 `LiveSession { core, engine, turn }`:`SessionCore` 是会话本身(`SessionState`、
-事件出口 `SessionHub`、steer 队列、进程组账本、名字、上下文用量),建会话或从日志冷恢复时建,
+事件出口 `SessionHub`、steer 队列、进程组账本、名字、上下文用量、日志是否落后),建会话或从日志冷恢复时建,
 关闭、驱逐、整池关闭时丢,重建不换;`EngineSlot` 是当前这一代引擎(输入通道、取消与退出令牌、
 命名器、绑定是否过期、委派器、脚本记录、健康检查);`TurnSlot` 是回合状态,不再由几个互相对得上的
 字段隐式表示:

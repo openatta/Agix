@@ -662,7 +662,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 | 每个 `tool_result` 必有先行的同 `id` `tool_use` | 反之不然:被取消的工具可能没有 result |
 | `turn_complete` 是本 turn 最后一个事件 | 其后只有 `run_turn` 的最终响应 |
 | 每个开始了的 turn 都有且只有一个 `turn_complete`(出错时发起者收到 `run_turn` 的错误响应,其他订阅者收到 `error` 帧) | 被 hook 拦下、被中断、被预算或策略截停的 turn 同样以它结束;被 `session.close` / `session.delete` 截断的,其他订阅者收到 `code` 为 `session_closed` 的 `error` 帧,发起者收到 `ENGINE_ERROR`(`message` 以 `session_closed:` 开头) |
-| 收到 `turn_complete` 时本轮已写进 transcript | 此刻读 `session.history` 能看到这一轮 |
+| 收到 `persisted` 为 `true` 的 `turn_complete` 时本轮已写进 transcript | 此刻读 `session.history` 能看到这一轮;`persisted` 为 `false` 时见 §7.2 |
 
 > **⚠️ 按 `id` 配对,不要按位置配对。** 并发安全的工具是并行执行的,谁先跑完谁先发
 > `tool_result`,所以事件流里 `tool_result` 的顺序与 `tool_use` 的顺序**可以不同**。
@@ -1553,6 +1553,9 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 旧引擎已经取消,会话被移出内存(`daemon.event` `session_evicted`,`reason: "rebuild"`),下一次
 `run_turn` / `session.resume` 等旧引擎停下后按原来的选择从转录恢复。要换,稍后再调一次。
 
+换厂商时上一轮的日志没写全(`turn_complete` 报 `persisted: false`,§7.2),重建前先让引擎补写;
+补写失败返回 `ENGINE_ERROR`(`kind: "persist_failed"`),选择没有生效,会话照旧在原来的引擎上。
+
 **只对内存里的会话有效**,冷会话返回 `SESSION_NOT_FOUND`(先 `session.resume`)。
 选择记在会话日志里(见 `session.create` 的 `options`):会话被驱逐后重建、
 `config.reload` 之后重建、daemon 重启后恢复,选的都还是这个模型和厂商。
@@ -1578,7 +1581,8 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 自己的 agent,它派生的子 agent 用各自类型与场景的提示。
 
 有一轮正在跑、或有后台任务在跑时拒绝,`SESSION_BUSY`,`data` 同 `session.setModel`;重建时旧引擎
-没停下也是 `SESSION_BUSY`,提示词不变,会话被移出内存,同 `session.setModel`。`append` 与 `override`
+没停下也是 `SESSION_BUSY`,提示词不变,会话被移出内存,同 `session.setModel`。上一轮的日志没写全、
+重建前补写又失败时是 `ENGINE_ERROR`(`kind: "persist_failed"`,§7.2),提示词不变,会话照旧。`append` 与 `override`
 都没给,或类型不对 → `INVALID_PARAMS`;会话不存在 → `SESSION_NOT_FOUND`。
 
 #### `session.history`
@@ -2694,7 +2698,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `user_message_delivered` | `{message_id,content}` | 运行中送来的消息(`on_busy:"steer"`)已加进对话,模型下一次调用会读到 |
 | `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
-| `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?,truncated?}` | 本轮结束,transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
+| `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?,truncated?,persisted}` | 本轮结束,`persisted` 为 `true` 时 transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
 | `error` | `{code,message,retryable,retry_after_ms}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知。`code`、`retryable`、`retry_after_ms` 与发起者收到的 `ENGINE_ERROR` 的 `data.kind`、`data.retryable`、`data.retry_after_ms` 相同(§9.1;字段叫 `code` 是因为帧里已经有 `kind:"error"`);会话在这一轮中途被关闭或删除时 `code` 为 `session_closed`,引擎在一轮中途退出时为 `engine_stopped` |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
@@ -2775,7 +2779,8 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
   "context":{ "tokens":120000, "compact_threshold":150000, "window":200000 },
   "structured_output":{…},     // 可选
   "message":"…",               // 可选
-  "truncated":true }           // 可选,只在为 true 时出现
+  "truncated":true,            // 可选,只在为 true 时出现
+  "persisted":true }
 ```
 
 `context.tokens` 是最后一次调用发出去的上下文大小,按厂商的计数(输入加两项缓存),不是
@@ -2799,6 +2804,14 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 既没有 `[DONE]` 也没有 `finish_reason`。不少网关两样都不发,所以这种流照常当作回复结束,
 收到的内容就是整个回复,`stop_reason` 按 `end_turn` 报;但连接中途断开看起来一模一样,
 回复可能不完整,宿主可以据此提示或重发。其余情况没有这个键。
+
+`persisted: false` 表示这一轮写日志失败了(磁盘满、存储不可用):这一轮确实跑完了,工具跑过、
+文件改过,所以照样以 `turn_complete` 结束、`run_turn` 照样成功 —— 不要把它当失败重发。但
+transcript、目标、计划模式与 todo 的落盘落在后面,内存里的会话是唯一完整的一份:daemon 不会
+因空闲或腾位置驱逐它,需要重建的调用(`session.setPrompt`、换厂商的 `session.setModel`)先让
+引擎补写,补写失败就拒绝,`ENGINE_ERROR`,`kind` 为 `persist_failed`,会话照旧。下一轮开头会
+自动补写,之后某一轮报 `persisted: true` 就说明日志已经追上。`session.close` 照常关闭,引擎
+退出前再试一次补写。
 
 **`stop_reason` 和 `usage` 只在这里出现**,`run_turn` 的最终响应里没有。
 
@@ -2882,7 +2895,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | -32602 | INVALID_PARAMS | 参数缺失/类型错/取值非法 |
 | -32603 | INTERNAL_ERROR | 服务端内部错误(写盘失败、会话创建失败等) |
 | -32000 | SESSION_NOT_FOUND | 会话不存在,或该方法要求它在内存里而它不在 |
-| -32002 | ENGINE_ERROR | turn 执行期错误,或引擎没有接下、没有回答一个回合之外的请求(`session.inspectContext` / `dropMessages` / `editMessage`);`message` 形如 `"<kind>: <描述>"`,`data` 见 §9.1 |
+| -32002 | ENGINE_ERROR | turn 执行期错误,或引擎没有接下、没有回答一个回合之外的请求(`session.inspectContext` / `dropMessages` / `editMessage`),或重建之前补写日志失败(`session.setPrompt`、换厂商的 `session.setModel`);`message` 形如 `"<kind>: <描述>"`,`data` 见 §9.1 |
 | -32003 | UNAUTHORIZED | TCP / WebSocket 握手缺失或失败,开了 `--unix-socket-auth` 时 Unix socket 也一样;Unix socket 上的对端是 daemon 自己起的进程(§5.1)。不需要握手的连接上发 `daemon.auth` 得到的是 `METHOD_NOT_FOUND`(-32601) |
 | -32004 | SCENE_NOT_FOUND | 场景未注册,或(`session.create`)未激活 |
 | -32006 | SCENE_MISMATCH | 会话记录的场景与这个 daemon 的不符 |
@@ -2950,6 +2963,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | `session_closed` | 这一轮中途会话被关闭或删除 | `false` |
 | `engine_stopped` | 引擎在一轮中途退出;会话已移出内存,下一次调用从 transcript 恢复它 | `true` |
 | `engine_unreachable` | 引擎没有接下、没有回答一个回合之外的请求 | `true` |
+| `persist_failed` | 会话的日志缺了它在内存里的一部分(上一轮 `turn_complete` 报 `persisted: false`),重建前补写又失败;会话没有重建,照旧在跑 | `true` |
 | `internal` | 引擎内部错误 | `false` |
 
 以后可能增加取值;不认识的 `kind` 按 `retryable` 处理。

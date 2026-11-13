@@ -2,7 +2,7 @@
 //! 刚被拿出表还在停的引擎、整池关闭的状态，以及引擎的代际号。
 //!
 //! 表里每个会话是一个 `LiveSession`：会话本身的 `SessionCore`（状态、事件出口、
-//! steer 队列、进程组、名字与上下文用量；建会话或冷恢复时建，关闭、驱逐、整池
+//! steer 队列、进程组、名字、上下文用量与日志是否落后；建会话或冷恢复时建，关闭、驱逐、整池
 //! 关闭时丢，重建不换）、当前这一代引擎的 `EngineSlot`，以及回合槽 `TurnSlot`
 //! （`phase.rs`）。门面经这里的窄方法读写这张表，拿不到表本身。
 //!
@@ -38,6 +38,24 @@ pub(in crate::session_pool) struct Naming {
     pub(in crate::session_pool) is_first_turn: bool,
 }
 
+/// Whether the session's log has everything the session holds. While it is
+/// behind, the session in memory is the only complete copy: a rebuild has its
+/// engine write the rest first, and eviction passes it over.
+#[derive(Default)]
+pub(in crate::session_pool) struct LogHealth {
+    behind: AtomicBool,
+}
+
+impl LogHealth {
+    pub(in crate::session_pool) fn is_behind(&self) -> bool {
+        self.behind.load(Ordering::SeqCst)
+    }
+
+    pub(in crate::session_pool) fn set_behind(&self, behind: bool) {
+        self.behind.store(behind, Ordering::SeqCst);
+    }
+}
+
 /// The session itself, whichever engine runs it.
 pub(in crate::session_pool) struct SessionCore {
     id: Arc<str>,
@@ -58,6 +76,7 @@ pub(in crate::session_pool) struct SessionCore {
     naming: Mutex<Naming>,
     /// How full the context was after the last turn that called the model.
     context: Mutex<Option<ContextUsage>>,
+    log: LogHealth,
 }
 
 impl SessionCore {
@@ -88,6 +107,7 @@ impl SessionCore {
             process_groups: platform::GroupLedger::new(),
             naming: Mutex::new(naming),
             context: Mutex::new(None),
+            log: LogHealth::default(),
         })
     }
 
@@ -133,6 +153,10 @@ impl SessionCore {
 
     pub(in crate::session_pool) fn set_context(&self, context: ContextUsage) {
         *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some(context);
+    }
+
+    pub(in crate::session_pool) fn log(&self) -> &LogHealth {
+        &self.log
     }
 
     pub(in crate::session_pool) fn reap_process_groups_later(&self) {
@@ -199,6 +223,12 @@ impl LiveSession {
             return None;
         }
         Some(std::mem::replace(&mut self.engine, engine))
+    }
+
+    /// Whether eviction may take the session out of memory: it is doing
+    /// nothing eviction would cut off, and its log has everything it holds.
+    fn evictable(&self) -> bool {
+        !self.is_busy() && !self.core.log.is_behind()
     }
 
     /// Whether eviction would cut something off: a turn, a rebuild, or
@@ -498,21 +528,21 @@ impl LiveSessions {
 }
 
 /// Take the least recently active idle session out of `sessions`, or `None`
-/// when every session is busy — the pool then runs over its cap rather than
-/// cut one off.
+/// when every session is busy or holds what its log lacks — the pool then
+/// runs over its cap rather than cut one off or lose what it holds.
 pub(in crate::session_pool) fn evict_lru(
     sessions: &mut HashMap<String, LiveSession>,
 ) -> Option<(String, LiveSession)> {
     let sid = sessions
         .iter()
-        .filter(|(_, live)| !live.is_busy())
+        .filter(|(_, live)| live.evictable())
         .min_by_key(|(_, live)| live.core.hub.last_active())
         .map(|(k, _)| k.clone())?;
     sessions.remove_entry(&sid)
 }
 
 /// The ids of the sessions whose `last_active` is more than `timeout` before
-/// `now` and that have nothing running. A pure function so a test can hand it
+/// `now`, that have nothing running and whose log has everything they hold. A pure function so a test can hand it
 /// a session that went quiet long ago instead of waiting for the janitor.
 pub(in crate::session_pool) fn idle_session_ids(
     sessions: &HashMap<String, LiveSession>,
@@ -522,7 +552,7 @@ pub(in crate::session_pool) fn idle_session_ids(
     sessions
         .iter()
         .filter(|(_, live)| {
-            now.saturating_duration_since(live.core.hub.last_active()) > timeout && !live.is_busy()
+            now.saturating_duration_since(live.core.hub.last_active()) > timeout && live.evictable()
         })
         .map(|(sid, _)| sid.clone())
         .collect()

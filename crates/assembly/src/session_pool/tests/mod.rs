@@ -16,6 +16,32 @@ impl SessionWatcher for NullWatcher {
     }
 }
 
+/// A watcher that keeps every agent event it is handed.
+pub(super) struct AgentEvents(pub(super) u64, pub(super) std::sync::Mutex<Vec<AgentEvent>>);
+
+impl AgentEvents {
+    pub(super) fn new(id: u64) -> Arc<Self> {
+        Arc::new(Self(id, Default::default()))
+    }
+
+    pub(super) fn seen(&self) -> Vec<AgentEvent> {
+        self.1.lock().unwrap().clone()
+    }
+}
+
+impl SessionWatcher for AgentEvents {
+    fn id(&self) -> WatcherId {
+        WatcherId(self.0)
+    }
+
+    fn deliver(&self, frame: &SessionFrame) -> bool {
+        if let SessionEvent::Agent(event) = &frame.event {
+            self.1.lock().unwrap().push(event.clone());
+        }
+        true
+    }
+}
+
 /// An ask of `session_id` as the engine would raise it.
 pub(super) fn raise_ask(
     hub: &SessionHub,

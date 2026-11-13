@@ -41,6 +41,12 @@ pub enum InputMessage {
         request: ContextRequest,
         reply: tokio::sync::oneshot::Sender<Result<ContextAnswer, ContextError>>,
     },
+    /// Write what the session's log does not have yet — the transcript, goal
+    /// changes, the durable state — between turns. `reply` says whether the
+    /// log now has all of it, or the first write that failed.
+    Flush {
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
 }
 
 /// Why a [`ContextRequest`] was not answered as asked.

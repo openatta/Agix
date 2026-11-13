@@ -530,7 +530,7 @@ impl Agent {
             if let Err(e) = self.session.persist().await {
                 tracing::warn!(error = %e, "failed to persist session");
             }
-            self.record_goal_changes().await;
+            let _ = self.record_goal_changes().await;
             if cancel.is_cancelled() {
                 self.last_had_tool_uses = had_tool_uses_this_turn;
                 self.record_turn_complete("cancelled", api_calls, tool_calls, start);
