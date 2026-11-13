@@ -167,9 +167,9 @@ pub(in crate::session_pool) fn bind_scripts(
 ) -> (Option<()>, Vec<(String, String)>) {
     const NO_ENGINE: &str = "this build carries no script engine";
 
-    if !settings.scripts.is_empty() {
+    if !settings.values.scripts.is_empty() {
         error!(
-            scripts = settings.scripts.len(),
+            scripts = settings.values.scripts.len(),
             "this build carries no script engine, so a `scripts` section cannot be honored; \
              rebuild with the `scripts` feature or remove the section"
         );
