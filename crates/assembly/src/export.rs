@@ -561,6 +561,19 @@ struct Findings {
     warnings: Vec<String>,
 }
 
+fn exported_session(
+    session_id: &str,
+    facts: &history::store::SessionFacts,
+    entry_count: usize,
+) -> ExportedSession {
+    ExportedSession {
+        session_id: session_id.to_string(),
+        kind: facts.session_kind.into(),
+        parent_session_id: facts.parent_session_id.clone(),
+        entry_count,
+    }
+}
+
 fn pack(
     request: &ExportRequest,
     snapshot: ExportSnapshot,
@@ -671,12 +684,7 @@ fn pack(
             )?;
         }
 
-        exported.push(ExportedSession {
-            session_id: sid.clone(),
-            kind: facts.session_kind.into(),
-            parent_session_id: facts.parent_session_id.clone(),
-            entry_count: part.entries.len(),
-        });
+        exported.push(exported_session(&sid, &facts, part.entries.len()));
         rows.push(json!({
             "session_id": sid,
             "kind": facts.session_kind,

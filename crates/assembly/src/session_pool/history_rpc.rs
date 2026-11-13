@@ -487,7 +487,7 @@ pub(super) fn export_views(
                 if !ns.starts_with(ENGINE_NS_PREFIX))
         })
         .filter_map(|(i, env)| entry_view(i, env, &lengths))
-        .map(|view| serde_json::to_value(view))
+        .map(serde_json::to_value)
         .collect::<Result<Vec<_>, _>>()?;
     Ok((history, rows))
 }
