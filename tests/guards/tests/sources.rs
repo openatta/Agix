@@ -1,7 +1,15 @@
 //! Rules over what the source says, found in the syntax tree rather than in
 //! the text: no crate finds its own `$HOME` (SRC-1), a plugin's disclosure
-//! names no script engine (SRC-2), and every `.rs` file in a package belongs
-//! to a target (SRC-3).
+//! names no script engine (SRC-2), every `.rs` file in a package belongs to a
+//! target (SRC-3), and only the crates in `MAY_SPAWN` start a process
+//! themselves (SRC-4).
+//!
+//! Everything else reaches a process through the session's `&dyn Process`,
+//! which is what puts it on the machine the host chose, inside the session's
+//! sandbox and environment policy, in a session of its own with no
+//! controlling terminal, and in the ledger that reaps it. A crate that names
+//! `std::process::Command`, `tokio::process::Command` or `process_wrap` in
+//! production code has stepped around all of that.
 //!
 //! Where an instance keeps its state is decided once, by the process entry
 //! point, and passed down. A module that reads `$HOME` instead has quietly
@@ -77,6 +85,24 @@ const HOME_READERS: &[(&str, &str)] = &[
         "the tests check both of the above against this machine's home.",
     ),
 ];
+
+/// The crates whose production code may start a process itself, each with
+/// what it starts.
+const MAY_SPAWN: &[(&str, &str)] = &[
+    (
+        "platform",
+        "`LocalProcess`, the one `Process` on this machine, and the sandbox \
+         backends' fixed-argv probes",
+    ),
+    (
+        "mcp",
+        "stdio MCP servers: processes the operator configured, started in a \
+         session of their own through process-wrap",
+    ),
+];
+
+/// Crates that still start one themselves, each with what takes it away.
+const NOT_YET: &[(&str, &str)] = &[];
 
 const ENGINE_MODULES: &[&str] = &["rquickjs", "script_host"];
 const ENGINE_TYPES: &[&str] = &["ScriptEngine"];
@@ -213,4 +239,98 @@ fn every_rust_file_in_a_package_belongs_to_a_target() {
         "declare the file with `mod`, or delete it: the compiler never reads it, so nothing \
          it says is checked",
     );
+}
+
+/// The names `process-wrap` goes by in the workspace's code.
+fn process_wrap_idents() -> BTreeSet<String> {
+    ws().packages()
+        .iter()
+        .flat_map(|p| &p.deps)
+        .filter(|d| d.name == "process-wrap")
+        .map(|d| d.ident.clone())
+        .chain(["process_wrap".to_string()])
+        .collect()
+}
+
+/// `std::process::Command`, `tokio::process::Command`, a glob import of
+/// either module, or anything under `process-wrap`; `use` aliases are undone
+/// before this sees the path.
+fn names_a_spawner(segments: &[String], wrappers: &BTreeSet<String>) -> bool {
+    let path = match segments {
+        [colons, rest @ ..] if colons == "::" => rest,
+        all => all,
+    };
+    match path {
+        [root, process, item, ..]
+            if (root == "std" || root == "tokio")
+                && process == "process"
+                && (item == "Command" || item == "*") =>
+        {
+            true
+        }
+        [first, ..] => wrappers.contains(first),
+        [] => false,
+    }
+}
+
+fn spawners(files: Vec<&guards::SourceFile>, view: View) -> Vec<Finding> {
+    let wrappers = process_wrap_idents();
+    par_flat_map(files, |f| {
+        scan::paths(f, view)
+            .into_iter()
+            .filter(|(segments, _)| names_a_spawner(segments, &wrappers))
+            .map(|(_, hit)| Finding {
+                key: f.package.clone(),
+                hit,
+            })
+            .collect()
+    })
+}
+
+/// The packages under `tests/` drive the product from outside — cargo, git,
+/// a built `agixd` — and are never linked into it.
+fn is_test_support(package: &str) -> bool {
+    ws().package(package).dir.starts_with("tests/")
+}
+
+#[test]
+fn only_the_listed_crates_start_a_process_themselves() {
+    let production: Vec<_> = ws()
+        .production()
+        .filter(|f| !is_test_support(&f.package))
+        .collect();
+    allow::non_vacuous("sources::MAY_SPAWN", production.len(), 300);
+    let listed: Vec<(&str, &str)> = MAY_SPAWN.iter().chain(NOT_YET).copied().collect();
+    allow::check(
+        "sources::MAY_SPAWN",
+        spawners(production, View::Prod),
+        &listed,
+        "build a `ProcessSpec` and run it through the session's `&dyn Process` (`ToolContext.exec`, \
+         `Agent.exec`, `base::engine_exec::EngineExec`), or a `platform::LocalProcess` for an \
+         operator's process; a crate that has to start one itself goes on `MAY_SPAWN` with \
+         what it starts, one on its way off goes on `NOT_YET`",
+    );
+}
+
+#[test]
+fn the_spawn_scan_sees_through_aliases() {
+    let src = r#"
+        use tokio::process as p;
+        use std::process::Command as C;
+        use std::process::*;
+        fn a() {
+            p::Command::new("x");
+            C::new("y");
+            ::std::process::Command::new("z");
+            process_wrap::tokio::CommandWrap::with_new("w", |_| {});
+            let _ = std::process::id();
+            let _ = std::process::Stdio::null();
+        }
+    "#;
+    let f = guards::source::standalone("fixture.rs", src.to_string()).expect("parses");
+    let lines: BTreeSet<usize> = spawners(vec![&f], View::Full)
+        .into_iter()
+        .map(|finding| finding.hit.line)
+        .collect();
+    assert_eq!(lines, BTreeSet::from([3, 4, 6, 7, 8, 9]));
 }
