@@ -1,4 +1,4 @@
-//! 会话创建：`create_session`、`create` 的装配，以及会话规格（`SessionSpec`）的读写。
+//! 会话创建：`create_session` 和 `create` 的装配。
 
 use crate::session_pool::*;
 
@@ -114,8 +114,7 @@ impl SessionPool {
         self.refuse_while_shutting_down()?;
         self.wait_until_stopped(&session_id).await?;
         let claim = self.claim_log(&session_id).await?;
-        let spec = self.spec_for(&session_id, resume, options).await;
-        self.lock_kept_specs().retain(|k| k != &session_id);
+        let spec = self.specs.spec_for(&session_id, resume, options).await;
         let options = spec.options.as_ref();
         self.note_served(project_root_for_meta.as_deref());
         let scene_id = scene.id.clone();
@@ -500,7 +499,7 @@ impl SessionPool {
                 }
             }
             if spec.options.is_some() {
-                self.persist_spec(&session_id, &spec).await;
+                self.specs.persist(&session_id, &spec).await;
             }
         }
 
@@ -672,122 +671,6 @@ impl SessionPool {
         }
         info!(%session_id, "session created");
         Ok(session_id)
-    }
-
-    /// This session's spec: the one this process already holds, else the one
-    /// its log recorded (for a resume), else a new one from `options`.
-    pub(in crate::session_pool) async fn spec_for(
-        &self,
-        session_id: &str,
-        resume: bool,
-        options: Option<&SessionOptions>,
-    ) -> SessionSpec {
-        if let Some(spec) = self.lock_specs().get(session_id) {
-            return spec.clone();
-        }
-        let mut spec = if resume {
-            self.recorded_spec(session_id).await
-        } else {
-            SessionSpec::default()
-        };
-        // A log written before specs were recorded has none; the options of
-        // the call that brought the session back are the best there is, and
-        // are recorded so the next resume finds them too.
-        let adopted = resume && spec.options.is_none() && options.is_some();
-        if spec.options.is_none() {
-            spec.options = options.cloned();
-        }
-        // `recorder` is never recorded, so the call bringing the session back
-        // is the only place it can come from.
-        if let Some(recorder) = options.and_then(|o| o.recorder.clone()) {
-            spec.options.get_or_insert_with(Default::default).recorder = Some(recorder);
-        }
-        if spec.options.as_ref().is_some_and(|o| o.recorder.is_some()) {
-            spec.recorder = Some(telemetry::recorder::Recorder::new());
-        }
-        let spec = self
-            .lock_specs()
-            .entry(session_id.to_string())
-            .or_insert(spec)
-            .clone();
-        if adopted {
-            self.persist_spec(session_id, &spec).await;
-        }
-        spec
-    }
-
-    pub(in crate::session_pool) fn lock_specs(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, SessionSpec>> {
-        self.specs
-            .lock()
-            .expect("specs mutex is never held across a panic")
-    }
-
-    pub(in crate::session_pool) async fn recorded_spec(&self, session_id: &str) -> SessionSpec {
-        let entries = self.load_entries(session_id).await.unwrap_or_default();
-        let recorded = entries
-            .iter()
-            .rev()
-            .find_map(|env| match &env.entry {
-                history::entry::LogEntry::Extension { ns, event, payload }
-                    if ns == SPEC_NS && event == SPEC_EVENT =>
-                {
-                    serde_json::from_value::<RecordedSpec>(payload.clone()).ok()
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
-        SessionSpec {
-            options: recorded.options,
-            model: recorded.model,
-            provider: recorded.provider,
-            prompt: recorded.prompt,
-            recorder: None,
-        }
-    }
-
-    pub(in crate::session_pool) async fn persist_spec(&self, session_id: &str, spec: &SessionSpec) {
-        let Some(store) = self.history_store.as_ref() else {
-            return;
-        };
-        let Ok(sid) = base::session::SessionId::parse(session_id) else {
-            return;
-        };
-        let recorded = RecordedSpec {
-            options: spec.options.clone().map(|mut o| {
-                o.recorder = None;
-                o
-            }),
-            model: spec.model.clone(),
-            provider: spec.provider.clone(),
-            prompt: spec.prompt.clone(),
-        };
-        let Ok(payload) = serde_json::to_value(&recorded) else {
-            return;
-        };
-        let entry = history::entry::LogEntry::Extension {
-            ns: SPEC_NS.to_string(),
-            event: SPEC_EVENT.to_string(),
-            payload,
-        };
-        if let Err(e) = store.append(sid, entry).await {
-            warn!(%session_id, error = %e, "failed to record the session spec");
-        }
-    }
-
-    /// Change this session's spec in memory only, returning it as it was and
-    /// as it is now.
-    pub(in crate::session_pool) fn change_spec(
-        &self,
-        session_id: &str,
-        change: impl FnOnce(&mut SessionSpec),
-    ) -> (Option<SessionSpec>, SessionSpec) {
-        let mut specs = self.lock_specs();
-        let previous = specs.get(session_id).cloned();
-        let spec = specs.entry(session_id.to_string()).or_default();
-        change(spec);
-        (previous, spec.clone())
     }
 
     /// Longest name `session.rename` accepts.

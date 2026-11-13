@@ -1,6 +1,6 @@
 //! `agix.session/spec` 条目的载荷格式：0.3.11 写出的日志要能读回来，且原样写回得到同一份 JSON。
 
-use super::*;
+use crate::session_pool::parts::specs::RecordedSpec;
 
 const SPEC_0_3_11: &str = include_str!("fixtures/spec_0.3.11.json");
 

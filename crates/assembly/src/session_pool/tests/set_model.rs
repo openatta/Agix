@@ -42,9 +42,9 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
     }
 
     assert!(
-        pool.lock_specs()
+        pool.specs
             .get(&session_id)
-            .and_then(|spec| spec.model.clone())
+            .and_then(|spec| spec.model)
             .is_none(),
         "a refused change must not be recorded — a later rebuild would apply it"
     );

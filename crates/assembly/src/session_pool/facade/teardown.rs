@@ -3,12 +3,6 @@
 use crate::session_pool::*;
 
 impl SessionPool {
-    /// Forget a session's `session.setModel` choice — it is deleted or
-    /// closed, and an id is never reused.
-    pub(in crate::session_pool) fn forget_spec(&self, session_id: &str) {
-        self.lock_specs().remove(session_id);
-    }
-
     /// Stop `live`, just taken out of `sessions` under `sid`, without
     /// waiting for it: whoever brings `sid` back waits instead
     /// ([`Self::wait_until_stopped`]). Nothing it still produces reaches its
@@ -54,43 +48,7 @@ impl SessionPool {
     pub(in crate::session_pool) fn evict(&self, sid: &str, live: &LiveSession) {
         self.stop_removed(sid, live);
         reap_process_groups_later(live);
-        self.release_spec(sid);
-    }
-
-    /// Drop the spec of `sid`, now out of memory, when its log gives it
-    /// back; one the log cannot — a recorder's progress, a session with no
-    /// log — is kept, for at most `cap` sessions.
-    pub(in crate::session_pool) fn release_spec(&self, sid: &str) {
-        let logged = self.history_store.is_some() && base::session::SessionId::parse(sid).is_ok();
-        let records = self
-            .lock_specs()
-            .get(sid)
-            .is_some_and(|spec| spec.recorder.is_some());
-        if logged && !records {
-            self.forget_spec(sid);
-            return;
-        }
-        let oldest = {
-            let mut kept = self.lock_kept_specs();
-            kept.retain(|k| k != sid);
-            kept.push_back(sid.to_string());
-            if kept.len() > self.cap {
-                kept.pop_front()
-            } else {
-                None
-            }
-        };
-        if let Some(oldest) = oldest {
-            self.forget_spec(&oldest);
-        }
-    }
-
-    pub(in crate::session_pool) fn lock_kept_specs(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::VecDeque<String>> {
-        self.kept_specs
-            .lock()
-            .expect("kept_specs is never held across a panic")
+        self.specs.release(sid);
     }
 
     /// Run `fut` while holding this pool's per-`session_id` lock — see the
@@ -264,7 +222,7 @@ impl SessionPool {
         }
         // The in-memory copy only: a session resumed later reads its spec back
         // from its log.
-        self.forget_spec(session_id);
+        self.specs.forget(session_id);
         self.delete_sidechain_list(session_id, children).await
     }
 

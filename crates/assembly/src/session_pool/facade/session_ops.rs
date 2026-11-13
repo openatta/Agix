@@ -219,10 +219,7 @@ impl SessionPool {
             )
         };
 
-        let current_provider = self
-            .lock_specs()
-            .get(session_id)
-            .and_then(SessionSpec::provider);
+        let current_provider = self.specs.get(session_id).and_then(|spec| spec.provider());
         let binding = self.binding_for(project.as_deref(), &scene).await;
         binding
             .check_model_choice(provider.or(current_provider.as_deref()), model)
@@ -256,8 +253,8 @@ impl SessionPool {
             .await
             .map_err(|e| e.into_error(session_id))?;
         } else {
-            let spec = self.change_spec(session_id, change).1;
-            self.persist_spec(session_id, &spec).await;
+            let spec = self.specs.update(session_id, change).1;
+            self.specs.persist(session_id, &spec).await;
         }
         if let (false, Some(m)) = (switching_provider, model) {
             if input_tx
@@ -274,11 +271,7 @@ impl SessionPool {
             }
         }
 
-        let spec = self
-            .lock_specs()
-            .get(session_id)
-            .cloned()
-            .unwrap_or_default();
+        let spec = self.specs.get(session_id).unwrap_or_default();
         Ok(api::ModelChoice {
             session_id: session_id.to_string(),
             model: spec.model(),
@@ -309,10 +302,7 @@ impl SessionPool {
         if !self.session_exists(session_id).await {
             return Err(PoolError::session_not_found(session_id));
         }
-        if !self.lock_specs().contains_key(session_id) {
-            let recorded = self.recorded_spec(session_id).await;
-            self.lock_specs().insert(session_id.to_string(), recorded);
-        }
+        self.specs.load(session_id).await;
         let change = |spec: &mut SessionSpec| {
             let mut prompt = spec.prompt().unwrap_or_default();
             change(&mut prompt);
@@ -326,9 +316,9 @@ impl SessionPool {
                             .await?
                     }
                     Err(Rebuild::NotLive) => {
-                        let spec = self.change_spec(session_id, change).1;
-                        self.persist_spec(session_id, &spec).await;
-                        self.release_spec(session_id);
+                        let spec = self.specs.update(session_id, change).1;
+                        self.specs.persist(session_id, &spec).await;
+                        self.specs.release(session_id);
                         spec
                     }
                     Err(busy) => return Err(busy),

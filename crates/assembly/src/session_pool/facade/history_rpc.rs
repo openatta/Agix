@@ -230,9 +230,9 @@ impl SessionPool {
         lineage: &history::store::LineageSnapshot,
     ) -> Vec<crate::export::RecordingPart> {
         let recorder = self
-            .lock_specs()
+            .specs
             .get(root_session)
-            .and_then(|spec| spec.options.as_ref()?.recorder.clone());
+            .and_then(|spec| spec.options?.recorder);
         let mut dirs = vec![recordings_root(
             settings,
             recorder.as_ref().and_then(|r| r.dir.as_deref()),

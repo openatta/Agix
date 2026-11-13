@@ -57,6 +57,7 @@ use mcp_status::*;
 use parts::hub::SessionHub;
 use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
 use parts::scheduler::{Scheduler, TurnLauncher};
+use parts::specs::{SessionSpec, SpecStore};
 use permission_scripts::*;
 use pool_telemetry::*;
 
@@ -338,69 +339,7 @@ pub enum TaskOutputRead {
     From(u64),
 }
 
-/// What a rebuild of a session has to reproduce: the options it was created
-/// with and what has been changed on it since.
-///
-/// An `Agent` is rebuilt whenever its binding goes stale, the janitor evicts
-/// it, or the daemon restarts; every rebuild reproduces this, not whatever the
-/// triggering call happens to pass.
-#[derive(Clone, Default)]
-struct SessionSpec {
-    options: Option<SessionOptions>,
-    model: Option<String>,
-    provider: Option<String>,
-    prompt: Option<runtime::agent::SessionPrompt>,
-    /// Shared by every Agent this process builds for the session, so a
-    /// rebuild continues a replay where it stood instead of from the first
-    /// recorded call. Not persisted: a recording in progress does not outlive
-    /// the process that made it.
-    recorder: Option<Arc<telemetry::recorder::Recorder>>,
-}
-
-impl SessionSpec {
-    /// The provider the conversation goes to: chosen since, else asked for
-    /// at creation. `None` follows the settings' routing.
-    fn provider(&self) -> Option<String> {
-        self.provider
-            .clone()
-            .or_else(|| self.options.as_ref().and_then(|o| o.provider.clone()))
-    }
-
-    /// The session's own prompt: set since, else given at creation.
-    fn prompt(&self) -> Option<runtime::agent::SessionPrompt> {
-        self.prompt
-            .clone()
-            .or_else(|| self.options.as_ref().and_then(|o| o.prompt.clone()))
-            .filter(|p| !p.is_empty())
-    }
-
-    /// The conversation's model, by the same precedence as `provider`.
-    fn model(&self) -> Option<String> {
-        self.model
-            .clone()
-            .or_else(|| self.options.as_ref().and_then(|o| o.model.clone()))
-    }
-}
-
-/// The persisted part of a [`SessionSpec`], written to the session's log as
-/// an extension entry each time it changes; the last one wins. An extension
-/// entry rather than a `Meta` field because the spec changes after `Meta` is
-/// written, and readers that do not know the namespace skip it.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct RecordedSpec {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    options: Option<SessionOptions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    prompt: Option<runtime::agent::SessionPrompt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
-}
-
-const SPEC_NS: &str = "agix.session";
 const ENGINE_NS_PREFIX: &str = "agix.";
-const SPEC_EVENT: &str = "spec";
 
 /// Where a session's first-turn naming call goes: the session's own `title`
 /// route when its project has one, else its conversation model.
@@ -721,14 +660,8 @@ pub struct SessionPool {
     /// binding invalidated nothing would be left to notice the next change to
     /// the global tier or to the settings `self.settings` mirrors.
     pool_watch: std::sync::Mutex<Vec<crate::watch_hub::WatchToken>>,
-    /// Each session's [`SessionSpec`], by id — what every rebuild of it
-    /// applies. Filled from the session's log the first time a session not
-    /// built in this process is resumed.
-    specs: std::sync::Mutex<HashMap<String, SessionSpec>>,
-    /// Sessions out of memory whose spec is still in `specs`, oldest first:
-    /// those the log cannot give back (a recorder's progress, a session with
-    /// no log). At most `cap` of them.
-    kept_specs: std::sync::Mutex<std::collections::VecDeque<String>>,
+    /// Each session's [`SessionSpec`]: what every rebuild of it applies.
+    specs: SpecStore,
     /// The engines taken out of `sessions` that may still be stopping, by
     /// session id. A session brought back under one of these ids waits for
     /// that engine first, so the two never run side by side.

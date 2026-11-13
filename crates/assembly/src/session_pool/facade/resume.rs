@@ -541,21 +541,15 @@ impl SessionPool {
         held: HeldSlot,
         change: impl FnOnce(&mut SessionSpec),
     ) -> Result<SessionSpec, Rebuild> {
-        let (previous, spec) = self.change_spec(sid, change);
+        let (previous, spec) = self.specs.update(sid, change);
         if let Err(e) = self.rebuild_holding(sid, held, None).await {
-            {
-                let mut specs = self.lock_specs();
-                match previous {
-                    Some(previous) => specs.insert(sid.to_string(), previous),
-                    None => specs.remove(sid),
-                };
-            }
+            self.specs.restore(sid, previous);
             if !self.sessions.lock().await.contains_key(sid) {
-                self.release_spec(sid);
+                self.specs.release(sid);
             }
             return Err(e);
         }
-        self.persist_spec(sid, &spec).await;
+        self.specs.persist(sid, &spec).await;
         Ok(spec)
     }
 

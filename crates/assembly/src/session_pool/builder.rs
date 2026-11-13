@@ -189,6 +189,7 @@ impl SessionPoolBuilder {
         active_scenes.insert(scene.id.clone(), scene.clone());
 
         let pool_telemetry = build_pool_telemetry(&settings);
+        let specs = SpecStore::new(self.history_store.clone(), self.cap);
 
         Arc::new_cyclic(|this| SessionPool {
             sessions: AsyncMutex::new(HashMap::new()),
@@ -230,8 +231,7 @@ impl SessionPoolBuilder {
                 }
             },
             pool_watch: std::sync::Mutex::new(Vec::new()),
-            specs: std::sync::Mutex::new(HashMap::new()),
-            kept_specs: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            specs,
             stopping: std::sync::Mutex::new(HashMap::new()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             generations: Generations::default(),

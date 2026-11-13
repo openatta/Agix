@@ -107,16 +107,20 @@ async fn a_prompt_set_on_a_session_out_of_memory_leaves_no_spec_behind() {
     let sid = new_session(&pool).await;
     let live = pool.sessions.lock().await.remove(&sid).unwrap();
     pool.evict(&sid, &live);
-    assert!(!pool.lock_specs().contains_key(&sid));
+    assert!(!pool.specs.contains(&sid));
 
     let answer = pool
         .set_session_prompt(&sid, append)
         .await
         .unwrap_or_else(|_| panic!("a session out of memory takes the change"));
     assert_eq!(answer.append.as_deref(), Some("Answer briefly."));
-    assert!(!pool.lock_specs().contains_key(&sid));
+    assert!(!pool.specs.contains(&sid));
     assert_eq!(
-        pool.recorded_spec(&sid).await.prompt.and_then(|p| p.append),
+        pool.specs
+            .recorded(&sid)
+            .await
+            .prompt
+            .and_then(|p| p.append),
         Some("Answer briefly.".to_string()),
         "the log gives the change back"
     );
@@ -175,29 +179,27 @@ async fn eviction_keeps_only_the_specs_a_log_cannot_give_back() {
     let (pool, _dir, _store) = pool_with_history().await;
     let logged = new_session(&pool).await;
     let recording = new_session(&pool).await;
-    pool.lock_specs().get_mut(&recording).unwrap().recorder =
-        Some(telemetry::recorder::Recorder::new());
+    pool.specs.with_mut(&recording, |spec| {
+        spec.recorder = Some(telemetry::recorder::Recorder::new())
+    });
     for sid in [&logged, &recording] {
         let live = pool.sessions.lock().await.remove(sid).unwrap();
         pool.evict(sid, &live);
     }
-    assert!(!pool.lock_specs().contains_key(&logged));
-    assert!(pool.lock_specs().contains_key(&recording));
+    assert!(!pool.specs.contains(&logged));
+    assert!(pool.specs.contains(&recording));
 
     let unlogged: Vec<String> = (0..pool.cap).map(|i| format!("no log {i}")).collect();
     for sid in &unlogged {
-        pool.lock_specs()
-            .insert(sid.clone(), SessionSpec::default());
-        pool.release_spec(sid);
+        pool.specs.with_mut(sid, |_| ());
+        pool.specs.release(sid);
     }
     assert!(
-        !pool.lock_specs().contains_key(&recording),
+        !pool.specs.contains(&recording),
         "the oldest kept spec makes room"
     );
-    assert!(unlogged
-        .iter()
-        .all(|sid| pool.lock_specs().contains_key(sid)));
-    assert_eq!(pool.lock_kept_specs().len(), pool.cap);
+    assert!(unlogged.iter().all(|sid| pool.specs.contains(sid)));
+    assert_eq!(pool.specs.kept_len(), pool.cap);
 }
 
 #[tokio::test]
