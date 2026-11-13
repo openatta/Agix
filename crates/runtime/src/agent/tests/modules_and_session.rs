@@ -36,7 +36,9 @@ impl crate::module::Module for Probe {
 
 pub(super) fn probe_builder(modules: Vec<Arc<dyn crate::module::Module>>) -> Builder {
     Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -125,42 +127,26 @@ fn a_module_whose_requirement_comes_later_is_refused() {
     assert!(err.contains("assembled twice"), "{err}");
 }
 
-pub(super) struct NarrowingScene {
-    pub(super) modules: Option<Vec<String>>,
-    pub(super) disabled: Vec<String>,
+/// A scene with an empty prompt and every tool, named `id`.
+pub(super) fn bare_scene(id: &str) -> SceneSpec {
+    SceneSpec::new(
+        id,
+        id,
+        Arc::new(base::interface::scene::FixedPrompt(Vec::new())),
+    )
 }
 
-impl Scene for NarrowingScene {
-    fn id(&self) -> &str {
-        "narrowing"
-    }
-    fn name(&self) -> &str {
-        "Narrowing"
-    }
-    fn description(&self) -> &str {
-        ""
-    }
-    fn build_system_prompt(
-        &self,
-        _: &base::interface::scene::ScenePromptContext,
-    ) -> Vec<base::prompt::PromptBlock> {
-        Vec::new()
-    }
-    fn tools(&self) -> Vec<String> {
-        Vec::new()
-    }
-    fn token_budget(&self) -> base::interface::scene::TokenBudget {
-        base::interface::scene::TokenBudget {
-            compact_threshold: 0,
-            compact_keep_recent: 10,
-        }
-    }
-    fn modules(&self) -> Option<Vec<String>> {
-        self.modules.clone()
-    }
-    fn disabled_modules(&self) -> Vec<String> {
-        self.disabled.clone()
-    }
+pub(super) fn narrowing_scene(modules: Option<Vec<String>>, disabled: Vec<String>) -> SceneSpec {
+    let mut s = bare_scene("narrowing");
+    s.token_budget = base::interface::scene::TokenBudget {
+        compact_threshold: 0,
+        compact_keep_recent: 10,
+    };
+    s.modules = base::interface::scene::ModuleSurface {
+        allow: modules,
+        deny: disabled,
+    };
+    s
 }
 
 pub(super) struct ListsModules {
@@ -198,12 +184,12 @@ pub(super) fn narrowed_build(
         })
         .collect();
     list.push(Arc::new(ListsModules { saw: saw.clone() }));
-    let scene = NarrowingScene {
-        modules: modules.map(|m| m.iter().map(|s| s.to_string()).collect()),
-        disabled: disabled.iter().map(|s| s.to_string()).collect(),
-    };
+    let scene = narrowing_scene(
+        modules.map(|m| m.iter().map(|s| s.to_string()).collect()),
+        disabled.iter().map(|s| s.to_string()).collect(),
+    );
     let result = Builder::new()
-        .scene(Arc::new(scene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -275,7 +261,9 @@ fn a_kept_module_whose_requirement_the_scene_excludes_is_refused() {
 async fn run_emits_session_end_on_exit() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(base::tool::InMemoryToolRegistry::new()))
@@ -361,7 +349,7 @@ async fn a_failed_turn_still_persists_the_users_message() {
 
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(FailingModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
     let sid = base::session::SessionId::new().to_string();
 
     let (mut agent, _event_rx, _input_tx) = Builder::new()
@@ -401,7 +389,9 @@ async fn a_failed_turn_still_persists_the_users_message() {
 #[tokio::test]
 async fn update_model_command_changes_the_model_the_next_turn_uses() {
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -432,7 +422,9 @@ async fn a_session_is_judged_by_the_counter_it_was_built_with() {
         base::interface::token_counter::FixedTokenCounter::new(0, 1_000),
     );
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(super::events_and_steering::PlainReplyModel))
         .settings(Arc::new(test_settings()))
         .token_counter(counter.clone())
@@ -493,7 +485,9 @@ async fn the_rule_index_comes_from_the_provider_the_session_was_built_with() {
     ));
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(KeepsPrompt(seen.clone())))
         .settings(Arc::new(test_settings()))
         .rule_provider(rules)

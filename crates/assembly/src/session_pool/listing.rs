@@ -89,19 +89,23 @@ impl SessionPool {
         }
 
         Ok(api::SceneDescription {
-            scene: scene.id().to_string(),
-            name: scene.name().to_string(),
-            description: scene.description().to_string(),
+            scene: scene.id.clone(),
+            name: scene.name.clone(),
+            description: scene.description.clone(),
             project_root: project_root.map(|p| p.display().to_string()),
             active: self.active_scenes.read().await.contains_key(scene_id),
             capabilities: api::SceneCapabilities {
-                requires_project: scene.requires_project(),
-                supports_team: scene.supports_team(),
+                requires_project: scene.requires_project,
+                supports_team: scene.supports_team,
             },
             tools: api::SceneTools {
-                allowed: Some(scene.tools()).filter(|tools| !tools.is_empty()),
-                disallowed: scene.disallowed_tools(),
-                deferred: scene.deferred_tools(),
+                allowed: scene
+                    .tools
+                    .allow
+                    .as_ref()
+                    .map(|allow| allow.iter().map(ToString::to_string).collect()),
+                disallowed: scene.tools.deny.iter().map(ToString::to_string).collect(),
+                deferred: scene.tools.deferred.clone(),
             },
             settings: settings_json,
         })

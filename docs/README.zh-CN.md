@@ -157,7 +157,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
  契约      core(包名 `base`)── 所有 trait 与所有共享数据类型
 ```
 
-- **契约。** `core` 定义 trait(`Model`、`Scene`、`PermissionPolicy`、`Tool`、`HistoryStore`、
+- **契约。** `core` 定义 trait(`Model`、`ScenePrompt`、`PermissionPolicy`、`Tool`、`HistoryStore`、
   `Compactor` ……)与数据类型,不依赖工作区里任何别的 crate。换掉一个子系统就是实现
   `core` 里的一个 trait,永远不用伸手进别的 crate 的内部。
 - **内核。** 一个会话跑一轮所需的一切:turn loop(`runtime`)、模型适配(Anthropic
@@ -174,7 +174,7 @@ MCP、询问、通知、监视、结构化输出(见下文[能力](#能力))。
 
 ```rust
 let (mut agent, events, input) = runtime::agent::Builder::new()
-    .scene(scene)          // 提示词、工具白名单、预算 —— Arc<dyn Scene>
+    .scene(scene)          // 提示词、工具白名单、预算 —— Arc<SceneSpec>
     .model(model)          // 任意后端 —— Arc<dyn Model>
     .settings(settings)
     .module(Arc::new(mcp::McpModule::new(manager)))   // 可选,按这个顺序:
@@ -218,7 +218,8 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 
 ### 会话、场景、历史
 
-- **场景**是无状态的行为:系统提示词、工具白名单、延迟加载的工具、预算、允许哪些模块。
+- **场景**是数据加一份提示词:工具黑白名单、延迟加载的工具、预算、允许哪些模块(`SceneSpec`),
+  以及系统提示词(`ScenePrompt`)。
   一个进程同时服务多个场景;每个会话选一个,按 `(项目, 场景)` 解析设置。场景可以用 Rust
   写,也可以是声明式的(`scene.json` + `prompt.md`)。
 - **历史是日志。** 会话的状态是一份只追加的 JSONL transcript,由投影变成模型看到的
@@ -342,7 +343,7 @@ echo '{"jsonrpc":"2.0","id":2,"method":"session.run_turn",
 
 ```rust
 let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-    .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+    .scene(Arc::new(scene::code::spec(Interaction::Interactive)))
     .model(Arc::new(model::adapter::AnthropicModel::new(client)))
     .settings(Arc::new(settings))
     .build()?;
@@ -368,7 +369,7 @@ ANTHROPIC_API_KEY=... cargo run --release -p runtime --example minimal -- "列�
 ```rust
 let pool = daemon::assemble::pool(
     &load_daemon_config("claude-sonnet-4-6", 8192, None, "code", &paths),
-    Arc::new(scene::code::CodeScene),
+    Arc::new(scene::code::spec(Interaction::Interactive)),
     daemon::Assembly { scenes: vec![my_scene], ..Default::default() },
 )
 .await?;

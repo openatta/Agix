@@ -84,13 +84,17 @@ async fn start_server_in(
     tempfile::TempDir,
     tokio::task::JoinHandle<()>,
 ) {
-    start_server_serving(dir, Arc::new(scene::code::CodeScene::default())).await
+    start_server_serving(
+        dir,
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
+    )
+    .await
 }
 
 /// Same server, serving `scene` instead of the interactive code scene.
 async fn start_server_serving(
     dir: tempfile::TempDir,
-    scene: Arc<dyn base::interface::scene::Scene>,
+    scene: Arc<base::interface::scene::SceneSpec>,
 ) -> (
     Arc<DaemonServer>,
     PathBuf,
@@ -500,9 +504,12 @@ async fn strict_options_refuse_what_they_cannot_read() {
 /// required: doctor says so, and says the default is planned to change.
 #[tokio::test]
 async fn doctor_warns_when_unattended_commands_may_reach_an_open_network() {
-    use scene::code::{CodeScene, Interaction};
+    use scene::code::{spec, Interaction};
 
-    async fn check(scene: CodeScene, settings: Option<&str>) -> serde_json::Value {
+    async fn check(
+        scene: base::interface::scene::SceneSpec,
+        settings: Option<&str>,
+    ) -> serde_json::Value {
         let dir = tempfile::tempdir().unwrap();
         if let Some(settings) = settings {
             std::fs::write(dir.path().join("settings.json"), settings).unwrap();
@@ -525,7 +532,7 @@ async fn doctor_warns_when_unattended_commands_may_reach_an_open_network() {
             .unwrap_or_else(|| panic!("no sandbox.unattended_network check: {v}"))
     }
 
-    let warned = check(CodeScene::new(Interaction::Unattended), None).await;
+    let warned = check(spec(Interaction::Unattended), None).await;
     assert_eq!(warned["status"], "degraded", "{warned}");
     let summary = warned["summary"].as_str().unwrap();
     assert!(summary.contains("later 0.3.x"), "{summary}");
@@ -534,13 +541,13 @@ async fn doctor_warns_when_unattended_commands_may_reach_an_open_network() {
         "{warned}"
     );
 
-    let attended = check(CodeScene::new(Interaction::Interactive), None).await;
+    let attended = check(spec(Interaction::Interactive), None).await;
     assert_eq!(attended["status"], "ok", "{attended}");
     for settings in [
         r#"{"sandbox": {"network_mode": "deny_all"}}"#,
         r#"{"sandbox": {"unattended_requires_network_policy": true}}"#,
     ] {
-        let held = check(CodeScene::new(Interaction::Unattended), Some(settings)).await;
+        let held = check(spec(Interaction::Unattended), Some(settings)).await;
         assert_eq!(held["status"], "ok", "{settings}: {held}");
     }
 }
@@ -1884,7 +1891,7 @@ async fn start_server_with_history(
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -1969,7 +1976,7 @@ async fn start_tcp_server(
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -2163,7 +2170,7 @@ async fn serve_tcp_listener_bails_without_a_token_even_when_called_directly() {
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),

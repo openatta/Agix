@@ -18,7 +18,7 @@
 //! implementation that never asked for one.
 
 use crate::interface::prompt_registry::PromptRegistry;
-use crate::interface::scene::{Scene, ScenePromptContext};
+use crate::interface::scene::{ScenePromptContext, SceneSpec};
 use crate::memory::MemoryStore;
 use crate::prompt::{BlockRole, CacheStrategy, PromptBlock};
 use crate::settings::Settings;
@@ -27,7 +27,7 @@ use crate::settings::Settings;
 pub struct AssemblyRequest<'a> {
     /// What else asked to be in this prompt.
     pub registry: &'a dyn PromptRegistry,
-    pub scene: &'a dyn Scene,
+    pub scene: &'a SceneSpec,
     pub settings: &'a Settings,
     pub memory_store: &'a MemoryStore,
     pub ctx: &'a ScenePromptContext<'a>,

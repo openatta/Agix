@@ -295,37 +295,15 @@ async fn a_background_sub_agent_reads_its_messages_and_reports_back_when_done() 
     assert!(notices[0].contains("report"));
 }
 
-/// A scene that brings a tool of its own, the way an embedder's does: a
-/// fresh instance on every call.
-pub(super) struct SceneWithProbe;
-impl base::interface::scene::Scene for SceneWithProbe {
-    fn id(&self) -> &str {
-        "with-probe"
-    }
-    fn name(&self) -> &str {
-        "With probe"
-    }
-    fn description(&self) -> &str {
-        "scene contributing scene_probe"
-    }
-    fn build_system_prompt(
-        &self,
-        _: &base::interface::scene::ScenePromptContext,
-    ) -> Vec<base::prompt::PromptBlock> {
-        vec![]
-    }
-    fn tools(&self) -> Vec<String> {
-        vec![]
-    }
-    fn token_budget(&self) -> base::interface::scene::TokenBudget {
-        base::interface::scene::TokenBudget {
-            compact_threshold: 150_000,
-            compact_keep_recent: 20,
-        }
-    }
-    fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-        vec![Arc::new(NamedTool("scene_probe"))]
-    }
+/// A scene that brings a tool of its own, the way an embedder's does.
+pub(super) fn scene_with_probe() -> SceneSpec {
+    let mut s = SceneSpec::new(
+        "with-probe",
+        "With probe",
+        Arc::new(base::interface::scene::FixedPrompt(vec![])),
+    );
+    s.extra_tools = vec![Arc::new(NamedTool("scene_probe"))];
+    s
 }
 
 /// Answers at once, noting the tools each request offered.
@@ -429,7 +407,7 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
     );
 }
 
-/// The `AgentTool` of a session on `SceneWithProbe`: its registry already
+/// The `AgentTool` of a session on `scene_with_probe`: its registry already
 /// holds the scene's tool, as `Builder::build()` leaves it, and the template
 /// it was built from does not.
 pub(super) fn agent_tool_on_a_scene_with_a_tool(
@@ -446,7 +424,7 @@ pub(super) fn agent_tool_on_a_scene_with_a_tool(
         tools,
         template,
         plugin_agent_types: (types).to_vec(),
-        scene: Arc::new(SceneWithProbe),
+        scene: Arc::new(scene_with_probe()),
         ..TestParent::new(Arc::new(ToolCensusModel {
             offered: offered.clone(),
         }))

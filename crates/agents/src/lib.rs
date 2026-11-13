@@ -85,7 +85,7 @@ impl Module for AgentsModule {
         // The setting is the operator's switch; the scene's capability is what
         // the scene is for. A scene that does no teamwork never shows the
         // model these tools, rather than showing and refusing them.
-        let team_registry = (settings.execution.team_enabled && cx.scene.supports_team())
+        let team_registry = (settings.execution.team_enabled && cx.scene.supports_team)
             .then(|| Arc::new(team::registry::TeamRegistry::new()));
 
         let mut env = DelegateEnv::capture(cx);
@@ -122,7 +122,7 @@ impl Module for AgentsModule {
                 cx.tools.clone(),
                 spawner.clone(),
                 registry.clone(),
-                cx.scene.id().to_string(),
+                cx.scene.id.clone(),
             ));
             create.set_event_sender(cx.events.unbounded_bridge());
             create.set_telemetry_handle(cx.host.telemetry.clone());

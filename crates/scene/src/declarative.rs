@@ -1,10 +1,10 @@
-//! `DeclarativeScene` — a scene described by files instead of Rust source.
+//! `DeclaredScene` — a scene described by files instead of Rust source.
 //!
 //! A scene directory holds `scene.json` (identity, tool surface, budgets,
 //! modules, reminders) and `prompt.md` (the system prompt body). A host loads
 //! its own from `~/.agix/scenes/<id>/` with [`load_all`]; a plugin package
-//! ships one and loads it with [`DeclarativeScene::load_for_plugin`]. Either
-//! way the result is an ordinary [`Scene`] that goes into a
+//! ships one and loads it with [`DeclaredScene::load_for_plugin`]. Either
+//! way the result is an ordinary [`SceneSpec`] that goes into a
 //! [`SceneRegistry`](crate::SceneRegistry). The format is specified in
 //! `docs/extension_points.md` ("声明式场景").
 //!
@@ -17,12 +17,15 @@
 //! `prompt.variable` registrations to expand after assembly, so it cannot be
 //! refused here: whether it resolves depends on what the host registered.
 
+pub use base::interface::scene::Reminder;
 use base::interface::scene::{
-    ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
+    ExecutionParams, ModuleSurface, ScenePrompt, ScenePromptContext, SceneSpec, TokenBudget,
+    ToolSurface,
 };
 use base::prompt::PromptBlock;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub const SCENE_FILE: &str = "scene.json";
 pub const PROMPT_FILE: &str = "prompt.md";
@@ -103,14 +106,6 @@ struct ExecutionFile {
     max_api_calls_per_turn: Option<u32>,
 }
 
-/// What the per-turn `<system-reminder>` carries, in the order listed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Reminder {
-    GitStatus,
-    Memory,
-}
-
 enum IdRule<'a> {
     DirSafe,
     Plugin(&'a str),
@@ -165,7 +160,6 @@ enum Piece {
 /// and cacheable, the rest is rendered every time.
 #[derive(Debug, Clone)]
 struct Prompt {
-    raw: String,
     fixed: String,
     varying: Vec<Piece>,
 }
@@ -180,14 +174,12 @@ impl Prompt {
             Piece::Text(_) => None,
         }) else {
             return Ok(Self {
-                raw: raw.to_string(),
                 fixed: raw.trim().to_string(),
                 varying: Vec::new(),
             });
         };
         let line_start = raw[..first].rfind('\n').map_or(0, |i| i + 1);
         Ok(Self {
-            raw: raw.to_string(),
             fixed: raw[..line_start].trim().to_string(),
             varying: tokenize(&raw[line_start..])
                 .into_iter()
@@ -239,37 +231,24 @@ pub fn environment_block(ctx: &ScenePromptContext) -> String {
     out
 }
 
-pub struct DeclarativeScene {
-    dir: PathBuf,
-    id: String,
-    name: String,
-    description: String,
-    prompt: Prompt,
-    tools: Vec<String>,
-    disallowed_tools: Vec<String>,
-    deferred_tools: Vec<String>,
-    budget: TokenBudget,
-    execution: ExecutionParams,
-    requires_project: bool,
-    supports_team: bool,
-    modules: Option<Vec<String>>,
-    disabled_modules: Vec<String>,
-    reminders: Vec<Reminder>,
-    interactive: bool,
-    bundled_skills: Option<Vec<String>>,
+/// A loaded scene and the directory it came from.
+pub struct DeclaredScene {
+    pub spec: SceneSpec,
+    pub dir: PathBuf,
+    prompt_md: String,
 }
 
-impl std::fmt::Debug for DeclarativeScene {
+impl std::fmt::Debug for DeclaredScene {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DeclarativeScene")
+        f.debug_struct("DeclaredScene")
             .field("dir", &self.dir)
-            .field("id", &self.id)
-            .field("name", &self.name)
+            .field("id", &self.spec.id)
+            .field("name", &self.spec.name)
             .finish_non_exhaustive()
     }
 }
 
-impl DeclarativeScene {
+impl DeclaredScene {
     /// Load the scene in `dir`. Its id must be a directory-safe name.
     pub fn load(dir: &Path) -> Result<Self, SceneLoadError> {
         Self::read(dir, IdRule::DirSafe)
@@ -293,14 +272,10 @@ impl DeclarativeScene {
         Self::parse(dir, scene_json, prompt_md, IdRule::DirSafe)
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// `prompt.md` as written, before any placeholder is filled — what an
     /// installer shows the user.
     pub fn prompt(&self) -> &str {
-        &self.prompt.raw
+        &self.prompt_md
     }
 
     fn read(dir: &Path, rule: IdRule<'_>) -> Result<Self, SceneLoadError> {
@@ -375,38 +350,41 @@ impl DeclarativeScene {
             message,
         })?;
 
+        let mut spec = SceneSpec::new(file.id, file.name, Arc::new(DeclarativePrompt(prompt)));
+        spec.description = file.description;
+        spec.tools = ToolSurface::from_lists(&file.tools, &file.disallowed_tools)
+            .deferring(&file.deferred_tools);
+        spec.token_budget = TokenBudget {
+            compact_threshold: file
+                .token_budget
+                .compact_threshold
+                .unwrap_or(DEFAULT_COMPACT_THRESHOLD),
+            compact_keep_recent: file
+                .token_budget
+                .compact_keep_recent
+                .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT),
+        };
+        spec.execution = ExecutionParams {
+            max_api_calls_per_turn: file
+                .execution
+                .max_api_calls_per_turn
+                .unwrap_or(ExecutionParams::default().max_api_calls_per_turn),
+        };
+        spec.requires_project = file.requires_project;
+        spec.supports_team = file.supports_team;
+        spec.modules = ModuleSurface {
+            allow: file.modules,
+            deny: file.disabled_modules,
+        };
+        spec.reminders = file.reminders;
+        spec.interactive = file.interactive;
+        if let Some(skills) = file.bundled_skills {
+            spec.bundled_skills = skills;
+        }
         Ok(Self {
+            spec,
             dir: dir.to_path_buf(),
-            id: file.id,
-            name: file.name,
-            description: file.description,
-            prompt,
-            tools: file.tools,
-            disallowed_tools: file.disallowed_tools,
-            deferred_tools: file.deferred_tools,
-            budget: TokenBudget {
-                compact_threshold: file
-                    .token_budget
-                    .compact_threshold
-                    .unwrap_or(DEFAULT_COMPACT_THRESHOLD),
-                compact_keep_recent: file
-                    .token_budget
-                    .compact_keep_recent
-                    .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT),
-            },
-            execution: ExecutionParams {
-                max_api_calls_per_turn: file
-                    .execution
-                    .max_api_calls_per_turn
-                    .unwrap_or(ExecutionParams::default().max_api_calls_per_turn),
-            },
-            requires_project: file.requires_project,
-            supports_team: file.supports_team,
-            modules: file.modules,
-            disabled_modules: file.disabled_modules,
-            reminders: file.reminders,
-            interactive: file.interactive,
-            bundled_skills: file.bundled_skills,
+            prompt_md: prompt_md.to_string(),
         })
     }
 }
@@ -419,7 +397,7 @@ impl DeclarativeScene {
 /// built-in scenes included. One holding a `prompt.md` and no `scene.json`
 /// is reported, since that is a scene missing half of itself. A missing
 /// `root` holds no scenes.
-pub fn load_all(root: &Path) -> Vec<Result<DeclarativeScene, SceneLoadError>> {
+pub fn load_all(root: &Path) -> Vec<Result<DeclaredScene, SceneLoadError>> {
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -453,16 +431,16 @@ pub fn load_all(root: &Path) -> Vec<Result<DeclarativeScene, SceneLoadError>> {
             }
             continue;
         }
-        out.push(DeclarativeScene::load(&dir).and_then(|scene| {
+        out.push(DeclaredScene::load(&dir).and_then(|scene| {
             let dir_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if scene.id == dir_name {
+            if scene.spec.id == dir_name {
                 Ok(scene)
             } else {
                 Err(SceneLoadError::Invalid {
                     path: dir.join(SCENE_FILE),
                     message: format!(
                         "`id` is {:?} but the directory is named {dir_name:?}; they must match",
-                        scene.id
+                        scene.spec.id
                     ),
                 })
             }
@@ -527,29 +505,20 @@ fn check_disjoint(a: (&str, &[String]), b: (&str, &[String])) -> Result<(), Stri
     }
 }
 
-impl Scene for DeclarativeScene {
-    fn id(&self) -> &str {
-        &self.id
-    }
+struct DeclarativePrompt(Prompt);
 
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
+impl ScenePrompt for DeclarativePrompt {
+    fn system(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
+        let prompt = &self.0;
         let mut blocks = Vec::new();
-        if !self.prompt.fixed.is_empty() {
-            blocks.push(PromptBlock::system_cached(self.prompt.fixed.clone()));
+        if !prompt.fixed.is_empty() {
+            blocks.push(PromptBlock::system_cached(prompt.fixed.clone()));
         }
-        let varying = if self.prompt.varying.is_empty() {
+        let varying = if prompt.varying.is_empty() {
             environment_block(ctx)
         } else {
             let mut out = String::new();
-            for piece in &self.prompt.varying {
+            for piece in &prompt.varying {
                 match piece {
                     Piece::Text(text) => out.push_str(text),
                     Piece::Value(value) => out.push_str(&value.render(ctx)),
@@ -560,84 +529,13 @@ impl Scene for DeclarativeScene {
         blocks.push(PromptBlock::system(varying));
         blocks
     }
-
-    fn tools(&self) -> Vec<String> {
-        self.tools.clone()
-    }
-
-    /// Unlike the trait's default, `disallowed_tools` still applies under a
-    /// non-empty whitelist, so `"tools": ["mcp__*"]` with
-    /// `"disallowed_tools": ["mcp__shell__*"]` means what it says.
-    fn permits_tool(&self, name: &str) -> bool {
-        let covers = |entry: &String| match entry.strip_suffix('*') {
-            Some(prefix) => name.starts_with(prefix),
-            None => entry == name,
-        };
-        (self.tools.is_empty() || self.tools.iter().any(covers))
-            && !self.disallowed_tools.iter().any(covers)
-    }
-
-    fn disallowed_tools(&self) -> Vec<String> {
-        self.disallowed_tools.clone()
-    }
-
-    fn deferred_tools(&self) -> Vec<String> {
-        self.deferred_tools.clone()
-    }
-
-    fn token_budget(&self) -> TokenBudget {
-        self.budget.clone()
-    }
-
-    fn execution_params(&self) -> ExecutionParams {
-        self.execution.clone()
-    }
-
-    fn requires_project(&self) -> bool {
-        self.requires_project
-    }
-
-    fn supports_team(&self) -> bool {
-        self.supports_team
-    }
-
-    fn interactive(&self) -> bool {
-        self.interactive
-    }
-
-    fn bundled_skills(&self) -> Vec<String> {
-        match &self.bundled_skills {
-            Some(names) => names.clone(),
-            None => vec!["skillify".into()],
-        }
-    }
-
-    fn modules(&self) -> Option<Vec<String>> {
-        self.modules.clone()
-    }
-
-    fn disabled_modules(&self) -> Vec<String> {
-        self.disabled_modules.clone()
-    }
-
-    fn build_system_reminder(&self, ctx: &ReminderContext) -> String {
-        let mut out = String::new();
-        for reminder in &self.reminders {
-            let body = match reminder {
-                Reminder::GitStatus => ctx.git_status.as_deref(),
-                Reminder::Memory => ctx.memory_summary.as_deref(),
-            };
-            if let Some(body) = body {
-                out.push_str(&format!("\n<system-reminder>\n{body}\n</system-reminder>"));
-            }
-        }
-        out
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base::interface::scene::ReminderContext;
+    use base::interface::tool::ToolOrigin;
     use std::borrow::Cow;
 
     const MINIMAL: &str = r#"{"id": "review", "name": "Review"}"#;
@@ -665,8 +563,8 @@ mod tests {
         }
     }
 
-    fn parse(scene_json: &str, prompt_md: &str) -> Result<DeclarativeScene, SceneLoadError> {
-        DeclarativeScene::from_sources(Path::new("/scenes/review"), scene_json, prompt_md)
+    fn parse(scene_json: &str, prompt_md: &str) -> Result<DeclaredScene, SceneLoadError> {
+        DeclaredScene::from_sources(Path::new("/scenes/review"), scene_json, prompt_md)
     }
 
     fn error(scene_json: &str, prompt_md: &str) -> String {
@@ -681,28 +579,23 @@ mod tests {
 
     #[test]
     fn a_minimal_scene_takes_the_documented_defaults() {
-        let s = parse(MINIMAL, "You review code.").unwrap();
-        assert_eq!(s.id(), "review");
-        assert_eq!(s.name(), "Review");
-        assert_eq!(s.description(), "");
-        assert!(s.tools().is_empty());
-        assert!(s.disallowed_tools().is_empty());
-        assert!(s.deferred_tools().is_empty());
+        let s = parse(MINIMAL, "You review code.").unwrap().spec;
+        assert_eq!(s.id, "review");
+        assert_eq!(s.name, "Review");
+        assert_eq!(s.description, "");
+        assert_eq!(s.tools, ToolSurface::default());
+        assert_eq!(s.token_budget.compact_threshold, DEFAULT_COMPACT_THRESHOLD);
         assert_eq!(
-            s.token_budget().compact_threshold,
-            DEFAULT_COMPACT_THRESHOLD
-        );
-        assert_eq!(
-            s.token_budget().compact_keep_recent,
+            s.token_budget.compact_keep_recent,
             DEFAULT_COMPACT_KEEP_RECENT
         );
-        assert_eq!(s.execution_params().max_api_calls_per_turn, u32::MAX);
-        assert!(!s.requires_project());
-        assert!(!s.supports_team());
-        assert_eq!(s.modules(), None);
-        assert!(s.disabled_modules().is_empty());
-        assert!(s.permits_module("agents"));
-        assert!(s.permits_tool("Bash"));
+        assert_eq!(s.execution.max_api_calls_per_turn, u32::MAX);
+        assert!(!s.requires_project);
+        assert!(!s.supports_team);
+        assert_eq!(s.modules, ModuleSurface::default());
+        assert!(s.modules.permits("agents"));
+        assert!(s.permits_tool("Bash", &ToolOrigin::Builtin));
+        assert_eq!(s.bundled_skills, ["skillify"]);
     }
 
     #[test]
@@ -725,21 +618,31 @@ mod tests {
             }"#,
             "You review code.",
         )
-        .unwrap();
-        assert_eq!(s.description(), "Reads, never writes");
-        assert_eq!(s.tools(), ["Read", "Grep", "ToolSearch", "mcp__*"]);
-        assert_eq!(s.deferred_tools(), ["Grep"]);
-        assert_eq!(s.token_budget().compact_threshold, 90_000);
-        assert_eq!(s.token_budget().compact_keep_recent, 5);
-        assert_eq!(s.execution_params().max_api_calls_per_turn, 12);
-        assert!(s.requires_project());
-        assert!(s.supports_team());
-        assert_eq!(s.modules(), Some(vec!["agents".into(), "skills".into()]));
-        assert!(s.permits_module("skills"));
-        assert!(!s.permits_module("mcp"));
-        assert!(!s.permits_module("team"));
+        .unwrap()
+        .spec;
+        assert_eq!(s.description, "Reads, never writes");
+        assert_eq!(
+            s.tools,
+            ToolSurface::from_lists(
+                &["Read", "Grep", "ToolSearch", "mcp__*"],
+                &["mcp__shell__*"]
+            )
+            .deferring(&["Grep"])
+        );
+        assert_eq!(s.token_budget.compact_threshold, 90_000);
+        assert_eq!(s.token_budget.compact_keep_recent, 5);
+        assert_eq!(s.execution.max_api_calls_per_turn, 12);
+        assert!(s.requires_project);
+        assert!(s.supports_team);
+        assert_eq!(
+            s.modules.allow,
+            Some(vec!["agents".into(), "skills".into()])
+        );
+        assert!(s.modules.permits("skills"));
+        assert!(!s.modules.permits("mcp"));
+        assert!(!s.modules.permits("team"));
 
-        let r = s.build_system_reminder(&ReminderContext {
+        let r = s.reminder(&ReminderContext {
             cwd: Cow::Borrowed("/work"),
             git_status: Some(Cow::Borrowed("M a.rs")),
             memory_summary: Some(Cow::Borrowed("likes tests")),
@@ -756,17 +659,18 @@ mod tests {
                 "disallowed_tools": ["mcp__shell__*"]}"#,
             "p",
         )
-        .unwrap();
-        assert!(s.permits_tool("Read"));
-        assert!(s.permits_tool("mcp__github__diff"));
-        assert!(!s.permits_tool("mcp__shell__run"));
-        assert!(!s.permits_tool("Bash"));
+        .unwrap()
+        .spec;
+        assert!(s.permits_tool("Read", &ToolOrigin::Builtin));
+        assert!(s.permits_tool("mcp__github__diff", &ToolOrigin::mcp("github")));
+        assert!(!s.permits_tool("mcp__shell__run", &ToolOrigin::mcp("shell")));
+        assert!(!s.permits_tool("Bash", &ToolOrigin::Builtin));
     }
 
     #[test]
     fn no_reminders_unless_asked_for() {
-        let s = parse(MINIMAL, "p").unwrap();
-        let r = s.build_system_reminder(&ReminderContext {
+        let s = parse(MINIMAL, "p").unwrap().spec;
+        let r = s.reminder(&ReminderContext {
             cwd: Cow::Borrowed("/work"),
             git_status: Some(Cow::Borrowed("M a.rs")),
             memory_summary: Some(Cow::Borrowed("likes tests")),
@@ -850,7 +754,7 @@ mod tests {
     #[test]
     fn a_plain_prompt_is_cached_and_followed_by_the_environment() {
         let s = parse(MINIMAL, "\nYou review code.\n\n").unwrap();
-        let blocks = s.build_system_prompt(&ctx());
+        let blocks = s.spec.system_prompt(&ctx());
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].content, "You review code.");
         assert!(blocks[0].cache_strategy.is_some());
@@ -868,7 +772,7 @@ mod tests {
              {{date}}, {{model}}\n{{environment}}\n",
         )
         .unwrap();
-        let blocks = s.build_system_prompt(&ctx());
+        let blocks = s.spec.system_prompt(&ctx());
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].content, "You review code.\nBe terse.");
         assert!(blocks[0].cache_strategy.is_some());
@@ -885,7 +789,7 @@ mod tests {
     #[test]
     fn a_prompt_that_starts_with_a_placeholder_has_no_fixed_part() {
         let s = parse(MINIMAL, "Today is {{date}}.").unwrap();
-        let blocks = s.build_system_prompt(&ctx());
+        let blocks = s.spec.system_prompt(&ctx());
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].content, "Today is 2026-11-05.");
     }
@@ -893,13 +797,13 @@ mod tests {
     #[test]
     fn a_name_the_scene_does_not_fill_is_left_for_prompt_variables() {
         let s = parse(MINIMAL, "Team {{team_name}}.\nIn {{cwd}}, see {{ticket}}.").unwrap();
-        let blocks = s.build_system_prompt(&ctx());
+        let blocks = s.spec.system_prompt(&ctx());
         assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[0].content, "Team {{team_name}}.");
         assert_eq!(blocks[1].content, "In /work, see {{ticket}}.");
 
         let s = parse(MINIMAL, "Templates look like {{ user.name }} or {{Name}}.").unwrap();
-        let blocks = s.build_system_prompt(&ctx());
+        let blocks = s.spec.system_prompt(&ctx());
         assert_eq!(
             blocks[0].content,
             "Templates look like {{ user.name }} or {{Name}}."
@@ -914,14 +818,14 @@ mod tests {
     fn a_plugin_scene_must_carry_its_plugins_id() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), r#"{"id": "plugin:demo", "name": "D"}"#, "p");
-        let s = DeclarativeScene::load_for_plugin(dir.path(), "demo").unwrap();
-        assert_eq!(s.id(), "plugin:demo");
+        let s = DeclaredScene::load_for_plugin(dir.path(), "demo").unwrap();
+        assert_eq!(s.spec.id, "plugin:demo");
 
-        let e = DeclarativeScene::load_for_plugin(dir.path(), "other")
+        let e = DeclaredScene::load_for_plugin(dir.path(), "other")
             .unwrap_err()
             .to_string();
         assert!(e.contains(r#"must be "plugin:other""#), "{e}");
-        let e = DeclarativeScene::load(dir.path()).unwrap_err().to_string();
+        let e = DeclaredScene::load(dir.path()).unwrap_err().to_string();
         assert!(e.contains("is not a scene id"), "{e}");
     }
 
@@ -929,9 +833,9 @@ mod tests {
     fn the_files_are_read_once_at_load() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), MINIMAL, "original");
-        let s = DeclarativeScene::load(dir.path()).unwrap();
+        let s = DeclaredScene::load(dir.path()).unwrap();
         std::fs::write(dir.path().join(PROMPT_FILE), "rewritten").unwrap();
-        assert_eq!(s.build_system_prompt(&ctx())[0].content, "original");
+        assert_eq!(s.spec.system_prompt(&ctx())[0].content, "original");
         assert_eq!(s.prompt(), "original");
     }
 
@@ -939,7 +843,7 @@ mod tests {
     fn a_missing_prompt_file_is_an_error_naming_it() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(SCENE_FILE), MINIMAL).unwrap();
-        let e = DeclarativeScene::load(dir.path()).unwrap_err().to_string();
+        let e = DeclaredScene::load(dir.path()).unwrap_err().to_string();
         assert!(e.contains("prompt.md"), "{e}");
     }
 
@@ -959,7 +863,7 @@ mod tests {
 
         let ids: Vec<String> = load_all(root.path())
             .into_iter()
-            .map(|r| r.unwrap().id().to_string())
+            .map(|r| r.unwrap().spec.id)
             .collect();
         assert_eq!(ids, ["review", "triage"]);
     }
@@ -991,7 +895,7 @@ mod tests {
             .any(|e| e.contains("\"original\"") && e.contains("\"renamed\"")));
         assert!(results
             .iter()
-            .any(|r| r.as_ref().is_ok_and(|s| s.id() == "review")));
+            .any(|r| r.as_ref().is_ok_and(|s| s.spec.id == "review")));
     }
 
     #[test]

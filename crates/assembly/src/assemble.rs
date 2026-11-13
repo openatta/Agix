@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use base::interface::credentials::CredentialSource;
 use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionSet};
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use model::client::{AnthropicClient, AuthMode, HttpAnthropicClient};
 use tracing::{info, warn};
 
@@ -72,7 +72,7 @@ pub struct Assembly {
     /// Scenes the host defines beyond the built-in ones. Registered before
     /// `extra_scenes` is read, so they can be named there; otherwise they are
     /// available to `scene.activate`.
-    pub scenes: Vec<Arc<dyn Scene>>,
+    pub scenes: Vec<Arc<SceneSpec>>,
     /// How long an unanswered permission prompt may block a turn.
     pub permission_prompt_timeout: Duration,
     /// Where model calls go. `None` builds an Anthropic client keyed from
@@ -175,7 +175,7 @@ pub enum Transcripts {
 /// plugin tools, servers that never connect, sessions that never expire.
 pub async fn pool(
     config: &DaemonConfig,
-    scene: Arc<dyn Scene>,
+    scene: Arc<SceneSpec>,
     assembly: Assembly,
 ) -> anyhow::Result<Arc<SessionPool>> {
     let (managed_path, managed) = managed_settings(config);

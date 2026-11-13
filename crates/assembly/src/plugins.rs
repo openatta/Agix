@@ -545,7 +545,7 @@ mod imp {
             }
         }
 
-        pub fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::Scene>> {
+        pub fn scenes(&self) -> Vec<Arc<base::interface::scene::SceneSpec>> {
             plugin::scenes::declared_scenes(&self.packages.active())
         }
 
@@ -720,7 +720,7 @@ mod imp {
         pub fn contributions(&self) -> Contributions {
             Contributions::default()
         }
-        pub fn scenes(&self) -> Vec<Arc<dyn base::interface::scene::Scene>> {
+        pub fn scenes(&self) -> Vec<Arc<base::interface::scene::SceneSpec>> {
             Vec::new()
         }
         pub fn mcp_servers(&self) -> HashMap<String, serde_json::Value> {

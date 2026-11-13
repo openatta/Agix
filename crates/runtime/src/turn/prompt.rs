@@ -389,7 +389,7 @@ impl Agent {
                 self.compaction.tool_results_ever_cleared,
                 &*self.policies.environment,
             );
-            self.scene.build_session_context(&ctx)
+            self.scene.session_context(&ctx)
         };
         let instructions = self.build_instruction_context();
         let today = chrono_now(&*self.policies.environment);

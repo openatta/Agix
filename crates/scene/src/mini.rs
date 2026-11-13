@@ -2,8 +2,11 @@
 //! and a prompt of a few lines. Unattended, like harnix.
 
 use crate::common;
-use base::interface::scene::{ReminderContext, Scene, ScenePromptContext, TokenBudget};
+use base::interface::scene::{
+    Reminder, ScenePrompt, ScenePromptContext, SceneSpec, TokenBudget, ToolSurface,
+};
 use base::prompt::PromptBlock;
+use std::sync::Arc;
 
 pub const TOOLS: &[&str] = &[
     "Agent",
@@ -17,42 +20,29 @@ pub const TOOLS: &[&str] = &[
     "Write",
 ];
 
-pub struct MiniScene;
+pub fn spec() -> SceneSpec {
+    let mut s = SceneSpec::new("mini", "Agix Mini", Arc::new(MiniPrompt));
+    s.description = "最小编码场景 — 九个常驻工具与几行提示词".into();
+    s.tools = ToolSurface::allowing(TOOLS);
+    s.token_budget = TokenBudget {
+        compact_threshold: 150_000,
+        compact_keep_recent: 10,
+    };
+    s.reminders = vec![Reminder::GitStatus];
+    s
+}
 
-impl Scene for MiniScene {
-    fn id(&self) -> &str {
-        "mini"
-    }
-    fn name(&self) -> &str {
-        "Agix Mini"
-    }
-    fn description(&self) -> &str {
-        "最小编码场景 — 九个常驻工具与几行提示词"
-    }
+pub struct MiniPrompt;
 
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
+impl ScenePrompt for MiniPrompt {
+    fn system(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
         let mut identity =
             PromptBlock::system_cached(format!("{PROMPT}\n{}", common::SAFETY_RULES));
         identity.name = Some("identity".into());
         vec![identity, common::session_block(ctx)]
     }
 
-    fn tools(&self) -> Vec<String> {
-        TOOLS.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn token_budget(&self) -> TokenBudget {
-        TokenBudget {
-            compact_threshold: 150_000,
-            compact_keep_recent: 10,
-        }
-    }
-
-    fn build_system_reminder(&self, ctx: &ReminderContext) -> String {
-        common::reminder(ctx)
-    }
-
-    fn build_session_context(&self, ctx: &ScenePromptContext) -> String {
+    fn session_context(&self, ctx: &ScenePromptContext) -> String {
         common::session_context(ctx)
     }
 }
@@ -73,23 +63,25 @@ You are Agix, a software engineering agent.
 mod tests {
     use super::*;
     use crate::common::test_ctx;
+    use base::interface::tool::ToolOrigin;
 
     #[test]
     fn nine_tools_none_deferred() {
-        assert_eq!(MiniScene.tools().len(), 9);
-        assert!(!MiniScene.interactive());
-        assert!(MiniScene.deferred_tools().is_empty());
-        assert!(!MiniScene.permits_tool("WebFetch"));
-        assert!(!MiniScene.permits_tool("mcp__github__search"));
+        let mini = spec();
+        assert_eq!(mini.tools.allow.as_ref().map(Vec::len), Some(9));
+        assert!(!mini.interactive);
+        assert!(mini.tools.deferred.is_empty());
+        assert!(!mini.permits_tool("WebFetch", &ToolOrigin::Builtin));
+        assert!(!mini.permits_tool("mcp__github__search", &ToolOrigin::mcp("github")));
     }
 
     #[test]
     fn prompt_is_short() {
-        let blocks = MiniScene.build_system_prompt(&test_ctx());
+        let blocks = spec().system_prompt(&test_ctx());
         assert!(blocks[0].content.len() < 1_500);
         assert!(!blocks[1].content.contains("/home/user/project"));
-        assert!(MiniScene
-            .build_session_context(&test_ctx())
+        assert!(spec()
+            .session_context(&test_ctx())
             .contains("/home/user/project"));
     }
 }

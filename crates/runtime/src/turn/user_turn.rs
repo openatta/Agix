@@ -240,7 +240,7 @@ impl Agent {
         }
 
         // Inject system-reminder: git status + memory summary, via the scene's
-        // own `build_system_reminder` — each scene decides what belongs here.
+        // `reminders` — each scene decides what belongs here.
         // Called once per
         // turn, and the git slice it reads was refreshed just above, so the
         // status shown is this turn's, not the session's opening snapshot.
@@ -260,7 +260,7 @@ impl Agent {
                     .filter(|m| self.settings.memory_enabled && !m.is_empty())
                     .map(std::borrow::Cow::Borrowed),
             };
-            let reminder = self.scene.build_system_reminder(&ctx);
+            let reminder = self.scene.reminder(&ctx);
             if !reminder.is_empty() {
                 self.session.push_message(ModelMessage {
                     role: MessageRole::User,
@@ -1001,7 +1001,7 @@ impl Agent {
                 sync_mcp_adapters(
                     self.tooling.tools.as_ref(),
                     self.tooling.mcp.as_ref(),
-                    |n| self.tooling.tool_policy.permits(n),
+                    |t| self.tooling.tool_policy.permits(t),
                 );
                 if !cancel.is_cancelled() {
                     self.deliver_queued_user_messages(false).await;
@@ -1174,7 +1174,7 @@ impl Agent {
                         self.settings.model.model_name.clone(),
                     ),
                 };
-                let prompt_intro = self.scene.memory_extraction_prompt();
+                let prompt_intro = self.scene.memory_extraction_intro.clone();
                 let environment = self.policies.environment.clone();
                 let session_id = self.session.session_id.clone();
                 while self.memory.extractions.try_join_next().is_some() {}

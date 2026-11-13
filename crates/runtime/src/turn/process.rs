@@ -325,7 +325,7 @@ impl Agent {
                         sync_mcp_adapters(
                             self.tooling.tools.as_ref(),
                             self.tooling.mcp.as_ref(),
-                            |n| self.tooling.tool_policy.permits(n),
+                            |t| self.tooling.tool_policy.permits(t),
                         );
                         Ok(TurnOutcome::default())
                     }

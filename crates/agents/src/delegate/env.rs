@@ -7,7 +7,7 @@ use std::sync::{Arc, Weak};
 use base::context::{EngineConfig, SessionState};
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::interface::skill_catalog::SkillCatalog;
 use base::settings::LoadedSettings;
 use runtime::agent::{EventSender, HostContracts, PendingPermissions};
@@ -20,7 +20,7 @@ pub(crate) struct DelegateEnv {
     /// Weak: the runner's `"agent"` hooks spawn through this session's
     /// delegates, and a strong edge back would keep both alive past it.
     pub(crate) hooks: Weak<hooks::HookRunner>,
-    pub(crate) scene: Arc<dyn Scene>,
+    pub(crate) scene: Arc<SceneSpec>,
     pub(crate) settings: Arc<LoadedSettings>,
     pub(crate) config: Arc<EngineConfig>,
     pub(crate) model: Arc<dyn Model>,

@@ -1,11 +1,15 @@
 //! Harnix scene — the default scene of sessions hosted by Harnix: a common
-//! working tool set and a short prompt, which a Harnix scene wraps to add its
-//! own tools and instructions. Unattended: nobody answers mid-task, so the
+//! working tool set and a short prompt, which a Harnix scene starts from to add
+//! its own tools and instructions. Unattended: nobody answers mid-task, so the
 //! tools and prompt lines that would wait on a reply are not here.
 
 use crate::common;
-use base::interface::scene::{ReminderContext, Scene, ScenePromptContext, TokenBudget};
+use base::interface::scene::{
+    Reminder, ScenePrompt, ScenePromptContext, SceneSpec, TokenBudget, ToolSurface,
+};
+use base::interface::tool::PathStyle;
 use base::prompt::PromptBlock;
+use std::sync::Arc;
 
 pub const TOOLS: &[&str] = &[
     "Agent",
@@ -45,20 +49,26 @@ const DEFERRED: &[&str] = &[
     "TeamList",
 ];
 
-pub struct HarnixScene;
+pub fn spec() -> SceneSpec {
+    let mut s = SceneSpec::new("harnix", "Harnix", Arc::new(HarnixPrompt));
+    s.description = "Harnix 宿主会话 — 常用工具集与精简提示词，宿主在其上加自己的工具".into();
+    s.supports_team = true;
+    s.tools = ToolSurface::allowing(TOOLS).deferring(DEFERRED);
+    s.path_style = PathStyle::WorkspaceRelative;
+    s.token_budget = TokenBudget {
+        compact_threshold: 150_000,
+        compact_keep_recent: 15,
+    };
+    s.reminders = vec![Reminder::GitStatus];
+    s.session_naming =
+        Some("用 3-5 个词概括以下对话的主题，只输出标题不要任何解释：\n{first_message}".into());
+    s
+}
 
-impl Scene for HarnixScene {
-    fn id(&self) -> &str {
-        "harnix"
-    }
-    fn name(&self) -> &str {
-        "Harnix"
-    }
-    fn description(&self) -> &str {
-        "Harnix 宿主会话 — 常用工具集与精简提示词，宿主在其上加自己的工具"
-    }
+pub struct HarnixPrompt;
 
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
+impl ScenePrompt for HarnixPrompt {
+    fn system(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
         let mut identity =
             PromptBlock::system_cached(format!("{IDENTITY}\n\n{}", common::SAFETY_RULES));
         identity.name = Some("identity".into());
@@ -71,45 +81,8 @@ impl Scene for HarnixScene {
         vec![identity, rules, common::session_block(ctx)]
     }
 
-    fn supports_team(&self) -> bool {
-        true
-    }
-
-    fn tools(&self) -> Vec<String> {
-        TOOLS.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn deferred_tools(&self) -> Vec<String> {
-        DEFERRED.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn path_style(&self) -> base::interface::tool::PathStyle {
-        base::interface::tool::PathStyle::WorkspaceRelative
-    }
-
-    fn token_budget(&self) -> TokenBudget {
-        TokenBudget {
-            compact_threshold: 150_000,
-            compact_keep_recent: 15,
-        }
-    }
-
-    fn build_system_reminder(&self, ctx: &ReminderContext) -> String {
-        common::reminder(ctx)
-    }
-
-    fn build_session_context(&self, ctx: &ScenePromptContext) -> String {
+    fn session_context(&self, ctx: &ScenePromptContext) -> String {
         common::session_context(ctx)
-    }
-
-    fn auto_name_session(&self) -> bool {
-        true
-    }
-
-    fn session_name_prompt(&self, first_message: &str) -> Option<String> {
-        Some(format!(
-            "用 3-5 个词概括以下对话的主题，只输出标题不要任何解释：\n{first_message}"
-        ))
     }
 }
 
@@ -132,6 +105,7 @@ const RULES: &str = "\
 mod tests {
     use super::*;
     use crate::common::test_ctx;
+    use base::interface::tool::ToolOrigin;
 
     #[test]
     fn every_deferred_tool_is_also_allowed() {
@@ -142,14 +116,12 @@ mod tests {
 
     #[test]
     fn tools_admit_mcp_and_leave_out_the_rest() {
-        let scene = HarnixScene;
-        assert!(scene.permits_tool("mcp__github__search"));
-        assert!(scene.permits_tool("Agent"));
-        assert!(!scene.interactive());
-        assert_eq!(
-            scene.path_style(),
-            base::interface::tool::PathStyle::WorkspaceRelative
-        );
+        let scene = spec();
+        let builtin = ToolOrigin::Builtin;
+        assert!(scene.permits_tool("mcp__github__search", &ToolOrigin::mcp("github")));
+        assert!(scene.permits_tool("Agent", &builtin));
+        assert!(!scene.interactive);
+        assert_eq!(scene.path_style, PathStyle::WorkspaceRelative);
         for excluded in [
             "AskUserQuestion",
             "EnterPlanMode",
@@ -157,19 +129,19 @@ mod tests {
             "NotebookEdit",
             "EnterWorktree",
         ] {
-            assert!(!scene.permits_tool(excluded), "{excluded}");
+            assert!(!scene.permits_tool(excluded, &builtin), "{excluded}");
         }
     }
 
     #[test]
     fn session_facts_stay_out_of_the_prompt() {
-        let blocks = HarnixScene.build_system_prompt(&test_ctx());
+        let blocks = spec().system_prompt(&test_ctx());
         assert_eq!(blocks.len(), 3);
         assert!(blocks[0].content.contains("Harnix"));
         assert!(!blocks[2].content.contains("/home/user/project"));
         assert!(blocks[2].content.contains("claude-sonnet-4-6"));
-        assert!(HarnixScene
-            .build_session_context(&test_ctx())
+        assert!(spec()
+            .session_context(&test_ctx())
             .contains("/home/user/project"));
     }
 }

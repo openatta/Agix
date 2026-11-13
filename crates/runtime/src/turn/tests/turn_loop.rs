@@ -160,7 +160,8 @@ async fn a_policy_is_told_what_the_cache_cost() {
     };
     let model: Arc<dyn base::interface::model::Model> =
         Arc::new(FixedUsageModel { usage: reported });
-    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<base::interface::scene::SceneSpec> =
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
     let policy = Arc::new(Recording::default());
 
     let (telemetry_tx, _telemetry_rx) = tokio::sync::mpsc::channel(16);
@@ -219,7 +220,8 @@ async fn max_budget_tokens_stops_the_turn_on_reported_usage() {
             ..Default::default()
         },
     });
-    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<base::interface::scene::SceneSpec> =
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let mut settings = recall_test_settings(tmp.path());
     settings.values.execution = base::settings::ExecutionSettings {
@@ -341,7 +343,9 @@ async fn a_recall_past_its_budget_is_stopped() {
         },
     };
     let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(model))
         .settings(Arc::new(recall_test_settings(tmp.path())))
         .memory_store(store)
@@ -394,7 +398,8 @@ async fn recall_reaches_the_model_on_a_turn_with_no_tool_calls() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let model: Arc<dyn base::interface::model::Model> =
         Arc::new(RecordingAnswerModel { seen: seen.clone() });
-    let scene: Arc<dyn base::interface::scene::Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<base::interface::scene::SceneSpec> =
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
         .scene(scene)
@@ -476,7 +481,9 @@ async fn a_skill_swapped_into_a_shared_catalog_is_announced() {
     let tmp = tempfile::tempdir().unwrap();
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (mut agent, mut event_rx, _input_tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(RecordingAnswerModel { seen: seen.clone() }))
         .settings(Arc::new(recall_test_settings(tmp.path())))
         .skip_warmup(true)
@@ -599,7 +606,9 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
     let tmp = tempfile::tempdir().unwrap();
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(RecordingAnswerModel { seen: seen.clone() }))
         .settings(Arc::new(recall_test_settings(tmp.path())))
         .skip_warmup(true)

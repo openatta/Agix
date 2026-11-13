@@ -45,7 +45,7 @@ struct Harness {
 
 async fn start(
     model: Arc<dyn AnthropicClient>,
-    scene: Arc<dyn base::interface::scene::Scene>,
+    scene: Arc<base::interface::scene::SceneSpec>,
     session_cap: usize,
     configure: impl FnOnce(&mut Settings),
 ) -> Harness {
@@ -110,7 +110,7 @@ async fn start(
 async fn start_code(model: Arc<dyn AnthropicClient>) -> Harness {
     start(
         model,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         |_| {},
     )
@@ -565,7 +565,7 @@ async fn documented_request_examples_are_accepted_by_a_real_daemon() {
     // their own.
     let with_providers = start(
         Arc::new(OneTurnClient),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         |settings| {
             settings.default_provider = Some("anthropic".into());
@@ -1310,66 +1310,28 @@ const DAEMON_EVENTS_NOT_PROVOKED: &[(&str, &str)] = &[
 ];
 
 /// The code scene, with a context budget one token wide so the first turn
-/// compacts, and with the tools the code scene leaves out.
-struct TunedScene {
-    inner: scene::code::CodeScene,
-    compacts_at_once: bool,
-    extra_tools: &'static [&'static str],
-}
+/// compacts, or with the tools the code scene leaves out.
+struct TunedScene;
 
 impl TunedScene {
-    fn compacting() -> Arc<Self> {
-        Arc::new(Self {
-            inner: Default::default(),
-            compacts_at_once: true,
-            extra_tools: &[],
-        })
+    fn compacting() -> Arc<base::interface::scene::SceneSpec> {
+        let mut s = Self::code();
+        s.token_budget = base::interface::scene::TokenBudget {
+            compact_threshold: 1,
+            compact_keep_recent: 1,
+        };
+        Arc::new(s)
     }
 
-    fn notifying() -> Arc<Self> {
-        Arc::new(Self {
-            inner: Default::default(),
-            compacts_at_once: false,
-            extra_tools: &["PushNotification"],
-        })
-    }
-}
-
-impl base::interface::scene::Scene for TunedScene {
-    fn id(&self) -> &str {
-        "tuned"
+    fn notifying() -> Arc<base::interface::scene::SceneSpec> {
+        Arc::new(Self::code())
     }
 
-    fn name(&self) -> &str {
-        "Tuned"
-    }
-
-    fn description(&self) -> &str {
-        "the code scene, tuned for a test"
-    }
-
-    fn build_system_prompt(
-        &self,
-        ctx: &base::interface::scene::ScenePromptContext,
-    ) -> Vec<base::prompt::PromptBlock> {
-        self.inner.build_system_prompt(ctx)
-    }
-
-    fn tools(&self) -> Vec<String> {
-        let mut tools = self.inner.tools();
-        tools.extend(self.extra_tools.iter().map(|t| t.to_string()));
-        tools
-    }
-
-    fn token_budget(&self) -> base::interface::scene::TokenBudget {
-        if self.compacts_at_once {
-            base::interface::scene::TokenBudget {
-                compact_threshold: 1,
-                compact_keep_recent: 1,
-            }
-        } else {
-            self.inner.token_budget()
-        }
+    fn code() -> base::interface::scene::SceneSpec {
+        let code = scene::code::spec(scene::code::Interaction::Interactive);
+        let mut s = base::interface::scene::SceneSpec::new("tuned", "Tuned", code.prompt);
+        s.token_budget = code.token_budget;
+        s
     }
 }
 
@@ -1452,7 +1414,7 @@ async fn a_steered_message_a_hook_refuses(obs: &mut Observed) {
     let hook = r#"grep -q refuse-me && echo '{"decision":"block","message":"not now"}'; true"#;
     let h = start(
         scripted(vec![thinking_then_a_bash_call(), text_round("done")]),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         |settings| {
             settings.hooks_config = Some(json!({
@@ -1546,7 +1508,7 @@ async fn a_sub_agent_inside_a_turn(obs: &mut Observed) {
             text_round("hello"),
             text_round("done"),
         ]),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         bypass,
     )
@@ -1559,7 +1521,7 @@ async fn a_sub_agent_inside_a_turn(obs: &mut Observed) {
 async fn a_sub_agent_the_host_starts(obs: &mut Observed) {
     let h = start(
         Arc::new(OneTurnClient),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         bypass,
     )
@@ -1586,7 +1548,7 @@ async fn a_shell_command_that_runs_on(obs: &mut Observed) {
             ),
             text_round("ran"),
         ]),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         bypass,
     )
@@ -1816,7 +1778,7 @@ async fn daemon_events() -> Observed {
     let mut obs = Observed::default();
     let h = start(
         Arc::new(OneTurnClient),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         1,
         |_| {},
     )
@@ -1926,7 +1888,7 @@ async fn documented_accept_edits_asks_about_reads_outside_the_project_and_a_nest
             tool_round("Bash", "tool-2", json!({"command": "cd nested && git log"})),
             text_round("done"),
         ]),
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         8,
         |settings| settings.permission_mode = base::settings::PermissionMode::AcceptEdits,
     )

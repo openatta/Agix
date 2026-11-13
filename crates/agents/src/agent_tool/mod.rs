@@ -19,7 +19,7 @@ use base::context::EngineConfig;
 use base::event::AgentEvent;
 use base::interface::model::Model;
 use base::interface::permission::{PermissionFacts, PermissionSet, Reach, Subject};
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::paths::PromptFiles;
 use base::settings::{Effort, LoadedSettings, Settings};
 #[cfg(test)]

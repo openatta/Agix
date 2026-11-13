@@ -65,7 +65,9 @@ async fn the_permission_judges_a_call_on_the_providers_it_runs_on() {
         permissions::rule_set_permission::RuleSetPermission::from_settings(&settings, []),
     ));
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(ToolThenStopModel {
             calls: Default::default(),
             tool: "ExecProbe",
@@ -105,7 +107,9 @@ async fn a_session_built_with_providers_runs_on_them() {
     tools.register(Arc::new(ExecProbe(seen.clone())));
     let providers = base::interface::exec::ExecProviders::in_process();
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(ToolThenStopModel {
             calls: Default::default(),
             tool: "ExecProbe",
@@ -142,7 +146,9 @@ async fn a_session_built_with_providers_runs_on_them() {
 #[test]
 fn providers_and_a_process_ledger_are_not_given_together() {
     let built = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(ToolThenStopModel {
             calls: Default::default(),
             tool: "ExecProbe",

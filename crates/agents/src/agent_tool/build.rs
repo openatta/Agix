@@ -69,7 +69,7 @@ impl Delegator {
             sub_settings.values.permission_mode = mode.min_permissive(sub_settings.permission_mode);
         }
         let scene = self.scene_for_subagent(def.as_ref());
-        let scene_id = scene.id().to_string();
+        let scene_id = scene.id.clone();
         let settings = Arc::new(sub_settings);
         let sid = spec.session_id.clone();
         let parent_session_id = Some(self.env.parent.id.clone());

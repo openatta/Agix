@@ -285,7 +285,7 @@ fn runtime(worker_threads: Option<usize>) -> std::io::Result<tokio::runtime::Run
 fn resolve_scene(
     name: &str,
     user_scenes: &std::path::Path,
-) -> anyhow::Result<Arc<dyn base::interface::scene::Scene>> {
+) -> anyhow::Result<Arc<base::interface::scene::SceneSpec>> {
     let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
     for e in registry.register_declarative_dir(user_scenes) {
@@ -342,7 +342,7 @@ async fn serve(cli: Cli) -> anyhow::Result<()> {
             .global_root()
             .join("scenes"),
     )?;
-    let scope = scene.id().to_string();
+    let scope = scene.id.clone();
 
     let paths = DefaultDaemonPaths::from_env(&scope);
     let mut daemon_config = load_daemon_config(
@@ -711,7 +711,8 @@ mod tests {
             assert_eq!(
                 resolve_scene(id, std::path::Path::new("/nonexistent"))
                     .expect("builtin scene should resolve")
-                    .id(),
+                    .id
+                    .as_str(),
                 id
             );
         }
@@ -740,7 +741,10 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("prompt.md"), "Sort incoming issues.").unwrap();
-        assert_eq!(resolve_scene("triage", root.path()).unwrap().id(), "triage");
+        assert_eq!(
+            resolve_scene("triage", root.path()).unwrap().id.as_str(),
+            "triage"
+        );
     }
 
     #[test]

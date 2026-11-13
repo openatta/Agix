@@ -81,7 +81,9 @@ pub(super) fn compacting_agent_and_events(
 ) -> (Agent, EventReceiver) {
     use base::interface::model::MessageRole;
     let (mut agent, rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .compactor(Arc::new(KeepingCompactor { keep, strategy }))
@@ -303,7 +305,9 @@ async fn automatic_compaction_leaves_room_for_the_request_overhead() {
     }
 
     let (mut agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .compactor(Arc::new(Cascade))
         .settings(Arc::new({
@@ -391,7 +395,9 @@ impl compaction::compact::Compactor for Unshrinkable {
 fn over_the_threshold(fails: bool) -> (Agent, Arc<std::sync::atomic::AtomicUsize>) {
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (mut agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .compactor(Arc::new(Unshrinkable {
             asked: asked.clone(),

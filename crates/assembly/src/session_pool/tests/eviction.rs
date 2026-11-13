@@ -14,7 +14,7 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
         cancel: CancellationToken::new(),
         exited: CancellationToken::new(),
         context: None,
-        scene: Arc::new(scene::code::CodeScene::default()),
+        scene: Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         project: None,
         name: None,
         created_at: last_active,

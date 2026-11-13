@@ -103,7 +103,7 @@ async fn start_daemon() -> Daemon {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),

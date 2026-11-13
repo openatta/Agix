@@ -100,7 +100,7 @@ pub struct Settings {
     /// Edit paths under it relative, so a recorded session replays in another
     /// working directory and long paths stop repeating in every call.
     /// Resolving paths is unchanged. Unset, the scene decides
-    /// (`Scene::path_style`: `harnix` is relative, the rest absolute).
+    /// (`SceneSpec::path_style`: `harnix` is relative, the rest absolute).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_style: Option<crate::context::config::PathStyle>,
 
@@ -490,7 +490,7 @@ pub struct ExecutionSettings {
     pub team_stage_concurrency: usize,
     /// Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at
     /// all for a session (`agents::AgentsModule`), and only in a scene whose
-    /// `Scene::supports_team` is true. Default `false`: most
+    /// `SceneSpec::supports_team` is true. Default `false`: most
     /// deployments never use multi-agent team coordination, and an
     /// always-registered tool means its `tool.prompt.md` "When to Use"
     /// section is always in the system prompt and its `team`/`name` input
@@ -571,7 +571,7 @@ impl Default for ExecutionSettings {
 }
 
 /// Context compaction, over what the scene asks for. A field left out keeps
-/// the scene's own value (`Scene::token_budget`).
+/// the scene's own value (`SceneSpec::token_budget`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CompactionConfig {
     /// Compact once a request's context passes this many tokens. `0` turns

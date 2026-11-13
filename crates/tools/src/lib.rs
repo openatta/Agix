@@ -222,9 +222,9 @@ mod register_builtin_tools_tests {
             .map(|t| t.name().to_string())
             .collect();
 
-        // CodeScene's tools() is an empty allow-list ("everything
-        // registered is allowed") — it depends on these actually being
-        // registered, not just declared in a scene's tools() list.
+        // The code scene has no allow list ("everything registered is
+        // allowed") — it depends on these actually being registered, not
+        // just named in a scene's allow list.
         for expected in [
             "Bash",
             "Read",

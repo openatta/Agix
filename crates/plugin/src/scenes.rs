@@ -1,33 +1,33 @@
 //! The declarative scene a package ships in `[scene] dir`.
 //!
-//! A directory of `scene.json` + `prompt.md`, read by `scene::DeclarativeScene`
+//! A directory of `scene.json` + `prompt.md`, read by `scene::DeclaredScene`
 //! like a scene in `~/.agix/scenes/`. The id is the plugin's, `plugin:<name>`
 //! — a plugin owns its own scene and never anyone else's.
 
 use crate::manifest::Plugin;
-use ::scene::{DeclarativeScene, SceneLoadError};
-use base::interface::scene::Scene;
+use ::scene::{DeclaredScene, SceneLoadError};
+use base::interface::scene::SceneSpec;
 use std::sync::Arc;
 
 /// The scene this package's `[scene] dir` declares, or `None` when it
 /// declares none.
-pub fn declared_scene(plugin: &Plugin) -> Option<Result<DeclarativeScene, SceneLoadError>> {
+pub fn declared_scene(plugin: &Plugin) -> Option<Result<DeclaredScene, SceneLoadError>> {
     let dir = plugin.manifest.scene.dir.as_ref()?;
     let resolved = plugin.path(dir).map_err(|e| SceneLoadError::Invalid {
         path: plugin.root.join(dir),
         message: e.to_string(),
     });
-    Some(resolved.and_then(|dir| DeclarativeScene::load_for_plugin(&dir, plugin.name())))
+    Some(resolved.and_then(|dir| DeclaredScene::load_for_plugin(&dir, plugin.name())))
 }
 
 /// Every declared scene among `plugins` that loads. One that does not is
 /// left out with a warning naming the file and the fault; the package's
 /// other contributions are unaffected.
-pub fn declared_scenes(plugins: &[Plugin]) -> Vec<Arc<dyn Scene>> {
+pub fn declared_scenes(plugins: &[Plugin]) -> Vec<Arc<SceneSpec>> {
     plugins
         .iter()
         .filter_map(|p| match declared_scene(p)? {
-            Ok(scene) => Some(Arc::new(scene) as Arc<dyn Scene>),
+            Ok(scene) => Some(Arc::new(scene.spec)),
             Err(e) => {
                 tracing::warn!(
                     plugin = %p.name(),
@@ -69,8 +69,11 @@ mod tests {
 
         let scenes = declared_scenes(&[p]);
         assert_eq!(scenes.len(), 1);
-        assert_eq!(scenes[0].id(), "plugin:review");
-        assert_eq!(scenes[0].tools(), ["Read"]);
+        assert_eq!(scenes[0].id, "plugin:review");
+        assert_eq!(
+            scenes[0].tools,
+            base::interface::scene::ToolSurface::allowing(&["Read"])
+        );
     }
 
     #[test]

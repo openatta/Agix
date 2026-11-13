@@ -138,7 +138,9 @@ async fn a_tool_step_does_not_relist_tools_without_an_announcement() {
     let asked = Arc::new(Asked::default());
     let model = Arc::new(TwoToolSteps(AtomicUsize::new(0)));
     let mut agent = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model.clone())
         .settings(Arc::new(settings))
         .tools({

@@ -32,13 +32,13 @@ impl SessionPool {
         // A scene that requires a project is refused here, not later: with no
         // project root there is nothing for its tools to read or write, and
         // the failure is far more legible at creation than at the first turn.
-        if scene.requires_project() && matches!(project_root, ProjectSelector::NoProject) {
+        if scene.requires_project && matches!(project_root, ProjectSelector::NoProject) {
             return Err(PoolError::ProjectRequired {
-                scene: scene.id().to_string(),
+                scene: scene.id.clone(),
             });
         }
 
-        let session_scene_id = scene.id().to_string();
+        let session_scene_id = scene.id.clone();
         let (binding, project_root_for_meta) = match project_root {
             ProjectSelector::Default => (
                 self.binding_for(Some(&self.cwd.clone()), &session_scene_id)
@@ -61,7 +61,7 @@ impl SessionPool {
             )
             .map_err(PoolError::InvalidRequest)?;
 
-        let scene_id_for_result = scene.id().to_string();
+        let scene_id_for_result = scene.id.clone();
         let project_trust = binding.settings.trust();
         let sid = Id::new().to_string();
         let created_id = self
@@ -105,7 +105,7 @@ impl SessionPool {
     pub(super) async fn create(
         &self,
         session_id: String,
-        scene: Arc<dyn Scene>,
+        scene: Arc<SceneSpec>,
         binding: Arc<ProjectBinding>,
         project_root_for_meta: Option<PathBuf>,
         options: Option<&SessionOptions>,
@@ -118,7 +118,7 @@ impl SessionPool {
         self.lock_kept_specs().retain(|k| k != &session_id);
         let options = spec.options.as_ref();
         self.note_served(project_root_for_meta.as_deref());
-        let scene_id = scene.id().to_string();
+        let scene_id = scene.id.clone();
         // The `Builder` takes ownership of the scene; the session keeps a
         // handle of its own because `run_turn` has to ask it things.
         let scene_for_session = scene.clone();

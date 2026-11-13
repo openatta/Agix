@@ -12,9 +12,9 @@ pub mod declarative;
 pub mod harnix;
 pub mod mini;
 
-pub use declarative::{DeclarativeScene, SceneLoadError};
+pub use declarative::{DeclaredScene, SceneLoadError};
 
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -25,27 +25,37 @@ pub struct SceneInfo {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// See [`Scene::requires_project`] — hosts use it to decide whether
+    /// See [`SceneSpec::requires_project`] — hosts use it to decide whether
     /// creating a session needs a project first.
     pub requires_project: bool,
-    /// See [`Scene::supports_team`].
+    /// See [`SceneSpec::supports_team`].
     pub supports_team: bool,
+}
+
+/// A built-in scene by id: `code` (interactive), `harnix` or `mini`.
+pub fn builtin(id: &str) -> Option<SceneSpec> {
+    match id {
+        "code" => Some(code::spec(code::Interaction::Interactive)),
+        "harnix" => Some(harnix::spec()),
+        "mini" => Some(mini::spec()),
+        _ => None,
+    }
 }
 
 /// Registry of available scenes. Populated at process startup.
 #[derive(Default)]
 pub struct SceneRegistry {
-    scenes: HashMap<String, Arc<dyn Scene>>,
+    scenes: HashMap<String, Arc<SceneSpec>>,
 }
 
 impl SceneRegistry {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn register(&mut self, scene: Arc<dyn Scene>) {
-        self.scenes.insert(scene.id().to_string(), scene);
+    pub fn register(&mut self, scene: Arc<SceneSpec>) {
+        self.scenes.insert(scene.id.clone(), scene);
     }
-    pub fn resolve(&self, id: &str) -> Option<Arc<dyn Scene>> {
+    pub fn resolve(&self, id: &str) -> Option<Arc<SceneSpec>> {
         self.scenes.get(id).cloned()
     }
     pub fn ids(&self) -> Vec<String> {
@@ -56,10 +66,10 @@ impl SceneRegistry {
             .iter()
             .map(|(id, s)| SceneInfo {
                 id: id.clone(),
-                name: s.name().to_string(),
-                description: s.description().to_string(),
-                requires_project: s.requires_project(),
-                supports_team: s.supports_team(),
+                name: s.name.clone(),
+                description: s.description.clone(),
+                requires_project: s.requires_project,
+                supports_team: s.supports_team,
             })
             .collect()
     }
@@ -68,14 +78,14 @@ impl SceneRegistry {
     /// Call after the built-in and host scenes are in: a file in a user's
     /// home directory must not be able to stand in for `code` under the
     /// same name.
-    pub fn register_declarative(&mut self, scene: DeclarativeScene) -> Result<(), SceneLoadError> {
-        if self.scenes.contains_key(scene.id()) {
+    pub fn register_declarative(&mut self, scene: DeclaredScene) -> Result<(), SceneLoadError> {
+        if self.scenes.contains_key(&scene.spec.id) {
             return Err(SceneLoadError::IdTaken {
-                path: scene.dir().join(declarative::SCENE_FILE),
-                id: scene.id().to_string(),
+                path: scene.dir.join(declarative::SCENE_FILE),
+                id: scene.spec.id,
             });
         }
-        self.register(Arc::new(scene));
+        self.register(Arc::new(scene.spec));
         Ok(())
     }
 
@@ -90,9 +100,13 @@ impl SceneRegistry {
     }
 
     pub fn register_builtin(&mut self) {
-        self.register(Arc::new(code::CodeScene::default()));
-        self.register(Arc::new(harnix::HarnixScene));
-        self.register(Arc::new(mini::MiniScene));
+        for spec in [
+            code::spec(code::Interaction::Interactive),
+            harnix::spec(),
+            mini::spec(),
+        ] {
+            self.register(Arc::new(spec));
+        }
     }
 }
 
@@ -128,11 +142,11 @@ mod tests {
         );
         assert!(refused[0].to_string().contains("already registered"));
         assert_eq!(
-            registry.resolve("code").unwrap().name(),
-            code::CodeScene::default().name(),
+            registry.resolve("code").unwrap().name,
+            builtin("code").unwrap().name,
             "the built-in stays in place"
         );
-        assert_eq!(registry.resolve("review").unwrap().name(), "review");
+        assert_eq!(registry.resolve("review").unwrap().name, "review");
     }
 
     #[test]

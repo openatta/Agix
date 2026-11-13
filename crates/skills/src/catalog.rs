@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use base::frozen::SkillEntry;
 use base::interface::permission::PermissionPolicy;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::interface::skill_catalog::{SkillCatalog, SkillExpansion};
+use base::interface::tool::ToolOrigin;
 use base::tool::ToolContext;
 
 use crate::manager::{SkillInfo, SkillManager, SkillSource};
@@ -111,15 +112,16 @@ impl SkillCatalog for SkillManager {
 pub struct BundledAdmission(Option<Arc<HashSet<String>>>);
 
 impl BundledAdmission {
-    pub fn for_scene(scene: &dyn Scene) -> Self {
+    pub fn for_scene(scene: &SceneSpec) -> Self {
         let names = scene
-            .bundled_skills()
-            .into_iter()
+            .bundled_skills
+            .iter()
             .filter(|name| {
                 crate::bundled::required_tools(name)
                     .iter()
-                    .all(|tool| scene.permits_tool(tool))
+                    .all(|tool| scene.permits_tool(tool, &ToolOrigin::Builtin))
             })
+            .cloned()
             .collect();
         Self(Some(Arc::new(names)))
     }
@@ -194,35 +196,14 @@ impl SkillCatalog for SceneSkills {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base::interface::scene::{ScenePromptContext, TokenBudget};
-    use base::prompt::PromptBlock;
+    use base::interface::scene::{FixedPrompt, ToolSurface};
 
-    struct Picky(Vec<&'static str>, Vec<&'static str>);
-    impl Scene for Picky {
-        fn id(&self) -> &str {
-            "picky"
-        }
-        fn name(&self) -> &str {
-            "picky"
-        }
-        fn description(&self) -> &str {
-            ""
-        }
-        fn build_system_prompt(&self, _: &ScenePromptContext) -> Vec<PromptBlock> {
-            vec![]
-        }
-        fn tools(&self) -> Vec<String> {
-            self.1.iter().map(|s| s.to_string()).collect()
-        }
-        fn token_budget(&self) -> TokenBudget {
-            TokenBudget {
-                compact_threshold: 1,
-                compact_keep_recent: 1,
-            }
-        }
-        fn bundled_skills(&self) -> Vec<String> {
-            self.0.iter().map(|s| s.to_string()).collect()
-        }
+    #[allow(non_snake_case)]
+    fn Picky(bundled: Vec<&str>, tools: Vec<&str>) -> SceneSpec {
+        let mut s = SceneSpec::new("picky", "picky", Arc::new(FixedPrompt(vec![])));
+        s.tools = ToolSurface::from_lists(&tools, &[] as &[&str]);
+        s.bundled_skills = bundled.into_iter().map(String::from).collect();
+        s
     }
 
     fn manager() -> Arc<SkillManager> {

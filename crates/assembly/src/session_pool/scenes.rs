@@ -12,14 +12,14 @@ impl SessionPool {
 
     /// This daemon instance's *default* scene id — see the `scene` field.
     pub fn scene_id(&self) -> &str {
-        self.scene.id()
+        self.scene.id.as_str()
     }
 
     /// Resolve `scene_id` against the currently-active scenes, or `None`
     /// (the pool default) against `self.scene` directly. `session.create`'s
     /// resolution rule: omitted `scene` param always means the default,
     /// regardless of what else is active.
-    pub(super) async fn resolve_scene(&self, scene_id: Option<&str>) -> Option<Arc<dyn Scene>> {
+    pub(super) async fn resolve_scene(&self, scene_id: Option<&str>) -> Option<Arc<SceneSpec>> {
         match scene_id {
             None => Some(self.scene.clone()),
             Some(id) => self.active_scenes.read().await.get(id).cloned(),
@@ -66,10 +66,10 @@ impl SessionPool {
     /// one replaces it.
     ///
     /// [`Assembly::extra_scenes`]: crate::assemble::Assembly::extra_scenes
-    pub fn register_scene(&self, scene: Arc<dyn Scene>) {
+    pub fn register_scene(&self, scene: Arc<SceneSpec>) {
         {
             let mut host = self.host_scenes.write().unwrap_or_else(|e| e.into_inner());
-            host.retain(|s| s.id() != scene.id());
+            host.retain(|s| s.id != scene.id);
             host.push(scene);
         }
         let (registry, _) = self.scene_registry_now(&self.plugins.scenes());
@@ -81,7 +81,7 @@ impl SessionPool {
 
     pub(super) fn scene_registry_now(
         &self,
-        plugin_scenes: &[Arc<dyn Scene>],
+        plugin_scenes: &[Arc<SceneSpec>],
     ) -> (scene::SceneRegistry, Vec<String>) {
         registry_of(
             &self.host_scenes.read().unwrap_or_else(|e| e.into_inner()),
@@ -143,13 +143,13 @@ impl SessionPool {
         scene_json: &str,
         prompt_md: &str,
     ) -> Result<String, PoolError> {
-        let scene = scene::DeclarativeScene::from_sources(
+        let scene = scene::DeclaredScene::from_sources(
             std::path::Path::new("scene.register"),
             scene_json,
             prompt_md,
         )
         .map_err(|e| PoolError::InvalidRequest(e.to_string()))?;
-        let id = scene.id().to_string();
+        let id = scene.spec.id.clone();
         if self.scene_registry().resolve(&id).is_some() {
             return Err(PoolError::InvalidRequest(format!(
                 "scene `{id}` is already registered"
@@ -158,7 +158,7 @@ impl SessionPool {
         self.registered_scenes
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .push(Arc::new(scene));
+            .push(Arc::new(scene.spec));
         self.refresh_scene_table().await;
         Ok(id)
     }
@@ -171,7 +171,7 @@ impl SessionPool {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .any(|s| s.id() == scene_id);
+            .any(|s| s.id == scene_id);
         if !known {
             return Err(PoolError::SceneNotRegistered {
                 scene: scene_id.to_string(),
@@ -181,7 +181,7 @@ impl SessionPool {
         self.registered_scenes
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|s| s.id() != scene_id);
+            .retain(|s| s.id != scene_id);
         self.refresh_scene_table().await;
         Ok(())
     }

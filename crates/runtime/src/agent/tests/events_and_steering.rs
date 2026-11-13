@@ -46,7 +46,9 @@ pub(super) async fn run_one_turn_with_sinks(
     sinks: Vec<Arc<dyn base::interface::event_sink::EventSink>>,
 ) -> Vec<AgentEvent> {
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(PlainReplyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -369,7 +371,9 @@ async fn notices_reach_the_model_at_turn_start_and_at_step_boundaries() {
         sent: sent.clone(),
     });
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -407,7 +411,9 @@ async fn compacting_on_request_works_far_below_the_threshold() {
         sent: Default::default(),
     });
     let (mut agent, mut event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -459,7 +465,9 @@ async fn compacting_on_request_works_far_below_the_threshold() {
     ));
 
     let mut empty = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(StepRecordingModel {
             tool: None,
             hold_first: None,
@@ -499,7 +507,9 @@ pub(super) async fn steer_during_a_tool_step(
     });
     let (mut agent, mut event_rx, input_tx) = builder(
         Builder::new()
-            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::spec(
+                scene::code::Interaction::Interactive,
+            )))
             .model(model)
             .settings(Arc::new(settings))
             .tools(tools)

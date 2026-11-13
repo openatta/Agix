@@ -6,8 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
-use base::prompt::PromptBlock;
+use base::interface::scene::{SceneSpec, ToolSurface};
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::AnthropicClient;
@@ -20,27 +19,13 @@ use tokio_util::sync::CancellationToken;
 
 const NO_SHELL: &str = "audit3-no-shell";
 
-struct NoShellScene;
-
-impl Scene for NoShellScene {
-    fn id(&self) -> &str {
-        NO_SHELL
-    }
-    fn name(&self) -> &str {
-        "No shell"
-    }
-    fn description(&self) -> &str {
-        "a scene whose whitelist leaves Bash out"
-    }
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::mini::MiniScene.build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        vec!["Read".into(), "Skill".into()]
-    }
-    fn token_budget(&self) -> TokenBudget {
-        scene::mini::MiniScene.token_budget()
-    }
+/// A scene whose whitelist leaves Bash out.
+fn no_shell_scene() -> SceneSpec {
+    let mini = scene::mini::spec();
+    let mut s = SceneSpec::new(NO_SHELL, "No shell", mini.prompt);
+    s.tools = ToolSurface::allowing(&["Read", "Skill"]);
+    s.token_budget = mini.token_budget;
+    s
 }
 
 fn stop(reason: base::message::StopReason) -> StreamEvent {
@@ -155,12 +140,12 @@ async fn audit3_a_skills_inline_command_does_not_run_in_a_scene_without_bash() {
     let model = Arc::new(MockAnthropicClient::new());
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(work),
             model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
             transcripts: daemon::Transcripts::Nowhere,
-            scenes: vec![Arc::new(NoShellScene)],
+            scenes: vec![Arc::new(no_shell_scene())],
             extra_scenes: vec![NO_SHELL.into()],
             ..Default::default()
         },

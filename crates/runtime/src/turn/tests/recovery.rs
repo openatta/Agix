@@ -118,7 +118,9 @@ fn agent(
     let mut settings = recall_test_settings(root);
     settings.values.memory_enabled = false;
     let mut builder = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(settings))
         .skip_warmup(true);

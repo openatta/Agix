@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base::interface::model::Model;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::interface::script::{ScriptLedger, ScriptOutcome, ScriptRecord};
 use base::interface::tool::{InMemoryToolRegistry, Tool};
 use base::memory::MemoryStore;
@@ -44,7 +44,7 @@ pub struct Session {
     memory: Option<Arc<MemoryStore>>,
     keep_log: bool,
     project: Option<PathBuf>,
-    scene: Option<Arc<dyn Scene>>,
+    scene: Option<Arc<SceneSpec>>,
     asking: bool,
     hooks: Option<serde_json::Value>,
     #[allow(clippy::type_complexity)]
@@ -191,7 +191,7 @@ impl Session {
 
     /// Which scene to run under. Harnix by default, because most cases only
     /// need a turn loop; a case about tools needs the scene that offers them.
-    pub fn scene(mut self, scene: Arc<dyn Scene>) -> Self {
+    pub fn scene(mut self, scene: Arc<SceneSpec>) -> Self {
         self.scene = Some(scene);
         self
     }
@@ -323,9 +323,9 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
         registry.register(tool);
     }
 
-    let scene: Arc<dyn Scene> = session
+    let scene: Arc<SceneSpec> = session
         .scene
-        .unwrap_or_else(|| Arc::new(scene::harnix::HarnixScene));
+        .unwrap_or_else(|| Arc::new(scene::harnix::spec()));
 
     // The gate the daemon builds for a session that is not bypassing, rather
     // than the builder's own allow-everything default: a case about the

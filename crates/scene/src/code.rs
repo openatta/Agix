@@ -11,12 +11,12 @@
 
 use crate::common;
 use base::interface::scene::{
-    ExecutionParams, ReminderContext, Scene, ScenePromptContext, TokenBudget,
+    Reminder, ScenePrompt, ScenePromptContext, SceneSpec, TokenBudget, ToolSurface,
 };
 use base::prompt::{CacheStrategy, PromptBlock};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Tools whose full JSON schema stays in every request for this scene: what a
 /// coding turn reaches for without deliberating, plus the two that reach
@@ -41,7 +41,7 @@ pub const RESIDENT_TOOLS: &[&str] = &[
 
 /// Every tool this scene may see, resident or not.
 ///
-/// Spelled out rather than read from the registry: `deferred_tools()` runs
+/// Spelled out rather than read from the registry: the deferred list is built
 /// before the session's registry is assembled and must give the same answer
 /// whichever optional tools a deployment wired up. A tool missing here is
 /// never deferred — `every_registered_tool_has_a_deferral_policy` in
@@ -107,99 +107,55 @@ const USER_SKILLS: &[&str] = &[
     "updateConfig",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Interaction {
+    #[default]
     Interactive,
     Unattended,
 }
 
+pub fn spec(interaction: Interaction) -> SceneSpec {
+    let interactive = interaction == Interaction::Interactive;
+    let mut s = SceneSpec::new("code", "Agix Code", Arc::new(CodePrompt { interaction }));
+    s.description = "编程场景 — 完整工具权限的通用编程 Agent".into();
+    s.requires_project = true;
+    s.supports_team = true;
+    s.interactive = interactive;
+    let deferred: Vec<&str> = ALL_DEFERRABLE_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| !RESIDENT_TOOLS.contains(name))
+        .collect();
+    s.tools = ToolSurface::denying(NOT_OFFERED).deferring(&deferred);
+    let user: &[&str] = if interactive { USER_SKILLS } else { &[] };
+    s.bundled_skills = CODING_SKILLS
+        .iter()
+        .chain(user)
+        .map(|s| s.to_string())
+        .collect();
+    s.token_budget = TokenBudget {
+        compact_threshold: 150_000,
+        compact_keep_recent: 20,
+    };
+    s.reminders = vec![Reminder::GitStatus];
+    s
+}
+
+/// The code scene's prompt: sections rebuilt only when their input changed
+/// (see `SECTION_CACHE`).
 #[derive(Debug, Clone, Copy)]
-pub struct CodeScene {
-    interaction: Interaction,
+pub struct CodePrompt {
+    pub interaction: Interaction,
 }
 
-impl CodeScene {
-    pub const fn new(interaction: Interaction) -> Self {
-        Self { interaction }
-    }
-}
-
-impl Default for CodeScene {
-    fn default() -> Self {
-        Self::new(Interaction::Interactive)
-    }
-}
-
-impl Scene for CodeScene {
-    fn id(&self) -> &str {
-        "code"
-    }
-    fn name(&self) -> &str {
-        "Agix Code"
-    }
-    fn description(&self) -> &str {
-        "编程场景 — 完整工具权限的通用编程 Agent"
+impl ScenePrompt for CodePrompt {
+    fn system(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
+        let sections = build_section_registry(ctx, self.interaction == Interaction::Interactive);
+        render_prompt_blocks(resolve_sections(sections))
     }
 
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        let sections = build_section_registry(ctx, self.interactive());
-        let resolved = resolve_sections(sections);
-        render_prompt_blocks(resolved)
-    }
-
-    fn requires_project(&self) -> bool {
-        true
-    }
-
-    fn supports_team(&self) -> bool {
-        true
-    }
-
-    fn tools(&self) -> Vec<String> {
-        vec![]
-    }
-    fn disallowed_tools(&self) -> Vec<String> {
-        NOT_OFFERED.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn interactive(&self) -> bool {
-        self.interaction == Interaction::Interactive
-    }
-
-    fn bundled_skills(&self) -> Vec<String> {
-        let user: &[&str] = if self.interactive() { USER_SKILLS } else { &[] };
-        CODING_SKILLS
-            .iter()
-            .chain(user)
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    fn deferred_tools(&self) -> Vec<String> {
-        ALL_DEFERRABLE_TOOLS
-            .iter()
-            .filter(|name| !RESIDENT_TOOLS.contains(*name))
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    fn token_budget(&self) -> TokenBudget {
-        TokenBudget {
-            compact_threshold: 150_000,
-            compact_keep_recent: 20,
-        }
-    }
-
-    fn build_system_reminder(&self, ctx: &ReminderContext) -> String {
-        common::reminder(ctx)
-    }
-
-    fn build_session_context(&self, ctx: &ScenePromptContext) -> String {
+    fn session_context(&self, ctx: &ScenePromptContext) -> String {
         common::session_context(ctx)
-    }
-
-    fn execution_params(&self) -> ExecutionParams {
-        ExecutionParams::default()
     }
 }
 
@@ -596,7 +552,12 @@ fn render_session_guidance(available_tools: Option<&str>, interactive: bool) -> 
 mod tests {
     use super::*;
     use crate::common::test_ctx as ctx;
+    use base::interface::scene::ReminderContext;
     use std::borrow::Cow;
+
+    fn code() -> SceneSpec {
+        spec(Interaction::Interactive)
+    }
 
     fn text(blocks: &[PromptBlock]) -> String {
         blocks
@@ -626,23 +587,23 @@ mod tests {
     fn only_a_claude_model_is_given_the_claude_model_list() {
         let mut c = ctx();
         c.model_name = Cow::Borrowed("deepseek-flash");
-        let deepseek = text(&CodeScene::default().build_system_prompt(&c));
+        let deepseek = text(&code().system_prompt(&c));
         assert!(deepseek.contains("You are powered by the model deepseek-flash."));
         assert!(!deepseek.contains("Claude"), "{deepseek}");
 
-        let claude = text(&CodeScene::default().build_system_prompt(&ctx()));
+        let claude = text(&code().system_prompt(&ctx()));
         assert!(claude.contains("Knowledge cutoff: August 2025"));
         assert!(claude.contains("Latest Claude model IDs"));
     }
 
     #[test]
     fn code_id() {
-        assert_eq!(CodeScene::default().id(), "code");
+        assert_eq!(code().id, "code");
     }
 
     #[test]
     fn prompt_contains_identity_and_behavior() {
-        let text = text(&CodeScene::default().build_system_prompt(&ctx()));
+        let text = text(&code().system_prompt(&ctx()));
         assert!(text.contains("Agix"));
         assert!(text.contains("software engineering"));
         assert!(text.contains("# Doing tasks"));
@@ -655,12 +616,12 @@ mod tests {
         let mut c = ctx();
         c.scratchpad_dir = Some(Cow::Borrowed("/home/user/project/.agix/scratchpad"));
         c.git_status = Some(Cow::Borrowed("M src/main.rs"));
-        let prompt = text(&CodeScene::default().build_system_prompt(&c));
+        let prompt = text(&code().system_prompt(&c));
         assert!(!prompt.contains("/home/user/project"), "{prompt}");
         assert!(!prompt.contains("2026-06-10"));
         assert!(!prompt.contains("M src/main.rs"));
 
-        let context = CodeScene::default().build_session_context(&c);
+        let context = code().session_context(&c);
         assert!(context.contains("Working directory: /home/user/project"));
         assert!(context.contains("Git branch: main"));
         assert!(context.contains(".agix/scratchpad"));
@@ -681,15 +642,12 @@ mod tests {
         b.date = Cow::Borrowed("2026-02-02");
         b.git_branch = Some(Cow::Borrowed("dev"));
         b.scratchpad_dir = Some(Cow::Borrowed("/b/.agix/scratchpad"));
-        assert_eq!(
-            CodeScene::default().build_system_prompt(&a),
-            CodeScene::default().build_system_prompt(&b)
-        );
+        assert_eq!(code().system_prompt(&a), code().system_prompt(&b));
     }
 
     #[test]
     fn static_sections_have_global_cache() {
-        let blocks = CodeScene::default().build_system_prompt(&ctx());
+        let blocks = code().system_prompt(&ctx());
         assert_eq!(blocks[0].cache_strategy, Some(CacheStrategy::Global));
     }
 
@@ -700,7 +658,7 @@ mod tests {
             git_status: Some(Cow::Borrowed("On branch main")),
             memory_summary: None,
         };
-        let r = CodeScene::default().build_system_reminder(&rctx);
+        let r = code().reminder(&rctx);
         assert!(r.contains("On branch main"));
         assert!(r.contains("system-reminder"));
     }
@@ -712,13 +670,13 @@ mod tests {
             git_status: None,
             memory_summary: Some(Cow::Borrowed("- [deploy](deploy.md)")),
         };
-        assert_eq!(CodeScene::default().build_system_reminder(&rctx), "");
+        assert_eq!(code().reminder(&rctx), "");
     }
 
     #[test]
     fn section_cache_is_reusable() {
-        let b1 = CodeScene::default().build_system_prompt(&ctx());
-        let b2 = CodeScene::default().build_system_prompt(&ctx());
+        let b1 = code().system_prompt(&ctx());
+        let b2 = code().system_prompt(&ctx());
         assert_eq!(b1.len(), b2.len());
         for (a, b) in b1.iter().zip(b2.iter()) {
             assert_eq!(a.content, b.content);
@@ -729,7 +687,7 @@ mod tests {
     fn function_result_clearing_only_appears_after_something_was_actually_cleared() {
         let mut ctx_fresh = ctx();
         ctx_fresh.tool_results_ever_cleared = false;
-        let blocks_fresh = CodeScene::default().build_system_prompt(&ctx_fresh);
+        let blocks_fresh = code().system_prompt(&ctx_fresh);
         let dynamic_fresh = &blocks_fresh.last().expect("dynamic block").content;
         assert!(
             !dynamic_fresh.contains("Function results have been cleared"),
@@ -738,7 +696,7 @@ mod tests {
 
         let mut ctx_cleared = ctx();
         ctx_cleared.tool_results_ever_cleared = true;
-        let blocks_cleared = CodeScene::default().build_system_prompt(&ctx_cleared);
+        let blocks_cleared = code().system_prompt(&ctx_cleared);
         let dynamic_cleared = &blocks_cleared.last().expect("dynamic block").content;
         assert!(dynamic_cleared.contains("Function results have been cleared"));
     }
@@ -749,7 +707,7 @@ mod tests {
     fn output_style_section_reflects_changed_content_not_stale_cache() {
         let mut ctx_a = ctx();
         ctx_a.output_style_content = Some(Cow::Borrowed("Style A: be terse."));
-        let blocks_a = CodeScene::default().build_system_prompt(&ctx_a);
+        let blocks_a = code().system_prompt(&ctx_a);
         assert!(blocks_a
             .last()
             .expect("dynamic block")
@@ -758,7 +716,7 @@ mod tests {
 
         let mut ctx_b = ctx();
         ctx_b.output_style_content = Some(Cow::Borrowed("Style B: be verbose."));
-        let blocks_b = CodeScene::default().build_system_prompt(&ctx_b);
+        let blocks_b = code().system_prompt(&ctx_b);
         let dynamic_b = &blocks_b.last().expect("dynamic block").content;
         assert!(
             dynamic_b.contains("Style B: be verbose."),
@@ -769,7 +727,7 @@ mod tests {
 
     #[test]
     fn every_block_names_its_section() {
-        let blocks = CodeScene::default().build_system_prompt(&ctx());
+        let blocks = code().system_prompt(&ctx());
         assert!(blocks.iter().all(|b| b.name.is_some()));
         assert_eq!(blocks[0].name.as_deref(), Some("identity"));
 
@@ -793,22 +751,22 @@ mod tests {
 
     #[test]
     fn an_unattended_prompt_does_not_count_on_a_reply() {
-        let unattended = CodeScene::new(Interaction::Unattended);
-        let interactive = CodeScene::default();
-        assert!(interactive.interactive() && !unattended.interactive());
+        let unattended = spec(Interaction::Unattended);
+        let interactive = code();
+        assert!(interactive.interactive && !unattended.interactive);
 
-        let prompt = text(&unattended.build_system_prompt(&ctx()));
+        let prompt = text(&unattended.system_prompt(&ctx()));
         for line in ["Check with the user", "`! <command>`", "AskUserQuestion"] {
             assert!(!prompt.contains(line), "{line}");
         }
         assert!(prompt.contains("Nobody is there to confirm"));
-        assert!(text(&interactive.build_system_prompt(&ctx())).contains("Check with the user"));
+        assert!(text(&interactive.system_prompt(&ctx())).contains("Check with the user"));
     }
 
     #[test]
     fn only_an_interactive_session_gets_the_skills_that_hand_back_to_the_user() {
-        let unattended = CodeScene::new(Interaction::Unattended).bundled_skills();
-        let interactive = CodeScene::default().bundled_skills();
+        let unattended = spec(Interaction::Unattended).bundled_skills;
+        let interactive = code().bundled_skills;
         assert!(unattended
             .iter()
             .all(|s| CODING_SKILLS.contains(&s.as_str())));

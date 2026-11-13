@@ -112,14 +112,17 @@ async fn two_scenes_can_be_active_in_one_process() {
 
     let code = pool.resolve_scene(Some("code")).await.expect("code");
     let harnix = pool.resolve_scene(Some("harnix")).await.expect("harnix");
-    assert_eq!(code.id(), "code");
-    assert_eq!(harnix.id(), "harnix");
+    assert_eq!(code.id, "code");
+    assert_eq!(harnix.id, "harnix");
 
     // Distinct scenes, so distinct tool surfaces — this is what makes
     // running both in one process meaningful rather than cosmetic.
-    assert!(code.tools().is_empty(), "code allows every registered tool");
     assert!(
-        !harnix.tools().is_empty(),
+        code.tools.allow.is_none(),
+        "code allows every registered tool"
+    );
+    assert!(
+        harnix.tools.allow.is_some(),
         "harnix restricts its tools to a whitelist"
     );
 }

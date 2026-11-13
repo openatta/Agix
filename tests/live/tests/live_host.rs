@@ -10,8 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
-use base::prompt::PromptBlock;
+use base::interface::scene::SceneSpec;
 use base::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent};
 use live::{Host, LiveRun, Mode, Watcher};
 use serde_json::{json, Value};
@@ -511,49 +510,22 @@ impl Tool for ServiceStatus {
     }
 }
 
-/// The scene an on-call host serves: the code scene, plus the host's own
-/// `ServiceStatus` — a new instance each time a session is built, as a host
-/// scene hands them out.
-struct OnCallScene {
-    incident: String,
-    asked_by: Arc<Mutex<Vec<(String, String)>>>,
-}
-
-impl Scene for OnCallScene {
-    fn id(&self) -> &str {
-        "oncall"
-    }
-    fn name(&self) -> &str {
-        "On-call"
-    }
-    fn description(&self) -> &str {
-        "Production on-call, with the host's service status tool"
-    }
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::code::CodeScene::default().build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        Vec::new()
-    }
-    fn token_budget(&self) -> TokenBudget {
-        scene::code::CodeScene::default().token_budget()
-    }
-    fn extra_tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(ServiceStatus {
-            incident: self.incident.clone(),
-            asked_by: self.asked_by.clone(),
-        })]
-    }
+/// The scene an on-call host serves: the code scene's prompt, plus the
+/// host's own `ServiceStatus`.
+fn on_call_scene(incident: String, asked_by: Arc<Mutex<Vec<(String, String)>>>) -> SceneSpec {
+    let code = scene::code::spec(scene::code::Interaction::Interactive);
+    let mut s = SceneSpec::new("oncall", "On-call", code.prompt);
+    s.description = "Production on-call, with the host's service status tool".into();
+    s.token_budget = code.token_budget;
+    s.extra_tools = vec![Arc::new(ServiceStatus { incident, asked_by })];
+    s
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sub_agents_in_a_host_scene_use_the_scenes_own_tool() -> anyhow::Result<()> {
     let incident = format!("INC-{}", nonce());
     let asked_by = Arc::new(Mutex::new(Vec::new()));
-    let scene = Arc::new(OnCallScene {
-        incident: incident.clone(),
-        asked_by: asked_by.clone(),
-    });
+    let scene = Arc::new(on_call_scene(incident.clone(), asked_by.clone()));
     let mut run = LiveRun::start_with_host(
         "oncall",
         json!({}),

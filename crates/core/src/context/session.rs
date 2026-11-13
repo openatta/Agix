@@ -36,7 +36,7 @@ pub struct SessionState {
     /// runs.
     pub cache_directories: Vec<PathBuf>,
     /// Nobody answers this session's questions or permission prompts — see
-    /// `Scene::interactive`.
+    /// `SceneSpec::interactive`.
     pub unattended: bool,
     /// `sandbox.dangerously_disable_sandbox`, for checks made before a
     /// command runs.

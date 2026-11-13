@@ -4,14 +4,13 @@ use crate::agent::Agent;
 use crate::turn::request::sync_mcp_adapters;
 use base::interface::model::ModelMessage;
 use base::interface::model::ToolDef;
-use base::interface::scene::ScenePromptContext;
 use base::prompt::PromptBlock;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use base::error::ToolError;
-use base::interface::scene::{ExecutionParams, Scene, TokenBudget};
+use base::interface::scene::{ExecutionParams, FixedPrompt, SceneSpec, ToolSurface};
 use base::tool::{
     InMemoryToolRegistry, PathStyle, PermissionDecision, ProgressSender, PromptContext, Tool,
     ToolContext, ToolResult,
@@ -103,45 +102,22 @@ impl base::interface::model::Model for DummyModel {
 
 /// A scene whose only distinguishing features are the tool whitelist and
 /// the API-call ceiling, so tests can control whether `ToolSearch` is
-/// reachable and what `execution_params()` declares.
-struct TestScene {
-    allowed: Vec<String>,
-    max_api_calls: u32,
-}
-impl Scene for TestScene {
-    fn id(&self) -> &str {
-        "test"
-    }
-    fn name(&self) -> &str {
-        "Test"
-    }
-    fn description(&self) -> &str {
-        "test scene"
-    }
-    fn build_system_prompt(&self, _: &ScenePromptContext) -> Vec<PromptBlock> {
-        vec![PromptBlock::system("skeleton")]
-    }
-    fn tools(&self) -> Vec<String> {
-        self.allowed.clone()
-    }
-    fn token_budget(&self) -> TokenBudget {
-        TokenBudget {
-            compact_threshold: 150_000,
-            compact_keep_recent: 20,
-        }
-    }
-    fn execution_params(&self) -> ExecutionParams {
-        ExecutionParams {
-            max_api_calls_per_turn: self.max_api_calls,
-        }
-    }
+/// reachable and what `execution` declares.
+fn scene_with(allowed: Vec<String>, max_api_calls: u32) -> SceneSpec {
+    let mut s = SceneSpec::new(
+        "test",
+        "Test",
+        Arc::new(FixedPrompt(vec![PromptBlock::system("skeleton")])),
+    );
+    s.tools = ToolSurface::allowing(&allowed);
+    s.execution = ExecutionParams {
+        max_api_calls_per_turn: max_api_calls,
+    };
+    s
 }
 
-fn test_scene(allowed: Vec<String>) -> Arc<dyn Scene> {
-    Arc::new(TestScene {
-        allowed,
-        max_api_calls: 200,
-    })
+fn test_scene(allowed: Vec<String>) -> Arc<SceneSpec> {
+    Arc::new(scene_with(allowed, 200))
 }
 
 fn test_settings(root: &std::path::Path) -> base::settings::LoadedSettings {
@@ -365,37 +341,12 @@ async fn an_mcp_adapter_is_advertised_once_and_not_reported_as_shadowed() {
 /// exactly like one that was there when the session was built.
 #[tokio::test]
 async fn an_mcp_tool_that_arrives_mid_session_is_deferred_by_the_scene() {
-    struct Defers;
-    impl Scene for Defers {
-        fn id(&self) -> &str {
-            "defers"
-        }
-        fn name(&self) -> &str {
-            "Defers"
-        }
-        fn description(&self) -> &str {
-            "defers one MCP tool"
-        }
-        fn build_system_prompt(&self, _: &ScenePromptContext) -> Vec<PromptBlock> {
-            vec![PromptBlock::system("skeleton")]
-        }
-        fn tools(&self) -> Vec<String> {
-            vec![]
-        }
-        fn token_budget(&self) -> TokenBudget {
-            TokenBudget {
-                compact_threshold: 150_000,
-                compact_keep_recent: 20,
-            }
-        }
-        fn deferred_tools(&self) -> Vec<String> {
-            vec!["mcp__desk__late".into()]
-        }
-    }
+    let mut defers = scene_with(vec![], 200);
+    defers.tools.deferred = vec!["mcp__desk__late".into()];
 
     let dir = tempfile::tempdir().unwrap();
     let (mut agent, _rx, _tx) = crate::agent::Builder::new()
-        .scene(Arc::new(Defers))
+        .scene(Arc::new(defers))
         .model(Arc::new(DummyModel))
         .tools(Arc::new(InMemoryToolRegistry::new()))
         .settings(Arc::new(test_settings(dir.path())))
@@ -586,14 +537,11 @@ fn scene_execution_params_tighten_the_api_call_ceiling() {
     assert_eq!(settings.execution.max_api_calls_per_turn, 25);
 
     let resolve = |scene_limit: u32| {
-        let scene = TestScene {
-            allowed: vec![],
-            max_api_calls: scene_limit,
-        };
+        let scene = scene_with(vec![], scene_limit);
         settings
             .execution
             .max_api_calls_per_turn
-            .min(scene.execution_params().max_api_calls_per_turn)
+            .min(scene.execution.max_api_calls_per_turn)
     };
 
     assert_eq!(resolve(3), 3, "a scene tighter than settings must win");

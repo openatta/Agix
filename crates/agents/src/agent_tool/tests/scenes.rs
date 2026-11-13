@@ -3,17 +3,17 @@
 use super::*;
 
 /// The sub-agent inherits the parent's scene rather than always
-/// being handed `CodeScene`, and an agent type's own `scene:` wins.
+/// being handed the code scene, and an agent type's own `scene:` wins.
 #[test]
 fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
     let agent_tool = TestParent {
-        scene: Arc::new(scene::harnix::HarnixScene),
+        scene: Arc::new(scene::harnix::spec()),
         ..test_parent()
     }
     .agent_tool();
 
     assert_eq!(
-        agent_tool.delegator.scene_for_subagent(None).id(),
+        agent_tool.delegator.scene_for_subagent(None).id.as_str(),
         "harnix",
         "a harnix-scene parent must not hand its sub-agent the code scene"
     );
@@ -33,7 +33,8 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         agent_tool
             .delegator
             .scene_for_subagent(Some(&widening))
-            .id(),
+            .id
+            .as_str(),
         "harnix",
         "an agent type must not be able to widen the parent scene's tool surface"
     );
@@ -49,7 +50,8 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         agent_tool
             .delegator
             .scene_for_subagent(Some(&narrowing))
-            .id(),
+            .id
+            .as_str(),
         "mini",
         "an agent type narrowing the parent scene must still be honored"
     );
@@ -61,7 +63,11 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool.delegator.scene_for_subagent(Some(&bogus)).id(),
+        agent_tool
+            .delegator
+            .scene_for_subagent(Some(&bogus))
+            .id
+            .as_str(),
         "harnix",
         "an unknown scene id is ignored, not fatal — inherited scene is kept"
     );
@@ -84,25 +90,28 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
     // Reusing the parent's scene under a plugin-style id keeps this test
     // about *resolution*, not about the narrowing rule above.
     let agent_tool = TestParent {
-        scene: Arc::new(scene::mini::MiniScene),
+        scene: Arc::new(scene::mini::spec()),
         ..test_parent()
     }
     .agent_tool();
 
     assert_eq!(
-        agent_tool.delegator.scene_for_subagent(Some(&named)).id(),
+        agent_tool
+            .delegator
+            .scene_for_subagent(Some(&named))
+            .id
+            .as_str(),
         "mini",
         "without a registry, a non-builtin id is unresolvable and the parent scene is kept"
     );
 
     let mut registry = scene::SceneRegistry::new();
     registry.register_builtin();
-    registry.register(Arc::new(AliasScene {
-        id: "plugin:demo",
-        inner: Arc::new(scene::mini::MiniScene),
-    }));
+    let mut alias = scene::mini::spec();
+    alias.id = "plugin:demo".into();
+    registry.register(Arc::new(alias));
     let agent_tool = TestParent {
-        scene: Arc::new(scene::mini::MiniScene),
+        scene: Arc::new(scene::mini::spec()),
         host: Some(runtime::agent::HostContracts {
             scene_registry: Some(Arc::new(registry)),
             ..host_contracts()
@@ -112,44 +121,14 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
     .agent_tool();
 
     assert_eq!(
-        agent_tool.delegator.scene_for_subagent(Some(&named)).id(),
+        agent_tool
+            .delegator
+            .scene_for_subagent(Some(&named))
+            .id
+            .as_str(),
         "plugin:demo",
         "a registry-only scene id must resolve once the registry is wired in"
     );
-}
-
-/// A scene that borrows another's behavior under a different id — stands
-/// in for a plugin scene without depending on the plugin crate.
-pub(super) struct AliasScene {
-    pub(super) id: &'static str,
-    pub(super) inner: Arc<dyn Scene>,
-}
-
-impl Scene for AliasScene {
-    fn id(&self) -> &str {
-        self.id
-    }
-    fn name(&self) -> &str {
-        self.id
-    }
-    fn description(&self) -> &str {
-        "alias"
-    }
-    fn build_system_prompt(
-        &self,
-        ctx: &base::interface::scene::ScenePromptContext,
-    ) -> Vec<base::prompt::PromptBlock> {
-        self.inner.build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        self.inner.tools()
-    }
-    fn token_budget(&self) -> base::interface::scene::TokenBudget {
-        self.inner.token_budget()
-    }
-    fn disallowed_tools(&self) -> Vec<String> {
-        self.inner.disallowed_tools()
-    }
 }
 
 /// A sub-agent's settings carry the instruction file the parent's settings

@@ -61,7 +61,7 @@ impl Daemon {
         let model = Arc::new(MockAnthropicClient::new());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene::default()),
+            Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
             daemon::Assembly {
                 cwd: Some(root.clone()),
                 model_client: Some(model.clone() as Arc<dyn AnthropicClient>),

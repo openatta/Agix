@@ -5,8 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
-use base::prompt::PromptBlock;
+use base::interface::scene::SceneSpec;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::AnthropicClient;
@@ -17,27 +16,12 @@ use tokio_util::sync::CancellationToken;
 
 const HOST_SCENE: &str = "host-review";
 
-struct HostScene;
-
-impl Scene for HostScene {
-    fn id(&self) -> &str {
-        HOST_SCENE
-    }
-    fn name(&self) -> &str {
-        "Review"
-    }
-    fn description(&self) -> &str {
-        "a scene this host defines"
-    }
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::code::CodeScene::default().build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        scene::code::CodeScene::default().tools()
-    }
-    fn token_budget(&self) -> TokenBudget {
-        scene::code::CodeScene::default().token_budget()
-    }
+/// A scene this host defines.
+fn host_scene() -> SceneSpec {
+    let code = scene::code::spec(scene::code::Interaction::Interactive);
+    let mut s = SceneSpec::new(HOST_SCENE, "Review", code.prompt);
+    s.token_budget = code.token_budget;
+    s
 }
 
 async fn call(
@@ -78,11 +62,11 @@ async fn a_host_scene_is_served_and_survives_being_turned_off() {
     );
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
-            scenes: vec![Arc::new(HostScene)],
+            scenes: vec![Arc::new(host_scene())],
             extra_scenes: vec![HOST_SCENE.into()],
             ..Default::default()
         },
@@ -163,7 +147,7 @@ async fn a_declarative_scene_under_the_state_root_is_served() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),
@@ -220,7 +204,7 @@ async fn scenes_can_be_added_while_the_daemon_runs() {
     let scenes_root = config.paths.global_root().join("scenes");
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(Arc::new(MockAnthropicClient::new()) as Arc<dyn AnthropicClient>),

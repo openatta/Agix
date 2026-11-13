@@ -173,7 +173,7 @@ impl Builder {
             let plugin_session = crate::plugin::PluginSession {
                 session_id: session.session_id_str(),
                 project_root: settings.paths.project_root(),
-                scene: scene.id(),
+                scene: &scene.id,
                 depth: agent_depth,
             };
             crate::plugin::register_all(
@@ -230,17 +230,17 @@ impl Builder {
 
         let config = Arc::new({
             let mut c = base::context::EngineConfig::from_loaded(&settings);
-            c.path_style = settings.path_style.unwrap_or_else(|| scene.path_style());
+            c.path_style = settings.path_style.unwrap_or(scene.path_style);
             c.deferred_tools = Arc::new(
                 scene
-                    .deferred_tools()
-                    .into_iter()
-                    // `ToolSearch` is the only way back to a deferred tool's
-                    // schema, so deferring it would strand every other one; a
-                    // host that bound an output schema wants the model to see
-                    // `StructuredOutput` whole.
-                    .filter(|n| n != "ToolSearch")
-                    .filter(|n| n != "StructuredOutput" || self.output_schema.is_none())
+                    .tools
+                    .deferred
+                    .iter()
+                    // `ToolSearch` is the only way back to a deferred schema; a host
+                    // that bound an output schema wants `StructuredOutput` whole.
+                    .filter(|n| *n != "ToolSearch")
+                    .filter(|n| *n != "StructuredOutput" || self.output_schema.is_none())
+                    .cloned()
                     .collect(),
             );
             c
@@ -277,7 +277,7 @@ impl Builder {
                 .collect();
             state.read_anywhere = settings.sandbox.read_anywhere;
             state.cache_directories = settings.sandbox.cache_directories.paths(&cwd);
-            state.unattended = !scene.interactive();
+            state.unattended = !scene.interactive;
             state.sandbox_disabled = settings.sandbox.dangerously_disable_sandbox;
             state
         });
@@ -469,7 +469,7 @@ impl Builder {
 
         // Registration is complete; everything below reads the final set.
 
-        // Scene-contributed tools (`Scene::extra_tools`, default empty).
+        // Scene-contributed tools (`SceneSpec::extra_tools`, default empty).
         //
         // Deliberately last. The collision check is the whole point of this
         // block, and it can only see names already in the registry — running
@@ -478,7 +478,7 @@ impl Builder {
         // check against an empty slot, and then win the lookup anyway
         // (`get` returns the first match, and the engine's own instance is
         // appended after). That is precisely the shadowing this rejects.
-        for t in scene.extra_tools() {
+        for t in scene.extra_tools.iter().cloned() {
             if !admits(&self.contributed_tool_filter, t.name()) {
                 continue;
             }
@@ -486,7 +486,7 @@ impl Builder {
                 return Err(EngineError::Internal(format!(
                     "scene {:?} contributes a tool named {:?}, which is already \
                      registered; rename the scene's tool",
-                    scene.id(),
+                    scene.id,
                     t.name()
                 )));
             }
@@ -518,7 +518,7 @@ impl Builder {
         }
 
         let tool_policy = Arc::new(crate::tool_policy::ToolPolicy::new(
-            scene.clone(),
+            &scene,
             plugin_tool_owners
                 .iter()
                 .filter(|(name, owner)| {
@@ -537,17 +537,17 @@ impl Builder {
         // The scene's tool policy, applied to the registry itself rather than
         // only to what is advertised: `ToolSearch` and dispatch read this same
         // registry, so a tool the scene excludes has to be absent from it.
-        let attended = scene.interactive();
+        let attended = scene.interactive;
         let questions_answered = self.question_prompts || self.elicitation.is_some();
         for t in tools.list() {
             let waits_on_a_reply = base::interface::scene::NEEDS_A_USER.contains(&t.name())
                 && (!attended || (t.name() == ASK_USER_QUESTION && !questions_answered));
-            let excluded = !tool_policy.permits(t.name());
+            let excluded = !tool_policy.permits(t.as_ref());
             if waits_on_a_reply || excluded {
                 tools.remove(t.name());
                 tracing::debug!(
                     tool = t.name(),
-                    scene = scene.id(),
+                    scene = %scene.id,
                     plugin = plugin_tool_owners.get(t.name()).map(|o| o.plugin.as_str()),
                     reason = if excluded {
                         "not permitted by the scene's tool policy"
@@ -676,7 +676,7 @@ impl Builder {
             self.turn_policy.clone().unwrap_or_else(|| {
                 Arc::new(base::interface::turn_policy::LimitsPolicy::new(
                     settings.execution.max_api_calls_per_turn,
-                    scene.execution_params().max_api_calls_per_turn,
+                    scene.execution.max_api_calls_per_turn,
                     5,
                 ))
             });

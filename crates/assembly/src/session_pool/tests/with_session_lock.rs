@@ -18,7 +18,7 @@ async fn test_pool() -> (Arc<SessionPool>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
     let permission = Some(PermissionSet::without_grants(Arc::new(
         AllowAllTestPermission,
     )));

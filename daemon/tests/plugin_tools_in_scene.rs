@@ -5,8 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
-use base::prompt::PromptBlock;
+use base::interface::scene::{SceneSpec, ToolSurface};
 use base::settings::{PermissionAction, PermissionRule};
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
@@ -23,27 +22,13 @@ const SCENE: &str = "read-only-host";
 const ADMITTED: &str = "demo__x";
 const NOT_ADMITTED: &str = "demo__y";
 
-struct ReadOnlyScene;
-
-impl Scene for ReadOnlyScene {
-    fn id(&self) -> &str {
-        SCENE
-    }
-    fn name(&self) -> &str {
-        "Read only"
-    }
-    fn description(&self) -> &str {
-        "a scene whose whitelist names one built-in tool"
-    }
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::mini::MiniScene.build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        vec!["Read".into()]
-    }
-    fn token_budget(&self) -> TokenBudget {
-        scene::mini::MiniScene.token_budget()
-    }
+/// A scene whose whitelist names one built-in tool.
+fn read_only_scene() -> SceneSpec {
+    let mini = scene::mini::spec();
+    let mut s = SceneSpec::new(SCENE, "Read only", mini.prompt);
+    s.tools = ToolSurface::allowing(&["Read"]);
+    s.token_budget = mini.token_budget;
+    s
 }
 
 struct Echo(&'static str);
@@ -215,11 +200,11 @@ async fn an_admitted_plugin_tool_passes_the_scene_whitelist_and_the_rest_do_not(
     let model = Arc::new(MockAnthropicClient::new());
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
-            scenes: vec![Arc::new(ReadOnlyScene)],
+            scenes: vec![Arc::new(read_only_scene())],
             extra_scenes: vec![SCENE.into()],
             plugins: vec![Arc::new(Demo)],
             ..Default::default()

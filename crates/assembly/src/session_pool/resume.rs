@@ -339,7 +339,7 @@ impl SessionPool {
             (
                 live.and_then(|live| live.state.as_ref())
                     .map_or(mode, |state| state.permission_mode().into()),
-                live.map(|live| (live.project.clone(), live.scene.id().to_string())),
+                live.map(|live| (live.project.clone(), live.scene.id.clone())),
             )
         };
         let (project_trust, settings) = match project {
@@ -366,7 +366,7 @@ impl SessionPool {
             name,
             created_at,
             last_active,
-            scene: self.scene.id().to_string(),
+            scene: self.scene.id.clone(),
             project_trust: project_trust.into(),
             permission: api::PermissionReport {
                 mode,

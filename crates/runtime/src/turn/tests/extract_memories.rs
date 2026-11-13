@@ -378,7 +378,9 @@ async fn an_extraction_still_running_past_the_grace_is_aborted() {
 async fn a_stopped_engine_leaves_no_extraction_running() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut agent, _rx, _tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(super::support::FixedUsageModel {
             usage: Default::default(),
         }))

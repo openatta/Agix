@@ -188,7 +188,7 @@ impl Harness {
         // this file put together itself.
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene::default()),
+            Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
             daemon::Assembly {
                 cwd: Some(cwd.clone()),
                 model_client: Some(client),

@@ -10,8 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
-use base::prompt::PromptBlock;
+use base::interface::scene::SceneSpec;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::{DaemonServer, SessionPool};
 use model::client::AnthropicClient;
@@ -23,27 +22,12 @@ use tokio_util::sync::CancellationToken;
 
 const BETA_ONLY_SCENE: &str = "beta-only";
 
-struct BetaScene;
-
-impl Scene for BetaScene {
-    fn id(&self) -> &str {
-        BETA_ONLY_SCENE
-    }
-    fn name(&self) -> &str {
-        "Beta only"
-    }
-    fn description(&self) -> &str {
-        "a scene only the beta pool's host defines"
-    }
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        scene::code::CodeScene::default().build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        scene::code::CodeScene::default().tools()
-    }
-    fn token_budget(&self) -> TokenBudget {
-        scene::code::CodeScene::default().token_budget()
-    }
+/// A scene only the beta pool's host defines.
+fn beta_scene() -> SceneSpec {
+    let code = scene::code::spec(scene::code::Interaction::Interactive);
+    let mut s = SceneSpec::new(BETA_ONLY_SCENE, "Beta only", code.prompt);
+    s.token_budget = code.token_budget;
+    s
 }
 
 fn one_turn() -> Vec<StreamEvent> {
@@ -77,7 +61,7 @@ struct Pool {
 }
 
 impl Pool {
-    async fn start(name: &str, scenes: Vec<Arc<dyn Scene>>) -> Self {
+    async fn start(name: &str, scenes: Vec<Arc<SceneSpec>>) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join(format!("{name}.sock"));
         let cwd = dir.path().join("work");
@@ -103,7 +87,7 @@ impl Pool {
         model.push_turn(one_turn());
         let pool = daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene::default()),
+            Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
             daemon::Assembly {
                 cwd: Some(cwd),
                 scenes,
@@ -186,7 +170,7 @@ impl Pool {
 #[tokio::test]
 async fn two_pools_in_one_process_see_nothing_of_each_other() {
     let a = Pool::start("alpha", Vec::new()).await;
-    let b = Pool::start("beta", vec![Arc::new(BetaScene)]).await;
+    let b = Pool::start("beta", vec![Arc::new(beta_scene())]).await;
 
     let (in_a, in_b) = (a.one_turn_session().await, b.one_turn_session().await);
 

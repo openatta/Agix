@@ -119,7 +119,7 @@ impl Daemon {
             Arc::new(HttpAnthropicClient::new(AuthMode::ApiKey("unused".into())).unwrap());
         daemon::assemble::pool(
             &config,
-            Arc::new(scene::code::CodeScene::default()),
+            Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
             daemon::Assembly {
                 cwd: Some(self.root().to_path_buf()),
                 model_client: Some(client),

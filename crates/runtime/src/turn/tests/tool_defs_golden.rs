@@ -18,7 +18,9 @@ async fn code_scene_tool_defs_match_the_golden_bytes() {
     let template = Arc::new(base::tool::InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
     let (mut agent, _rx, _tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(FixedUsageModel {
             usage: Default::default(),
         }))

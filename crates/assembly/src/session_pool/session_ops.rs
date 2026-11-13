@@ -215,7 +215,7 @@ impl SessionPool {
             (
                 live.input_tx.clone(),
                 live.project.clone(),
-                live.scene.id().to_string(),
+                live.scene.id.clone(),
             )
         };
 

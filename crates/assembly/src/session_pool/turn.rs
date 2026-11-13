@@ -352,7 +352,7 @@ impl SessionPool {
                 // A slash command is not what the conversation is about.
                 Some(live) if live.is_first_turn && !message.starts_with('/') => {
                     live.is_first_turn = false;
-                    (live.scene.auto_name_session() && !live.named_by_user)
+                    (!live.named_by_user)
                         .then(|| live.scene.session_name_prompt(&message))
                         .flatten()
                         .map(|prompt| (prompt, live.namer.clone()))

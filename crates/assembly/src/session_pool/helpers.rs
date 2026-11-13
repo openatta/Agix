@@ -8,10 +8,10 @@ use super::*;
 /// registered scene cannot take an id already there; one that does not load
 /// is left out, named in the returned list, and the rest load.
 pub(super) fn registry_of(
-    host_scenes: &[Arc<dyn Scene>],
-    plugin_scenes: &[Arc<dyn Scene>],
+    host_scenes: &[Arc<SceneSpec>],
+    plugin_scenes: &[Arc<SceneSpec>],
     user_scenes: &std::path::Path,
-    registered: &[Arc<dyn Scene>],
+    registered: &[Arc<SceneSpec>],
 ) -> (scene::SceneRegistry, Vec<String>) {
     let mut registry = scene::SceneRegistry::new();
     let mut refused = Vec::new();
@@ -24,10 +24,10 @@ pub(super) fn registry_of(
         refused.push(e.to_string());
     }
     for s in registered {
-        if registry.resolve(s.id()).is_some() {
+        if registry.resolve(&s.id).is_some() {
             let e = format!(
                 "scene `{}` (scene.register): the id is already registered",
-                s.id()
+                s.id.as_str()
             );
             warn!(error = %e, "a registered scene was not loaded");
             refused.push(e);

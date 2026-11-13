@@ -24,7 +24,7 @@
 use base::event::AgentEvent;
 use base::id::Id;
 use base::interface::model::Model;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::interface::tool::{InMemoryToolRegistry, Tool};
 use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use history::store::HistoryStore as _;
@@ -144,13 +144,16 @@ async fn trace(case: Case) -> String {
         permissions::rule_set_permission::RuleSetPermission::from_settings(&settings, []),
     ));
 
-    let scene: Arc<dyn Scene> = {
+    let scene: Arc<SceneSpec> = {
         let mut scene = BudgetScene::new(case.compact_threshold);
         scene.interactive = case.interactive;
-        Arc::new(match case.max_api_calls {
-            Some(max) => scene.with_max_api_calls(max),
-            None => scene,
-        })
+        Arc::new(
+            match case.max_api_calls {
+                Some(max) => scene.with_max_api_calls(max),
+                None => scene,
+            }
+            .spec(),
+        )
     };
     let (mut agent, mut event_rx, input_tx) = Builder::new()
         .scene(scene)

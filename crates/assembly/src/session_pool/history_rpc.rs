@@ -381,7 +381,7 @@ impl SessionPool {
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
             agix_version: env!("CARGO_PKG_VERSION").to_string(),
             parent_session_id: Some(session_id.to_string()),
-            scene: Some(source_scene.unwrap_or_else(|| self.scene.id().to_string())),
+            scene: Some(source_scene.unwrap_or_else(|| self.scene.id.clone())),
             project_root: project_root_for_fork.map(|p| p.display().to_string()),
             session_kind: history::entry::SessionKind::Primary,
             schema_version: history::entry::CURRENT_META_SCHEMA_VERSION,

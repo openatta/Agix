@@ -2,9 +2,9 @@
 //! 提示差一个字节，跨会话的提示缓存就失效，所以这里逐字节比对；确实要改提示时
 //! 用 `UPDATE_GOLDEN=1 cargo test -p scene --test prompt_golden` 重新生成。
 
-use base::interface::scene::{Scene, ScenePromptContext};
-use scene::code::{CodeScene, Interaction};
-use scene::declarative::DeclarativeScene;
+use base::interface::scene::{ScenePromptContext, SceneSpec};
+use scene::code::Interaction;
+use scene::declarative::DeclaredScene;
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -48,31 +48,31 @@ fn ctx() -> ScenePromptContext<'static> {
     }
 }
 
-fn render(scene: &dyn Scene) -> serde_json::Value {
+fn render(scene: &SceneSpec) -> serde_json::Value {
     let ctx = ctx();
     serde_json::json!({
-        "id": scene.id(),
-        "system_prompt": scene.build_system_prompt(&ctx),
-        "session_context": scene.build_session_context(&ctx),
+        "id": scene.id,
+        "system_prompt": scene.system_prompt(&ctx),
+        "session_context": scene.session_context(&ctx),
     })
 }
 
 #[test]
 fn scene_prompts_match_the_golden_bytes() {
-    let declarative = DeclarativeScene::from_sources(
+    let declarative = DeclaredScene::from_sources(
         Path::new("/scenes/review"),
         DECLARATIVE_JSON,
         DECLARATIVE_PROMPT,
     )
     .unwrap();
-    let scenes: Vec<Box<dyn Scene>> = vec![
-        Box::new(CodeScene::new(Interaction::Interactive)),
-        Box::new(CodeScene::new(Interaction::Unattended)),
-        Box::new(scene::harnix::HarnixScene),
-        Box::new(scene::mini::MiniScene),
-        Box::new(declarative),
+    let scenes = [
+        scene::code::spec(Interaction::Interactive),
+        scene::code::spec(Interaction::Unattended),
+        scene::harnix::spec(),
+        scene::mini::spec(),
+        declarative.spec,
     ];
-    let rendered: Vec<_> = scenes.iter().map(|s| render(s.as_ref())).collect();
+    let rendered: Vec<_> = scenes.iter().map(render).collect();
     let actual = serde_json::to_string_pretty(&rendered).unwrap() + "\n";
 
     if std::env::var_os("UPDATE_GOLDEN").is_some() {

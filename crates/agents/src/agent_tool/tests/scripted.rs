@@ -183,7 +183,9 @@ pub(super) fn assembled_root(model: Arc<RoutedModel>, edit: impl FnOnce(&mut Set
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
     let (agent, events, input) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(settings))
         .tools(registry)

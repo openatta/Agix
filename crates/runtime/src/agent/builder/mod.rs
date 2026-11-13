@@ -9,7 +9,7 @@ pub(in crate::agent) use hook_runner::{build_hook_runner, hook_ambient};
 pub use host::{HostContracts, HostLayers};
 
 pub struct Builder {
-    scene: Option<Arc<dyn Scene>>,
+    scene: Option<Arc<SceneSpec>>,
     model: Option<Arc<dyn Model>>,
     tools: Option<Arc<dyn base::tool::ToolRegistry>>,
     settings: Option<Arc<LoadedSettings>>,
@@ -560,7 +560,7 @@ impl Builder {
         self
     }
 
-    pub fn scene(mut self, s: Arc<dyn Scene>) -> Self {
+    pub fn scene(mut self, s: Arc<SceneSpec>) -> Self {
         self.scene = Some(s);
         self
     }
@@ -656,7 +656,7 @@ impl Builder {
     }
 
     /// Which of the tools contributed at build — the scene's own
-    /// (`Scene::extra_tools`) and the plugins' — this session gets; the rest
+    /// (`SceneSpec::extra_tools`) and the plugins' — this session gets; the rest
     /// are not registered. A sub-agent narrows those with its type's tool
     /// lists this way, as the tools it inherits from its parent are narrowed
     /// before they reach `tools`.

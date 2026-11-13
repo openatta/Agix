@@ -26,7 +26,7 @@
 //!
 //! 还有几个我们刻意不带：它们要么依赖 Anthropic SaaS / Chrome 扩展，要么是内部子流程。
 //!
-//! 一个 session 列出哪些由它的 scene 决定（`Scene::bundled_skills`），还要
+//! 一个 session 列出哪些由它的 scene 决定（`SceneSpec::bundled_skills`），还要
 //! [`required_tools`] 里的工具在这个 scene 都允许——见 `catalog::BundledAdmission`。
 
 use base::frozen::{SkillEntry, SkillSource};

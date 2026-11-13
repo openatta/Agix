@@ -13,7 +13,7 @@ use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef,
 };
 use base::interface::prompt_registry::{InMemoryPromptRegistry, PromptRegistry};
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::prompt::PromptBlock;
 use base::settings::*;
 use base::tool::InMemoryToolRegistry;
@@ -119,7 +119,7 @@ fn registry_with(root: &Path) -> scene::SceneRegistry {
 }
 
 fn build(
-    scene: Arc<dyn Scene>,
+    scene: Arc<SceneSpec>,
     settings: base::settings::LoadedSettings,
     model: Arc<dyn Model>,
 ) -> Agent {
@@ -128,7 +128,7 @@ fn build(
 
 fn build_with(
     builder: Builder,
-    scene: Arc<dyn Scene>,
+    scene: Arc<SceneSpec>,
     settings: base::settings::LoadedSettings,
     model: Arc<dyn Model>,
 ) -> Agent {

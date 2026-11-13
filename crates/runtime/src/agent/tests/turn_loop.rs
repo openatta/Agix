@@ -156,7 +156,9 @@ async fn run_starts_goal_rounds_until_the_limit() {
         tool: "Nope",
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -218,7 +220,9 @@ async fn structured_output_calls_from_earlier_turns_do_not_cut_this_one_short() 
         tool: "Probe",
     });
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -300,7 +304,9 @@ async fn a_panicking_tool_fails_its_call_and_the_turn_finishes() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     tools.register(Arc::new(PanickingTool));
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -346,7 +352,9 @@ async fn a_panicking_tool_fails_its_call_and_the_turn_finishes() {
 #[tokio::test]
 async fn a_host_result_for_no_waiting_call_is_refused_and_not_recorded() {
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -480,7 +488,9 @@ pub(super) async fn run_code_result(
         input: serde_json::json!({"code": code, "args": args}),
     });
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(template)
@@ -568,7 +578,9 @@ async fn task_created_fires_when_a_running_task_starts() {
         ]
     }));
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(settings))
         .skip_warmup(true)
@@ -609,7 +621,9 @@ async fn task_completed_fires_when_a_running_task_ends_however_it_ends() {
         ]
     }));
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(settings))
         .skip_warmup(true)
@@ -696,7 +710,9 @@ async fn an_async_rewake_hook_runs_again_once_a_running_task_ends() {
         }]
     }));
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(FailingModel))
         .settings(Arc::new(settings))
         .skip_warmup(true)
@@ -774,7 +790,9 @@ async fn a_tool_hook_is_told_which_tool_use_it_is_about_and_the_live_mode() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     tools.register(Arc::new(ProbeTool));
     let (mut agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(settings))
         .tools(tools)
@@ -822,7 +840,7 @@ async fn post_tool_use_hook_discontinue_ends_the_turn_early() {
         calls: call_count.clone(),
         tool: "Probe",
     });
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
     let tools = Arc::new(InMemoryToolRegistry::new());
     tools.register(Arc::new(ProbeTool));
 
@@ -916,7 +934,7 @@ async fn turn_without_tool_use_does_not_wait_on_a_slow_memory_prefetch() {
     let mut settings = test_settings();
     settings.values.memory_enabled = true;
     let model: Arc<dyn Model> = Arc::new(AnswersDirectlySlowPrefetchModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     // >5 entries so `select_memories_from` doesn't short-circuit
     // (skip the model call entirely) before ever reaching our mock's
@@ -1033,7 +1051,9 @@ async fn a_permission_answer_reaches_a_turn_that_is_blocked_waiting_for_it() {
         tool: "Probe",
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -1118,7 +1138,9 @@ async fn cancel_turn_interrupts_the_turn_and_leaves_the_session_usable() {
         tool: "Hang",
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -1209,7 +1231,9 @@ async fn cancel_turn_interrupts_the_turn_and_leaves_the_session_usable() {
 #[tokio::test]
 async fn cancel_turn_lands_on_the_turn_it_names() {
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(super::events_and_steering::PlainReplyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -1271,7 +1295,9 @@ async fn cancelling_the_session_still_stops_the_turn_in_flight() {
         tool: "Hang",
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -1327,7 +1353,7 @@ async fn user_prompt_submit_hook_block_ends_the_turn_before_any_model_call() {
         calls: call_count.clone(),
         tool: "Probe",
     });
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let (mut agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
@@ -1372,7 +1398,7 @@ async fn user_prompt_submit_hook_rewrites_the_message_content() {
     // test (unlike the block test above) lets the turn actually reach
     // the model call.
     let model: Arc<dyn Model> = Arc::new(AnswersDirectlySlowPrefetchModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let (mut agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)

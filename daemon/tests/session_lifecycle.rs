@@ -350,7 +350,7 @@ async fn start_server_without_history() -> (
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(dir.path().to_path_buf()),
             model_client: Some(client),
@@ -2941,7 +2941,7 @@ async fn session_create_with_null_project_root_is_a_no_project_session() {
 
     // `harnix`, not the daemon's `code`: a no-project session is only
     // meaningful in a scene that doesn't require one, and `code`
-    // refuses (see `Scene::requires_project`).
+    // refuses (see `SceneSpec::requires_project`).
     let _ = rpc(
         &srv.sock,
         r#"{"jsonrpc":"2.0","method":"scene.activate","params":{"scene":"harnix"},"id":0}"#,

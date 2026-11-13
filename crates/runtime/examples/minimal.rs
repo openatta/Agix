@@ -16,7 +16,6 @@
 use std::sync::Arc;
 
 use base::event::AgentEvent;
-use base::interface::scene::Scene;
 use base::settings::*;
 use base::tool::{InMemoryToolRegistry, Tool};
 use model::adapter::AnthropicModel;
@@ -112,7 +111,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(settings(
             model_name,

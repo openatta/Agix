@@ -47,7 +47,9 @@ fn outside() -> std::path::PathBuf {
 
 fn session(turns: &[&str], replies: Vec<Reply>) -> Session {
     Session::new(fixtures(), turns, replies)
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .tool(Arc::new(Echo) as Arc<dyn Tool>)
 }
 

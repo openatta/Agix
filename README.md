@@ -215,7 +215,7 @@ other way.
  contract   core (crate `base`) — every trait and every shared data type
 ```
 
-- **Contract.** `core` defines the traits (`Model`, `Scene`, `PermissionPolicy`, `Tool`,
+- **Contract.** `core` defines the traits (`Model`, `ScenePrompt`, `PermissionPolicy`, `Tool`,
   `HistoryStore`, `Compactor`, …) and the data types, and depends on no other
   crate in the workspace. Replacing a subsystem means implementing a trait from
   `core`, never reaching into another crate's internals.
@@ -237,7 +237,7 @@ other way.
 
 ```rust
 let (mut agent, events, input) = runtime::agent::Builder::new()
-    .scene(scene)          // prompt, tool whitelist, budgets — Arc<dyn Scene>
+    .scene(scene)          // prompt, tool whitelist, budgets — Arc<SceneSpec>
     .model(model)          // any backend — Arc<dyn Model>
     .settings(settings)
     .module(Arc::new(mcp::McpModule::new(manager)))   // optional, in this order:
@@ -286,8 +286,9 @@ between a `tool_use` and its `tool_result`.
 
 ### Sessions, scenes, history
 
-- **Scenes** are stateless behavior: system prompt, tool whitelist, deferred
-  tools, budgets, which modules may run. One process serves several; each
+- **Scenes** are data plus a prompt: tool allow and deny lists, deferred
+  tools, budgets, which modules may run (`SceneSpec`), and the system prompt
+  (`ScenePrompt`). One process serves several; each
   session picks one and resolves its settings by `(project, scene)`. A scene can
   be Rust or declarative (`scene.json` + `prompt.md`).
 - **History is a log.** A session's state is an append-only JSONL transcript
@@ -426,7 +427,7 @@ As a library — one agent, driven directly:
 
 ```rust
 let (mut agent, mut events, _input) = runtime::agent::Builder::new()
-    .scene(Arc::new(scene::code::CodeScene) as Arc<dyn Scene>)
+    .scene(Arc::new(scene::code::spec(Interaction::Interactive)))
     .model(Arc::new(model::adapter::AnthropicModel::new(client)))
     .settings(Arc::new(settings))
     .build()?;
@@ -453,7 +454,7 @@ settings tiers, routing, history layout and modules, and your own scenes:
 ```rust
 let pool = daemon::assemble::pool(
     &load_daemon_config("claude-sonnet-4-6", 8192, None, "code", &paths),
-    Arc::new(scene::code::CodeScene),
+    Arc::new(scene::code::spec(Interaction::Interactive)),
     daemon::Assembly { scenes: vec![my_scene], ..Default::default() },
 )
 .await?;

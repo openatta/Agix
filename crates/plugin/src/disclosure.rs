@@ -115,7 +115,7 @@ impl Disclosure {
 
         if let Some(loaded) = crate::scenes::declared_scene(plugin) {
             let scene = loaded.map_err(|e| PluginError::Schema(e.to_string()))?;
-            let description = base::interface::scene::Scene::description(&scene);
+            let description = &scene.spec.description;
             if !description.is_empty() {
                 d.push_text("scene description", description, MAX_DESCRIPTION_CHARS)?;
             }

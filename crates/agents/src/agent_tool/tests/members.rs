@@ -15,7 +15,7 @@ pub(super) fn team_enabled_agent_tool() -> AgentTool {
 #[tokio::test]
 async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
     let agent_tool = TestParent {
-        scene: Arc::new(scene::harnix::HarnixScene),
+        scene: Arc::new(scene::harnix::spec()),
         ..test_parent().with_team()
     }
     .agent_tool();
@@ -30,7 +30,7 @@ async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
         )
         .await
         .expect("build should succeed");
-    assert_eq!(agent.scene().id(), "harnix");
+    assert_eq!(agent.scene().id.as_str(), "harnix");
 }
 
 /// A delegate runs its hooks on its parent's runner rather than one it

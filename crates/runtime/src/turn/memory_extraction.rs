@@ -39,8 +39,8 @@ pub(crate) async fn finish_within(
 /// `task_models.memory` override is configured, falling
 /// back to the main conversation model otherwise, mirroring
 /// `agents::delegate::Delegator::model_for_subagent`'s pattern for the `"subagent"`
-/// task type. `prompt_intro` is the scene's `memory_extraction_prompt()`
-/// override, if any — see `Scene::memory_extraction_prompt`.
+/// task type. `prompt_intro` is the scene's override, if any — see
+/// `SceneSpec::memory_extraction_intro`.
 pub(crate) async fn extract_memories_after_turn(
     store: Arc<MemoryStore>,
     messages: &[ModelMessage],

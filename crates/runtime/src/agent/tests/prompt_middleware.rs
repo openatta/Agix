@@ -56,7 +56,9 @@ pub(super) fn answering_agent(
     });
     let (agent, event_rx, _input_tx) = builder(
         Builder::new()
-            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::spec(
+                scene::code::Interaction::Interactive,
+            )))
             .model(model)
             .settings(Arc::new(settings))
             .skip_warmup(true),
@@ -349,7 +351,9 @@ async fn a_message_sent_during_a_tool_step_reaches_the_next_model_call() {
         sent: sent.clone(),
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -434,7 +438,9 @@ async fn a_message_sent_while_the_model_answers_is_answered_in_the_same_turn() {
         sent: sent.clone(),
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -499,7 +505,9 @@ async fn an_interrupted_turn_hands_back_what_it_never_delivered() {
         sent: sent.clone(),
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)

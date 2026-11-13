@@ -511,29 +511,29 @@ impl GoldenFile {
     }
 }
 
-/// `HarnixScene` with a caller-chosen compaction threshold, offering whatever
-/// tools the case registers.
+/// The harnix scene's identity and system prompt with a caller-chosen
+/// compaction threshold, offering whatever tools the case registers.
 ///
 /// The threshold lives on the scene, not in settings, so a case that wants to
 /// exercise compaction cannot get there by tweaking `Settings` — it needs a
 /// scene of its own. The tool surface is opened because the scene's
 /// whitelist decides what a session has at all, and the cases' fake tools
-/// are on no real scene's list. Everything else delegates.
+/// are on no real scene's list. Nothing else of harnix is taken: no session
+/// context, reminders, deferral or path style, so the goldens stay about the
+/// turn loop.
 pub struct BudgetScene {
-    inner: scene::harnix::HarnixScene,
     pub compact_threshold: usize,
-    /// `None` leaves the inner scene's own ceiling. `Some` is how a case pins
-    /// the stop-on-max-turns decision without running dozens of model calls.
+    /// `None` leaves no ceiling. `Some` is how a case pins the
+    /// stop-on-max-turns decision without running dozens of model calls.
     pub max_api_calls: Option<u32>,
-    /// Whether a permission prompt reaches the harness. On, unlike the inner
-    /// scene, so the prompt flow itself stays under test.
+    /// Whether a permission prompt reaches the harness. On, unlike harnix,
+    /// so the prompt flow itself stays under test.
     pub interactive: bool,
 }
 
 impl BudgetScene {
     pub fn new(compact_threshold: usize) -> Self {
         Self {
-            inner: scene::harnix::HarnixScene,
             compact_threshold,
             max_api_calls: None,
             interactive: true,
@@ -544,41 +544,35 @@ impl BudgetScene {
         self.max_api_calls = Some(max);
         self
     }
+
+    pub fn spec(self) -> base::interface::scene::SceneSpec {
+        let harnix = scene::harnix::spec();
+        let mut s = base::interface::scene::SceneSpec::new(
+            harnix.id,
+            harnix.name,
+            std::sync::Arc::new(SystemOnly(harnix.prompt)),
+        );
+        s.description = harnix.description;
+        s.interactive = self.interactive;
+        s.token_budget = base::interface::scene::TokenBudget {
+            compact_threshold: self.compact_threshold,
+            compact_keep_recent: 2,
+        };
+        if let Some(max) = self.max_api_calls {
+            s.execution.max_api_calls_per_turn = max;
+        }
+        s
+    }
 }
 
-impl base::interface::scene::Scene for BudgetScene {
-    fn id(&self) -> &str {
-        self.inner.id()
-    }
-    fn name(&self) -> &str {
-        self.inner.name()
-    }
-    fn description(&self) -> &str {
-        self.inner.description()
-    }
-    fn build_system_prompt(
+/// Another prompt's system blocks, without its session context.
+struct SystemOnly(std::sync::Arc<dyn base::interface::scene::ScenePrompt>);
+
+impl base::interface::scene::ScenePrompt for SystemOnly {
+    fn system(
         &self,
         ctx: &base::interface::scene::ScenePromptContext,
     ) -> Vec<base::prompt::PromptBlock> {
-        self.inner.build_system_prompt(ctx)
-    }
-    fn tools(&self) -> Vec<String> {
-        Vec::new()
-    }
-    fn interactive(&self) -> bool {
-        self.interactive
-    }
-    fn token_budget(&self) -> base::interface::scene::TokenBudget {
-        base::interface::scene::TokenBudget {
-            compact_threshold: self.compact_threshold,
-            compact_keep_recent: 2,
-        }
-    }
-    fn execution_params(&self) -> base::interface::scene::ExecutionParams {
-        let mut params = self.inner.execution_params();
-        if let Some(max) = self.max_api_calls {
-            params.max_api_calls_per_turn = max;
-        }
-        params
+        self.0.system(ctx)
     }
 }

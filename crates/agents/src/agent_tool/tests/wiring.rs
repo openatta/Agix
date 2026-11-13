@@ -52,7 +52,9 @@ pub(super) fn host_contracts() -> runtime::agent::HostContracts {
     let (settings, dir) = parent_settings_for_test("code");
     let probe = Arc::new(CapturesHost(Default::default()));
     let built = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(settings))
         .skip_warmup(true)

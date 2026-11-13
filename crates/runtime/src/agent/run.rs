@@ -74,7 +74,7 @@ impl Agent {
     /// Start the agent event loop. Runs until cancelled (caller calls `.cancel()` on the token)
     /// or the input channel closes. Does NOT consume self — the agent can be reused after stop.
     pub async fn run(&mut self, cancel: CancellationToken) {
-        tracing::info!(scene = %self.scene.id(), "Engine started");
+        tracing::info!(scene = %self.scene.id, "Engine started");
 
         // Emit SystemInit
         let tools: Vec<_> = self
@@ -88,7 +88,7 @@ impl Agent {
             })
             .collect();
         let _ = self.channels.event_tx.send(AgentEvent::SystemInit {
-            scene: self.scene.id().to_string(),
+            scene: self.scene.id.clone(),
             tools,
             mcp_servers: vec![],
         });
@@ -509,7 +509,7 @@ impl Agent {
         &self.config.deferred_tools
     }
 
-    pub fn scene(&self) -> &Arc<dyn Scene> {
+    pub fn scene(&self) -> &Arc<SceneSpec> {
         &self.scene
     }
 
@@ -570,7 +570,7 @@ impl Agent {
         let keep = self
             .policies
             .budget_policy
-            .context_budget(&self.scene.token_budget())
+            .context_budget(&self.scene.token_budget)
             .compact_keep_recent
             .min(rounds.saturating_sub(1))
             .max(1);

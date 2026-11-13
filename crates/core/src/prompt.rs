@@ -2,7 +2,7 @@
 
 use crate::interface::instruction_provider::RuleProvider;
 use crate::interface::prompt_assembler::AssemblyRequest;
-use crate::interface::scene::{Scene, ScenePromptContext};
+use crate::interface::scene::{ScenePromptContext, SceneSpec};
 use crate::memory::{memory_prompt, MemoryStore};
 use crate::rules::render_rules_prompt;
 use crate::settings::LoadedSettings;
@@ -168,7 +168,7 @@ impl PromptBlock {
 /// Assemble the full system prompt from all sources.
 ///
 /// Concatenation order:
-/// 1. Scene skeleton (Scene::build_system_prompt)
+/// 1. Scene skeleton (SceneSpec::system_prompt)
 /// 2. Skills loaded from skills/ directories
 /// 3. Memory loaded from MemoryStore
 ///    3b. Rules discovery index (filenames + first line only; see `crate::rules`)
@@ -179,7 +179,7 @@ impl PromptBlock {
 /// Note: CLAUDE.md / instruction file is NOT in the system prompt — it is injected
 /// as a synthetic `<system-reminder>` user message.
 pub fn assemble_prompt(
-    scene: &dyn Scene,
+    scene: &SceneSpec,
     settings: &LoadedSettings,
     memory_store: &MemoryStore,
     ctx: &ScenePromptContext,
@@ -239,7 +239,7 @@ pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
     let mut unnamed = 0usize;
     kernel.extend(
         scene
-            .build_system_prompt(ctx)
+            .system_prompt(ctx)
             .into_iter()
             .map(|b| match &b.name {
                 // A scene that labels its own sections keeps those labels,
@@ -363,7 +363,7 @@ pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interface::scene::TokenBudget;
+    use crate::interface::scene::{FixedPrompt, TokenBudget};
     use crate::memory::MemoryStore;
     use crate::provider::ApiType;
     use crate::settings::{
@@ -372,29 +372,17 @@ mod tests {
     use std::borrow::Cow;
     use tempfile::TempDir;
 
-    struct TestScene;
-    impl Scene for TestScene {
-        fn id(&self) -> &str {
-            "test"
-        }
-        fn name(&self) -> &str {
-            "Test"
-        }
-        fn description(&self) -> &str {
-            "Test scene"
-        }
-        fn build_system_prompt(&self, _ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-            vec![PromptBlock::system_cached("You are a test agent.")]
-        }
-        fn tools(&self) -> Vec<String> {
-            vec![]
-        }
-        fn token_budget(&self) -> TokenBudget {
-            TokenBudget {
-                compact_threshold: 1000,
-                compact_keep_recent: 5,
-            }
-        }
+    fn scene_with(blocks: Vec<PromptBlock>) -> SceneSpec {
+        let mut scene = SceneSpec::new("test", "Test", std::sync::Arc::new(FixedPrompt(blocks)));
+        scene.token_budget = TokenBudget {
+            compact_threshold: 1000,
+            compact_keep_recent: 5,
+        };
+        scene
+    }
+
+    fn test_scene() -> SceneSpec {
+        scene_with(vec![PromptBlock::system_cached("You are a test agent.")])
     }
 
     fn test_ctx() -> ScenePromptContext<'static> {
@@ -475,7 +463,7 @@ mod tests {
 
     #[test]
     fn assemble_basic_prompt() {
-        let scene = TestScene;
+        let scene = test_scene();
         let settings = test_settings();
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
@@ -508,7 +496,7 @@ mod tests {
 
     #[test]
     fn override_replaces_all() {
-        let scene = TestScene;
+        let scene = test_scene();
         let mut settings = test_settings();
         settings.prompt_override = Some("OVERRIDE".into());
         let tmp = TempDir::new().unwrap();
@@ -559,7 +547,7 @@ mod tests {
     /// would be invisible in exactly the configuration that produced it.
     #[test]
     fn every_assembled_block_is_named_and_owned() {
-        let scene = TestScene;
+        let scene = test_scene();
         let mut settings = test_settings();
         settings.prompt_append = Some("appended".into());
         settings.memory_enabled = true;
@@ -610,40 +598,17 @@ mod tests {
     /// only handle anything downstream has on a block.
     #[test]
     fn unnamed_scene_sections_are_numbered_so_each_can_be_addressed() {
-        struct ThreeSections;
-        impl Scene for ThreeSections {
-            fn id(&self) -> &str {
-                "three"
-            }
-            fn name(&self) -> &str {
-                "Three"
-            }
-            fn description(&self) -> &str {
-                "three unnamed sections"
-            }
-            fn build_system_prompt(&self, _ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-                vec![
-                    PromptBlock::system("first"),
-                    PromptBlock::system("second"),
-                    PromptBlock::system("third"),
-                ]
-            }
-            fn tools(&self) -> Vec<String> {
-                vec![]
-            }
-            fn token_budget(&self) -> TokenBudget {
-                TokenBudget {
-                    compact_threshold: 1000,
-                    compact_keep_recent: 5,
-                }
-            }
-        }
+        let three_sections = scene_with(vec![
+            PromptBlock::system("first"),
+            PromptBlock::system("second"),
+            PromptBlock::system("third"),
+        ]);
 
         let settings = test_settings();
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let blocks = assemble_prompt(
-            &ThreeSections,
+            &three_sections,
             &test_loaded(settings),
             &store,
             &test_ctx(),
@@ -666,39 +631,16 @@ mod tests {
 
     #[test]
     fn a_scene_that_names_its_sections_keeps_the_names_under_the_prefix() {
-        struct SectionedScene;
-        impl Scene for SectionedScene {
-            fn id(&self) -> &str {
-                "sectioned"
-            }
-            fn name(&self) -> &str {
-                "Sectioned"
-            }
-            fn description(&self) -> &str {
-                "names its own sections"
-            }
-            fn build_system_prompt(&self, _ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-                vec![
-                    PromptBlock::system("who you are").named("identity"),
-                    PromptBlock::system("what you may do").named("tools"),
-                ]
-            }
-            fn tools(&self) -> Vec<String> {
-                vec![]
-            }
-            fn token_budget(&self) -> TokenBudget {
-                TokenBudget {
-                    compact_threshold: 1000,
-                    compact_keep_recent: 5,
-                }
-            }
-        }
+        let sectioned = scene_with(vec![
+            PromptBlock::system("who you are").named("identity"),
+            PromptBlock::system("what you may do").named("tools"),
+        ]);
 
         let settings = test_settings();
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let blocks = assemble_prompt(
-            &SectionedScene,
+            &sectioned,
             &test_loaded(settings),
             &store,
             &test_ctx(),
@@ -717,7 +659,7 @@ mod tests {
     fn an_empty_registry_assembles_the_identical_prompt() {
         use crate::interface::prompt_registry::NoRegistrations;
 
-        let scene = TestScene;
+        let scene = test_scene();
         let mut settings = test_settings();
         settings.prompt_append = Some("appended".into());
         let tmp = TempDir::new().unwrap();
@@ -751,7 +693,7 @@ mod tests {
             orders, InMemoryPromptRegistry, PromptRegistry, RegisteredBlock,
         };
 
-        let scene = TestScene;
+        let scene = test_scene();
         let settings = test_settings();
         let tmp = TempDir::new().unwrap();
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
@@ -819,7 +761,7 @@ mod tests {
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let blocks = assemble_prompt_with(&AssemblyRequest {
             registry: registry.as_ref(),
-            scene: &TestScene,
+            scene: &test_scene(),
             settings: &test_settings(),
             memory_store: &store,
             ctx: &test_ctx(),
@@ -853,7 +795,7 @@ mod tests {
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let blocks = assemble_prompt_with(&AssemblyRequest {
             registry: registry.as_ref(),
-            scene: &TestScene,
+            scene: &test_scene(),
             settings: &test_settings(),
             memory_store: &store,
             ctx: &test_ctx(),
@@ -902,7 +844,7 @@ mod tests {
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let blocks = assemble_prompt_with(&AssemblyRequest {
             registry: registry.as_ref(),
-            scene: &TestScene,
+            scene: &test_scene(),
             settings: &test_settings(),
             memory_store: &store,
             ctx: &test_ctx(),
@@ -949,7 +891,7 @@ mod tests {
         let store = MemoryStore::new(tmp.path().join("user"), tmp.path().join("local"));
         let blocks = assemble_prompt_with(&AssemblyRequest {
             registry: registry.as_ref(),
-            scene: &TestScene,
+            scene: &test_scene(),
             settings: &test_settings(),
             memory_store: &store,
             ctx: &test_ctx(),

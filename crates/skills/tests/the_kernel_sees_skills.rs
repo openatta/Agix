@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base::frozen::SkillEntry;
 use base::interface::model::{Model, ModelMessage};
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::settings::*;
 use base::tool::InMemoryToolRegistry;
 use runtime::agent::Builder;
@@ -264,7 +264,7 @@ fn skill_derived_commands_carry_named_arguments() {
 async fn build_uses_the_injected_skill_catalog_instead_of_scanning_disk() {
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let catalog = skills::manager::SkillManager::new();
     catalog.register_bundled(base::frozen::SkillEntry {
@@ -312,7 +312,9 @@ async fn a_host_can_register_a_fourth_skill_source() {
     .with_body("file-a-ticket", "Ask for a summary, then POST it.");
 
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .module(Arc::new(
@@ -353,7 +355,9 @@ async fn commands_handle_outlives_the_agent_and_stays_live() {
         .unwrap();
 
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -387,7 +391,9 @@ async fn commands_handle_outlives_the_agent_and_stays_live() {
 async fn the_skill_tool_is_resident_and_needs_the_module() {
     let build = |with_skills: bool| {
         let mut builder = Builder::new()
-            .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+            .scene(Arc::new(scene::code::spec(
+                scene::code::Interaction::Interactive,
+            )))
             .model(Arc::new(DummyModel))
             .settings(Arc::new(test_settings()))
             .tools({
@@ -408,7 +414,7 @@ async fn the_skill_tool_is_resident_and_needs_the_module() {
     );
     assert!(
         !agent.deferred_tools().contains("Skill"),
-        "Skill is in CodeScene's resident set and must ship its full schema"
+        "Skill is in the code scene's resident set and must ship its full schema"
     );
     assert!(build(false).tools().get("Skill").is_none());
 }

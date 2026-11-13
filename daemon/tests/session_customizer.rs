@@ -73,7 +73,7 @@ async fn serve(
     config.settings.values.memory_enabled = false;
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(model as Arc<dyn AnthropicClient>),

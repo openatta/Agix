@@ -79,7 +79,7 @@ pub struct DaemonOptions {
 #[derive(Clone, Default)]
 pub struct Host {
     /// Served beside the built-in scenes.
-    pub scenes: Vec<Arc<dyn base::interface::scene::Scene>>,
+    pub scenes: Vec<Arc<base::interface::scene::SceneSpec>>,
     /// Added to every session the daemon builds.
     pub plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
 }
@@ -228,12 +228,7 @@ impl Daemon {
                 permission_prompt_timeout: opts.prompt_timeout,
                 model_client: Some(client),
                 permission: Some(PermissionSet::without_grants(Arc::new(AllowAll))),
-                extra_scenes: opts
-                    .host
-                    .scenes
-                    .iter()
-                    .map(|s| s.id().to_string())
-                    .collect(),
+                extra_scenes: opts.host.scenes.iter().map(|s| s.id.clone()).collect(),
                 scenes: opts.host.scenes.clone(),
                 plugins: opts.host.plugins.clone(),
                 ..Default::default()

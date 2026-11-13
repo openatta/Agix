@@ -72,7 +72,9 @@ pub(super) async fn search_once(agent: &Agent) -> String {
 async fn web_search_goes_through_the_sessions_own_model() {
     let (session, asked) = search_spy("https://from.session.example");
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(session as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -102,7 +104,9 @@ async fn task_models_can_route_web_search_to_another_provider() {
         session.clone() as Arc<dyn Model>,
     );
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(session as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .task_router(Arc::new(router))
@@ -233,7 +237,9 @@ async fn task_models_web_fetch_extracts_pages_on_the_routed_model() {
         session.clone() as Arc<dyn Model>,
     );
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(session as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(templated())
@@ -283,7 +289,9 @@ async fn without_task_models_web_fetch_no_model_reads_the_page() {
         session.clone() as Arc<dyn Model>,
     );
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(session as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(templated())

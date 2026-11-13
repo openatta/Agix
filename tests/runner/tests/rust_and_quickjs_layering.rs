@@ -87,7 +87,9 @@ async fn a_quickjs_result_policy_reads_what_the_rust_one_left() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let counted = Arc::new(AtomicUsize::new(0));
         let session = Session::new(fixtures(), &["echo something"], calls_the_echo_tool())
-            .scene(Arc::new(scene::code::CodeScene::default()))
+            .scene(Arc::new(scene::code::spec(
+                scene::code::Interaction::Interactive,
+            )))
             .tool(Arc::new(ScriptEcho))
             .bind("tool_result.js", "tool.result", "onResult")
             .rust(order, move |b| b.plugin(Arc::new(Contributes { counted })));
@@ -110,7 +112,9 @@ async fn a_quickjs_ring_sits_outside_the_rust_ones() {
             let counted = Arc::new(AtomicUsize::new(0));
             let seen = counted.clone();
             let session = Session::new(fixtures(), &["echo something"], calls_the_echo_tool())
-                .scene(Arc::new(scene::code::CodeScene::default()))
+                .scene(Arc::new(scene::code::spec(
+                    scene::code::Interaction::Interactive,
+                )))
                 .tool(Arc::new(ScriptEcho))
                 .bind(script, "tool.around", "onAround")
                 .rust(order, move |b| b.plugin(Arc::new(Contributes { counted })));
@@ -278,7 +282,9 @@ async fn a_rust_plugin_follows_the_work_into_a_sub_agent() {
             Reply::Text("(background)"),
         ];
         let session = Session::new(fixtures(), &["delegate an echo"], replies)
-            .scene(Arc::new(scene::code::CodeScene::default()))
+            .scene(Arc::new(scene::code::spec(
+                scene::code::Interaction::Interactive,
+            )))
             .tool(Arc::new(ScriptEcho))
             .rust(RustOrder::AfterScripts, move |b| b.plugin(plugin));
         let ran = drive(tmp.path(), session).await;

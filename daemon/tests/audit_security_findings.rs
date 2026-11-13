@@ -70,7 +70,7 @@ struct Setup {
     mode: PermissionMode,
     global: Value,
     managed: Option<&'static str>,
-    scene: Option<Arc<dyn base::interface::scene::Scene>>,
+    scene: Option<Arc<base::interface::scene::SceneSpec>>,
 }
 
 impl Default for Setup {
@@ -121,9 +121,9 @@ impl Daemon {
         let model = Arc::new(MockAnthropicClient::new());
         let pool = daemon::assemble::pool(
             &config,
-            setup
-                .scene
-                .unwrap_or_else(|| Arc::new(scene::code::CodeScene::default())),
+            setup.scene.unwrap_or_else(|| {
+                Arc::new(scene::code::spec(scene::code::Interaction::Interactive))
+            }),
             daemon::Assembly {
                 cwd: Some(work.clone()),
                 model_client: Some(model.clone()),
@@ -649,7 +649,7 @@ async fn call(sock: &Path, method: &str, params: Value) -> Value {
 async fn audit2_a_no_project_session_writes_the_state_roots_parent_silently() {
     let daemon = Daemon::start(
         Setup {
-            scene: Some(Arc::new(scene::harnix::HarnixScene)),
+            scene: Some(Arc::new(scene::harnix::spec())),
             ..Default::default()
         },
         |_, _| {},

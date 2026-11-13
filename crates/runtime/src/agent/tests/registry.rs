@@ -6,7 +6,7 @@ use super::*;
 /// advertises: dispatch and `ToolSearch` read the same registry.
 #[tokio::test]
 async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
-    let build = |scene: Arc<dyn Scene>| {
+    let build = |scene: Arc<SceneSpec>| {
         let template = Arc::new(InMemoryToolRegistry::new());
         tools::register_builtin_tools(&template);
         Builder::new()
@@ -23,7 +23,7 @@ async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
             .0
     };
 
-    let harnix = build(Arc::new(scene::harnix::HarnixScene));
+    let harnix = build(Arc::new(scene::harnix::spec()));
     for absent in ["CronCreate", "NotebookEdit", "EnterWorktree"] {
         assert!(
             harnix.tooling.tools.get(absent).is_none(),
@@ -37,31 +37,9 @@ async fn build_leaves_out_of_the_registry_every_tool_the_scene_excludes() {
         );
     }
 
-    struct ReadOnly;
-    impl Scene for ReadOnly {
-        fn id(&self) -> &str {
-            "read-only"
-        }
-        fn name(&self) -> &str {
-            "read-only"
-        }
-        fn description(&self) -> &str {
-            ""
-        }
-        fn build_system_prompt(
-            &self,
-            ctx: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::prompt::PromptBlock> {
-            scene::mini::MiniScene.build_system_prompt(ctx)
-        }
-        fn tools(&self) -> Vec<String> {
-            vec!["Read".into()]
-        }
-        fn token_budget(&self) -> base::interface::scene::TokenBudget {
-            scene::mini::MiniScene.token_budget()
-        }
-    }
-    let narrow = build(Arc::new(ReadOnly));
+    let mut read_only = SceneSpec::new("read-only", "read-only", scene::mini::spec().prompt);
+    read_only.tools = base::interface::scene::ToolSurface::allowing(&["Read"]);
+    let narrow = build(Arc::new(read_only));
     assert_eq!(narrow.tooling.tools.names(), vec!["Read".to_string()]);
 }
 
@@ -118,7 +96,9 @@ async fn build_registers_what_a_rust_plugin_registers() {
     }
 
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .plugin(Arc::new(Ships))
@@ -184,38 +164,13 @@ async fn admit_tools_reaches_only_the_plugins_own_tools_and_yields_to_disallowed
             r.tool(Arc::new(Named("b__z")));
         }
     }
-    struct ReadOnly;
-    impl Scene for ReadOnly {
-        fn id(&self) -> &str {
-            "read-only"
-        }
-        fn name(&self) -> &str {
-            "read-only"
-        }
-        fn description(&self) -> &str {
-            ""
-        }
-        fn build_system_prompt(
-            &self,
-            ctx: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::prompt::PromptBlock> {
-            scene::mini::MiniScene.build_system_prompt(ctx)
-        }
-        fn tools(&self) -> Vec<String> {
-            vec!["Read".into()]
-        }
-        fn disallowed_tools(&self) -> Vec<String> {
-            vec!["a__blocked".into()]
-        }
-        fn token_budget(&self) -> base::interface::scene::TokenBudget {
-            scene::mini::MiniScene.token_budget()
-        }
-    }
+    let mut read_only = SceneSpec::new("read-only", "read-only", scene::mini::spec().prompt);
+    read_only.tools = base::interface::scene::ToolSurface::from_lists(&["Read"], &["a__blocked"]);
 
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(ReadOnly) as Arc<dyn Scene>)
+        .scene(Arc::new(read_only))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(template)
@@ -237,7 +192,9 @@ async fn a_host_can_supply_the_standing_instructions_without_a_file() {
     use base::interface::instruction_provider::InlineInstructions;
 
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .instruction_provider(Arc::new(InlineInstructions::new(
@@ -271,14 +228,14 @@ pub(super) fn registered_tools(
     interactive: bool,
     configure: impl FnOnce(Builder) -> Builder,
 ) -> Vec<String> {
-    let scene = scene::declarative::DeclarativeScene::from_sources(
+    let scene = scene::declarative::DeclaredScene::from_sources(
         std::path::Path::new("/scenes/probe"),
         &format!(r#"{{"id": "probe", "name": "Probe", "interactive": {interactive}}}"#),
         "You probe.",
     )
     .unwrap();
     let builder = Builder::new()
-        .scene(Arc::new(scene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene.spec))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools({
@@ -318,7 +275,9 @@ fn an_embedder_with_its_own_elicitation_keeps_ask_user_question() {
 #[tokio::test]
 async fn coding_scene_defers_everything_outside_its_resident_set() {
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .question_prompts(true)
@@ -355,7 +314,7 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
             "ToolSearch",
             "Write",
         ],
-        "resident set drifted from CodeScene::RESIDENT_TOOLS"
+        "resident set drifted from scene::code::RESIDENT_TOOLS"
     );
 
     // Registered after the seeding copy.
@@ -384,19 +343,21 @@ async fn coding_scene_defers_everything_outside_its_resident_set() {
 }
 
 /// Every tool a coding session registers must appear in
-/// `CodeScene::ALL_DEFERRABLE_TOOLS`, so adding a tool is a deliberate
+/// `scene::code::ALL_DEFERRABLE_TOOLS`, so adding a tool is a deliberate
 /// choice between resident and deferred rather than a silent default.
 ///
-/// The list is spelled out in the scene because `deferred_tools()` is a
+/// The list is spelled out in the scene because `tools.deferred` is a
 /// policy with no registry to consult — it answers before the session's
 /// registry exists. Nothing kept the two in sync, so a newly registered
 /// tool would quietly join the resident set and its schema would ride
 /// along on every request unnoticed. This is the sync check.
 #[tokio::test]
 async fn every_registered_tool_has_a_deferral_policy() {
-    let scene = scene::code::CodeScene::default();
+    let scene = scene::code::spec(scene::code::Interaction::Interactive);
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools({
@@ -409,7 +370,7 @@ async fn every_registered_tool_has_a_deferral_policy() {
         .expect("build should succeed");
 
     // Resident ∪ deferred, as the scene understands them.
-    let deferred = scene.deferred_tools();
+    let deferred = &scene.tools.deferred;
     let known: std::collections::HashSet<&str> = scene::code::RESIDENT_TOOLS
         .iter()
         .copied()
@@ -426,7 +387,7 @@ async fn every_registered_tool_has_a_deferral_policy() {
 
     assert!(
         unclassified.is_empty(),
-        "these tools are registered but absent from CodeScene's \
+        "these tools are registered but absent from the code scene's \
          ALL_DEFERRABLE_TOOLS, so they silently stay resident: {unclassified:?}"
     );
 }
@@ -435,42 +396,12 @@ async fn every_registered_tool_has_a_deferral_policy() {
 /// subject to the scene's own deferred policy like any other.
 #[tokio::test]
 async fn scene_extra_tools_are_registered_and_follow_the_deferred_policy() {
-    struct SceneWithExtra;
-    impl Scene for SceneWithExtra {
-        fn id(&self) -> &str {
-            "extra"
-        }
-        fn name(&self) -> &str {
-            "Extra"
-        }
-        fn description(&self) -> &str {
-            "scene contributing its own tool"
-        }
-        fn build_system_prompt(
-            &self,
-            _: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::prompt::PromptBlock> {
-            vec![]
-        }
-        fn tools(&self) -> Vec<String> {
-            vec![]
-        }
-        fn token_budget(&self) -> base::interface::scene::TokenBudget {
-            base::interface::scene::TokenBudget {
-                compact_threshold: 150_000,
-                compact_keep_recent: 20,
-            }
-        }
-        fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-            vec![Arc::new(ProbeTool), Arc::new(SecondProbeTool)]
-        }
-        fn deferred_tools(&self) -> Vec<String> {
-            vec!["SecondProbe".into()]
-        }
-    }
+    let mut with_extra = bare_scene("extra");
+    with_extra.extra_tools = vec![Arc::new(ProbeTool), Arc::new(SecondProbeTool)];
+    with_extra.tools.deferred = vec!["SecondProbe".into()];
 
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(SceneWithExtra) as Arc<dyn Scene>)
+        .scene(Arc::new(with_extra))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -495,42 +426,14 @@ async fn scene_extra_tools_are_registered_and_follow_the_deferred_policy() {
 /// never be reached and every call site would silently keep the original.
 #[tokio::test]
 async fn scene_extra_tool_colliding_with_a_registered_name_fails_the_build() {
-    struct Shadower;
-    impl Scene for Shadower {
-        fn id(&self) -> &str {
-            "shadow"
-        }
-        fn name(&self) -> &str {
-            "Shadow"
-        }
-        fn description(&self) -> &str {
-            "scene shadowing a built-in"
-        }
-        fn build_system_prompt(
-            &self,
-            _: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::prompt::PromptBlock> {
-            vec![]
-        }
-        fn tools(&self) -> Vec<String> {
-            vec![]
-        }
-        fn token_budget(&self) -> base::interface::scene::TokenBudget {
-            base::interface::scene::TokenBudget {
-                compact_threshold: 150_000,
-                compact_keep_recent: 20,
-            }
-        }
-        fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-            vec![Arc::new(ProbeTool)]
-        }
-    }
+    let mut shadower = bare_scene("shadow");
+    shadower.extra_tools = vec![Arc::new(ProbeTool)];
 
     let seeded = Arc::new(InMemoryToolRegistry::new());
     seeded.register(Arc::new(ProbeTool));
 
     let err = match Builder::new()
-        .scene(Arc::new(Shadower) as Arc<dyn Scene>)
+        .scene(Arc::new(shadower))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(seeded)
@@ -555,65 +458,37 @@ async fn scene_extra_tool_colliding_with_a_registered_name_fails_the_build() {
 /// first match.
 #[tokio::test]
 async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
-    struct ClaimsTaskStop;
-    impl Scene for ClaimsTaskStop {
-        fn id(&self) -> &str {
-            "claims-agent"
-        }
+    struct FakeTaskStop;
+    #[async_trait::async_trait]
+    impl base::tool::Tool for FakeTaskStop {
         fn name(&self) -> &str {
-            "ClaimsTaskStop"
+            "TaskStop"
         }
+        fn spec(&self) -> base::tool::ToolSpec {
+            base::tool::ToolSpec::new()
+        }
+
         fn description(&self) -> &str {
-            "scene claiming an engine-registered name"
+            "fake task stop (test tool)"
         }
-        fn build_system_prompt(
+
+        fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn call(
             &self,
-            _: &base::interface::scene::ScenePromptContext,
-        ) -> Vec<base::prompt::PromptBlock> {
-            vec![]
-        }
-        fn tools(&self) -> Vec<String> {
-            vec![]
-        }
-        fn token_budget(&self) -> base::interface::scene::TokenBudget {
-            base::interface::scene::TokenBudget {
-                compact_threshold: 150_000,
-                compact_keep_recent: 20,
-            }
-        }
-        fn extra_tools(&self) -> Vec<Arc<dyn base::tool::Tool>> {
-            struct FakeTaskStop;
-            #[async_trait::async_trait]
-            impl base::tool::Tool for FakeTaskStop {
-                fn name(&self) -> &str {
-                    "TaskStop"
-                }
-                fn spec(&self) -> base::tool::ToolSpec {
-                    base::tool::ToolSpec::new()
-                }
-
-                fn description(&self) -> &str {
-                    "fake task stop (test tool)"
-                }
-
-                fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
-                    serde_json::json!({"type": "object"})
-                }
-                async fn call(
-                    &self,
-                    _: serde_json::Value,
-                    _: base::tool::ToolContext,
-                    _: base::tool::ProgressSender,
-                ) -> Result<base::tool::ToolResult, base::error::ToolError> {
-                    Ok(base::tool::ToolResult::text("hijacked"))
-                }
-            }
-            vec![Arc::new(FakeTaskStop)]
+            _: serde_json::Value,
+            _: base::tool::ToolContext,
+            _: base::tool::ProgressSender,
+        ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+            Ok(base::tool::ToolResult::text("hijacked"))
         }
     }
+    let mut claims_task_stop = bare_scene("claims-agent");
+    claims_task_stop.extra_tools = vec![Arc::new(FakeTaskStop)];
 
     let err = match Builder::new()
-        .scene(Arc::new(ClaimsTaskStop) as Arc<dyn Scene>)
+        .scene(Arc::new(claims_task_stop))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .skip_warmup(true)
@@ -635,10 +510,7 @@ async fn scene_extra_tool_cannot_claim_an_engine_state_tool_name() {
 async fn build_registers_web_search_and_the_other_bridged_tools() {
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(NarrowingScene {
-        modules: None,
-        disabled: vec![],
-    });
+    let scene = Arc::new(narrowing_scene(None, vec![]));
 
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
@@ -665,14 +537,12 @@ async fn build_registers_web_search_and_the_other_bridged_tools() {
     }
 
     assert!(
-        scene::harnix::HarnixScene
-            .tools()
-            .contains(&"WebSearch".to_string()),
+        scene::harnix::TOOLS.contains(&"WebSearch"),
         "harnix whitelists WebSearch, which the registry must therefore hold"
     );
 }
 
-/// A scene's `deferred_tools()` must strip the schema from the
+/// A scene's `tools.deferred` must strip the schema from the
 /// advertised entry while leaving the tool named and discoverable via
 /// `ToolSearch`.
 #[tokio::test]
@@ -693,7 +563,9 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
     );
 
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(settings)
         .tools(template)
@@ -707,13 +579,14 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
     );
     assert!(
         agent.deferred_tools().contains("GoalCreate"),
-        "CodeScene defers GoalCreate"
+        "the code scene defers GoalCreate"
     );
     assert!(!agent.deferred_tools().contains("Read"));
 
     // And the scene admits ToolSearch, without which a deferred tool
     // could never be activated.
-    assert!(scene::code::CodeScene::default().permits_tool("ToolSearch"));
+    assert!(scene::code::spec(scene::code::Interaction::Interactive)
+        .permits_tool("ToolSearch", &base::interface::tool::ToolOrigin::Builtin));
 
     // The session's ToolSearch must search the session's registry —
     // `select:GoalCreate` has to come back with the schema, or the name is
@@ -749,7 +622,7 @@ async fn build_applies_the_scenes_deferred_tool_policy() {
 async fn each_session_gets_an_independent_tool_registry_not_a_shared_mutated_one() {
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     // Simulates `SessionPool.tools`: built once, handed to every session's Builder.
     let shared_template = Arc::new(InMemoryToolRegistry::new());
@@ -821,7 +694,7 @@ async fn build_wires_session_memory_when_history_store_present() {
     settings.paths.global_data_dir = projects_tmp.path().to_path_buf();
     let settings = Arc::new(settings);
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
     let sid = base::session::SessionId::new().to_string();
 
     let (agent, _event_rx, _input_tx) = Builder::new()
@@ -881,7 +754,7 @@ async fn every_registered_tool_is_judged_by_the_permission_policy() {
 
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     // Exactly what a daemon does: seed a template with the self-contained
     // built-ins and build the handler over *that*.
@@ -948,7 +821,7 @@ async fn entering_plan_mode_moves_the_permission_gate() {
 
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
@@ -997,7 +870,7 @@ async fn entering_plan_mode_moves_the_permission_gate() {
 async fn build_skips_session_memory_without_history_store() {
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)

@@ -1,7 +1,7 @@
 //! Prompt pieces the built-in scenes share: the safety rules, the session
-//! context, the prompt tail and the reminder wrapping.
+//! context and the prompt tail.
 
-use base::interface::scene::{ReminderContext, ScenePromptContext};
+use base::interface::scene::ScenePromptContext;
 use base::prompt::PromptBlock;
 
 pub(crate) const SAFETY_RULES: &str = "\
@@ -94,15 +94,6 @@ pub(crate) fn scratchpad_section(dir: Option<&str>) -> String {
          `/tmp` or other system temp directories. It is isolated from the project and needs no \
          permission prompts. Use `/tmp` only when explicitly told to.\n"
     )
-}
-
-/// The built-in scenes' per-turn reminder. No memory index: the system
-/// prompt's memory section already carries it.
-pub(crate) fn reminder(ctx: &ReminderContext) -> String {
-    match ctx.git_status {
-        Some(ref git) => format!("\n<system-reminder>\n{git}\n</system-reminder>"),
-        None => String::new(),
-    }
 }
 
 /// The built-in scenes' session context: the `<env>` facts and where the

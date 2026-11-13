@@ -11,10 +11,20 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// What the scene's allow and deny lists say, in any of the forms code can
+/// read them in.
+const SCENE_TOOL_JUDGMENT: &[&str] = &[
+    ".permits_tool(",
+    ".tools.permits(",
+    ".tools.selector(",
+    ".tools.allow",
+    ".tools.deny",
+];
+
 /// A session's tool policy is decided once, in `runtime::tool_policy`, and
-/// every path that filters tools reads that. A path that asks the scene
-/// directly compiles and passes its tests, and quietly drops the plugin tools
-/// the policy admits.
+/// every path that filters tools reads that. A path that reads the scene's
+/// allow or deny list directly compiles and passes its tests, and quietly
+/// drops the plugin tools the policy admits.
 #[test]
 fn only_the_tool_policy_asks_the_scene_which_tools_are_permitted() {
     let root = repo_root();
@@ -35,7 +45,7 @@ fn only_the_tool_policy_asks_the_scene_which_tools_are_permitted() {
             }
             let text = std::fs::read_to_string(&path).unwrap();
             for (i, line) in text.lines().enumerate() {
-                if line.contains(".permits_tool(") {
+                if SCENE_TOOL_JUDGMENT.iter().any(|form| line.contains(form)) {
                     let at = path.strip_prefix(&src).unwrap().display().to_string();
                     sites.push((at, i + 1));
                 }
@@ -45,7 +55,8 @@ fn only_the_tool_policy_asks_the_scene_which_tools_are_permitted() {
 
     assert!(
         sites.iter().any(|(f, _)| f == "tool_policy.rs"),
-        "the scan found no `.permits_tool(` in tool_policy.rs; the scan or the policy moved"
+        "the scan found no read of the scene's tool lists in tool_policy.rs; the scan or \
+         the policy moved"
     );
     let elsewhere: Vec<String> = sites
         .iter()
@@ -54,7 +65,7 @@ fn only_the_tool_policy_asks_the_scene_which_tools_are_permitted() {
         .collect();
     assert!(
         elsewhere.is_empty(),
-        "crates/runtime/src asks `Scene::permits_tool` at {elsewhere:?}. Read the session's \
+        "crates/runtime/src reads the scene's tool lists at {elsewhere:?}. Read the session's \
          `ToolPolicy` instead (`self.tooling.tool_policy.permits(..)`), or the tools a \
          plugin admits with `Registrar::admit_tools` disappear on that path."
     );

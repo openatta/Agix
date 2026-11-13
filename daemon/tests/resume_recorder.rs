@@ -57,7 +57,7 @@ async fn start(
     config.settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(scene::code::CodeScene::default()),
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
         daemon::Assembly {
             cwd: Some(cwd),
             model_client: Some(model as Arc<dyn AnthropicClient>),

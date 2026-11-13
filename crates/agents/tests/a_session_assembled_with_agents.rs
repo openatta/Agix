@@ -9,7 +9,6 @@ use std::sync::Arc;
 use agents::AgentsModule;
 use async_trait::async_trait;
 use base::interface::model::{Model, ModelMessage};
-use base::interface::scene::Scene;
 use base::settings::*;
 use base::tool::InMemoryToolRegistry;
 use runtime::agent::{Agent, Builder};
@@ -85,7 +84,9 @@ fn settings() -> base::settings::LoadedSettings {
 
 fn build(settings: base::settings::LoadedSettings, depth: u32, with_agents: bool) -> Agent {
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel))
         .settings(Arc::new(settings))
         .tools({
@@ -110,7 +111,7 @@ async fn the_agent_tool_is_resident_and_needs_the_module() {
     );
     assert!(
         !agent.deferred_tools().contains("Agent"),
-        "Agent is in CodeScene's resident set and must ship its full schema"
+        "Agent is in the code scene's resident set and must ship its full schema"
     );
     assert!(build(settings(), 0, false).tools().get("Agent").is_none());
 }
@@ -316,7 +317,9 @@ async fn delegate_once(
     let mut s = settings();
     s.values.memory_enabled = false;
     let builder = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model.clone())
         .settings(Arc::new(s))
         .tools({

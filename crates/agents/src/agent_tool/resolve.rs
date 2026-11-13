@@ -167,7 +167,7 @@ impl Delegator {
     ///
     /// The agent type's own `scene:` when it is no wider than the parent's,
     /// otherwise the parent's.
-    pub(crate) fn scene_for_subagent(&self, def: Option<&AgentTypeDefinition>) -> Arc<dyn Scene> {
+    pub(crate) fn scene_for_subagent(&self, def: Option<&AgentTypeDefinition>) -> Arc<SceneSpec> {
         let parent = &self.env.scene;
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {
             match self.resolve_scene_id(name) {
@@ -176,7 +176,7 @@ impl Delegator {
                     //
                     // Agent types are loaded from `.agix/agents/*.md`, which
                     // is repository content — on a cloned repo it is
-                    // attacker-supplied. A scene's `tools()` whitelist is the
+                    // attacker-supplied. A scene's allow list is the
                     // enforcement point for "this session may not run shell
                     // commands" (the `harnix` and `mini` scenes rely on it), so
                     // letting a file in the repo pick the scene meant a narrow
@@ -189,10 +189,10 @@ impl Delegator {
                     // scene is accepted only when everything it exposes is
                     // also exposed by the parent.
                     match parent {
-                        p if !scene_is_narrower_or_equal(requested.as_ref(), p.as_ref()) => {
+                        p if !scene_is_narrower_or_equal(&requested, p) => {
                             tracing::warn!(
                                 scene = %name,
-                                parent_scene = %p.name(),
+                                parent_scene = %p.name,
                                 agent_type = %def.map(|d| d.name.as_str()).unwrap_or(""),
                                 "agent type requested a scene that grants tools the parent scene \
                                  does not; ignoring it and inheriting the parent's scene"
@@ -214,40 +214,21 @@ impl Delegator {
     }
 
     /// A scene id resolved against the host's registry when one was wired,
-    /// otherwise against the built-in set. Plugin scenes (`plugin:<name>`)
+    /// otherwise against the built-in set (`scene::builtin`). Plugin scenes (`plugin:<name>`)
     /// only exist in the registry, so without this an agent type naming one
     /// would silently fall through to "unrecognized scene" and inherit the
     /// parent's instead.
-    pub(crate) fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn Scene>> {
+    pub(crate) fn resolve_scene_id(&self, id: &str) -> Option<Arc<SceneSpec>> {
         if let Some(registry) = &self.env.host.scene_registry {
             return registry.resolve(id);
         }
-        builtin_scene_by_id(id)
+        scene::builtin(id).map(Arc::new)
     }
 }
 
-/// Does `candidate` expose a subset of `parent`'s tools?
-///
-/// Used to decide whether an agent type's `scene:` override may be honored —
-/// see `scene_for_subagent`. A scene's `tools()` is an allow-list, with the
-/// empty list meaning "everything registered is allowed"; `disallowed_tools()`
-/// subtracts from it.
-///
-/// So: a parent with an empty allow-list (CodeScene) permits any child. A
-/// parent with a real allow-list permits only a child whose own allow-list is
-/// non-empty and contained in it, minus anything the parent disallows.
-pub(crate) fn scene_is_narrower_or_equal(candidate: &dyn Scene, parent: &dyn Scene) -> bool {
-    let parent_allow = parent.tools();
-    let parent_deny = parent.disallowed_tools();
-    if parent_allow.is_empty() && parent_deny.is_empty() {
-        return true;
-    }
-    let candidate_allow = candidate.tools();
-    if candidate_allow.is_empty() {
-        // "Everything registered" is never a subset of a real allow-list.
-        return false;
-    }
-    candidate_allow
-        .iter()
-        .all(|t| !parent_deny.contains(t) && (parent_allow.is_empty() || parent_allow.contains(t)))
+/// Does `candidate` expose a subset of `parent`'s tools, as far as their
+/// patterns can show? Decides whether an agent type's `scene:` override may
+/// be honored — see `scene_for_subagent`.
+pub(crate) fn scene_is_narrower_or_equal(candidate: &SceneSpec, parent: &SceneSpec) -> bool {
+    candidate.tools.selector().within(&parent.tools.selector())
 }

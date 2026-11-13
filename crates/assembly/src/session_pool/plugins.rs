@@ -30,7 +30,7 @@ impl SessionPool {
 
         let (registry, _) = self.scene_registry_now(&plugin_scenes);
         let plugin_ids: std::collections::HashSet<String> =
-            plugin_scenes.iter().map(|s| s.id().to_string()).collect();
+            plugin_scenes.iter().map(|s| s.id.clone()).collect();
         *self
             .scene_registry
             .write()
@@ -39,7 +39,7 @@ impl SessionPool {
         let mut active = self.active_scenes.write().await;
         active.retain(|id, _| !id.starts_with("plugin:") || plugin_ids.contains(id));
         for s in plugin_scenes {
-            active.insert(s.id().to_string(), s);
+            active.insert(s.id.clone(), s);
         }
     }
 

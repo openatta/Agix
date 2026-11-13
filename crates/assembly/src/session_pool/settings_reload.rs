@@ -137,7 +137,7 @@ impl SessionPool {
         );
         crate::doctor::run_doctor(
             self.paths.as_ref(),
-            self.scene.id(),
+            self.scene.id.as_str(),
             settings,
             self.history_store.is_some(),
             self.plugins.status(),
@@ -149,8 +149,8 @@ impl SessionPool {
         let active = self.active_scenes.read().await;
         let mut ids: Vec<String> = std::iter::once(&self.scene)
             .chain(active.values())
-            .filter(|scene| !scene.interactive())
-            .map(|scene| scene.id().to_string())
+            .filter(|scene| !scene.interactive)
+            .map(|scene| scene.id.clone())
             .collect();
         ids.sort();
         ids.dedup();
@@ -526,7 +526,7 @@ impl SessionPool {
                 self.paths.global_root(),
                 self.paths.config_root(),
                 self.paths.project_root().join(".agix"),
-                self.scene.id().to_string(),
+                self.scene.id.clone(),
             );
             let loaded = off_the_runtime(move || {
                 LoadedSettings::load(global_root, config_root, local_dir, &scene, &default_model)

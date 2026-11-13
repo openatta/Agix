@@ -3,7 +3,7 @@
 use base::event::AgentEvent;
 use base::interface::model::Model;
 use base::interface::permission::PermissionSet;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::memory::MemoryStore;
 use base::settings::LoadedSettings;
 use base::tool::InMemoryToolRegistry;
@@ -55,7 +55,7 @@ impl Drop for SessionEnd {
 }
 
 pub struct Agent {
-    pub(crate) scene: Arc<dyn Scene>,
+    pub(crate) scene: Arc<SceneSpec>,
     pub(crate) settings: Arc<LoadedSettings>,
     /// Derived from `settings`; every tool call's `ToolExecCtx.config` is a
     /// clone of this, so tools see the configured sandbox/permission/shell

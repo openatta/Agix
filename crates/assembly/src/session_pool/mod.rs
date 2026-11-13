@@ -10,7 +10,7 @@
 use base::event::AgentEvent;
 use base::id::Id;
 use base::interface::permission::PermissionSet;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::settings::{Divergence, RecorderConfig, RecorderMode};
 use base::settings::{LoadedSettings, Settings};
 #[cfg(feature = "mcp")]
@@ -535,7 +535,7 @@ struct LiveSession {
     /// not this pool's default. Auto-naming is the one behaviour decided per
     /// turn rather than at build time, so it is the one that needs the scene
     /// kept here to ask.
-    scene: Arc<dyn Scene>,
+    scene: Arc<SceneSpec>,
     /// The project this session is bound to, `None` for a no-project session.
     project: Option<PathBuf>,
     /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
@@ -611,7 +611,7 @@ pub struct SessionPool {
     /// This daemon instance's *default* scene (resolved + validated from
     /// `--scene` at startup — see `main.rs::resolve_scene`). Every session
     /// created without an explicit `scene` uses this one.
-    scene: Arc<dyn Scene>,
+    scene: Arc<SceneSpec>,
     /// Every scene this daemon instance currently serves, keyed by id —
     /// always at least `{self.scene.id(): self.scene}`, plus whatever
     /// `--scenes` added at startup or `scene.activate` added at runtime.
@@ -619,21 +619,21 @@ pub struct SessionPool {
     /// `self.scene` — the pool's *default* scene concept and *which scenes
     /// are currently servable* are related but distinct (the default is
     /// always servable; not everything servable is the default).
-    active_scenes: AsyncRwLock<HashMap<String, Arc<dyn Scene>>>,
+    active_scenes: AsyncRwLock<HashMap<String, Arc<SceneSpec>>>,
     /// Every scene this pool can serve, active or not — what `scene.list`
     /// enumerates and `scene.activate` resolves against: the built-in ones,
     /// the host's and the plugins'. Swapped wholesale when the plugin set
     /// changes or the host registers a scene; a session already running
-    /// holds its own `Arc<dyn Scene>` and is unaffected.
+    /// holds its own `Arc<SceneSpec>` and is unaffected.
     scene_registry: std::sync::RwLock<Arc<scene::SceneRegistry>>,
     /// Scenes the host defined rather than the binary or a plugin: the one
     /// the pool was started with, and every one passed to
     /// [`register_scene`](Self::register_scene). Kept so each rebuild of the
     /// registry has them; without that, a host scene once deactivated could
     /// never be activated again.
-    host_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
+    host_scenes: std::sync::RwLock<Vec<Arc<SceneSpec>>>,
     /// Scenes `scene.register` added, held in memory only.
-    registered_scenes: std::sync::RwLock<Vec<Arc<dyn Scene>>>,
+    registered_scenes: std::sync::RwLock<Vec<Arc<SceneSpec>>>,
     /// The host's own permission, handed to a session whose effective mode
     /// is `bypassPermissions` in place of the rule gate (see
     /// `resolve_session_permission`). `None` when the host supplied none:
@@ -1019,7 +1019,7 @@ impl SessionPool {
         idle_timeout_secs: u64,
         client: Arc<dyn AnthropicClient>,
         settings: Arc<LoadedSettings>,
-        scene: Arc<dyn Scene>,
+        scene: Arc<SceneSpec>,
         permission: Option<PermissionSet>,
         cwd: PathBuf,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
@@ -1044,7 +1044,7 @@ impl SessionPool {
             registry_of(&host_scenes, &[], &paths.global_root().join("scenes"), &[]).0,
         ));
         let mut active_scenes = HashMap::new();
-        active_scenes.insert(scene.id().to_string(), scene.clone());
+        active_scenes.insert(scene.id.clone(), scene.clone());
 
         let pool_telemetry = build_pool_telemetry(&settings);
 

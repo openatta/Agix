@@ -132,7 +132,7 @@ async fn build_starts_file_watching_for_the_instruction_file_when_a_hook_wants_i
     );
 
     let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let scene: Arc<dyn Scene> = Arc::new(scene::code::CodeScene::default());
+    let scene: Arc<SceneSpec> = Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
         .model(model)
@@ -206,7 +206,9 @@ async fn a_registered_wrapper_can_put_a_deadline_on_one_tool() {
         tool: "Hang",
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -306,7 +308,9 @@ async fn a_result_transformer_is_the_last_thing_to_touch_a_tool_result() {
         tool: "Leak",
     });
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -385,7 +389,9 @@ async fn a_substituted_retriever_and_its_hooks_decide_what_is_recalled() {
     let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
     let model: Arc<dyn Model> = Arc::new(PlainReplyModel);
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -492,7 +498,9 @@ async fn a_model_interceptor_sees_whole_things_never_chunks() {
 
     let counting = Arc::new(Counting::default());
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(ChattyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -565,7 +573,9 @@ async fn a_turn_policy_decides_when_the_loop_stops() {
     tools.register(Arc::new(ProbeTool));
 
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -609,7 +619,9 @@ fn the_settings_compaction_numbers_reach_the_sessions_context_budget() {
     let mut settings = test_settings();
     settings.values.compaction.threshold_tokens = Some(1234);
     let (agent, _rx, _tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(settings))
         .skip_warmup(true)
@@ -618,11 +630,10 @@ fn the_settings_compaction_numbers_reach_the_sessions_context_budget() {
     let budget = agent
         .policies
         .budget_policy
-        .context_budget(&agent.scene.token_budget());
+        .context_budget(&agent.scene.token_budget);
     assert_eq!(budget.compact_threshold, 1234);
     assert_eq!(
-        budget.compact_keep_recent,
-        agent.scene.token_budget().compact_keep_recent,
+        budget.compact_keep_recent, agent.scene.token_budget.compact_keep_recent,
         "what settings leave out stays the scene's"
     );
 }
@@ -644,7 +655,9 @@ async fn a_context_hard_cap_ends_a_turn_the_scene_would_have_allowed() {
     // Zero: the system prompt alone is over it, so the first request is
     // one this deployment has said must never be sent.
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(test_settings()))
         .tools(tools)
@@ -734,7 +747,9 @@ async fn the_egress_policy_reaches_the_tool_that_has_to_obey_it() {
     tools.register(Arc::new(EgressProbe));
 
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(model)
         .settings(Arc::new(settings))
         .tools(tools)
@@ -801,7 +816,9 @@ async fn a_host_registers_a_health_check_and_reads_the_report_back() {
 
     let backed_up = Arc::new(AtomicBool::new(false));
     let (agent, _event_rx, _input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(DummyModel) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .health_check(Arc::new(Queue(backed_up.clone())))
@@ -864,7 +881,9 @@ async fn a_recovery_policy_can_refuse_the_fallback_the_engine_would_take() {
     settings.values.model.fallback_model = Some("some-other-model".into());
 
     let (mut agent, mut event_rx, input_tx) = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(AlwaysOverloaded) as Arc<dyn Model>)
         .settings(Arc::new(settings))
         .tools(Arc::new(InMemoryToolRegistry::new()))
@@ -946,7 +965,9 @@ pub(super) async fn prompt_blocks_for_one_turn(
 ) -> Vec<base::prompt::PromptBlock> {
     let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(RecordingModel(recorded.clone())) as Arc<dyn Model>)
         .settings(Arc::new(test_settings()))
         .tools(Arc::new(InMemoryToolRegistry::new()))

@@ -198,13 +198,13 @@ pub(super) fn push_unless_empty(out: &mut Vec<ModelMessage>, message: ModelMessa
 pub(super) fn sync_mcp_adapters(
     tools: &dyn base::tool::ToolRegistry,
     mcp: &dyn base::interface::mcp_servers::McpServers,
-    permits: impl Fn(&str) -> bool,
+    permits: impl Fn(&dyn base::tool::Tool) -> bool,
 ) {
     let is_mcp = |t: &Arc<dyn base::tool::Tool>| t.spec().origin.is_mcp();
     let current: Vec<_> = mcp
         .tools()
         .into_iter()
-        .filter(|a| permits(a.name()))
+        .filter(|a| permits(a.as_ref()))
         .collect();
     let live: HashSet<&str> = current.iter().map(|a| a.name()).collect();
     let registered = tools.list();
@@ -263,7 +263,7 @@ impl Agent {
         }
         let selected: Vec<Arc<dyn base::tool::Tool>> = pool
             .into_values()
-            .filter(|t| self.tooling.tool_policy.permits(t.name()))
+            .filter(|t| self.tooling.tool_policy.permits(t.as_ref()))
             .collect();
 
         // A guide is only worth pointing at if the model has a way to fetch
@@ -458,7 +458,7 @@ impl Agent {
     pub(crate) fn context_budget(&self) -> base::interface::budget_policy::ContextBudget {
         self.policies
             .budget_policy
-            .context_budget(&self.scene.token_budget())
+            .context_budget(&self.scene.token_budget)
     }
 
     /// Put a failed call to the recovery policy and carry out its answer:

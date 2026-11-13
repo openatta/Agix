@@ -8,7 +8,6 @@
 use base::id::Id;
 use base::interface::environment::FixedEnvironment;
 use base::interface::model::Model;
-use base::interface::scene::Scene;
 use base::interface::tool::InMemoryToolRegistry;
 use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
 use runtime::agent::{Builder, InputMessage};
@@ -66,7 +65,7 @@ async fn run_and_read_log(root: &std::path::Path, fixed: bool) -> String {
     let session_id = Id::from_bytes([7u8; 16]);
 
     let mut builder = Builder::new()
-        .scene(Arc::new(scene::harnix::HarnixScene) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::harnix::spec()))
         .model(model)
         .tools(registry)
         .settings(settings)

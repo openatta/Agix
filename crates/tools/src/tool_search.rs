@@ -3,7 +3,7 @@
 //!
 //! Two things are fetchable:
 //!
-//! 1. **Deferred tools.** A scene's `deferred_tools()` replaces a tool's JSON
+//! 1. **Deferred tools.** A scene's `tools.deferred` replaces a tool's JSON
 //!    schema in the per-call `tools` array with a stub (the session's
 //!    `EngineConfig::deferred_tools`).
 //!    A match returns the real schema as a `<function>` line inside a

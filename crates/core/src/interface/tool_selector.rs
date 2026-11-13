@@ -73,6 +73,19 @@ impl ToolPattern {
     }
 }
 
+/// The form [`ToolPattern::parse`] reads back to the same pattern; a server
+/// is written `mcp__<server>__*`.
+impl std::fmt::Display for ToolPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Name(n) => f.write_str(n),
+            Self::Prefix(p) => write!(f, "{p}*"),
+            Self::McpServer(s) => write!(f, "mcp__{s}__*"),
+            Self::AnyMcp => f.write_str("mcp__*"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Layer {
     allow: Option<Vec<ToolPattern>>,
@@ -188,6 +201,26 @@ mod tests {
         assert_eq!(ToolPattern::parse("Task*"), Prefix("Task".into()));
         assert_eq!(ToolPattern::parse("Read"), Name("Read".into()));
         assert_eq!(ToolPattern::parse("mcp__"), Name("mcp__".into()));
+    }
+
+    #[test]
+    fn a_pattern_displays_as_what_parses_back_to_it() {
+        for written in [
+            "mcp__*",
+            "mcp__docs",
+            "mcp__docs__*",
+            "mcp__a__b",
+            "Task*",
+            "Read",
+        ] {
+            let pattern = ToolPattern::parse(written);
+            assert_eq!(
+                ToolPattern::parse(&pattern.to_string()),
+                pattern,
+                "{written}"
+            );
+        }
+        assert_eq!(ToolPattern::parse("mcp__docs").to_string(), "mcp__docs__*");
     }
 
     #[test]

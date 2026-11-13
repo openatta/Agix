@@ -552,20 +552,6 @@ pub(super) fn parse_agent_type_file(content: &str, path: &Path) -> Option<AgentT
     })
 }
 
-/// Resolve a scene id against the built-in set.
-///
-/// The fallback for hosts that resolve no `SceneRegistry` — see
-/// `HostContracts::scene_registry` and `Delegator::resolve_scene_id`. Unknown
-/// ids return `None` so the caller can fall back rather than guessing.
-pub(super) fn builtin_scene_by_id(id: &str) -> Option<Arc<dyn Scene>> {
-    match id {
-        "code" => Some(Arc::new(scene::code::CodeScene::default())),
-        "harnix" => Some(Arc::new(scene::harnix::HarnixScene)),
-        "mini" => Some(Arc::new(scene::mini::MiniScene)),
-        _ => None,
-    }
-}
-
 pub(super) const EXPLORE_PROMPT: &str = "\
 You are a read-only file search specialist. Your job is to explore, find, and \
 report — do NOT edit, write, or delete any files. Use Read/Glob/Grep/WebFetch/\

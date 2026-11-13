@@ -15,8 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base::interface::scene::{Scene, ScenePromptContext, TokenBudget};
-use base::prompt::PromptBlock;
+use base::interface::scene::{SceneSpec, TokenBudget};
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::{AnthropicClient, CountFuture, EventStream};
@@ -29,35 +28,17 @@ use tokio_util::sync::CancellationToken;
 /// The code scene with a context budget one token wide, so the first turn
 /// crosses it. Compaction is otherwise a function of conversation length,
 /// which a test would have to spend a great many turns reaching.
-struct HairTriggerScene(scene::code::CodeScene);
-
-impl Scene for HairTriggerScene {
-    fn id(&self) -> &str {
-        "hair-trigger"
-    }
-
-    fn name(&self) -> &str {
-        "Hair Trigger"
-    }
-
-    fn description(&self) -> &str {
-        "code, compacting on the first turn"
-    }
-
-    fn build_system_prompt(&self, ctx: &ScenePromptContext) -> Vec<PromptBlock> {
-        self.0.build_system_prompt(ctx)
-    }
-
-    fn tools(&self) -> Vec<String> {
-        self.0.tools()
-    }
-
-    fn token_budget(&self) -> TokenBudget {
-        TokenBudget {
-            compact_threshold: 1,
-            compact_keep_recent: 1,
-        }
-    }
+fn hair_trigger_scene() -> SceneSpec {
+    let mut s = SceneSpec::new(
+        "hair-trigger",
+        "Hair Trigger",
+        scene::code::spec(scene::code::Interaction::Interactive).prompt,
+    );
+    s.token_budget = TokenBudget {
+        compact_threshold: 1,
+        compact_keep_recent: 1,
+    };
+    s
 }
 
 /// One canned assistant turn: says "ok" and stops.
@@ -182,7 +163,7 @@ async fn a_compacted_turn_says_so_on_the_wire() {
 
     let pool = daemon::assemble::pool(
         &config,
-        Arc::new(HairTriggerScene(scene::code::CodeScene::default())),
+        Arc::new(hair_trigger_scene()),
         daemon::Assembly {
             cwd: Some(cwd.clone()),
             model_client: Some(Arc::new(OneTurnClient)),

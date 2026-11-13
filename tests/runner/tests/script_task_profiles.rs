@@ -31,7 +31,6 @@
 //! it, so there is no file to go stale and nothing to regenerate reflexively.
 //! What the task itself does is pinned by the scripted replies.
 
-use base::interface::scene::Scene;
 use base::interface::script::ScriptOutcome;
 use base::interface::tool::InMemoryToolRegistry;
 use base::memory::MemoryStore;
@@ -169,7 +168,9 @@ async fn run(profile: Profile) -> Outcome {
         &["fix the typo in src/main.py"],
         the_task(&workdir),
     )
-    .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+    .scene(Arc::new(scene::code::spec(
+        scene::code::Interaction::Interactive,
+    )))
     .in_project(&workdir)
     .memory(memory);
     for tool in registry.list() {
@@ -450,7 +451,9 @@ async fn a_delegate_inherits_the_policy_scripts_and_not_the_prompt_ones() {
     ];
 
     let mut session = Session::new(fixtures(), &["delegate the typo fix"], replies)
-        .scene(Arc::new(scene::code::CodeScene::default()) as Arc<dyn Scene>)
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .in_project(&workdir)
         .bind("tool_around_deny_edit.js", "tool.around", "onAround")
         .bind("prompt_assemble.js", "prompt.assemble", "onAssemble");

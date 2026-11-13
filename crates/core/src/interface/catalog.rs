@@ -401,7 +401,7 @@ static POINTS: [ExtensionPoint; 45] = [
         rewrites: "一个 agent 怎么呈现自己,全部",
         frequency: Frequency::PerSession,
         trust: Trust::host_only(),
-        defined_in: "base::interface::scene::Scene",
+        defined_in: "base::interface::scene::SceneSpec",
         wired_by: &[Wiring::Builder("scene")],
     },
     ExtensionPoint {

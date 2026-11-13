@@ -6,7 +6,7 @@
 //! list, and `build()` calls each one's [`Module::on_session`] once the
 //! session's registry and services exist, before the scene's tool policy is
 //! applied, so whatever a module registers is subject to it like any built-in.
-//! A scene can narrow the list (`Scene::modules` / `Scene::disabled_modules`);
+//! A scene can narrow the list (`SceneSpec::modules`);
 //! a module it does not permit is not run for that session at all.
 //!
 //! [`Builder::modules`]: crate::agent::Builder::modules
@@ -20,7 +20,7 @@ use base::frozen::SkillEntry;
 use base::interface::agent_spawner::AgentSpawner;
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
-use base::interface::scene::Scene;
+use base::interface::scene::SceneSpec;
 use base::interface::skill_catalog::{NoSkills, SkillCatalog};
 use base::settings::LoadedSettings;
 use base::tool::InMemoryToolRegistry;
@@ -65,7 +65,7 @@ pub struct SessionContext<'a> {
     pub template_tools: &'a Arc<dyn base::tool::ToolRegistry>,
     pub settings: &'a Arc<LoadedSettings>,
     pub config: &'a Arc<EngineConfig>,
-    pub scene: &'a Arc<dyn Scene>,
+    pub scene: &'a Arc<SceneSpec>,
     /// Already wrapped for telemetry: what a module calls through it is
     /// accounted to this session.
     pub model: &'a Arc<dyn Model>,
@@ -261,12 +261,12 @@ impl AgentSpawner for LateAgentSpawner {
 /// exists to prevent.
 pub(crate) fn permitted_by(
     modules: &[Arc<dyn Module>],
-    scene: &dyn Scene,
+    scene: &SceneSpec,
 ) -> Result<Vec<Arc<dyn Module>>, ModuleError> {
     let (kept, left_out): (Vec<_>, Vec<_>) = modules
         .iter()
         .cloned()
-        .partition(|m| scene.permits_module(m.id()));
+        .partition(|m| scene.modules.permits(m.id()));
     for m in &kept {
         for needed in m.requires() {
             if left_out.iter().any(|out| out.id() == *needed) {
@@ -274,7 +274,7 @@ pub(crate) fn permitted_by(
                     m.id(),
                     format!(
                         "requires `{needed}`, which scene `{}` does not run",
-                        scene.id()
+                        scene.id
                     ),
                 ));
             }

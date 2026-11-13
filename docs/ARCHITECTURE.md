@@ -260,15 +260,17 @@ transcript,以 `UserMessagesReturned` 交还宿主。通知(`SessionState::post_
 
 ### 3.1 一个进程可以跑多个场景
 
-场景(`Scene`)是无状态的:`HarnixScene` / `MiniScene` 是零字段 unit struct,
-`CodeScene` 只带一个创建时定下的 `Interaction`,`Arc<dyn Scene>` 只是一组函数。所以同一
-进程并存多个场景没有障碍。
+场景是一份数据(`SceneSpec`):身份、工具面、模块面、预算、提醒、会话命名,都是字段;只有
+提示词是行为,由 `ScenePrompt`(`system` 与 `session_context`)给出。`code` 的提示词只带一个
+创建时定下的 `Interaction`,`Arc<SceneSpec>` 建好后不再变。所以同一进程并存多个场景没有障碍。
+宿主在内建场景上改自己的场景时改字段即可(`let mut s = scene::harnix::spec();`),不必包一层
+trait 再逐个转发方法。
 
 内建三个:
 
 | id | 工具 | 用途 |
 |---|---|---|
-| `code` | 注册的全部工具;`RESIDENT_TOOLS` 之外只报名字,schema 经 `ToolSearch` 取 | 编程,需要项目;daemon 的默认场景。注册的是交互版(`Interaction::Interactive`),嵌入方可换成 `CodeScene::new(Interaction::Unattended)` |
+| `code` | 注册的全部工具;`RESIDENT_TOOLS` 之外只报名字,schema 经 `ToolSearch` 取 | 编程,需要项目;daemon 的默认场景。注册的是交互版(`Interaction::Interactive`),嵌入方可换成 `scene::code::spec(Interaction::Unattended)` |
 | `harnix` | 常用集:文件读写与搜索、`Bash`、`Skill`、`TodoWrite`、`Agent` 与任务控制、`Team*`、目标、网页检索与抓取、`ToolSearch`、`mcp__*`;宿主经 `extra_tools` 加自己的 | Harnix 宿主会话的默认场景,无人值守 |
 | `mini` | `Agent` `Bash` `Edit` `Glob` `Grep` `Read` `Skill` `ToolSearch` `Write`,全部常驻 | 最小可用的编码 agent,无人值守 |
 
@@ -391,7 +393,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 ### 3.2.3 有人值守与无人值守
 
-`Scene::interactive()` 回答"会话进行中有没有人回答问题、批准计划、应答权限提示"。缺省
+`SceneSpec::interactive` 回答"会话进行中有没有人回答问题、批准计划、应答权限提示"。缺省
 `false`;只有交互版 `code` 是 `true`(声明式场景在 `scene.json` 里写 `"interactive": true`)。
 这一个答案同时决定四件事:
 
@@ -402,7 +404,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 | 内置技能 | 只有能独立做完的 | 再加需要用户在场的 |
 | 权限提示 | 不送给任何人,直接拒绝,拒绝消息里写清怎么授权(§6.3) | 送给宿主等回答 |
 
-内置技能由 `Scene::bundled_skills()` 点名,缺省只有 `skillify`;依赖的工具(`skills::bundled::required_tools`,
+内置技能由 `SceneSpec::bundled_skills` 点名,缺省只有 `skillify`;依赖的工具(`skills::bundled::required_tools`,
 如 `loop` 要 `CronCreate`)在场景里不被允许的,也不列。磁盘上和宿主 provider 给的技能不受
 影响,同名的照样覆盖内置。`code` 无人值守带 `skillify` `simplify` `verify` `debug`
 `security-review`,有人值守再加 `batch` `stuck` `remember` `init` `import` `loop` `rename`
@@ -412,7 +414,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 5、8 次,在结果后附一条提醒,让模型看上次的结果、换方法或停下汇报(`runtime::repeat_guard`)。
 只提醒,不拦调用;不触发就不花 token。
 
-文件工具给模型看的路径由 `Scene::path_style()` 定缺省:`harnix` 用相对工作目录的路径
+文件工具给模型看的路径由 `SceneSpec::path_style` 定缺省:`harnix` 用相对工作目录的路径
 (参数说明、Glob / Grep / Write / Edit 的输出都按相对写),其余场景用绝对路径;设置里写了
 `path_style` 就以设置为准。相对路径省掉的是每次调用都重复出现的那段项目前缀。
 
@@ -502,20 +504,22 @@ release 构建记一条 error。
 
 场景对工具有三种方向不同的控制:
 
-| 方法 | 作用 |
+| 字段 | 作用 |
 |---|---|
-| `tools()` | 白名单,与注册表取交集——**只能减**;以 `*` 结尾的项按前缀匹配(`mcp__*`) |
-| `extra_tools()` | 贡献注册表里没有的工具——**只能加** |
-| `deferred_tools()` | 哪些工具只报名字不带 schema |
+| `tools.allow` / `tools.deny` | 白名单与黑名单,与注册表取交集——**只能减** |
+| `extra_tools` | 贡献注册表里没有的工具——**只能加** |
+| `tools.deferred` | 哪些工具只报名字不带 schema |
 
-白名单(连同白名单为空时的 `disallowed_tools()`)经 `Scene::permits_tool` 作用在会话
-注册表本身:`Builder::build()` 把不许的工具从注册表里移走,之后运行期才出现的 MCP 适配器
+`allow` 与 `deny` 就是一层 `ToolSelector`,与智能体类型、调用方的名单同一套匹配:黑名单
+始终生效,白名单为 `None` 时放行黑名单以外的全部;`X*` 按前缀匹配,`mcp__*`、`mcp__<server>`
+按工具的来源(`ToolOrigin`)匹配 MCP 工具,不从工具名里拆。这份判定作用在会话注册表本身:`Builder::build()` 把不许的工具从注册表里移走,之后运行期才出现的 MCP 适配器
 也按它过滤。宣告、`ToolSearch`、分派读的是同一张表,不存在"不宣告但能调用"的工具。
 
 这份判定在 `Builder::build()` 里算一次,成为会话的 `ToolPolicy`(`runtime/src/tool_policy.rs`):
-场景允许的,加上插件经 `Registrar::admit_tools` 放行的自己登记的工具(场景 `disallowed_tools()`
-里的除外)。注册表过滤、每次请求的工具宣告、MCP 适配器同步都读这一份;`runtime` 里别处不直接问
-`Scene::permits_tool`,`daemon/tests/wiring_coverage.rs` 守着这一条。
+场景允许的,加上插件经 `Registrar::admit_tools` 放行的自己登记的工具(场景 `tools.deny`
+里的除外)。注册表过滤、每次请求的工具宣告、MCP 适配器同步都读这一份;`runtime` 里别处不直接读
+场景的 `tools.allow` / `tools.deny`(也不问 `permits_tool`),`daemon/tests/wiring_coverage.rs`
+守着这一条。
 
 **Tool 接口是 11 个方法**:`name`、`description`、`spec`、`input_schema(style)`、`guide`、
 `call_traits(input)`、`permission_match_content`、`accept_edits_allows`、`check_permissions`、
@@ -530,26 +534,26 @@ plan 模式的那一次调用)、`short_description`、`callable_from_code`、`c
 
 三条硬约束:
 
-1. **`extra_tools()` 重名直接失败,不覆盖。** 注册表按名字返回首个同名项,静默覆盖会让
+1. **`extra_tools` 重名直接失败,不覆盖。** 注册表按名字返回首个同名项,静默覆盖会让
    调用点拿到的和模型看到的不是同一个工具。检查跑在引擎态工具注册**之后**,
    否则场景能占用 `Agent` / `Skill` 这些名字并赢得查找。
 2. **`ToolSearch` 永不 defer。** 它是取回 deferred 工具 schema 的唯一途径。
-3. **延迟是会话属性,不是工具属性。** `Builder::build()` 把场景的 `deferred_tools()`
+3. **延迟是会话属性,不是工具属性。** `Builder::build()` 把场景的 `tools.deferred`
    写进 `EngineConfig::deferred_tools`,请求的工具表、`ToolSearch` 和调用失败时附 schema
    都读这一份名单;会话中途接入的 MCP 工具同样按名单延迟。工具自己没有"我是延迟的"
    这种声明,也没有包装器。
 
 ### 3.6 场景收窄模块
 
-`Scene::modules()` / `Scene::disabled_modules()` 对模块做的事和 `tools()` 对工具做的一样:
-**只能减**。`Builder::build()` 在任何模块运行之前按 `Scene::permits_module` 过滤装配
+`SceneSpec::modules`(`allow` 为 `None` 是全部,`deny` 再减)对模块做的事和 `tools` 对工具做的
+一样:**只能减**。`Builder::build()` 在任何模块运行之前按 `ModuleSurface::permits` 过滤装配
 列表,`SessionContext::host` 里的 `modules` 和子 agent 拿到的都是过滤后的那份。留下的模块 `requires`
 一个被排除的模块时构建失败——依赖关系由模块声明,场景不能悄悄拆掉它。
 
 ### 3.7 声明式场景
 
-`scene::DeclarativeScene` 是内核自己的一个 `Scene` 实现,数据来自 `scene.json` +
-`prompt.md`。它和 Rust 写的场景一样是加载后不再变的值:两个文件只读一次。注册走
+`scene::DeclaredScene` 把 `scene.json` + `prompt.md` 读成一份 `SceneSpec`(外加来源目录),
+提示词是模板渲染的 `ScenePrompt`。它和 Rust 写的场景一样是加载后不再变的值:两个文件只读一次。注册走
 `SceneRegistry::register_declarative*`,不替换已登记的 id;插件包里的那份 id 固定为
 `plugin:<name>`。运行中的 daemon 经 `scene.reload` 重读 `~/.agix/scenes/`,经
 `scene.register` / `scene.unregister` 登记、撤销一个不落盘的场景。格式与占位符见

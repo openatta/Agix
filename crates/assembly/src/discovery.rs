@@ -2,7 +2,7 @@
 //! `instances.d/` (multi-scene, current — see `docs/daemon_rpc_protocol.md` §2).
 //!
 //! The daemon writes `~/.agix/scenes/<scene>/daemon.lock` (mode 0600, `<scene>` is
-//! the `Scene` id resolved from `--scene` in `main.rs`, default
+//! the scene id resolved from `--scene` in `main.rs`, default
 //! `code`) on startup with `{pid, socket_path, version, started_at}`. IDE
 //! plugins read this file to find a running daemon — no env var hunting, no
 //! port scan.

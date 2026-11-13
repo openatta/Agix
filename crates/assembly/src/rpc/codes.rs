@@ -76,7 +76,7 @@ error_codes! {
     /// wait or to `session.interrupt` first. `data.current_turn_id` names the
     /// turn holding the session.
     SessionBusy = -32015, SESSION_BUSY;
-    /// The scene requires a project (`Scene::requires_project`) but the
+    /// The scene requires a project (`SceneSpec::requires_project`) but the
     /// caller asked for a session without one. Reported at `session.create`
     /// rather than at the first tool call, so a host can put the user in
     /// front of a project picker instead of a failed turn.

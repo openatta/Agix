@@ -90,7 +90,9 @@ fn extract_tool_file_paths_does_not_match_unrelated_write() {
 async fn clearing_old_tool_results_by_age_is_reported_as_a_compaction() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut agent, mut event_rx, _input_tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(FixedUsageModel {
             usage: Default::default(),
         }))
@@ -145,7 +147,9 @@ async fn clearing_old_tool_results_by_age_is_reported_as_a_compaction() {
 async fn this_turn_starts_at_its_user_message_however_long_the_transcript() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()
-        .scene(Arc::new(scene::code::CodeScene::default()))
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
         .model(Arc::new(FixedUsageModel {
             usage: Default::default(),
         }))

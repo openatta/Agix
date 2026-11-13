@@ -133,7 +133,7 @@ impl Tool for FileTicketTool {
   不实现(缺省 `None`)。请求的工具表只带 `description()`,有指南的工具后面附一行
   `ToolSearch{"query":"select:<name>"}`,模型要看时再取。
 - 是否延迟(只发名字和描述、schema 经 `ToolSearch` 取)是会话的事,由场景的
-  `deferred_tools()` 决定,工具自己不声明。
+  `tools.deferred` 决定,工具自己不声明。
 - `permission_match_content`、`accept_edits_allows`、`check_permissions` 是权限引擎看
   这次调用的三个入口;`accept_edits_allows` 缺省读 `call_traits(input).read_only`。
 
@@ -306,33 +306,52 @@ Builder::new().permission(PermissionSet::without_grants(Arc::new(MyPolicy)));
 
 ### 一个 agent 怎么呈现自己 — `scene`
 
-`base::interface::scene::Scene` 持有系统提示骨架、工具白名单和预算:
+`base::interface::scene::SceneSpec` 是一份数据:身份、工具面、模块面、预算、提醒。唯一的
+行为是提示词,实现 `ScenePrompt`(`system` 给系统提示骨架,`session_context` 给会话事实):
 
 ```rust
-Builder::new().scene(Arc::new(MyScene));
+let mut scene = SceneSpec::new("review", "Review", Arc::new(MyPrompt));
+scene.tools = ToolSurface::allowing(&["Read", "Grep", "Glob"]);
+Builder::new().scene(Arc::new(scene));
 ```
 
 引擎自带三个 scene,正好是照着抄的阶梯:
 
 | scene | 是什么 | 值守 |
 |---|---|---|
-| `scene::code::CodeScene` | 完整参考:几乎全部工具,不常用的延迟加载,分节提示词 | `CodeScene::new(Interaction::Interactive)`(`default()`)或 `Interaction::Unattended` |
-| `scene::harnix::HarnixScene` | 精简版:宿主会话的缺省场景,常用工具集,短提示词,文件工具用相对路径 | 无人值守 |
-| `scene::mini::MiniScene` | 最小骨架:九个工具全部常驻,几行提示词,没有 `RunCode` | 无人值守 |
+| `scene::code::spec(interaction)` | 完整参考:几乎全部工具,不常用的延迟加载,分节提示词 | `Interaction::Interactive`(缺省)或 `Interaction::Unattended` |
+| `scene::harnix::spec()` | 精简版:宿主会话的缺省场景,常用工具集,短提示词,文件工具用相对路径 | 无人值守 |
+| `scene::mini::spec()` | 最小骨架:九个工具全部常驻,几行提示词,没有 `RunCode` | 无人值守 |
+
+在内建场景上改出自己的,改字段即可,其余照旧:
+
+```rust
+let mut scene = scene::harnix::spec();
+scene.id = "my-host".into();
+scene.tools.allow.get_or_insert_with(Vec::new).push(ToolPattern::parse("tickets__*"));
+scene.prompt = Arc::new(MyPrompt { base: scene::harnix::HarnixPrompt });
+```
 
 自己给提示分节命名的 scene 保住那些名字,收在 `scene.` 前缀下——见下面的块名。
 
-写自己的 scene 时,除了提示词、工具白名单和预算,下面几项决定它在实际运行中的样子:
+工具面 `tools` 是 `ToolSurface { allow, deny, deferred }`。`allow` 与 `deny` 是一层
+`ToolSelector`:**黑名单始终生效**,白名单为 `None` 时放行黑名单以外的全部;`X*` 按前缀,
+`mcp__*`、`mcp__<server>`、`mcp__<server>__*` 按工具来源(`ToolOrigin`)匹配 MCP 工具。
 
-| 方法 | 缺省 | 决定什么 |
+写自己的 scene 时,除了提示词、工具面和预算,下面几项决定它在实际运行中的样子:
+
+| 字段 | 缺省 | 决定什么 |
 |---|---|---|
-| `interactive()` | `false` | 有没有人在场。`false` 时权限询问直接变成写明怎么授权的拒绝、只在实例授权的根内读写、`Bash` 只在 OS 沙箱完整生效时放行(`ARCHITECTURE.md` §3.2.3、§6.3)。要等人回答的工具(`AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode`,`base::interface::scene::NEEDS_A_USER`)由 `Builder::build()` 统一不注册,场景不必自己从白名单里拿掉;`true` 时 `AskUserQuestion` 还要宿主能回答提问才注册(见[向人提问](#向人提问--elicitationask)) |
-| `build_session_context()` | 空 | 本会话的事实(工作目录、平台、草稿目录),由内核在会话开头连同项目说明作为一条上下文消息注入一次,压缩与 `/clear` 之后重新注入。**随会话而变的东西放这里,不要放进系统提示**:系统提示逐字节相同,厂商的前缀缓存才能跨会话命中 |
-| `bundled_skills()` | `["skillify"]` | 列出哪些内置技能;依赖的工具不被允许的自动不列 |
-| `path_style()` | 绝对路径 | 文件工具给模型看的路径;`harnix` 用相对路径,省掉每次都重复的项目前缀。设置里写了 `path_style` 以设置为准 |
-| `token_budget()` | — | 压缩阈值与保留轮数 |
+| `interactive` | `false` | 有没有人在场。`false` 时权限询问直接变成写明怎么授权的拒绝、只在实例授权的根内读写、`Bash` 只在 OS 沙箱完整生效时放行(`ARCHITECTURE.md` §3.2.3、§6.3)。要等人回答的工具(`AskUserQuestion`、`EnterPlanMode` / `ExitPlanMode`,`base::interface::scene::NEEDS_A_USER`)由 `Builder::build()` 统一不注册,场景不必自己从白名单里拿掉;`true` 时 `AskUserQuestion` 还要宿主能回答提问才注册(见[向人提问](#向人提问--elicitationask)) |
+| `ScenePrompt::session_context` | 空 | 本会话的事实(工作目录、平台、草稿目录),由内核在会话开头连同项目说明作为一条上下文消息注入一次,压缩与 `/clear` 之后重新注入。**随会话而变的东西放这里,不要放进系统提示**:系统提示逐字节相同,厂商的前缀缓存才能跨会话命中 |
+| `bundled_skills` | `["skillify"]` | 列出哪些内置技能;依赖的工具不被允许的自动不列 |
+| `path_style` | 绝对路径 | 文件工具给模型看的路径;`harnix` 用相对路径,省掉每次都重复的项目前缀。设置里写了 `path_style` 以设置为准 |
+| `token_budget` | 150000 / 20 | 压缩阈值与保留轮数 |
+| `reminders` | 空 | 每轮 `<system-reminder>` 带什么(`GitStatus`、`Memory`),按列出的顺序;内建场景是 `[GitStatus]` |
+| `session_naming` | `None` | 首轮之后用这段提示(`{first_message}` 换成用户首条消息)让模型给会话起名 |
+| `memory_extraction_intro` | `None` | 换掉每轮之后记忆抽取的开场白(缺省是写给编程的) |
 
-daemon 的嵌入方把自己的 scene 交给 `Assembly { scenes: vec![Arc::new(MyScene)], .. }`
+daemon 的嵌入方把自己的 scene 交给 `Assembly { scenes: vec![Arc::new(my_scene)], .. }`
 (或运行中调 `SessionPool::register_scene`):登记之后 `scene.list` 看得到它,
 `extra_scenes` 和 `scene.activate` 能按 id 把它打开,停用之后也还能再打开。登记不等于
 激活;id 与内建 scene 相同的,替换内建的那个。
@@ -340,7 +359,7 @@ daemon 的嵌入方把自己的 scene 交给 `Assembly { scenes: vec![Arc::new(M
 #### 声明式场景——不写 Rust 的 scene
 
 一个目录,两个文件:`scene.json` 描述场景,`prompt.md` 是系统提示正文。
-`scene::DeclarativeScene` 读它们、实现 `Scene`,所以纯配置和插件包都能贡献场景,
+`scene::DeclaredScene` 把它们读成一份 `SceneSpec`,所以纯配置和插件包都能贡献场景,
 和 Rust 写的 scene 进同一张 `SceneRegistry`:
 
 ```rust
@@ -356,7 +375,8 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 场景(包括内建场景)的设置层目录;有 `prompt.md` 却没有 `scene.json` 的会报出来。
 **声明式场景不替换已登记的 id**:`scene.json` 写 `"id": "code"` 会被拒,内建的那个
 原样留着——家目录里的一个文件不该能冒名顶替。所以要在内建和宿主 scene 登记之后再调。
-单个目录用 `DeclarativeScene::load(dir)`,编进二进制的用 `DeclarativeScene::from_sources`。
+单个目录用 `DeclaredScene::load(dir)`,编进二进制的用 `DeclaredScene::from_sources`;结果的
+`spec` 是场景,`dir` 是它来自哪个目录。
 
 `agixd` 就是这样做的:会话池与 `--scene` 都从 `<状态根>/scenes/`(默认 `~/.agix/scenes/`)
 读声明式场景,和内建场景一样经 `scene.activate` / `--scenes` 激活后可用。沙箱里的命令在
@@ -390,7 +410,7 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 | `id` | string,必填 | — | 1–64 个 `a-z0-9-_`,字母或数字开头;从目录加载时必须等于目录名 |
 | `name` | string,必填 | — | 非空 |
 | `description` | string | `""` | |
-| `tools` | string[] | `[]`(全部) | 白名单;`*` 只能出现一次、在末尾,按前缀匹配 |
+| `tools` | string[] | `[]`(全部) | 白名单;`*` 只能出现一次、在末尾,按前缀匹配;`mcp__*`、`mcp__<server>`、`mcp__<server>__*` 按来源匹配 MCP 工具 |
 | `disallowed_tools` | string[] | `[]` | 黑名单,同样的通配;**白名单非空时也生效** |
 | `deferred_tools` | string[] | `[]` | 只报名字、schema 经 `ToolSearch` 取的工具;不支持通配 |
 | `token_budget.compact_threshold` | 整数 | 150000 | 0 = 不自动压缩 |
@@ -429,7 +449,7 @@ for refused in registry.register_declarative_dir(&global_root.join("scenes")) {
 
 #### 场景收窄模块
 
-`Scene::modules()`(白名单,`None` 是全部)和 `Scene::disabled_modules()` 决定一个
+`SceneSpec::modules`(`allow` 为 `None` 是全部,`deny` 再减)决定一个
 会话跑宿主装配的哪些模块。`Builder::build()` 先按场景过滤 `Builder::modules` 给的列表,
 再检查顺序、调 `on_session`:场景不允许的模块在这个会话里根本不跑,它派出去的子 agent
 拿到的也是过滤后的列表。白名单里写了宿主没装配的模块不算错——只能收窄,不能凭空加。
@@ -1145,8 +1165,8 @@ agent 类型和磁盘上的定义之间仍按层级覆盖:内建 < 插件包与�
   ```
 
   `Builder::build` 为会话算一份工具策略:一个工具留下,当且仅当场景允许它
-  (`Scene::permits_tool`),或者它由插件登记、命中这个插件的某个 pattern、并且不在场景的
-  `disallowed_tools` 里。pattern 只和这个插件自己的工具比,放行不了内建工具和别的插件的工具。
+  (`SceneSpec::tools`),或者它由插件登记、命中这个插件的某个 pattern、并且不在场景的
+  `tools.deny` 里。pattern 只和这个插件自己的工具比,放行不了内建工具和别的插件的工具。
   注册表、每次请求的工具宣告、MCP 适配器同步读的都是这一份;agent 类型的 `allowed_tools`、
   需要用户回答的工具(`NEEDS_A_USER`)照旧在它之外收窄。被移除的工具记 `debug` 日志
   (工具名、场景、插件名)。不调 `admit_tools` 的插件,行为和以前一样。
