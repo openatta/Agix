@@ -128,7 +128,7 @@ pub(super) async fn fire_ctx_lifecycle_hook(
         )
         .with_turn_id(ctx.turn_id.clone()),
     );
-    let _ = ctx.hooks.run(event, &input).await;
+    let _ = ctx.hooks.run(event, &input, &ctx.cancel).await;
 }
 
 /// A `PushNotification` reaches the host as a `notification` frame and the
@@ -421,7 +421,7 @@ pub(super) async fn execute_tool_inner(
         };
         let hook_result = ctx
             .hooks
-            .run(hooks::HookEvent::PostToolUse, &post_input)
+            .run(hooks::HookEvent::PostToolUse, &post_input, &ctx.cancel)
             .await;
         if let Some(response) = hook_result.blocked() {
             outcome = Err(format!(

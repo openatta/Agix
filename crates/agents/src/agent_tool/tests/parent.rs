@@ -113,6 +113,7 @@ impl TestParent {
             mcp: self.mcp,
             skills: self.skills,
             depth: self.depth,
+            under_hook: false,
         };
         let catalog = match self.shared_types {
             Some(map) => AgentCatalog::shared(map, &self.session_agent_types),
@@ -122,7 +123,8 @@ impl TestParent {
                 &env.config.prompt_files,
             ),
         };
-        let limits = crate::delegate::Limits::new(&env.config, env.depth, self.slots);
+        let limits =
+            crate::delegate::Limits::new(&env.config, env.depth, self.slots, Default::default());
         let pool = crate::delegate::ToolPool::new(self.template, self.tools);
         let members = crate::delegate::PersistentMembers::new(self.team_registry);
         AgentTool::new(Delegator::new(env, catalog, pool, limits, members))

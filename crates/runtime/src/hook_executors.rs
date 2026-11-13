@@ -15,6 +15,7 @@ use base::settings::ThinkingMode;
 use hooks::payload::HookInput;
 use hooks::runner::{AgentHookExecutor, PromptHookExecutor};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// Runs a `"type": "prompt"` hook as a single one-shot, tool-less model call:
 /// the hook's `prompt` becomes the system prompt, the serialized `HookInput`
@@ -51,6 +52,7 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
         prompt: &str,
         model: Option<&str>,
         payload: &HookInput,
+        stop: &CancellationToken,
     ) -> Result<String, String> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
         let params = StreamParams {
@@ -76,10 +78,9 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
             content: vec![ModelContentBlock::Text { text: payload_json }],
         }];
         let prompt_blocks = vec![PromptBlock::system(prompt.to_string())];
-        let cancel = tokio_util::sync::CancellationToken::new();
         let mut stream = self
             .model
-            .stream(prompt_blocks, vec![], messages, params, cancel)
+            .stream(prompt_blocks, vec![], messages, params, stop.child_token())
             .await
             .map_err(|e| format!("model call failed: {e}"))?;
 
@@ -123,13 +124,14 @@ impl AgentHookExecutor for AgentSpawnerHookExecutor {
         prompt: &str,
         model: Option<&str>,
         payload: &HookInput,
+        stop: &CancellationToken,
     ) -> Result<String, String> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
         let full_prompt = format!("{prompt}\n\nContext:\n{payload_json}");
         let request = base::interface::agent_spawner::SpawnRequest::new(
             full_prompt,
             self.cwd.clone(),
-            tokio_util::sync::CancellationToken::new(),
+            stop.child_token(),
         )
         .model(model.map(str::to_string))
         .mode(base::interface::agent_spawner::SpawnMode::Hook {
@@ -198,7 +200,12 @@ mod tests {
         });
         let executor = ModelPromptHookExecutor::new(model, "test-model".into(), 100, None);
         let out = executor
-            .execute("is this safe?", None, &test_input())
+            .execute(
+                "is this safe?",
+                None,
+                &test_input(),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, r#"{"decision":"approve"}"#);
@@ -228,7 +235,12 @@ mod tests {
             });
         let executor = AgentSpawnerHookExecutor::new(spawner, std::path::PathBuf::from("/tmp"));
         let out = executor
-            .execute("review this", None, &test_input())
+            .execute(
+                "review this",
+                None,
+                &test_input(),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, r#"{"ok":true}"#);
@@ -242,7 +254,12 @@ mod tests {
             });
         let executor = AgentSpawnerHookExecutor::new(spawner, std::path::PathBuf::from("/tmp"));
         let out = executor
-            .execute("review this", Some("claude-haiku-4-5"), &test_input())
+            .execute(
+                "review this",
+                Some("claude-haiku-4-5"),
+                &test_input(),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap();
         assert_eq!(out, "ran on claude-haiku-4-5");

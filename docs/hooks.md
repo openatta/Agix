@@ -154,9 +154,9 @@ JSON。子 Agent 的最终回答应当是 `{"ok": true|false, "reason": "…"}`:
 不是 JSON 的回答只当 `message`,不拦不改。写了 `model` 的,子 Agent 跑在这个模型上,provider
 按会话的路由选;不写用会话的模型。
 
-这个子 Agent 不占 `execution.max_concurrent_subagents`,模型把名额占满了照样起。它自己的事件
-(它的工具调用、它的 `SubagentStart` 等)不再起 agent hook,按执行失败处理、走 `on_error`;
-command / prompt / http hook 对它照旧跑。它一次性跑完就丢,不做记忆抽取。
+这个子 Agent 不占 `execution.max_concurrent_subagents`,模型把名额占满了照样起。它和它再
+委派出去的子孙,自己的事件(工具调用、`SubagentStart` 等)不再起 agent hook,按执行失败处理、
+走 `on_error`;command / prompt / http hook 对它们照旧跑。它一次性跑完就丢,不做记忆抽取。
 
 ---
 
@@ -251,6 +251,11 @@ warn。
 `` http `<url>` ``、`prompt hook`、`agent hook`)。拦下的效果按事件走,同回答 `block`:
 `PreToolUse` 上这次调用不执行,`Stop` 上这一轮不结束、模型被送回去,只通知的事件上不起作用。
 `if`、`only_on_error` 没放行的那次不算失败。
+
+hook 跟着它所属的东西停:回合里的事件(`PreToolUse`、`PostToolUse`、`Stop`、`UserPromptSubmit`、
+压缩前后等)随回合被打断,其余的随会话结束。被叫停的 hook 不等超时:command 的进程被杀掉,
+agent hook 的子 Agent 以 `cancelled` 停下;它按失败算,写了 `"on_error": "block"` 的照样拦下。
+`PreToolUse` 跑完时回合已经被打断的,这次调用不执行。
 
 ```json
 { "type": "command", "command": "policy-check.sh", "timeout": 5000, "on_error": "block" }

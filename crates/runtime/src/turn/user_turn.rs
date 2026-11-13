@@ -56,7 +56,7 @@ impl Agent {
         //   `PreToolUse` uses for rewriting tool input, repurposed here for
         //   the one thing there is to rewrite: the prompt text itself.
         match self
-            .screen_user_prompt(content, &attachments, PromptDelivery::Turn)
+            .screen_user_prompt(content, &attachments, PromptDelivery::Turn, &cancel)
             .await
         {
             PromptScreen::Pass(screened) => content = screened,
@@ -72,7 +72,7 @@ impl Agent {
         // TurnStart — fires after UserPromptSubmit has had its chance to block
         // or rewrite, so a hook here sees the message that will actually be
         // processed. Notification only: the response is discarded.
-        self.fire_lifecycle_hook(hooks::HookEvent::TurnStart, |input| {
+        self.fire_turn_hook(hooks::HookEvent::TurnStart, &cancel, |input| {
             input.with_turn_id(self.current_turn_id.clone())
         })
         .await;
@@ -803,7 +803,7 @@ impl Agent {
             {
                 let sr = stop_reason.clone();
                 let out_tokens = usage.output_tokens;
-                self.fire_lifecycle_hook(hooks::HookEvent::PostSampling, |i| {
+                self.fire_turn_hook(hooks::HookEvent::PostSampling, &cancel, |i| {
                     i.with_reason(format!(
                         "model response complete (stop_reason={sr}, output_tokens={out_tokens})"
                     ))
@@ -1004,7 +1004,7 @@ impl Agent {
                     |t| self.tooling.tool_policy.permits(t),
                 );
                 if !cancel.is_cancelled() {
-                    self.deliver_queued_user_messages(false).await;
+                    self.deliver_queued_user_messages(false, &cancel).await;
                 }
                 continue;
             }
@@ -1032,7 +1032,7 @@ impl Agent {
                 let hook_result = self
                     .gate
                     .hooks
-                    .run(hooks::HookEvent::Stop, &stop_hook_input)
+                    .run(hooks::HookEvent::Stop, &stop_hook_input, &cancel)
                     .await;
                 if hook_result.discontinued() {
                     tracing::info!("Stop hook discontinued the turn");
@@ -1131,7 +1131,7 @@ impl Agent {
             // The model has answered; a message the user sent meanwhile is
             // answered in the same turn rather than left for one nobody
             // asked to start.
-            if self.deliver_queued_user_messages(true).await {
+            if self.deliver_queued_user_messages(true, &cancel).await {
                 continue;
             }
 

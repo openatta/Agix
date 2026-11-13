@@ -20,6 +20,7 @@ const FIRE_CALLS: &[&str] = &[
     "run",
     "fire",
     "fire_lifecycle_hook",
+    "fire_turn_hook",
     "fire_ctx_lifecycle_hook",
     "fire_subagent_hook",
 ];

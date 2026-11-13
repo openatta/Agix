@@ -202,8 +202,12 @@ impl Delegator {
                 base::error::ToolError::Execution(e) => DelegateError::Build(e.to_string()),
                 other => DelegateError::Build(other.to_string()),
             })?;
-        self.fire_subagent_hook(hooks::HookEvent::SubagentStart, &delegate.payload)
-            .await;
+        self.fire_subagent_hook(
+            hooks::HookEvent::SubagentStart,
+            &delegate.payload,
+            &self.env.parent.ended,
+        )
+        .await;
         let spawned = SpawnTelemetry::start(
             self,
             None,
@@ -245,6 +249,7 @@ impl Delegator {
             idle_seq_counter: self.members.idle_seq_counter.clone(),
             slots: self.limits.slots.clone(),
             hooks: me.env.hooks.clone(),
+            session_ended: me.env.parent.ended.clone(),
             spawned,
         }));
         Ok(Delegated::Started(StartedAgent {
@@ -328,6 +333,8 @@ struct MemberLoop {
     /// as that session may take one, and holds none while idle.
     slots: SlotRule,
     hooks: std::sync::Weak<hooks::HookRunner>,
+    /// What its `SubagentStop` stops with: `cancel` has fired by then.
+    session_ended: CancellationToken,
     spawned: SpawnTelemetry,
 }
 
@@ -405,7 +412,7 @@ async fn member_loop(mut m: MemberLoop) {
         payload
             .clone()
             .stopped("shutdown")
-            .fire(&runner, hooks::HookEvent::SubagentStop)
+            .fire(&runner, hooks::HookEvent::SubagentStop, &m.session_ended)
             .await;
     }
     let ended = if failed { last } else { DelegateEnd::Completed };

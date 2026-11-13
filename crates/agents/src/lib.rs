@@ -18,7 +18,9 @@ use base::context::EngineConfig;
 use runtime::module::{Module, ModuleError, SessionContext};
 
 use crate::agent_tool::{AgentCatalog, AgentTool, SharedAgentTypeMap};
-use crate::delegate::{DelegateEnv, Delegator, Limits, PersistentMembers, SubagentSlots, ToolPool};
+use crate::delegate::{
+    DelegateEnv, Delegator, HookAgents, Limits, PersistentMembers, SubagentSlots, ToolPool,
+};
 use crate::spawner::RuntimeAgentSpawner;
 
 pub const MODULE_ID: &str = "agents";
@@ -29,6 +31,8 @@ pub struct AgentsModule {
     /// Set on the copy a session's delegates are assembled with, so the
     /// whole tree draws on the root's `execution.max_concurrent_subagents`.
     slots: Option<SubagentSlots>,
+    /// Set the same way: the root's hook agents and their descendants.
+    hook_agents: Option<HookAgents>,
 }
 
 impl AgentsModule {
@@ -50,6 +54,7 @@ impl AgentsModule {
         &self,
         modules: &[Arc<dyn Module>],
         slots: &SubagentSlots,
+        hook_agents: &HookAgents,
     ) -> Vec<Arc<dyn Module>> {
         modules
             .iter()
@@ -58,6 +63,7 @@ impl AgentsModule {
                     Arc::new(Self {
                         shared_types: self.shared_types.clone(),
                         slots: Some(slots.clone()),
+                        hook_agents: Some(hook_agents.clone()),
                     })
                 } else {
                     m.clone()
@@ -88,8 +94,9 @@ impl Module for AgentsModule {
         let team_registry = (settings.execution.team_enabled && cx.scene.supports_team)
             .then(|| Arc::new(team::registry::TeamRegistry::new()));
 
-        let mut env = DelegateEnv::capture(cx);
-        env.host.modules = self.for_delegates(&cx.host.modules, &slots);
+        let hook_agents = self.hook_agents.clone().unwrap_or_default();
+        let mut env = DelegateEnv::capture(cx, &hook_agents);
+        env.host.modules = self.for_delegates(&cx.host.modules, &slots, &hook_agents);
         let catalog = match &self.shared_types {
             Some(shared) => AgentCatalog::shared(shared.clone(), cx.plugin_agent_types),
             None => AgentCatalog::watched(
@@ -98,7 +105,7 @@ impl Module for AgentsModule {
                 &env.config.prompt_files,
             ),
         };
-        let limits = Limits::new(&env.config, env.depth, slots);
+        let limits = Limits::new(&env.config, env.depth, slots, hook_agents);
         let pool = ToolPool::new(template, cx.tools.clone());
         let members = PersistentMembers::new(team_registry.clone());
         let delegator = Delegator::new(env, catalog, pool, limits, members);

@@ -27,6 +27,8 @@ pub(crate) struct Delegate {
     pub(crate) settings: Arc<LoadedSettings>,
     pub(crate) payload: SubagentPayload,
     pub(crate) history_store: Option<Arc<dyn HistoryStore>>,
+    /// Held as long as the delegate is: it is in `HookAgents` while it runs.
+    pub(crate) under_hook: Option<HookAgentRunning>,
 }
 
 /// One prompt, one turn, then the delegate ends.
@@ -106,6 +108,11 @@ impl Delegator {
             builder = builder.mcp_servers(servers);
         }
         let history_store = self.env.host.history_store.clone();
+        // Before `build`: the delegate's own agents module reads it there.
+        let under_hook = self
+            .env
+            .under_hook
+            .then(|| self.limits.hook_agents.enter(sid.clone()));
         let (agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
@@ -122,6 +129,7 @@ impl Delegator {
             settings,
             payload,
             history_store,
+            under_hook,
         })
     }
 
@@ -156,6 +164,7 @@ impl Delegator {
             settings,
             payload,
             history_store,
+            under_hook: _under_hook,
         } = match self
             .build_delegate(&spec, depth, extra_tools, permission, false)
             .await
@@ -176,7 +185,7 @@ impl Delegator {
 
         // `Stop` fires on both success and failure — a hook that cleans up
         // after a sub-agent must not be skipped just because it errored.
-        self.fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
+        self.fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload, &cancel)
             .await;
         let spawned = SpawnTelemetry::start(
             self,
@@ -216,7 +225,9 @@ impl Delegator {
         };
         spawned.finish(matches!(end, DelegateEnd::Failed(_)));
         let stopped = payload.stopped(stop_reason_of(&end));
-        self.fire_subagent_hook(hooks::HookEvent::SubagentStop, &stopped)
+        // Not `cancel`: a delegate it stopped still reports stopping.
+        let ended = &self.env.parent.ended;
+        self.fire_subagent_hook(hooks::HookEvent::SubagentStop, &stopped, ended)
             .await;
         // Marked terminal on failure too, so a stale `session.resume` against
         // it is rejected instead of silently continuing a "finished" sub-agent.

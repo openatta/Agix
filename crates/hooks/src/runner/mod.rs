@@ -11,6 +11,7 @@ use crate::config::{HookConfig, HookEvent, HooksSettings, OnError};
 use crate::payload::{HookDecision, HookInput, HookResponse};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// 没写 `timeout` 的 hook 最多跑多久（60 秒），四种后端都一样。到时它什么都不拦、
 /// 不改，除非它写了 `on_error: "block"`。
@@ -31,6 +32,8 @@ pub enum HookOutcome {
     Skipped(&'static str),
     /// 执行失败 / 超时
     Error(String),
+    /// 没跑完就被叫停：它所属的回合或会话结束了
+    Cancelled,
 }
 
 impl HookOutcome {
@@ -111,7 +114,8 @@ impl HookRunResult {
 }
 
 /// Prompt-type hook 执行器。HookRunner 持有 `Option<Arc<dyn PromptHookExecutor>>`；
-/// 不注入时 Prompt hook skip 报错 "no executor configured"。
+/// 不注入时 Prompt hook skip 报错 "no executor configured"。`stop` 被 cancel 时
+/// 应尽快返回。
 ///
 /// CLI 注入一个 wrap AnthropicClient 的实现 —— hooks crate 自身**不**依赖
 /// agix-anthropic，避免循环依赖（anthropic 依赖 core，hooks 依赖 core，
@@ -124,6 +128,7 @@ pub trait PromptHookExecutor: Send + Sync {
         prompt: &str,
         model: Option<&str>,
         payload: &HookInput,
+        stop: &CancellationToken,
     ) -> Result<String, String>;
 }
 
@@ -132,13 +137,14 @@ pub trait PromptHookExecutor: Send + Sync {
 /// hook prompt + payload and returns structured JSON: `{"ok": bool, "reason": "..."}`.
 #[async_trait::async_trait]
 pub trait AgentHookExecutor: Send + Sync {
-    /// Execute an agent hook with the given prompt and model.
-    /// Returns the agent's JSON response string.
+    /// Execute an agent hook with the given prompt and model; the agent stops
+    /// when `stop` does. Returns the agent's JSON response string.
     async fn execute(
         &self,
         prompt: &str,
         model: Option<&str>,
         payload: &HookInput,
+        stop: &CancellationToken,
     ) -> Result<String, String>;
 }
 
@@ -241,7 +247,7 @@ impl HookRunner {
         self
     }
 
-    /// 注入 Agent hook 执行器。CLI 用 AgentSpawner 包一层注入。
+    /// 注入 Agent hook 执行器。宿主用会话的 `Delegator` 包一层注入。
     pub fn with_agent_executor(mut self, executor: Arc<dyn AgentHookExecutor>) -> Self {
         self.agent_executor = Some(executor);
         self
@@ -334,12 +340,13 @@ impl HookRunner {
         ambient: &crate::payload::Ambient,
         server_name: &str,
         url: &str,
+        stop: &CancellationToken,
     ) -> HookRunResult {
         let input = HookInput::from_ambient(ambient, "Elicitation").with_tool(
             format!("mcp_elicitation_{server_name}"),
             serde_json::json!({ "server_name": server_name, "url": url }),
         );
-        self.run(HookEvent::Elicitation, &input).await
+        self.run(HookEvent::Elicitation, &input, stop).await
     }
 
     /// Fire the `ElicitationResult` hook event with the elicitation context
@@ -365,6 +372,7 @@ impl HookRunner {
         server_name: &str,
         url: &str,
         response: Option<&serde_json::Value>,
+        stop: &CancellationToken,
     ) -> HookRunResult {
         let mut tool_input = serde_json::json!({ "server_name": server_name, "url": url });
         if let Some(r) = response {
@@ -373,7 +381,7 @@ impl HookRunner {
         let mut input = HookInput::from_ambient(ambient, "ElicitationResult")
             .with_tool(format!("mcp_elicitation_{server_name}"), tool_input);
         input.tool_result = response.cloned();
-        self.run(HookEvent::ElicitationResult, &input).await
+        self.run(HookEvent::ElicitationResult, &input, stop).await
     }
 
     /// 并行跑某事件的所有 hook。
@@ -389,7 +397,15 @@ impl HookRunner {
     ///
     /// Outcomes are collected in **registration order** (not completion order)
     /// so `updated_input()` is deterministic.
-    pub async fn run(&self, event: HookEvent, input: &HookInput) -> HookRunResult {
+    ///
+    /// Once `stop` is cancelled, every hook still running is stopped and
+    /// reported [`HookOutcome::Cancelled`] rather than left to its timeout.
+    pub async fn run(
+        &self,
+        event: HookEvent,
+        input: &HookInput,
+        stop: &CancellationToken,
+    ) -> HookRunResult {
         let configs = match self.settings.get(&event) {
             Some(v) => v,
             None => return HookRunResult::default(),
@@ -413,9 +429,8 @@ impl HookRunner {
         // regardless of completion order.
         let mut futures = futures::stream::FuturesUnordered::new();
         for &idx in &pending {
-            let cfg = configs[idx].clone();
-            let input = input.clone();
-            futures.push(async move { (idx, self.run_one(&cfg, &input).await) });
+            let cfg = &configs[idx];
+            futures.push(async move { (idx, self.run_one(cfg, input, stop).await) });
         }
 
         let mut indexed: Vec<(usize, HookOutcome)> = Vec::with_capacity(pending.len());
@@ -488,9 +503,17 @@ impl HookRunner {
 
     /// Run a single hook config, dispatching to the appropriate executor.
     /// `pub(super)` so that tests in submodules can call this directly if needed.
-    pub(super) async fn run_one(&self, cfg: &HookConfig, input: &HookInput) -> HookOutcome {
+    pub(super) async fn run_one(
+        &self,
+        cfg: &HookConfig,
+        input: &HookInput,
+        stop: &CancellationToken,
+    ) -> HookOutcome {
         if let Err(why) = cfg.applies_to(input) {
             return HookOutcome::Skipped(why);
+        }
+        if stop.is_cancelled() {
+            return HookOutcome::Cancelled;
         }
         match cfg {
             HookConfig::Command {
@@ -500,7 +523,7 @@ impl HookRunner {
                 ..
             } => {
                 let shell = shell.as_deref().unwrap_or("bash");
-                self.exec_command(shell, command, input, self.timeout_of(*timeout))
+                self.exec_command(shell, command, input, self.timeout_of(*timeout), stop)
                     .await
             }
             HookConfig::Prompt {
@@ -510,8 +533,14 @@ impl HookRunner {
                 may_approve,
                 ..
             } => judged(
-                self.exec_prompt(prompt, model.as_deref(), input, self.timeout_of(*timeout))
-                    .await,
+                self.exec_prompt(
+                    prompt,
+                    model.as_deref(),
+                    input,
+                    self.timeout_of(*timeout),
+                    stop,
+                )
+                .await,
                 *may_approve,
             ),
             HookConfig::Http {
@@ -521,8 +550,15 @@ impl HookRunner {
                 timeout,
                 ..
             } => {
-                self.exec_http(url, headers, *allow_local, input, self.timeout_of(*timeout))
-                    .await
+                self.exec_http(
+                    url,
+                    headers,
+                    *allow_local,
+                    input,
+                    self.timeout_of(*timeout),
+                    stop,
+                )
+                .await
             }
             HookConfig::Agent {
                 prompt,
@@ -531,8 +567,14 @@ impl HookRunner {
                 may_approve,
                 ..
             } => judged(
-                self.exec_agent(prompt, model.as_deref(), input, self.timeout_of(*timeout))
-                    .await,
+                self.exec_agent(
+                    prompt,
+                    model.as_deref(),
+                    input,
+                    self.timeout_of(*timeout),
+                    stop,
+                )
+                .await,
                 *may_approve,
             ),
         }
@@ -546,18 +588,24 @@ impl HookRunner {
 
     /// Execute an Agent-type hook. Delegates to the injected AgentHookExecutor.
     /// If no executor is available, returns Skipped with an explanation.
+    ///
+    /// Not raced against `stop` here: the executor stops its agent on `stop`
+    /// and returns, and dropping it instead would end the agent without its
+    /// `SubagentStop`.
     async fn exec_agent(
         &self,
         prompt: &str,
         model: Option<&str>,
         input: &HookInput,
         timeout: Duration,
+        stop: &CancellationToken,
     ) -> HookOutcome {
         let Some(ref executor) = self.agent_executor else {
             return HookOutcome::Skipped(NO_AGENT_EXECUTOR);
         };
         let answered =
-            match tokio::time::timeout(timeout, executor.execute(prompt, model, input)).await {
+            match tokio::time::timeout(timeout, executor.execute(prompt, model, input, stop)).await
+            {
                 Ok(answered) => answered,
                 Err(_) => {
                     return HookOutcome::Error(format!(
@@ -566,6 +614,9 @@ impl HookRunner {
                     ))
                 }
             };
+        if stop.is_cancelled() {
+            return HookOutcome::Cancelled;
+        }
         match answered {
             Ok(response) => {
                 // Parse JSON response: {"ok": bool, "reason": "..."}
@@ -618,8 +669,12 @@ impl HookRunner {
     /// If no wake signal is available, the pending set is preserved so the
     /// hooks can be re-executed on a later call. Signals that arrive while no
     /// hook is waiting are discarded: work that finished before a hook asked
-    /// to be woken is not what it is waiting for.
-    pub async fn check_rewakes(&self, ambient: HookInput) -> Vec<HookResponse> {
+    /// to be woken is not what it is waiting for. The hooks stop with `stop`.
+    pub async fn check_rewakes(
+        &self,
+        stop: &CancellationToken,
+        ambient: HookInput,
+    ) -> Vec<HookResponse> {
         let pending: Vec<(HookEvent, usize)> = {
             let mut set = self
                 .pending_rewakes
@@ -688,7 +743,7 @@ impl HookRunner {
                 Some(c) => c,
                 None => continue,
             };
-            let outcome = self.run_one(cfg, &wake_input).await;
+            let outcome = self.run_one(cfg, &wake_input, stop).await;
             if let HookOutcome::Ran { response, .. } = outcome {
                 responses.push(response);
             }
@@ -709,6 +764,12 @@ const NO_AGENT_EXECUTOR: &str =
 fn block_on_failure(event: HookEvent, cfg: &HookConfig, outcome: HookOutcome) -> HookOutcome {
     let (why, stdout, stderr, exit_code) = match outcome {
         HookOutcome::Error(error) => (error, String::new(), String::new(), None),
+        HookOutcome::Cancelled => (
+            "stopped before it answered".to_string(),
+            String::new(),
+            String::new(),
+            None,
+        ),
         HookOutcome::Ran {
             failure: Some(failure),
             stdout,
@@ -762,7 +823,13 @@ mod tests {
     #[tokio::test]
     async fn empty_runner_returns_no_outcomes() {
         let r = HookRunner::empty();
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(result.outcomes.is_empty());
     }
 
@@ -809,11 +876,15 @@ mod tests {
 
         let mut input = input_for_bash("ls");
         input.is_error = Some(false);
-        let r1 = r.run(HookEvent::PostToolUse, &input).await;
+        let r1 = r
+            .run(HookEvent::PostToolUse, &input, &CancellationToken::new())
+            .await;
         assert!(matches!(&r1.outcomes[0], HookOutcome::Skipped(_)));
 
         input.is_error = Some(true);
-        let r2 = r.run(HookEvent::PostToolUse, &input).await;
+        let r2 = r
+            .run(HookEvent::PostToolUse, &input, &CancellationToken::new())
+            .await;
         assert!(matches!(&r2.outcomes[0], HookOutcome::Ran { .. }));
     }
 
@@ -832,7 +903,13 @@ mod tests {
             }],
         );
         let r = HookRunner::new(s);
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(matches!(&result.outcomes[0], HookOutcome::Skipped(_)));
     }
 
@@ -865,7 +942,13 @@ mod tests {
             ],
         );
         let r = HookRunner::new(s);
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert_eq!(result.outcomes.len(), 2);
         assert!(result.discontinued());
         match &result.outcomes[1] {
@@ -903,7 +986,13 @@ mod tests {
             ],
         );
         let r = HookRunner::new(s);
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert_eq!(result.outcomes.len(), 2);
         match (&result.outcomes[0], &result.outcomes[1]) {
             (HookOutcome::Ran { stdout: s0, .. }, HookOutcome::Ran { stdout: s1, .. }) => {
@@ -931,7 +1020,13 @@ mod tests {
             }],
         );
         let r = HookRunner::new(s);
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         let new = result.updated_input().expect("expected updated_input");
         assert_eq!(new["command"], "echo redirected");
     }
@@ -955,7 +1050,13 @@ mod tests {
         let r = HookRunner::new(s);
 
         // 不匹配 → skipped
-        let r1 = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let r1 = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(matches!(&r1.outcomes[0], HookOutcome::Skipped(_)));
         assert!(r1.blocked().is_none());
 
@@ -964,6 +1065,7 @@ mod tests {
             .run(
                 HookEvent::PreToolUse,
                 &input_for_bash("git push origin main"),
+                &CancellationToken::new(),
             )
             .await;
         assert!(r2.blocked().is_some());
@@ -1009,7 +1111,13 @@ mod tests {
             }],
         );
         let r = HookRunner::new(s).with_hooks_search_dirs(vec![dir.clone()]);
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         let _ = std::fs::remove_dir_all(&dir);
         match &result.outcomes[0] {
             HookOutcome::Ran { stdout, .. } => assert!(stdout.contains("hi from greet.sh")),
@@ -1075,7 +1183,7 @@ mod tests {
             "echo scripts/check.sh",
         ] {
             let result = runner(command, OnError::Allow, true)
-                .run(HookEvent::PreToolUse, &input)
+                .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
                 .await;
             assert!(!marker.exists(), "`{command}` ran the project's script");
             match &result.outcomes[0] {
@@ -1085,7 +1193,7 @@ mod tests {
         }
 
         let blocked = runner("./scripts/check.sh", OnError::Block, true)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         assert!(blocked.blocked().is_some(), "{:?}", blocked.outcomes);
 
@@ -1096,7 +1204,7 @@ mod tests {
             "true",
         ] {
             let result = runner(command, OnError::Allow, true)
-                .run(HookEvent::PreToolUse, &input)
+                .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
                 .await;
             assert!(
                 matches!(result.outcomes[0], HookOutcome::Ran { .. }),
@@ -1106,7 +1214,7 @@ mod tests {
         }
 
         runner("./scripts/check.sh", OnError::Allow, false)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         assert!(marker.exists(), "a trusted project's script runs as before");
         let _ = std::fs::remove_dir_all(&root);
@@ -1191,7 +1299,7 @@ mod tests {
             "node -r./scripts/check.js -e 0",
         ] {
             let result = runner(command, true)
-                .run(HookEvent::PreToolUse, &input)
+                .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
                 .await;
             assert!(!marker.exists(), "`{command}` ran the project's script");
             match &result.outcomes[0] {
@@ -1207,7 +1315,7 @@ mod tests {
             "echo log >> scripts/check.sh.log",
         ] {
             let result = runner(command, true)
-                .run(HookEvent::PreToolUse, &input)
+                .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
                 .await;
             assert!(
                 matches!(result.outcomes[0], HookOutcome::Ran { .. }),
@@ -1218,7 +1326,7 @@ mod tests {
         }
 
         runner("awk -f scripts/check.awk", false)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         assert!(marker.exists(), "a trusted project's script runs as before");
         let _ = std::fs::remove_dir_all(&root);
@@ -1269,7 +1377,7 @@ mod tests {
             "sh -c '$PWD/scripts/check.sh'",
         ] {
             let result = runner(command, true)
-                .run(HookEvent::PreToolUse, &input)
+                .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
                 .await;
             assert!(!marker.exists(), "`{command}` ran the project's script");
             match &result.outcomes[0] {
@@ -1279,7 +1387,7 @@ mod tests {
         }
 
         let result = runner("test -d \"$HOME\" && cd \"$HOME\"", true)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         assert!(
             matches!(result.outcomes[0], HookOutcome::Ran { .. }),
@@ -1288,7 +1396,7 @@ mod tests {
         );
 
         runner("$PWD/scripts/check.sh", false)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         assert!(marker.exists(), "a trusted project's script runs as before");
         let _ = std::fs::remove_dir_all(&root);
@@ -1324,7 +1432,13 @@ mod tests {
             20_000,
         );
         let started = std::time::Instant::now();
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(
             started.elapsed() < Duration::from_secs(10),
             "the hook waited on its background sleep: {:?}",
@@ -1355,7 +1469,13 @@ mod tests {
     async fn a_hook_that_outlives_its_timeout_is_stopped_and_reported() {
         let r = one_command_hook("sleep 30", 300);
         let started = std::time::Instant::now();
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
         assert!(result.blocked().is_none());
@@ -1373,7 +1493,11 @@ mod tests {
             other => panic!("{other:?}"),
         };
         let inherited = one_command_hook(probe, 10_000)
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert_eq!(stdout_of(inherited), env!("CARGO_MANIFEST_DIR"));
 
@@ -1383,7 +1507,11 @@ mod tests {
         };
         let narrowed = one_command_hook(probe, 10_000)
             .with_subprocess_env(allowlist)
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert_eq!(stdout_of(narrowed), "absent");
     }
@@ -1395,7 +1523,7 @@ mod tests {
         let mut input = input_for_bash("ls");
         input.cwd = dir.to_string_lossy().into_owned();
         let result = one_command_hook("pwd -P", 10_000)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         let expected = std::fs::canonicalize(&dir).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
@@ -1413,7 +1541,7 @@ mod tests {
         let mut input = input_for_bash("ls");
         input.cwd = "/definitely/not/a/dir".into();
         let result = one_command_hook("echo ran", 10_000)
-            .run(HookEvent::PreToolUse, &input)
+            .run(HookEvent::PreToolUse, &input, &CancellationToken::new())
             .await;
         match &result.outcomes[0] {
             HookOutcome::Ran { stdout, .. } => assert_eq!(stdout.trim(), "ran"),
@@ -1452,7 +1580,13 @@ mod tests {
             }],
         );
         let r = HookRunner::new(s); // no hooks_search_dirs configured
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         match &result.outcomes[0] {
             HookOutcome::Ran { exit_code, .. } => assert_ne!(*exit_code, Some(0)),
             other => panic!("expected a failing exit code, got {other:?}"),
@@ -1474,7 +1608,13 @@ mod tests {
             }],
         );
         let r = HookRunner::new(s);
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert_eq!(result.outcomes.len(), 1);
         match &result.outcomes[0] {
             HookOutcome::Error(msg) => {
@@ -1508,7 +1648,11 @@ mod tests {
     #[tokio::test]
     async fn the_exit_code_decides_whatever_stdout_holds() {
         let blocked = on_pre_tool_use(vec![command("echo 'not json {{'; echo NO-RM >&2; exit 2")])
-            .run(HookEvent::PreToolUse, &input_for_bash("rm x"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("rm x"),
+                &CancellationToken::new(),
+            )
             .await;
         assert_eq!(
             blocked.blocked().and_then(|r| r.message.as_deref()),
@@ -1518,7 +1662,11 @@ mod tests {
         );
 
         let failed = on_pre_tool_use(vec![command("echo boom >&2; exit 1")])
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(failed.blocked().is_none(), "{:?}", failed.outcomes);
     }
@@ -1540,7 +1688,12 @@ mod tests {
         };
         let r = on_pre_tool_use(vec![hook]);
         for cmd in ["ls", "git push origin", "git push origin", "ls"] {
-            r.run(HookEvent::PreToolUse, &input_for_bash(cmd)).await;
+            r.run(
+                HookEvent::PreToolUse,
+                &input_for_bash(cmd),
+                &CancellationToken::new(),
+            )
+            .await;
         }
         let ran = std::fs::read_to_string(&marker).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
@@ -1551,14 +1704,26 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PromptHookExecutor for Answering {
-        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &HookInput,
+            _: &CancellationToken,
+        ) -> Result<String, String> {
             Ok(self.0.to_string())
         }
     }
 
     #[async_trait::async_trait]
     impl AgentHookExecutor for Answering {
-        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &HookInput,
+            _: &CancellationToken,
+        ) -> Result<String, String> {
             Ok(self.0.to_string())
         }
     }
@@ -1573,7 +1738,11 @@ mod tests {
             on_pre_tool_use(vec![config])
                 .with_prompt_executor(Arc::new(Answering(r#"{"decision":"approve"}"#)))
                 .with_agent_executor(Arc::new(Answering(r#"{"ok":true}"#)))
-                .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+                .run(
+                    HookEvent::PreToolUse,
+                    &input_for_bash("ls"),
+                    &CancellationToken::new(),
+                )
                 .await
         };
         for kind in ["prompt", "agent"] {
@@ -1597,7 +1766,11 @@ mod tests {
         }))
         .unwrap()])
         .with_agent_executor(Arc::new(Answering(r#"{"ok":false,"reason":"no"}"#)))
-        .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+        .run(
+            HookEvent::PreToolUse,
+            &input_for_bash("ls"),
+            &CancellationToken::new(),
+        )
         .await;
         assert!(refused.blocked().is_some(), "{:?}", refused.outcomes);
     }
@@ -1633,7 +1806,13 @@ mod tests {
         .with_prompt_executor(Arc::new(Answering(r#"{"decision":"block"}"#)))
         .with_agent_executor(Arc::new(Answering(r#"{"ok":false}"#)));
 
-        let bash = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let bash = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(
             bash.outcomes
                 .iter()
@@ -1644,7 +1823,9 @@ mod tests {
 
         let mut write = input_for_bash("ls");
         write.tool_name = Some("Write".into());
-        let written = r.run(HookEvent::PreToolUse, &write).await;
+        let written = r
+            .run(HookEvent::PreToolUse, &write, &CancellationToken::new())
+            .await;
         assert!(written.blocked().is_some(), "{:?}", written.outcomes);
     }
 
@@ -1652,7 +1833,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentHookExecutor for Slow {
-        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &HookInput,
+            _: &CancellationToken,
+        ) -> Result<String, String> {
             tokio::time::sleep(Duration::from_secs(30)).await;
             Ok(r#"{"ok":false}"#.into())
         }
@@ -1670,10 +1857,80 @@ mod tests {
         }])
         .with_agent_executor(Arc::new(Slow));
         let started = std::time::Instant::now();
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
         assert!(result.blocked().is_none());
+    }
+
+    struct Judging(Arc<tokio::sync::Notify>);
+
+    #[async_trait::async_trait]
+    impl AgentHookExecutor for Judging {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &HookInput,
+            stop: &CancellationToken,
+        ) -> Result<String, String> {
+            self.0.notify_one();
+            stop.cancelled().await;
+            Err("stopped".into())
+        }
+    }
+
+    /// An interrupted turn does not wait on its hooks: once `stop` is
+    /// cancelled, `run` returns with them stopped rather than timed out, and
+    /// one that fails closed still blocks.
+    #[tokio::test]
+    async fn a_stopped_run_returns_without_waiting_out_its_hooks() {
+        let judging = Arc::new(tokio::sync::Notify::new());
+        let r = on_pre_tool_use(vec![
+            HookConfig::Agent {
+                prompt: "judge".into(),
+                timeout: Some(600_000),
+                model: None,
+                if_pattern: None,
+                on_error: OnError::Allow,
+                may_approve: false,
+            },
+            blocking_on_error(HookConfig::Command {
+                command: "sleep 600".into(),
+                shell: None,
+                timeout: Some(600_000),
+                if_pattern: None,
+                only_on_error: None,
+                once: None,
+                async_rewake: None,
+                on_error: OnError::Allow,
+            }),
+        ])
+        .with_agent_executor(Arc::new(Judging(judging.clone())));
+        let stop = CancellationToken::new();
+        let stopper = stop.clone();
+        tokio::spawn(async move {
+            judging.notified().await;
+            stopper.cancel();
+        });
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            r.run(HookEvent::PreToolUse, &input_for_bash("ls"), &stop),
+        )
+        .await
+        .expect("run returns once stopped");
+        assert!(
+            matches!(result.outcomes[0], HookOutcome::Cancelled),
+            "{:?}",
+            result.outcomes
+        );
+        assert!(result.blocked().is_some(), "{:?}", result.outcomes);
     }
 
     fn blocking_on_error(mut hook: HookConfig) -> HookConfig {
@@ -1706,7 +1963,11 @@ mod tests {
             (command("echo 'not json'"), "not a JSON answer"),
         ] {
             let result = on_pre_tool_use(vec![blocking_on_error(hook)])
-                .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+                .run(
+                    HookEvent::PreToolUse,
+                    &input_for_bash("ls"),
+                    &CancellationToken::new(),
+                )
                 .await;
             let message = block_message(&result);
             assert!(
@@ -1720,12 +1981,20 @@ mod tests {
     #[tokio::test]
     async fn on_error_block_leaves_a_working_hook_alone() {
         let quiet = on_pre_tool_use(vec![blocking_on_error(command("true"))])
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(quiet.blocked().is_none(), "{:?}", quiet.outcomes);
 
         let refused = on_pre_tool_use(vec![blocking_on_error(command("echo NO >&2; exit 2"))])
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert_eq!(block_message(&refused), "NO");
 
@@ -1734,7 +2003,11 @@ mod tests {
             *if_pattern = Some("Write".into());
         }
         let skipped = on_pre_tool_use(vec![skipped])
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(skipped.blocked().is_none(), "{:?}", skipped.outcomes);
     }
@@ -1760,12 +2033,20 @@ mod tests {
 
         let unparsable = on_pre_tool_use(vec![prompt()])
             .with_prompt_executor(Arc::new(Answering("sure, looks fine")))
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(block_message(&unparsable).contains("prompt hook"));
 
         let unwired = on_pre_tool_use(vec![prompt()])
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(block_message(&unwired).contains("PromptHookExecutor"));
 
@@ -1777,31 +2058,51 @@ mod tests {
             on_error: OnError::Block,
             allow_local: false,
         }])
-        .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+        .run(
+            HookEvent::PreToolUse,
+            &input_for_bash("ls"),
+            &CancellationToken::new(),
+        )
         .await;
         assert!(block_message(&unreachable).contains("http `http://127.0.0.1:1/no-such`"));
 
         let timed_out = on_pre_tool_use(vec![agent(Some(200))])
             .with_agent_executor(Arc::new(Slow))
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(block_message(&timed_out).contains("timed out"));
 
         let errored = on_pre_tool_use(vec![agent(None)])
             .with_agent_executor(Arc::new(Failing))
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(block_message(&errored).contains("JUDGE-UNAVAILABLE"));
 
         let rambling = on_pre_tool_use(vec![agent(None)])
             .with_agent_executor(Arc::new(Answering("I think it is fine")))
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(block_message(&rambling).contains("not JSON"));
 
         let approving = on_pre_tool_use(vec![agent(None)])
             .with_agent_executor(Arc::new(Answering(r#"{"ok":true}"#)))
-            .run(HookEvent::PreToolUse, &input_for_bash("ls"))
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
             .await;
         assert!(approving.blocked().is_none(), "{:?}", approving.outcomes);
     }
@@ -1854,7 +2155,13 @@ mod tests {
             may_approve: false,
         }])
         .with_agent_executor(Arc::new(Failing));
-        let result = r.run(HookEvent::PreToolUse, &input_for_bash("ls")).await;
+        let result = r
+            .run(
+                HookEvent::PreToolUse,
+                &input_for_bash("ls"),
+                &CancellationToken::new(),
+            )
+            .await;
         assert!(result.outcomes[0].is_error());
 
         let logged = String::from_utf8_lossy(
@@ -1877,7 +2184,13 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AgentHookExecutor for Failing {
-        async fn execute(&self, _: &str, _: Option<&str>, _: &HookInput) -> Result<String, String> {
+        async fn execute(
+            &self,
+            _: &str,
+            _: Option<&str>,
+            _: &HookInput,
+            _: &CancellationToken,
+        ) -> Result<String, String> {
             Err("JUDGE-UNAVAILABLE".into())
         }
     }

@@ -200,6 +200,7 @@ async fn build_wires_mcp_elicitation_urls_to_the_elicitation_hook() {
             _prompt: &str,
             _model: Option<&str>,
             payload: &hooks::HookInput,
+            _stop: &tokio_util::sync::CancellationToken,
         ) -> Result<String, String> {
             let _ = self
                 .fired

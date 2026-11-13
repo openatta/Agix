@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 /// File system change watcher that fires `HookEvent::FileChanged` hooks.
 ///
@@ -30,6 +31,14 @@ use std::time::{Duration, Instant};
 pub struct FileWatcher {
     watcher: notify::RecommendedWatcher,
     watched: HashSet<PathBuf>,
+    /// Stops the hooks it started when it goes, with the runner that owns it.
+    stopped: CancellationToken,
+}
+
+impl Drop for FileWatcher {
+    fn drop(&mut self) {
+        self.stopped.cancel();
+    }
 }
 
 impl FileWatcher {
@@ -48,13 +57,15 @@ impl FileWatcher {
             let _ = tx.send(res);
         })
         .map_err(|e| format!("notify watcher creation failed: {e}"))?;
+        let stopped = CancellationToken::new();
 
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 let runner = Arc::downgrade(hook_runner);
+                let stop = stopped.clone();
                 std::thread::Builder::new()
                     .name("file-watcher".into())
-                    .spawn(move || run_watcher_loop(rx, runner, handle, debounce_ms, ambient))
+                    .spawn(move || run_watcher_loop(rx, runner, handle, debounce_ms, ambient, stop))
                     .map_err(|e| format!("could not start the file-watcher thread: {e}"))?;
             }
             Err(_) => {
@@ -66,6 +77,7 @@ impl FileWatcher {
         Ok(Self {
             watcher,
             watched: HashSet::new(),
+            stopped,
         })
     }
 
@@ -100,6 +112,7 @@ fn run_watcher_loop(
     handle: tokio::runtime::Handle,
     debounce_ms: u64,
     ambient: Ambient,
+    stop: CancellationToken,
 ) {
     let debounce = Duration::from_millis(debounce_ms);
     // Use the debounce duration as the channel timeout — if nothing new arrives
@@ -141,8 +154,9 @@ fn run_watcher_loop(
                         }),
                     );
                     let runner = runner.clone();
+                    let stop = stop.clone();
                     handle.spawn(async move {
-                        runner.run(HookEvent::FileChanged, &input).await;
+                        runner.run(HookEvent::FileChanged, &input, &stop).await;
                     });
                 }
             }

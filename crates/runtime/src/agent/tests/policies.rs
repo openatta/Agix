@@ -103,6 +103,7 @@ async fn build_starts_file_watching_for_the_instruction_file_when_a_hook_wants_i
             _prompt: &str,
             _model: Option<&str>,
             _payload: &hooks::HookInput,
+            _stop: &tokio_util::sync::CancellationToken,
         ) -> Result<String, String> {
             let _ = self.fired.try_send(());
             Ok("{}".to_string())

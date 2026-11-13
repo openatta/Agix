@@ -33,8 +33,15 @@ pub(super) async fn pre_tool_use(
     };
     let hook_result = ctx
         .hooks
-        .run(hooks::HookEvent::PreToolUse, &pre_input)
+        .run(hooks::HookEvent::PreToolUse, &pre_input, &ctx.cancel)
         .await;
+    if ctx.cancel.is_cancelled() {
+        let answer = HookAnswer::Block {
+            hook: "PreToolUse".into(),
+            reason: "the turn was cancelled before its hooks answered".into(),
+        };
+        return (input, answer);
+    }
     if let Some(response) = hook_result.blocked() {
         let answer = HookAnswer::Block {
             hook: "PreToolUse".into(),

@@ -1513,7 +1513,6 @@ async fn an_http_hook_that_allows_local_reaches_this_machine_and_its_verdict_cou
 /// at once, and the hook's sub-agent is stopped with it rather than left to
 /// run out the hook's timeout.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: an agent hook does not stop on the turn's cancellation (C3, EXT F14)"]
 async fn an_interrupt_stops_an_agent_hook_still_judging() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let ledger = Ledger::new()?;
@@ -1584,7 +1583,6 @@ async fn an_interrupt_stops_an_agent_hook_still_judging() -> anyhow::Result<()> 
 /// What an `"agent"` hook's sub-agent delegates in turn is part of the
 /// hook's own judging: its calls are not judged by the hook again.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: a hook agent's descendants still fire agent hooks (C3, hook lineage)"]
 async fn a_hook_agents_own_sub_agent_does_not_fire_the_agent_hook() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("agent-hook-lineage", &stub)

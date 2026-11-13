@@ -24,6 +24,11 @@
 //! DLG-7: in `agents`, a task is registered only through `TaskLease`, which
 //! ends it however its holder goes away; nothing calls `register_task` or
 //! holds a `TaskScope`.
+//!
+//! DLG-8: what a delegate or a hook runs stops with something — its caller's
+//! token, its session's end. `agents`, `team`, `skills` and the runtime's hook
+//! executors make no `CancellationToken` of their own outside a short list
+//! that says why nothing is cut loose there.
 
 use std::collections::BTreeSet;
 
@@ -509,5 +514,56 @@ fn agents_register_tasks_only_through_a_lease() {
         }
     }
     guards::allow::non_vacuous("delegation::agents_files", scanned, 10);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+const ORPHAN_TOKEN_CRATES: &[&str] = &["agents", "team", "skills"];
+const ORPHAN_TOKEN_FILES: &[&str] = &["crates/runtime/src/hook_executors.rs"];
+
+/// `(file, why)`: a fresh token there stops nothing anyone would wait on.
+const ORPHAN_TOKENS_ALLOWED: &[(&str, &str)] = &[(
+    "crates/agents/src/agent_tool/permission.rs",
+    "a `ToolContext` built only for `validate_input`; nothing runs on it",
+)];
+
+#[test]
+fn delegation_and_hooks_make_no_orphan_tokens() {
+    let mut problems = Vec::new();
+    let mut allowed_seen = BTreeSet::new();
+    let mut scanned = 0;
+    for f in ws().production().filter(|f| {
+        ORPHAN_TOKEN_CRATES.contains(&f.package.as_str())
+            || ORPHAN_TOKEN_FILES.contains(&f.rel.as_str())
+    }) {
+        scanned += 1;
+        for call in scan::calls(f, View::Prod) {
+            let scan::Callee::Path(path) = &call.callee else {
+                continue;
+            };
+            let [.., ty, ctor] = path.as_slice() else {
+                continue;
+            };
+            if ty != "CancellationToken" || !(ctor == "new" || ctor == "default") {
+                continue;
+            }
+            if ORPHAN_TOKENS_ALLOWED.iter().any(|(file, _)| *file == f.rel) {
+                allowed_seen.insert(f.rel.clone());
+                continue;
+            }
+            problems.push(format!(
+                "{}: `CancellationToken::{ctor}()` stops with nothing; derive it from the \
+                 caller's token or the session's end",
+                call.hit
+            ));
+        }
+    }
+    guards::allow::non_vacuous("delegation::orphan_token_files", scanned, 20);
+    for (file, _) in ORPHAN_TOKENS_ALLOWED {
+        if !allowed_seen.contains(*file) {
+            problems.push(format!(
+                "{file} makes no token of its own any more: take it off ORPHAN_TOKENS_ALLOWED"
+            ));
+        }
+    }
     assert!(problems.is_empty(), "{problems:#?}");
 }

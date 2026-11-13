@@ -29,6 +29,9 @@ pub(crate) struct DelegateEnv {
     pub(crate) mcp: Option<Arc<dyn McpServers>>,
     pub(crate) skills: Arc<dyn SkillCatalog>,
     pub(crate) depth: u32,
+    /// The session is an agent hook's agent or one of its descendants: what
+    /// it delegates is entered in `HookAgents` too.
+    pub(crate) under_hook: bool,
 }
 
 pub(crate) struct ParentSession {
@@ -40,7 +43,7 @@ pub(crate) struct ParentSession {
 }
 
 impl DelegateEnv {
-    pub(crate) fn capture(cx: &SessionContext<'_>) -> Self {
+    pub(crate) fn capture(cx: &SessionContext<'_>, hook_agents: &super::HookAgents) -> Self {
         Self {
             host: cx.host.clone(),
             parent: ParentSession {
@@ -58,6 +61,7 @@ impl DelegateEnv {
             mcp: cx.mcp_for_delegates(),
             skills: cx.skill_catalog(),
             depth: cx.depth,
+            under_hook: hook_agents.includes(cx.session_id),
         }
     }
 

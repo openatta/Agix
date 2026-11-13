@@ -9,7 +9,7 @@ use base::settings::LoadedSettings;
 use base::tool::InMemoryToolRegistry;
 use compaction::cached::CachedMicroCompact;
 use compaction::compact::{Compactor, DefaultCompactor};
-use hooks::HookRunner;
+use hooks::{HookEvent, HookRunner};
 use session::session::SessionManager;
 use session::session_memory::SessionMemory;
 use std::path::PathBuf;
@@ -73,7 +73,7 @@ pub struct Agent {
     /// Outlives the turn it names: what is announced between turns (a
     /// `/compact`, a turn error) carries the last turn's id.
     pub(crate) current_turn_id: String,
-    _session_end: SessionEnd,
+    session_end: SessionEnd,
     pub(crate) identity: Identity,
     pub(crate) llm: ModelRoute,
     pub(crate) tooling: Tooling,

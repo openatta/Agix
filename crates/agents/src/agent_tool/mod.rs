@@ -53,7 +53,7 @@ mod task;
 mod tests;
 mod turn;
 
-use crate::delegate::{Admission, Delegator, AGENT_TOOL_NAME};
+use crate::delegate::{Admission, Delegator, HookAgentRunning, AGENT_TOOL_NAME};
 pub use crate::delegate::{SubagentSlots, DEFAULT_MAX_CONCURRENT_SUBAGENTS};
 use base::interface::delegate::Delegator as _;
 use base::interface::delegate::{

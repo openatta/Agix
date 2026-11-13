@@ -29,9 +29,11 @@ impl SubagentSlots {
     }
 }
 
-/// The sessions of the agents running for `"type": "agent"` hooks. Their own
-/// events start no agent hooks: a guard that reads a file would otherwise ask
-/// another guard about it, and that one another, until the first times out.
+/// The sessions of the agents running for `"type": "agent"` hooks, and of
+/// whatever those delegate in turn; one set for the whole session tree. Their
+/// own events start no agent hooks: a guard that reads a file would otherwise
+/// ask another guard about it, and that one another, until the first times
+/// out.
 #[derive(Clone, Default)]
 pub(crate) struct HookAgents(Arc<std::sync::Mutex<std::collections::HashSet<String>>>);
 
@@ -143,6 +145,7 @@ pub(crate) struct Limits {
     /// Sub-agents running anywhere under the root session; the pool is
     /// shared by every delegate's limits (see `AgentsModule::for_delegates`).
     pub(crate) slots: SlotRule,
+    /// Shared the same way.
     pub(crate) hook_agents: HookAgents,
     pub(crate) max_persistent_members: usize,
     pub(crate) member_idle_timeout_secs: u64,
@@ -153,12 +156,13 @@ impl Limits {
         config: &base::context::EngineConfig,
         depth: u32,
         subagent_slots: SubagentSlots,
+        hook_agents: HookAgents,
     ) -> Self {
         Self {
             depth,
             max_depth: config.max_agent_depth,
             slots: SlotRule::new(subagent_slots, depth),
-            hook_agents: HookAgents::default(),
+            hook_agents,
             max_persistent_members: config.team_max_persistent_members.max(1),
             member_idle_timeout_secs: config.team_member_idle_timeout_secs,
         }

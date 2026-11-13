@@ -595,7 +595,7 @@ impl Builder {
                             if hooks.has_hooks_for(hooks::HookEvent::TaskCreated) {
                                 let input = hooks::HookInput::from_ambient(&ambient, "TaskCreated")
                                     .with_reason(serde_json::json!(task).to_string());
-                                let _ = hooks.run(hooks::HookEvent::TaskCreated, &input).await;
+                                let _ = hooks.run(HookEvent::TaskCreated, &input, &ended).await;
                             }
                         }
                         Ok(base::context::TaskEvent::Finished { task }) => {
@@ -603,7 +603,7 @@ impl Builder {
                                 let input =
                                     hooks::HookInput::from_ambient(&ambient, "TaskCompleted")
                                         .with_reason(serde_json::json!(task).to_string());
-                                let _ = hooks.run(hooks::HookEvent::TaskCompleted, &input).await;
+                                let _ = hooks.run(HookEvent::TaskCompleted, &input, &ended).await;
                             }
                             if let Some(wake) = &task_wake {
                                 let _ = wake.send(());
@@ -787,7 +787,7 @@ impl Builder {
                 session,
                 session_state,
                 current_turn_id: String::new(),
-                _session_end: session_end,
+                session_end,
                 identity: Identity {
                     agent_depth,
                     agent_type: self.agent_type,

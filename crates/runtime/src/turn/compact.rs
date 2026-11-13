@@ -215,7 +215,7 @@ impl Agent {
         trigger: CompactTrigger,
         cancel: &CancellationToken,
     ) -> Result<CompactSummary, NotCompacted> {
-        if !self.pre_compact_hooks_allow(target, trigger).await {
+        if !self.pre_compact_hooks_allow(target, trigger, cancel).await {
             return Err(NotCompacted::Declined);
         }
         let compactor = self.compaction.compactor.clone();
@@ -402,13 +402,9 @@ impl Agent {
                             "tokens_before": tokens_before,
                             "tokens_after": tokens_after,
                         })),
-                        tool_name: None,
-                        tool_use_id: None,
-                        tool_result: None,
-                        is_error: None,
-                        user_prompt: None,
                         ..Default::default()
                     },
+                    cancel,
                 )
                 .await;
         }
@@ -420,6 +416,7 @@ impl Agent {
         &self,
         target: usize,
         trigger: CompactTrigger,
+        stop: &CancellationToken,
     ) -> bool {
         if !self
             .gate
@@ -451,6 +448,7 @@ impl Agent {
                     user_prompt: None,
                     ..Default::default()
                 },
+                stop,
             )
             .await;
         if hook_result.discontinued() {

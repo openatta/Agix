@@ -347,21 +347,42 @@ impl Agent {
     /// The `has_hooks_for` guard matters: `HookRunner::run` is an async call
     /// that ends up spawning processes, and these sites are on the hot path of
     /// every turn and every tool call.
+    ///
+    /// The hooks stop when the session ends: this is for an event about the
+    /// session, or about a turn that is over.
     pub(crate) async fn fire_lifecycle_hook(
         &self,
         event: hooks::HookEvent,
         build: impl FnOnce(hooks::HookInput) -> hooks::HookInput,
     ) {
+        self.fire_turn_hook(event, self.session_ended(), build)
+            .await;
+    }
+
+    /// [`fire_lifecycle_hook`](Self::fire_lifecycle_hook) for an event inside
+    /// a turn: the hooks stop with the turn's `stop`.
+    pub(crate) async fn fire_turn_hook(
+        &self,
+        event: hooks::HookEvent,
+        stop: &CancellationToken,
+        build: impl FnOnce(hooks::HookInput) -> hooks::HookInput,
+    ) {
         if !self.gate.hooks.has_hooks_for(event) {
             return;
         }
-        let input = build(hooks::HookInput::lifecycle(
-            format!("{event:?}"),
+        let input = build(self.lifecycle_input(format!("{event:?}")));
+        let _ = self.gate.hooks.run(event, &input, stop).await;
+    }
+
+    /// A hook payload for `event` carrying only the session's id, cwd and
+    /// current permission mode.
+    pub(crate) fn lifecycle_input(&self, event: String) -> hooks::HookInput {
+        hooks::HookInput::lifecycle(
+            event,
             self.session.session_id.clone(),
             self.settings.paths.working_dir().display().to_string(),
             hook_permission_mode(self.session_state.permission_mode()),
-        ));
-        let _ = self.gate.hooks.run(event, &input).await;
+        )
     }
 
     /// Run a full turn from a user message.
@@ -405,7 +426,11 @@ impl Agent {
     ///
     /// Each message passes the same screening as one that opens a turn; a
     /// refused one is announced and left out, and the turn goes on.
-    pub(super) async fn deliver_queued_user_messages(&mut self, last: bool) -> bool {
+    pub(super) async fn deliver_queued_user_messages(
+        &mut self,
+        last: bool,
+        cancel: &CancellationToken,
+    ) -> bool {
         let mut delivered = self.deliver_notices();
         // The turn goes on to answer the notices, so it must stay open to
         // messages too.
@@ -424,7 +449,7 @@ impl Agent {
             }
             for m in queued {
                 match self
-                    .screen_user_prompt(m.content.clone(), &[], PromptDelivery::Steer)
+                    .screen_user_prompt(m.content.clone(), &[], PromptDelivery::Steer, cancel)
                     .await
                 {
                     PromptScreen::Pass(content) => {
@@ -487,8 +512,9 @@ impl Agent {
         content: String,
         attachments: &[crate::agent::Attachment],
         delivery: PromptDelivery,
+        stop: &CancellationToken,
     ) -> PromptScreen {
-        let mut content = match self.run_prompt_hooks(content, delivery).await {
+        let mut content = match self.run_prompt_hooks(content, delivery, stop).await {
             PromptScreen::Pass(content) => content,
             blocked => return blocked,
         };
@@ -528,6 +554,7 @@ impl Agent {
         &self,
         content: String,
         delivery: PromptDelivery,
+        stop: &CancellationToken,
     ) -> PromptScreen {
         if !self
             .gate
@@ -548,7 +575,7 @@ impl Agent {
         let hook_result = self
             .gate
             .hooks
-            .run(hooks::HookEvent::UserPromptSubmit, &prompt_input)
+            .run(hooks::HookEvent::UserPromptSubmit, &prompt_input, stop)
             .await;
         if let Some(response) = hook_result.blocked() {
             tracing::info!(

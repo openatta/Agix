@@ -24,23 +24,29 @@ impl HookRunner {
         model: Option<&str>,
         input: &HookInput,
         timeout_dur: Duration,
+        stop: &CancellationToken,
     ) -> HookOutcome {
         let Some(executor) = &self.prompt_executor else {
             return HookOutcome::Skipped(super::NO_PROMPT_EXECUTOR);
         };
-        let result =
-            match tokio::time::timeout(timeout_dur, executor.execute(prompt, model, input)).await {
-                Ok(Ok(text)) => text,
-                Ok(Err(e)) => {
-                    return HookOutcome::Error(format!("prompt hook executor: {e}"));
-                }
-                Err(_) => {
-                    return HookOutcome::Error(format!(
-                        "prompt hook timed out after {}ms",
-                        timeout_dur.as_millis()
-                    ));
-                }
-            };
+        let answering =
+            tokio::time::timeout(timeout_dur, executor.execute(prompt, model, input, stop));
+        let result = tokio::select! {
+            _ = stop.cancelled() => return HookOutcome::Cancelled,
+            answered = answering => answered,
+        };
+        let result = match result {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => {
+                return HookOutcome::Error(format!("prompt hook executor: {e}"));
+            }
+            Err(_) => {
+                return HookOutcome::Error(format!(
+                    "prompt hook timed out after {}ms",
+                    timeout_dur.as_millis()
+                ));
+            }
+        };
         let (response, failure) = parse_hook_response_lenient(&result);
         HookOutcome::Ran {
             response,
@@ -64,6 +70,7 @@ impl HookRunner {
         allow_local: bool,
         input: &HookInput,
         timeout_dur: Duration,
+        stop: &CancellationToken,
     ) -> HookOutcome {
         let payload = match serde_json::to_vec(input) {
             Ok(p) => p,
@@ -85,7 +92,11 @@ impl HookRunner {
         let sending = self
             .net()
             .send(req, base::interface::exec::Origin::Operator);
-        let resp = match tokio::time::timeout(timeout_dur, sending).await {
+        let sent = tokio::select! {
+            _ = stop.cancelled() => return HookOutcome::Cancelled,
+            sent = tokio::time::timeout(timeout_dur, sending) => sent,
+        };
+        let resp = match sent {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => return HookOutcome::Error(format!("http hook send: {e}")),
             Err(_elapsed) => {
@@ -116,6 +127,7 @@ impl HookRunner {
         command: &str,
         input: &HookInput,
         timeout: Duration,
+        stop: &CancellationToken,
     ) -> HookOutcome {
         let cwd = Some(Path::new(&input.cwd))
             .filter(|dir| !input.cwd.is_empty() && dir.is_dir())
@@ -155,7 +167,7 @@ impl HookRunner {
             }
         }
 
-        let mut child = match self.process.spawn(spec, CancellationToken::new()).await {
+        let mut child = match self.process.spawn(spec, stop.child_token()).await {
             Ok(c) => c,
             Err(e) => return HookOutcome::Error(format!("hook spawn failed: {e}")),
         };
@@ -169,6 +181,11 @@ impl HookRunner {
                 child.kill().await;
                 stop_reading.cancel();
                 return HookOutcome::Error(format!("hook timed out after {:?}", timeout));
+            }
+            _ = stop.cancelled() => {
+                child.kill().await;
+                stop_reading.cancel();
+                return HookOutcome::Cancelled;
             }
             r = child.wait() => match r {
                 Ok(s) => s,

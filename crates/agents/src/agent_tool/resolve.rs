@@ -12,9 +12,14 @@ impl Delegator {
         }
     }
 
-    pub(crate) async fn fire_subagent_hook(&self, event: hooks::HookEvent, sub: &SubagentPayload) {
+    pub(crate) async fn fire_subagent_hook(
+        &self,
+        event: hooks::HookEvent,
+        sub: &SubagentPayload,
+        stop: &tokio_util::sync::CancellationToken,
+    ) {
         if let Some(runner) = self.env.hooks() {
-            sub.fire(&runner, event).await;
+            sub.fire(&runner, event, stop).await;
         }
     }
 

@@ -35,6 +35,11 @@ impl Agent {
         self.session_state.clone()
     }
 
+    /// Cancelled when the session ends.
+    pub(crate) fn session_ended(&self) -> &CancellationToken {
+        &self.session_end.ended
+    }
+
     /// How this session starts sub-agents, for a host that starts one itself
     /// (`AgentSpawner::start_agent`). Refuses when no module provided one.
     pub fn agent_spawner(&self) -> Arc<dyn base::interface::agent_spawner::AgentSpawner> {
@@ -256,12 +261,7 @@ impl Agent {
         loop {
             self.gate
                 .hooks
-                .check_rewakes(hooks::HookInput::lifecycle(
-                    String::new(),
-                    self.session.session_id.clone(),
-                    self.settings.paths.working_dir().display().to_string(),
-                    crate::turn::hook_permission_mode(self.session_state.permission_mode()),
-                ))
+                .check_rewakes(self.session_ended(), self.lifecycle_input(String::new()))
                 .await;
 
             tokio::select! {

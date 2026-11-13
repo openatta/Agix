@@ -95,11 +95,15 @@ impl Module for McpModule {
         // session's hooks; the callback is sync, the hook is not.
         let hooks = cx.hooks.clone();
         let ambient = cx.hook_ambient.clone();
+        let session_ended = cx.session_ended();
         manager.set_elicitation_callback(Arc::new(move |server_name, url| {
             let hooks = hooks.clone();
             let ambient = ambient.clone();
+            let stop = session_ended.clone();
             tokio::spawn(async move {
-                hooks.run_elicitation(&ambient, &server_name, &url).await;
+                hooks
+                    .run_elicitation(&ambient, &server_name, &url, &stop)
+                    .await;
             });
         }));
         if !manager.clients().is_empty() {
