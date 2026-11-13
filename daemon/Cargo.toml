@@ -52,6 +52,7 @@ zip = { workspace = true }
 uuid = { workspace = true }
 mcp-oauth-mock = { workspace = true }
 guards = { workspace = true }
+schemars = { workspace = true }
 
 [features]
 # The same switches as `assembly`'s, where they are documented; the binary

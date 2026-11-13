@@ -9,7 +9,8 @@
 //!   `METHOD_NOT_FOUND`;
 //! - every `kind` in the §7 and §8 tables is provoked on a daemon with a
 //!   scripted model and the frame's field set is compared with the row;
-//! - every `error.data` shape in §9.1 is provoked and compared.
+//! - every `error.data` shape in §9.1 is provoked and compared, and its
+//!   `kind` table is held to `FailureKind` both ways.
 //!
 //! What cannot be provoked in a test is listed in [`NOT_SENT`],
 //! [`SESSION_EVENTS_NOT_PROVOKED`] and [`DAEMON_EVENTS_NOT_PROVOKED`] with the
@@ -1058,6 +1059,83 @@ async fn a_failed_turn_carries_the_documented_engine_error_data() {
             .is_some_and(|m| m.starts_with("auth: ")),
         "{failed}"
     );
+}
+
+/// The `kind` table under §9.1's `ENGINE_ERROR`: each row's kind and
+/// whether it says `retryable`.
+fn documented_failure_kinds(doc: &str) -> BTreeMap<String, bool> {
+    let section = &doc[doc.find("### 9.1").expect("the doc has a §9.1")..];
+    let table = &section[..section
+        .find("以后可能增加取值")
+        .expect("§9.1's kind table ends where it says more may come")];
+    table
+        .lines()
+        .filter(|l| l.starts_with("| `") && !l.starts_with("| `kind`"))
+        .map(|row| {
+            let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+            let retryable = match cells[3] {
+                "`true`" => true,
+                "`false`" => false,
+                other => panic!("§9.1's `{}` row says retryable is {other}", cells[1]),
+            };
+            (cells[1].trim_matches('`').to_string(), retryable)
+        })
+        .collect()
+}
+
+/// Every string a `FailureKind` serializes to, read off its JSON schema.
+fn failure_kinds_of_the_type() -> BTreeSet<String> {
+    fn strings(schema: &Value, into: &mut BTreeSet<String>) {
+        match schema {
+            Value::Object(map) => {
+                if let Some(Value::String(s)) = map.get("const") {
+                    into.insert(s.clone());
+                }
+                if let Some(Value::Array(values)) = map.get("enum") {
+                    into.extend(values.iter().filter_map(Value::as_str).map(str::to_string));
+                }
+                map.values().for_each(|v| strings(v, into));
+            }
+            Value::Array(values) => values.iter().for_each(|v| strings(v, into)),
+            _ => {}
+        }
+    }
+    let schema = serde_json::to_value(schemars::schema_for!(base::event::FailureKind)).unwrap();
+    let mut kinds = BTreeSet::new();
+    strings(&schema, &mut kinds);
+    kinds
+}
+
+/// §9.1's kind table and `FailureKind` name the same kinds, and each row's
+/// `retryable` is the one the kind carries.
+#[test]
+fn the_documented_failure_kinds_are_the_ones_the_type_has() {
+    let documented = documented_failure_kinds(&protocol_doc());
+    let of_the_type = failure_kinds_of_the_type();
+    assert!(
+        of_the_type.len() >= 10,
+        "the schema gave too few kinds to be read right: {of_the_type:?}"
+    );
+    let in_the_doc: BTreeSet<String> = documented.keys().cloned().collect();
+    assert_eq!(
+        in_the_doc.difference(&of_the_type).collect::<Vec<_>>(),
+        Vec::<&String>::new(),
+        "§9.1 documents kinds `FailureKind` does not have"
+    );
+    assert_eq!(
+        of_the_type.difference(&in_the_doc).collect::<Vec<_>>(),
+        Vec::<&String>::new(),
+        "`FailureKind` has kinds §9.1 does not document"
+    );
+    for (kind, retryable) in &documented {
+        let parsed: base::event::FailureKind =
+            serde_json::from_value(json!(kind)).expect("a documented kind parses");
+        assert_eq!(
+            parsed.retryable(),
+            *retryable,
+            "§9.1 says `{kind}` is retryable: {retryable}"
+        );
+    }
 }
 
 #[tokio::test]
