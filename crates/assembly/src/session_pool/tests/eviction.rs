@@ -1,7 +1,10 @@
 //! `eviction_tests` 原样搬来的用例。
 
 use super::*;
+use crate::session_pool::parts::live::evict_lru;
+use crate::session_pool::parts::phase::Generations;
 use model::adapter::AnthropicModel;
+use runtime::agent::InputSender;
 
 /// A `LiveSession` with no real agent behind it — only `last_active`
 /// (and `cancel`, so eviction's `.cancel()` call doesn't panic) matter

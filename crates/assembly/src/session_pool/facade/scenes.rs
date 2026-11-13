@@ -102,6 +102,6 @@ impl SessionPool {
     }
 
     async fn live_ids(&self) -> Vec<String> {
-        self.sessions.lock().await.keys().cloned().collect()
+        self.live.lock().await.keys().cloned().collect()
     }
 }

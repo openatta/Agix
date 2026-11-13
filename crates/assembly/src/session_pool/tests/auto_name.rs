@@ -188,7 +188,7 @@ async fn a_replay_whose_recording_never_named_leaves_the_session_unnamed_without
 
     bind(&pool, &project, "harnix", Answering::new("发布清单"), None).await;
     let recorded = harnix_session(&pool, &project, recorder("record", &recordings)).await;
-    pool.sessions
+    pool.live
         .lock()
         .await
         .get_mut(&recorded)
@@ -205,7 +205,7 @@ async fn a_replay_whose_recording_never_named_leaves_the_session_unnamed_without
 
     assert_eq!(result["name"], serde_json::Value::Null, "{result}");
     assert_eq!(unreachable.calls.load(Ordering::SeqCst), 0);
-    let namer = pool.sessions.lock().await[&replayed].namer.clone();
+    let namer = pool.live.lock().await[&replayed].namer.clone();
     assert_eq!(
         namer.name("把发布流程整理成一份清单").await,
         Ok(None),

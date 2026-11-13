@@ -68,13 +68,14 @@ async fn concurrent_calls_for_the_same_id_never_overlap() {
         let concurrent = concurrent.clone();
         let max_concurrent = max_concurrent.clone();
         tasks.push(tokio::spawn(async move {
-            pool.with_session_lock("shared-id", async {
-                let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                max_concurrent.fetch_max(now, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                concurrent.fetch_sub(1, Ordering::SeqCst);
-            })
-            .await;
+            pool.live
+                .with_session_lock("shared-id", async {
+                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_concurrent.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await;
         }));
     }
     for t in tasks {
@@ -105,14 +106,15 @@ async fn distinct_ids_run_concurrently() {
         let max_concurrent = max_concurrent.clone();
         let barrier = barrier.clone();
         tasks.push(tokio::spawn(async move {
-            pool.with_session_lock(&format!("id-{i}"), async {
-                barrier.wait().await;
-                let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                max_concurrent.fetch_max(now, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                concurrent.fetch_sub(1, Ordering::SeqCst);
-            })
-            .await;
+            pool.live
+                .with_session_lock(&format!("id-{i}"), async {
+                    barrier.wait().await;
+                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_concurrent.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                })
+                .await;
         }));
     }
     for t in tasks {
@@ -128,9 +130,9 @@ async fn distinct_ids_run_concurrently() {
 #[tokio::test]
 async fn registry_entry_is_cleaned_up_after_use() {
     let (pool, _dir) = test_pool().await;
-    pool.with_session_lock("temp-id", async {}).await;
+    pool.live.with_session_lock("temp-id", async {}).await;
     assert!(
-        pool.session_locks.lock().await.is_empty(),
+        pool.live.no_session_locks().await,
         "a lock nothing else references must not linger in the registry forever"
     );
 }

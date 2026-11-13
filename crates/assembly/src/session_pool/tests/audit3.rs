@@ -14,11 +14,7 @@ async fn new_session(pool: &SessionPool) -> String {
 
 /// The rebuild holding `sid`'s lock and one more caller queued on it.
 async fn waits_on_session_lock(pool: &SessionPool, sid: &str) -> bool {
-    pool.session_locks
-        .lock()
-        .await
-        .get(sid)
-        .is_some_and(|lock| Arc::strong_count(lock) >= 3)
+    pool.live.session_lock_holders(sid).await >= 3
 }
 
 /// Lets the first engine build through and holds the second one — the
@@ -83,7 +79,7 @@ async fn audit3_close_during_a_rebuild_is_not_undone_by_the_rebuild() {
     let _ = rebuild.await.unwrap();
     close.await.unwrap().unwrap();
     assert!(
-        !pool.sessions.lock().await.contains_key(&sid),
+        !pool.live.lock().await.contains_key(&sid),
         "session.close returned, yet the rebuild in flight put the session back in memory"
     );
 }

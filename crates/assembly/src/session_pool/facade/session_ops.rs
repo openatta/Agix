@@ -53,7 +53,7 @@ impl SessionPool {
         // Naming something that does not exist would create a sidecar for a
         // session nothing else knows about — a row in every future listing
         // that nobody can open.
-        let live = self.sessions.lock().await.contains_key(session_id);
+        let live = self.live.lock().await.contains_key(session_id);
         if !live
             && matches!(
                 store.load(sid).await,
@@ -69,7 +69,7 @@ impl SessionPool {
             .map_err(|e| PoolError::Internal(format!("could not rename: {e}")))?;
 
         {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             if let Some(live) = sessions.get_mut(session_id) {
                 live.name = name.clone();
                 live.named_by_user = name.is_some();
@@ -204,7 +204,7 @@ impl SessionPool {
     ) -> Result<api::ModelChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         let (input_tx, project, scene) = {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             let Some(live) = sessions.get_mut(session_id) else {
                 return Err(PoolError::session_not_found(session_id));
             };
@@ -246,12 +246,13 @@ impl SessionPool {
         // started since the check above refuses both rather than being cut
         // off or finding the change applied by some later rebuild.
         if switching_provider {
-            self.with_session_lock(session_id, async {
-                let held = self.take_idle_slot(session_id).await?;
-                self.rebuild_on_changed_spec(session_id, held, change).await
-            })
-            .await
-            .map_err(|e| e.into_error(session_id))?;
+            self.live
+                .with_session_lock(session_id, async {
+                    let held = self.take_idle_slot(session_id).await?;
+                    self.rebuild_on_changed_spec(session_id, held, change).await
+                })
+                .await
+                .map_err(|e| e.into_error(session_id))?;
         } else {
             let spec = self.specs.update(session_id, change).1;
             self.specs.persist(session_id, &spec).await;
@@ -291,7 +292,7 @@ impl SessionPool {
     ) -> Result<api::PromptChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             if let Some(busy) = sessions
                 .get(session_id)
                 .and_then(|l| l.turn.busy(session_id))
@@ -309,6 +310,7 @@ impl SessionPool {
             spec.prompt = Some(prompt);
         };
         let prompt = self
+            .live
             .with_session_lock(session_id, async {
                 let spec = match self.take_idle_slot(session_id).await {
                     Ok(held) => {

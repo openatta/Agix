@@ -15,7 +15,7 @@ impl SessionPool {
         ticket: &TurnTicket,
         event_rx: EventReceiver,
     ) -> bool {
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.live.lock().await;
         *ticket.rx.lock().await = Some(event_rx);
         let Some(live) = sessions
             .get_mut(&ticket.sid)
@@ -73,7 +73,7 @@ impl SessionPool {
                 // checked again next time — the flag stays set, so nothing
                 // is missed.
                 let stale = {
-                    let sessions = self.sessions.lock().await;
+                    let sessions = self.live.lock().await;
                     sessions.get(sid).map(|live| {
                         live.binding_stale
                             .load(std::sync::atomic::Ordering::Relaxed)
@@ -110,7 +110,7 @@ impl SessionPool {
         let mut steer_tried = false;
         let (input_tx, generation, rx, turn_state, hub) = loop {
             let idle = {
-                let sessions = self.sessions.lock().await;
+                let sessions = self.live.lock().await;
                 let Some(live) = sessions.get(&sid) else {
                     return Err(PoolError::session_not_found(&sid));
                 };
@@ -120,7 +120,7 @@ impl SessionPool {
             tokio::pin!(became_idle);
             became_idle.as_mut().enable();
             let (input_tx, busy) = {
-                let mut sessions = self.sessions.lock().await;
+                let mut sessions = self.live.lock().await;
                 let Some(live) = sessions.get_mut(&sid) else {
                     return Err(PoolError::session_not_found(&sid));
                 };
@@ -210,7 +210,7 @@ impl SessionPool {
         let taken = ticket.rx.lock().await.take();
         let Some(mut event_rx) = taken else {
             if let Some(live) = self
-                .sessions
+                .live
                 .lock()
                 .await
                 .get_mut(&sid)
@@ -255,7 +255,7 @@ impl SessionPool {
                 )
                 .await;
                 let dead = {
-                    let mut sessions = self.sessions.lock().await;
+                    let mut sessions = self.live.lock().await;
                     let ours = sessions
                         .get(&sid)
                         .is_some_and(|live| live.turn.generation == generation);
@@ -288,7 +288,7 @@ impl SessionPool {
                     ended_with = stop_reason.clone();
                     if context.is_some() {
                         if let Some(live) = self
-                            .sessions
+                            .live
                             .lock()
                             .await
                             .get_mut(&sid)
@@ -344,7 +344,7 @@ impl SessionPool {
         // pool's hottest mutex.
         let mut session_name = None;
         let naming = {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             match sessions
                 .get_mut(&sid)
                 .filter(|live| live.turn.generation == generation)
@@ -395,7 +395,7 @@ impl SessionPool {
         name: String,
     ) -> Option<String> {
         {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             let live = sessions
                 .get_mut(sid)
                 .filter(|live| live.turn.generation == generation)?;

@@ -14,7 +14,7 @@ use base::interface::scene::SceneSpec;
 use base::settings::{Divergence, RecorderConfig, RecorderMode};
 use base::settings::{LoadedSettings, Settings};
 use model::client::AnthropicClient;
-use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage, InputSender};
+use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,7 +51,8 @@ use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding, Projec
 use parts::directory::SessionDirectory;
 use parts::events::DaemonEvents;
 use parts::hub::SessionHub;
-use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
+use parts::live::{idle_session_ids, reap_process_groups_later, LiveSession, LiveSessions};
+use parts::phase::{Generation, RunningTurn, TurnSlot, TurnTicket};
 use parts::scenes::SceneCatalog;
 use parts::scheduler::{Scheduler, TurnLauncher};
 use parts::specs::{SessionSpec, SpecStore};
@@ -251,63 +252,6 @@ impl SessionNamer {
     }
 }
 
-struct LiveSession {
-    input_tx: InputSender,
-    /// Which engine this entry is, what it is doing, and the receiver its
-    /// turns take. A session runs one turn at a time; the running one is
-    /// named here, so a refusal can name it
-    /// (`SESSION_BUSY.data.current_turn_id`) and `session.get` can report
-    /// `turn_state`.
-    turn: TurnSlot,
-    cancel: CancellationToken,
-    /// Cancelled once the Agent's task has returned and dropped the Agent.
-    exited: CancellationToken,
-    /// How full the context was after the last turn that called the model.
-    context: Option<base::event::ContextUsage>,
-    /// The scene this session was created under — the one its `Meta` records,
-    /// not this pool's default. Auto-naming is the one behaviour decided per
-    /// turn rather than at build time, so it is the one that needs the scene
-    /// kept here to ask.
-    scene: Arc<SceneSpec>,
-    /// The project this session is bound to, `None` for a no-project session.
-    project: Option<PathBuf>,
-    /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
-    name: Option<String>,
-    created_at: Instant,
-    /// 用于首轮命名判断。
-    is_first_turn: bool,
-    /// Set by `session.rename`. The first-turn auto-namer skips a session
-    /// that has one: a name somebody typed outranks a name a model guessed,
-    /// and the guess arrives later.
-    named_by_user: bool,
-    namer: SessionNamer,
-    /// The `stale` flag of the binding this Agent was built from. `run_turn`
-    /// rebuilds the session before its next turn once it is set — lazily,
-    /// so an invalidation never has to walk the sessions.
-    binding_stale: Arc<std::sync::atomic::AtomicBool>,
-    /// The engine's own session state: the tasks `session.tasks` lists.
-    state: Option<Arc<base::context::SessionState>>,
-    /// How the engine delegates, for `session.startAgent`.
-    delegator: Option<Arc<dyn base::interface::delegate::Delegator>>,
-    /// What this session's bound scripts did, if it bound any.
-    ///
-    /// Kept because a script that quietly does nothing is the failure mode of
-    /// this whole tier, and a log line on the daemon's stderr is not something
-    /// the person asking "why is my script not working" has. `session.get`
-    /// reads it.
-    scripts: Option<Arc<base::interface::script::ScriptLedger>>,
-    /// The checks this session's plugins registered, for `session.get`.
-    health: Arc<base::interface::health::HealthChecks>,
-    /// Who watches this session, what it is still asking, and when it was
-    /// last active. Every frame the session produces goes to all of its
-    /// watchers; a turn is not owned by the one that started it. Kept across
-    /// a rebuild, so the watchers and the open asks go on with the session.
-    hub: Arc<SessionHub>,
-    /// The process groups this session's commands started, kept when
-    /// `sandbox.reap_process_groups` is on and stopped when the session ends.
-    process_groups: Option<Arc<platform::GroupLedger>>,
-}
-
 /// What `session.respondToPrompt` delivers, by `prompt_type`.
 #[derive(Debug, Clone)]
 pub enum PromptAnswer {
@@ -325,15 +269,8 @@ impl PromptAnswer {
 }
 
 pub struct SessionPool {
-    sessions: AsyncMutex<HashMap<String, LiveSession>>,
-    /// Per-`session_id` mutexes serializing a session's own disk-mutating
-    /// critical sections against each other — see `with_session_lock`.
-    /// Entries are dropped again once nothing references them, so this
-    /// stays proportional to concurrently-contended ids, not every id this
-    /// pool has ever touched.
-    session_locks: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
-    cap: usize,
-    idle_timeout: Duration,
+    /// The sessions in memory, and what brings them up and takes them down.
+    live: LiveSessions,
     /// The default scene, the scenes served now, and every scene this pool
     /// can serve.
     scenes: SceneCatalog,
@@ -380,17 +317,6 @@ pub struct SessionPool {
     health: std::sync::RwLock<base::interface::health::HealthChecks>,
     /// Each session's [`SessionSpec`]: what every rebuild of it applies.
     specs: SpecStore,
-    /// The engines taken out of `sessions` that may still be stopping, by
-    /// session id. A session brought back under one of these ids waits for
-    /// that engine first, so the two never run side by side.
-    stopping: std::sync::Mutex<HashMap<String, CancellationToken>>,
-    /// Set once [`Self::shutdown_all`] starts; no session is created after.
-    shutting_down: std::sync::atomic::AtomicBool,
-    /// Numbers every engine this pool brings up, so a turn can tell the entry
-    /// it started on from one brought up later under the same id.
-    generations: Generations,
-    /// Cancelled when [`Self::shutdown_all`] has finished.
-    shut_down: CancellationToken,
     /// How long a `kind:"prompt"` permission ask may sit unanswered before
     /// the daemon answers it with a `Deny` on the client's behalf.
     /// `Duration::ZERO` disables the timer entirely (wait forever — the

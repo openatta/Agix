@@ -75,7 +75,7 @@ impl SessionPool {
             .await?;
 
         let created_at = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             sessions
                 .get(&created_id)
                 .map(|live| format_instant(live.created_at))
@@ -110,8 +110,8 @@ impl SessionPool {
         options: Option<&SessionOptions>,
         resume: bool,
     ) -> Result<String, CreateError> {
-        self.refuse_while_shutting_down()?;
-        self.wait_until_stopped(&session_id).await?;
+        self.live.refuse_while_shutting_down()?;
+        self.live.wait_until_stopped(&session_id).await?;
         let claim = self.claim_log(&session_id).await?;
         let spec = self.specs.spec_for(&session_id, resume, options).await;
         let options = spec.options.as_ref();
@@ -369,7 +369,7 @@ impl SessionPool {
         // groups its earlier commands started.
         let process_groups = if base_settings.sandbox.reap_process_groups {
             let kept = self
-                .sessions
+                .live
                 .lock()
                 .await
                 .get(&session_id)
@@ -492,7 +492,7 @@ impl SessionPool {
         let mut has_user_turn = false;
         if resume {
             let previous_state = self
-                .sessions
+                .live
                 .lock()
                 .await
                 .get(&session_id)
@@ -544,7 +544,7 @@ impl SessionPool {
                 // The old engine is already stopped; an entry left in the map
                 // would take turns it can no longer run.
                 if previous_state.is_some() {
-                    if let Some(live) = self.sessions.lock().await.remove(&session_id) {
+                    if let Some(live) = self.live.lock().await.remove(&session_id) {
                         self.evict(&session_id, &live);
                     }
                 }
@@ -567,10 +567,10 @@ impl SessionPool {
             let _ = agent.run(cancel_clone).await;
         });
 
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.live.lock().await;
         // Checked again under the lock `shutdown_all` drains the map with: a
         // session inserted after that would outlive the shutdown.
-        if let Err(e) = self.refuse_while_shutting_down() {
+        if let Err(e) = self.live.refuse_while_shutting_down() {
             cancel.cancel();
             return Err(e.into());
         }
@@ -580,8 +580,8 @@ impl SessionPool {
         // （config-generation 触发的原地重建，见 `run_turn`），这次操作是
         // "替换同一个 key"，不是"新增一个"，`sessions.len()` 不会变，不该
         // 因为这次重建就凭空多驱逐一个无关的、真正最久未用的 session。
-        if !sessions.contains_key(&session_id) && sessions.len() >= self.cap {
-            if let Some((evicted, live)) = evict_lru(&mut sessions) {
+        {
+            if let Some((evicted, live)) = self.live.make_room(&mut sessions, &session_id) {
                 self.evict(&evicted, &live);
                 info!(sid = %evicted, "session evicted (LRU, pool full)");
                 self.emit_event(api::DaemonEvent::SessionEvicted {
@@ -592,7 +592,7 @@ impl SessionPool {
         }
 
         let (event_rx, arrived) = relay_events(event_rx);
-        let turn = TurnSlot::new(self.generations.next(), event_rx);
+        let turn = TurnSlot::new(self.live.next_generation(), event_rx);
         Self::forward_events_between_turns(
             &session_id,
             &hub,

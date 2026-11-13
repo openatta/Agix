@@ -17,7 +17,7 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
         .session_id;
 
     {
-        let mut sessions = pool.sessions.lock().await;
+        let mut sessions = pool.live.lock().await;
         sessions
             .get_mut(&session_id)
             .expect("the session is live")

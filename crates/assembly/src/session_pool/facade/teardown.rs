@@ -3,90 +3,12 @@
 use crate::session_pool::*;
 
 impl SessionPool {
-    /// Stop `live`, just taken out of `sessions` under `sid`, without
-    /// waiting for it: whoever brings `sid` back waits instead
-    /// ([`Self::wait_until_stopped`]). Nothing it still produces reaches its
-    /// watchers.
-    pub(in crate::session_pool) fn stop_removed(&self, sid: &str, live: &LiveSession) {
-        live.cancel.cancel();
-        live.hub.clear();
-        let mut stopping = self
-            .stopping
-            .lock()
-            .expect("stopping is never held across a panic");
-        stopping.retain(|_, exited| !exited.is_cancelled());
-        stopping.insert(sid.to_string(), live.exited.clone());
-    }
-
-    /// Wait, within [`AGENT_EXIT_GRACE`], for the engine `sid` last ran on
-    /// to stop, if it has not.
-    pub(in crate::session_pool) async fn wait_until_stopped(
-        &self,
-        sid: &str,
-    ) -> Result<(), CreateError> {
-        let exited = self
-            .stopping
-            .lock()
-            .expect("stopping is never held across a panic")
-            .get(sid)
-            .cloned();
-        let Some(exited) = exited else {
-            return Ok(());
-        };
-        if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
-            .await
-            .is_err()
-        {
-            warn!(%sid, "the session's previous engine did not stop within the grace period");
-            return Err(CreateError::previous_engine_running(sid));
-        }
-        Ok(())
-    }
-
     /// Take `live` out of memory as [`Self::stop_removed`] does, for a
     /// session that may be brought back.
     pub(in crate::session_pool) fn evict(&self, sid: &str, live: &LiveSession) {
-        self.stop_removed(sid, live);
+        self.live.stop_removed(sid, live);
         reap_process_groups_later(live);
         self.specs.release(sid);
-    }
-
-    /// Run `fut` while holding this pool's per-`session_id` lock — see the
-    /// `session_locks` field doc comment. Closes the race between a
-    /// sidechain's cascade delete (`delete_sidechain_list`, `delete_session`)
-    /// and a concurrent `session.resume(that_same_id, create_if_missing:
-    /// true)`: whichever side gets here first runs to completion before
-    /// the other starts, so a resume can't observe the id mid-cascade (files
-    /// half gone) and a completed cascade can't delete out from under a
-    /// resume that just finished recreating the id. It does *not* stop the
-    /// id from being reused afterward — recreating a just-deleted sidechain
-    /// as a fresh orphan session is still possible; the two operations
-    /// serialize instead of interleaving.
-    pub(in crate::session_pool) async fn with_session_lock<T>(
-        &self,
-        session_id: &str,
-        fut: impl std::future::Future<Output = T>,
-    ) -> T {
-        let lock = {
-            let mut locks = self.session_locks.lock().await;
-            locks
-                .entry(session_id.to_string())
-                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
-                .clone()
-        };
-        let result = {
-            let _guard = lock.lock().await;
-            fut.await
-        };
-        drop(lock);
-        let mut locks = self.session_locks.lock().await;
-        if locks
-            .get(session_id)
-            .is_some_and(|entry| Arc::strong_count(entry) == 1)
-        {
-            locks.remove(session_id);
-        }
-        result
     }
 
     /// `parent_session_id`'s **sidechains**, or `[]` if there's no history
@@ -152,12 +74,13 @@ impl SessionPool {
         for child in children {
             let child_str = child.to_string();
             let ok = self
+                .live
                 .with_session_lock(&child_str, async {
                     {
-                        let mut sessions = self.sessions.lock().await;
+                        let mut sessions = self.live.lock().await;
                         if let Some(live) = sessions.remove(&child_str) {
                             self.end_cut_off_turn(&child_str, &live);
-                            self.stop_removed(&child_str, &live);
+                            self.live.stop_removed(&child_str, &live);
                             reap_process_groups_later(&live);
                         }
                     }
@@ -199,10 +122,10 @@ impl SessionPool {
         children: Vec<base::session::SessionId>,
     ) -> usize {
         let removed = {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             sessions.remove(session_id).map(|live| {
                 self.end_cut_off_turn(session_id, &live);
-                self.stop_removed(session_id, &live);
+                self.live.stop_removed(session_id, &live);
                 info!(%session_id, "session removed");
                 self.emit_event(api::DaemonEvent::SessionClosed {
                     session_id: session_id.to_string(),
@@ -250,6 +173,7 @@ impl SessionPool {
         self.refuse_scene_mismatch(session_id).await?;
         let children = self.fetch_child_sidechains(session_id).await;
         Ok(self
+            .live
             .with_session_lock(session_id, async {
                 self.shutdown_session_with_children(session_id, children)
                     .await
@@ -292,6 +216,7 @@ impl SessionPool {
         // critical section — see that method's doc comment for the resume
         // race this closes.
         let (sidechains_deleted, delete_result) = self
+            .live
             .with_session_lock(session_id, async {
                 let deleted = self
                     .shutdown_session_with_children(session_id, children)
@@ -322,16 +247,12 @@ impl SessionPool {
     /// moment this starts no session is created; a second call waits for the
     /// first to finish.
     pub async fn shutdown_all(&self) {
-        if self
-            .shutting_down
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            self.shut_down.cancelled().await;
+        let Some(_done) = self.live.begin_shutdown() else {
+            self.live.shut_down().await;
             return;
-        }
-        let _done = self.shut_down.clone().drop_guard();
+        };
         let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             sessions
                 .drain()
                 .map(|(sid, live)| {
@@ -356,13 +277,6 @@ impl SessionPool {
         .await;
     }
 
-    pub(in crate::session_pool) fn refuse_while_shutting_down(&self) -> Result<(), String> {
-        if self.shutting_down.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err("the daemon is shutting down".to_string());
-        }
-        Ok(())
-    }
-
     /// Stops the Agent running under `session_id`, if any, and waits for it
     /// to finish — so whatever reads its transcript next reads all of it.
     ///
@@ -375,7 +289,7 @@ impl SessionPool {
         session_id: &str,
     ) -> Result<(), CreateError> {
         let (exited, generation) = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Ok(());
             };
@@ -388,7 +302,7 @@ impl SessionPool {
         {
             warn!(%session_id, "previous agent did not stop within the grace period");
             let stopping = {
-                let mut sessions = self.sessions.lock().await;
+                let mut sessions = self.live.lock().await;
                 let ours = sessions
                     .get(session_id)
                     .is_some_and(|live| live.turn.generation == generation);

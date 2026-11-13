@@ -104,7 +104,7 @@ impl SessionPool {
             return Err(PoolError::no_session(session_id));
         }
         let state = self
-            .sessions
+            .live
             .lock()
             .await
             .get(session_id)
@@ -155,7 +155,7 @@ impl SessionPool {
             task_id: task_id.to_string(),
         };
         let state = self
-            .sessions
+            .live
             .lock()
             .await
             .get(session_id)
@@ -201,7 +201,7 @@ impl SessionPool {
             return true;
         }
         let state = self
-            .sessions
+            .live
             .lock()
             .await
             .get(session_id)
@@ -219,7 +219,7 @@ impl SessionPool {
         message: String,
     ) -> Result<api::MessageDelivery, PoolError> {
         let state = self
-            .sessions
+            .live
             .lock()
             .await
             .get(session_id)
@@ -264,7 +264,7 @@ impl SessionPool {
         }
         self.ensure_live(session_id, None).await?;
         let delegator = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let live = sessions.get(session_id).ok_or_else(not_found)?;
             live.delegator.clone()
         };
@@ -349,7 +349,7 @@ impl SessionPool {
         }
         self.ensure_live(session_id, None).await?;
         let input_tx = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let live = sessions
                 .get(session_id)
                 .ok_or_else(|| PoolError::no_session(session_id))?;

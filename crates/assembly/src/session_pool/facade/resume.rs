@@ -113,7 +113,7 @@ impl SessionPool {
         // before the (disk-reading) history lookup — `sessions` is the
         // pool's hottest mutex and every other holder keeps it CPU-only.
         let already_active = {
-            let mut sessions = self.sessions.lock().await;
+            let mut sessions = self.live.lock().await;
             sessions.get_mut(session_id).map(|live| {
                 live.hub.touch();
                 (
@@ -159,91 +159,92 @@ impl SessionPool {
         // the terminal-state check and `resume_or_create` below must both
         // run as one atomic step relative to `delete_sidechain_list`/
         // `delete_session`, not race them.
-        self.with_session_lock(session_id, async {
-            // `docs/daemon_rpc_protocol.md` §3.3: a sidechain that already reached a terminal state has
-            // no continuation semantics — reject before touching engine
-            // state.
-            if let Some((parent_session_id, state)) =
-                self.sidechain_terminal_state(session_id).await
-            {
-                self.record_refused_resume(session_id, "sidechain_terminal", resume_start);
-                return Err(PoolError::SidechainTerminal {
-                    session_id: session_id.to_string(),
-                    parent_session_id,
-                    final_state: state,
-                });
-            }
-
-            let has_history = match self.directory.has_history(session_id).await {
-                Ok(has_history) => has_history,
-                Err(e) => {
-                    self.record_refused_resume(session_id, "unreadable", resume_start);
-                    return Err(PoolError::Internal(e));
+        self.live
+            .with_session_lock(session_id, async {
+                // `docs/daemon_rpc_protocol.md` §3.3: a sidechain that already reached a terminal state has
+                // no continuation semantics — reject before touching engine
+                // state.
+                if let Some((parent_session_id, state)) =
+                    self.sidechain_terminal_state(session_id).await
+                {
+                    self.record_refused_resume(session_id, "sidechain_terminal", resume_start);
+                    return Err(PoolError::SidechainTerminal {
+                        session_id: session_id.to_string(),
+                        parent_session_id,
+                        final_state: state,
+                    });
                 }
-            };
-            let (message_count, entry_count) = self.directory.history_counts(session_id).await;
-            if !has_history && !create_if_missing {
-                self.record_refused_resume(session_id, "not_found", resume_start);
-                return Err(PoolError::session_gone(
-                    session_id,
-                    format!(
-                        "session not found: {session_id} \
-                         (pass create_if_missing: true to start a new session under this id)"
-                    ),
-                ));
-            }
 
-            let raced = self.sessions.lock().await.get(session_id).map(|live| {
-                (
-                    live.name.clone(),
-                    format_instant(live.created_at),
-                    format_instant(live.hub.last_active()),
-                )
-            });
-            if let Some((name, created_at, last_active)) = raced {
-                return Ok(self
-                    .resume_report(
+                let has_history = match self.directory.has_history(session_id).await {
+                    Ok(has_history) => has_history,
+                    Err(e) => {
+                        self.record_refused_resume(session_id, "unreadable", resume_start);
+                        return Err(PoolError::Internal(e));
+                    }
+                };
+                let (message_count, entry_count) = self.directory.history_counts(session_id).await;
+                if !has_history && !create_if_missing {
+                    self.record_refused_resume(session_id, "not_found", resume_start);
+                    return Err(PoolError::session_gone(
                         session_id,
-                        api::ResumeStatus::AlreadyActive,
+                        format!(
+                            "session not found: {session_id} \
+                         (pass create_if_missing: true to start a new session under this id)"
+                        ),
+                    ));
+                }
+
+                let raced = self.live.lock().await.get(session_id).map(|live| {
+                    (
+                        live.name.clone(),
+                        format_instant(live.created_at),
+                        format_instant(live.hub.last_active()),
+                    )
+                });
+                if let Some((name, created_at, last_active)) = raced {
+                    return Ok(self
+                        .resume_report(
+                            session_id,
+                            api::ResumeStatus::AlreadyActive,
+                            message_count,
+                            entry_count,
+                            name,
+                            created_at,
+                            last_active,
+                            mode,
+                        )
+                        .await);
+                }
+                let sid = self
+                    .resume_or_create(session_id.to_string(), options)
+                    .await
+                    .map_err(PoolError::from)?;
+
+                let (created_at, last_active) = {
+                    let sessions = self.live.lock().await;
+                    match sessions.get(&sid) {
+                        Some(live) => (
+                            format_instant(live.created_at),
+                            format_instant(live.hub.last_active()),
+                        ),
+                        None => (String::new(), String::new()),
+                    }
+                };
+
+                Ok(self
+                    .resume_report(
+                        &sid,
+                        api::ResumeStatus::loaded(has_history),
                         message_count,
                         entry_count,
-                        name,
+                        None,
                         created_at,
                         last_active,
                         mode,
                     )
-                    .await);
-            }
-            let sid = self
-                .resume_or_create(session_id.to_string(), options)
-                .await
-                .map_err(PoolError::from)?;
-
-            let (created_at, last_active) = {
-                let sessions = self.sessions.lock().await;
-                match sessions.get(&sid) {
-                    Some(live) => (
-                        format_instant(live.created_at),
-                        format_instant(live.hub.last_active()),
-                    ),
-                    None => (String::new(), String::new()),
-                }
-            };
-
-            Ok(self
-                .resume_report(
-                    &sid,
-                    api::ResumeStatus::loaded(has_history),
-                    message_count,
-                    entry_count,
-                    None,
-                    created_at,
-                    last_active,
-                    mode,
-                )
-                .await)
-        })
-        .await
+                    .await)
+            })
+            .await
     }
 
     fn record_refused_resume(&self, session_id: &str, why: &str, started: Instant) {
@@ -279,7 +280,7 @@ impl SessionPool {
         mode: base::settings::PermissionMode,
     ) -> api::ResumeReport {
         let (mode, project) = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let live = sessions.get(session_id);
             (
                 live.and_then(|live| live.state.as_ref())
@@ -422,13 +423,14 @@ impl SessionPool {
         sid: &str,
         options: Option<&SessionOptions>,
     ) -> Result<String, CreateError> {
-        self.with_session_lock(sid, async {
-            if self.sessions.lock().await.contains_key(sid) {
-                return Ok(sid.to_string());
-            }
-            self.resume_or_create(sid.to_string(), options).await
-        })
-        .await
+        self.live
+            .with_session_lock(sid, async {
+                if self.live.lock().await.contains_key(sid) {
+                    return Ok(sid.to_string());
+                }
+                self.resume_or_create(sid.to_string(), options).await
+            })
+            .await
     }
 
     /// Rebuild a live, idle session in place from its spec and log. Its
@@ -440,11 +442,12 @@ impl SessionPool {
         sid: &str,
         options: Option<&SessionOptions>,
     ) -> Result<String, Rebuild> {
-        self.with_session_lock(sid, async {
-            let held = self.take_idle_slot(sid).await?;
-            self.rebuild_holding(sid, held, options).await
-        })
-        .await
+        self.live
+            .with_session_lock(sid, async {
+                let held = self.take_idle_slot(sid).await?;
+                self.rebuild_holding(sid, held, options).await
+            })
+            .await
     }
 
     /// Move live, idle `sid` into `Rebuilding`, so no turn starts until the
@@ -455,7 +458,7 @@ impl SessionPool {
         &self,
         sid: &str,
     ) -> Result<HeldSlot, Rebuild> {
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.live.lock().await;
         let live = sessions.get_mut(sid).ok_or(Rebuild::NotLive)?;
         if let Some(busy) = live.turn.busy(sid) {
             return Err(Rebuild::Busy(busy));
@@ -487,7 +490,7 @@ impl SessionPool {
         let (previous, spec) = self.specs.update(sid, change);
         if let Err(e) = self.rebuild_holding(sid, held, None).await {
             self.specs.restore(sid, previous);
-            if !self.sessions.lock().await.contains_key(sid) {
+            if !self.live.lock().await.contains_key(sid) {
                 self.specs.release(sid);
             }
             return Err(e);
@@ -506,7 +509,7 @@ impl SessionPool {
     ) -> Result<String, Rebuild> {
         let rebuilt = self.resume_or_create(sid.to_string(), options).await;
         if rebuilt.is_err() {
-            if let Some(live) = self.sessions.lock().await.get_mut(sid) {
+            if let Some(live) = self.live.lock().await.get_mut(sid) {
                 live.turn.abort_rebuild(held.generation);
             }
         }

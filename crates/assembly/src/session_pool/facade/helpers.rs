@@ -12,18 +12,6 @@ pub(in crate::session_pool) fn goal_round_task(
     Box::pin(async move { pool.run_goal_round(sid, round).await })
 }
 
-/// Whether `live` is doing anything eviction would cut off: running a turn,
-/// being rebuilt, or running background tasks.
-pub(in crate::session_pool) fn is_busy(live: &LiveSession) -> bool {
-    !live.turn.is_idle()
-        || live.state.as_ref().is_some_and(|state| {
-            state
-                .list_running_tasks()
-                .iter()
-                .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
-        })
-}
-
 /// The engine's events passed through to a receiver of their own, with a
 /// notice each time one arrives — what lets the forwarder between turns sleep
 /// until there is something to forward.
@@ -42,20 +30,6 @@ pub(in crate::session_pool) fn relay_events(
         }
     });
     (rx, arrived)
-}
-
-/// Take the least recently active idle session out of `sessions`, or `None`
-/// when every session is busy — the pool then runs over its cap rather than
-/// cut one off.
-pub(in crate::session_pool) fn evict_lru(
-    sessions: &mut HashMap<String, LiveSession>,
-) -> Option<(String, LiveSession)> {
-    let sid = sessions
-        .iter()
-        .filter(|(_, live)| !is_busy(live))
-        .min_by_key(|(_, live)| live.hub.last_active())
-        .map(|(k, _)| k.clone())?;
-    sessions.remove_entry(&sid)
 }
 
 /// The ask `event` raises — its `prompt_id`, the background task asking it
@@ -106,30 +80,6 @@ pub(in crate::session_pool) fn frame_between_turns(
         turn_id: None,
         event,
     }
-}
-
-pub(in crate::session_pool) fn reap_process_groups_later(live: &LiveSession) {
-    if let Some(ledger) = live.process_groups.clone() {
-        tokio::spawn(async move { ledger.reap(PROCESS_GROUP_GRACE).await });
-    }
-}
-
-/// Session id 列表：`last_active` 距 `now` 超过 `timeout`、且手上没有活的那些。拆成纯函数
-/// （不做任何驱逐动作，只挑出 id）——原逻辑内嵌在 `start_janitor` 真实跑
-/// 300 秒一次的循环体里，没法在测试里等 5 分钟去验证；抽出来之后可以直接用
-/// 人为构造的" last_active 已经很旧"的 session 测，不用真的睡觉。
-pub(in crate::session_pool) fn idle_session_ids(
-    sessions: &HashMap<String, LiveSession>,
-    now: Instant,
-    timeout: Duration,
-) -> Vec<String> {
-    sessions
-        .iter()
-        .filter(|(_, live)| {
-            now.saturating_duration_since(live.hub.last_active()) > timeout && !is_busy(live)
-        })
-        .map(|(sid, _)| sid.clone())
-        .collect()
 }
 
 pub(in crate::session_pool) fn format_instant(t: Instant) -> String {

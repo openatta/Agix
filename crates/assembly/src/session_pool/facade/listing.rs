@@ -173,7 +173,7 @@ impl SessionPool {
         };
         let current_turn_id = self.current_turn_of(session_id).await;
         let (context, health) = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let live = sessions.get(session_id);
             (
                 live.and_then(|live| live.context),
@@ -216,7 +216,7 @@ impl SessionPool {
         use base::interface::script::ScriptOutcome;
 
         let ledger = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             sessions.get(session_id)?.scripts.clone()?
         };
         let records = ledger.records();
@@ -307,7 +307,7 @@ impl SessionPool {
                 return Vec::new();
             };
             let active_ids: std::collections::HashSet<String> = {
-                let sessions = self.sessions.lock().await;
+                let sessions = self.live.lock().await;
                 sessions.keys().cloned().collect()
             };
             let mut out = Vec::with_capacity(children.len());
@@ -341,10 +341,10 @@ impl SessionPool {
 
         // Snapshot active sessions and release the lock before the disk
         // reads below (`session_facts_and_resumable` per session, plus
-        // `store.find_sessions()`) — holding `self.sessions` across that
+        // `store.find_sessions()`) — holding the session table across that
         // much I/O would block every other pool operation for the duration.
         let active_snapshot: Vec<(String, Option<String>, Instant, Instant)> = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             sessions
                 .iter()
                 .map(|(sid, live)| {
@@ -474,13 +474,13 @@ impl SessionPool {
 
     /// 获取活跃 session 数量。
     pub async fn active_count(&self) -> usize {
-        self.sessions.lock().await.len()
+        self.live.lock().await.len()
     }
 
     /// Whether `session_id` names a session this pool has — in memory, or a
     /// transcript it can resume.
     pub async fn session_exists(&self, session_id: &str) -> bool {
-        if self.sessions.lock().await.contains_key(session_id) {
+        if self.live.lock().await.contains_key(session_id) {
             return true;
         }
         self.directory.load_entries(session_id).await.is_ok()

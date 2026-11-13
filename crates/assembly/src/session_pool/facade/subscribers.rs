@@ -8,7 +8,7 @@ impl SessionPool {
         &self,
         session_id: &str,
     ) -> Option<Arc<SessionHub>> {
-        self.sessions
+        self.live
             .lock()
             .await
             .get(session_id)
@@ -92,7 +92,7 @@ impl SessionPool {
     /// another connection may be watching and a teardown would cascade into
     /// deleting the session's sidechain transcripts.
     pub async fn drop_watcher(&self, watcher: WatcherId) {
-        let sessions = self.sessions.lock().await;
+        let sessions = self.live.lock().await;
         for live in sessions.values() {
             live.hub.unsubscribe(watcher);
         }
@@ -128,7 +128,7 @@ impl SessionPool {
         frame: &SessionFrame,
         except: Option<WatcherId>,
     ) -> bool {
-        let mut sessions = self.sessions.lock().await;
+        let mut sessions = self.live.lock().await;
         let Some(live) = sessions
             .get_mut(&ticket.sid)
             .filter(|live| live.turn.generation == ticket.generation)
@@ -159,7 +159,7 @@ impl SessionPool {
     /// reports it as `turn_state`; a missing or unknown session reads as idle,
     /// same as one sitting between turns.
     pub async fn current_turn_of(&self, session_id: &str) -> Option<String> {
-        self.sessions
+        self.live
             .lock()
             .await
             .get(session_id)
@@ -186,7 +186,7 @@ impl SessionPool {
         session_id: &str,
     ) -> Result<bool, PoolError> {
         let (input_tx, running, state) = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Err(PoolError::session_not_found(session_id));
             };
@@ -225,7 +225,7 @@ impl SessionPool {
         answer: PromptAnswer,
     ) -> Result<(), PoolError> {
         let (input_tx, hub) = {
-            let sessions = self.sessions.lock().await;
+            let sessions = self.live.lock().await;
             let Some(live) = sessions.get(session_id) else {
                 return Err(PoolError::session_not_found(session_id));
             };

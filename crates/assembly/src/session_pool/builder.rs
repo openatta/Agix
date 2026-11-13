@@ -153,10 +153,7 @@ impl SessionPoolBuilder {
         );
 
         Arc::new_cyclic(|this| SessionPool {
-            sessions: AsyncMutex::new(HashMap::new()),
-            session_locks: AsyncMutex::new(HashMap::new()),
-            cap: self.cap,
-            idle_timeout: self.idle_timeout,
+            live: LiveSessions::new(self.cap, self.idle_timeout),
             scenes,
             permission: self.permission,
             tools,
@@ -169,10 +166,6 @@ impl SessionPoolBuilder {
             plugins,
             bindings,
             specs,
-            stopping: std::sync::Mutex::new(HashMap::new()),
-            shutting_down: std::sync::atomic::AtomicBool::new(false),
-            generations: Generations::default(),
-            shut_down: CancellationToken::new(),
             permission_prompt_timeout: self.permission_prompt_timeout,
             rust_plugins: self.rust_plugins,
             customize: self.customize,

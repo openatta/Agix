@@ -41,7 +41,7 @@ impl SessionPool {
             .enumerate()
             .map(|(i, m)| history_item(start + i, m))
             .collect();
-        let active = self.sessions.lock().await.contains_key(session_id);
+        let active = self.live.lock().await.contains_key(session_id);
 
         Ok(api::HistoryPage {
             session_id: session_id.to_string(),
@@ -75,9 +75,9 @@ impl SessionPool {
         let settings = self.bindings.pool_settings().await;
         let roots = history::path::HistoryRoots::under(&settings.paths.global_data_dir);
         crate::export::check_target(&request.path, &[roots.projects, roots.sessions.clone()])?;
-
         let include = request.include;
         let (lineage, cut_at, live, recordings) = self
+            .live
             .with_session_lock(&request.session_id, async {
                 let mut lineage = store.snapshot_lineage(root).await.map_err(|e| match e {
                     history::error::HistoryError::SessionNotFound(_) => {
@@ -95,7 +95,7 @@ impl SessionPool {
                     String,
                     (Option<String>, Option<Arc<base::context::SessionState>>),
                 > = {
-                    let sessions = self.sessions.lock().await;
+                    let sessions = self.live.lock().await;
                     lineage
                         .sessions
                         .iter()

@@ -5,6 +5,7 @@ pub(super) mod bindings;
 pub(super) mod directory;
 pub(super) mod events;
 pub(super) mod hub;
+pub(super) mod live;
 pub(super) mod phase;
 pub(super) mod scenes;
 pub(super) mod scheduler;

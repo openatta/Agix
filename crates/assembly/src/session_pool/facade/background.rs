@@ -126,12 +126,13 @@ impl SessionPool {
         // timeout doesn't spin the loop and a very long one doesn't sweep
         // needlessly often.
         let sweep_interval =
-            (pool.idle_timeout / 4).clamp(Duration::from_secs(30), Duration::from_secs(300));
+            (pool.live.idle_timeout() / 4).clamp(Duration::from_secs(30), Duration::from_secs(300));
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(sweep_interval).await;
-                let mut sessions = pool.sessions.lock().await;
-                let to_evict = idle_session_ids(&sessions, Instant::now(), pool.idle_timeout);
+                let mut sessions = pool.live.lock().await;
+                let to_evict =
+                    idle_session_ids(&sessions, Instant::now(), pool.live.idle_timeout());
                 for sid in &to_evict {
                     if let Some(live) = sessions.remove(sid) {
                         pool.evict(sid, &live);

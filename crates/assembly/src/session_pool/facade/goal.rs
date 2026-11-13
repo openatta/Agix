@@ -69,7 +69,7 @@ impl SessionPool {
         &self,
         sid: &str,
     ) -> Option<Arc<base::context::SessionState>> {
-        self.sessions
+        self.live
             .lock()
             .await
             .get(sid)
@@ -194,7 +194,7 @@ impl SessionPool {
         self.record_goal_changes(sid, &state).await;
 
         let running = self
-            .sessions
+            .live
             .lock()
             .await
             .get(sid)
