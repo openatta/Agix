@@ -8,7 +8,9 @@ use crate::parser::parse_sse;
 use crate::retry_after::parse_retry_after;
 use crate::stream::StreamEvent;
 use crate::types::MessagesRequest;
-use base::interface::backoff::{Backoff, BackoffPolicy, FailedAttempt, LadderBackoff};
+use base::interface::backoff::{
+    Backoff, BackoffPolicy, FailedAttempt, LadderBackoff, RequestFailure,
+};
 use base::interface::exec::{HttpRequest, HttpStream, Network, Origin};
 use futures::stream::{Stream, StreamExt};
 use platform::LocalNetwork;
@@ -156,12 +158,34 @@ fn push_unique(v: &mut Vec<String>, s: &str) {
     }
 }
 
+/// 一次响应读到的第一个事件，以及它之后的事件流。
+type Opened = (
+    Option<Result<StreamEvent, AnthropicError>>,
+    crate::parser::ParsedStream,
+);
+
+/// 200 响应的开头就是失败：第一个事件是 `error`，或者 body 是空的。这时还什么都
+/// 没交给调用方，按首字节前的失败一样交给退避策略。
+fn failed_opening(
+    first: &Option<Result<StreamEvent, AnthropicError>>,
+) -> Option<(RequestFailure, String)> {
+    match first {
+        None => Some((RequestFailure::Transport, "empty response body".into())),
+        Some(Ok(StreamEvent::Error { error })) => Some((
+            classify(None, Some(&error.kind), &error.message).request_failure(),
+            format!("error event {}: {}", error.kind, error.message),
+        )),
+        Some(_) => None,
+    }
+}
+
 /// 在首字节前重试：等多久、还试不试由 `BackoffPolicy` 决定；
 /// `retry-after` 头的解析留在本协议这一侧，作为提示交给策略。
+/// 放弃时原样交回最后一次的结果，开头的 `error` 事件仍由调用方按事件处理。
 async fn send_with_retry(
     inner: &HttpInner,
     req: &MessagesRequest,
-) -> Result<HttpStream, AnthropicError> {
+) -> Result<Opened, AnthropicError> {
     let mut attempt = 0u32;
     loop {
         // `send_one` 的 `.send().await` 只有 TCP connect_timeout（30s）——连上之后
@@ -175,22 +199,37 @@ async fn send_with_retry(
                     "no response headers within the idle window".into(),
                 )),
             };
-        let e = match attempt_result {
-            Ok(resp) => return Ok(resp),
-            Err(e) => e,
+        let (failure, server_hint, error, outcome) = match attempt_result {
+            Ok(resp) => {
+                let byte_stream = resp
+                    .body
+                    .map(|c| c.map(bytes::Bytes::from).map_err(AnthropicError::from));
+                let mut events = parse_sse(byte_stream);
+                let first = next_with_idle_timeout(&mut events, STREAM_IDLE_TIMEOUT).await;
+                let Some((failure, error)) = failed_opening(&first) else {
+                    return Ok((first, events));
+                };
+                (failure, None, error, Ok((first, events)))
+            }
+            Err(e) => (
+                e.kind().request_failure(),
+                e.retry_after(),
+                e.to_string(),
+                Err(e),
+            ),
         };
         let verdict = inner.backoff.after_failure(&FailedAttempt {
             index: attempt,
-            failure: e.kind().request_failure(),
-            server_hint: e.retry_after(),
+            failure,
+            server_hint,
         });
         match verdict {
-            Backoff::GiveUp => return Err(e),
+            Backoff::GiveUp => return outcome,
             Backoff::WaitThenRetry(delay) => {
                 tracing::warn!(
                     attempt = attempt + 1,
                     delay_ms = delay.as_millis() as u64,
-                    error = %e,
+                    error = %error,
                     "anthropic request retryable; backing off"
                 );
                 tokio::time::sleep(delay).await;
@@ -339,17 +378,13 @@ impl AnthropicClient for HttpAnthropicClient {
         let inner = self.inner.clone();
 
         Box::pin(async_stream::try_stream! {
-            // 重试只在**首字节前**做：classify_response 拿到 Ok 之后开始流式，
-            // 流中错（或服务端 error 事件）不重试 —— 避免重复计 token。
-            let resp = send_with_retry(&inner, &req).await?;
-
-            let byte_stream = resp
-                .body
-                .map(|c| c.map(bytes::Bytes::from).map_err(AnthropicError::from));
-
-            let mut events = parse_sse(byte_stream);
-            while let Some(ev) = next_with_idle_timeout(&mut events, STREAM_IDLE_TIMEOUT).await {
-                yield ev?;
+            // 重试只在第一个事件之前做；流中错（或中途的 error 事件）不重试 —— 避免重复计 token。
+            let (first, mut events) = send_with_retry(&inner, &req).await?;
+            if let Some(first) = first {
+                yield first?;
+                while let Some(ev) = next_with_idle_timeout(&mut events, STREAM_IDLE_TIMEOUT).await {
+                    yield ev?;
+                }
             }
         })
     }
@@ -389,6 +424,79 @@ mod tests {
         fn permits(&self, _host: &str, _origin: Origin) -> bool {
             true
         }
+    }
+
+    /// Answers every request with 200 and the next scripted body.
+    struct ScriptedOk {
+        bodies: std::sync::Mutex<Vec<&'static str>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Network for ScriptedOk {
+        async fn send(
+            &self,
+            _req: HttpRequest,
+            _origin: Origin,
+        ) -> Result<base::interface::exec::HttpResponse, base::interface::exec::ExecError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body = self.bodies.lock().unwrap().remove(0);
+            Ok(base::interface::exec::HttpResponse {
+                status: 200,
+                headers: Default::default(),
+                body: body.as_bytes().to_vec(),
+            })
+        }
+
+        fn permits(&self, _host: &str, _origin: Origin) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn a_200_that_opens_with_a_retryable_error_event_or_nothing_is_retried() {
+        const OK: &str = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\n";
+        const OVERLOADED: &str = "event: error\n\
+data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"busy\"}}\n\n";
+        const INVALID: &str = "event: error\n\
+data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad\"}}\n\n";
+
+        async fn run(
+            bodies: Vec<&'static str>,
+        ) -> (Vec<Result<StreamEvent, AnthropicError>>, usize) {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let client = HttpAnthropicClient::new(AuthMode::ApiKey("k".into()))
+                .unwrap()
+                .with_network(Arc::new(ScriptedOk {
+                    bodies: std::sync::Mutex::new(bodies),
+                    calls: calls.clone(),
+                }))
+                .with_backoff(vec![1, 1]);
+            let events = client
+                .stream_messages(MessagesRequest::minimal("m", "hi"))
+                .collect()
+                .await;
+            (events, calls.load(std::sync::atomic::Ordering::SeqCst))
+        }
+
+        for opening in [OVERLOADED, ""] {
+            let (events, calls) = run(vec![opening, OK]).await;
+            assert_eq!(calls, 2, "{opening:?} was not retried");
+            assert!(
+                matches!(events.last(), Some(Ok(StreamEvent::MessageStop))),
+                "{events:?}"
+            );
+        }
+
+        let (events, calls) = run(vec![INVALID, OK]).await;
+        assert_eq!(calls, 1, "an invalid request is not sent again");
+        assert!(matches!(
+            events.as_slice(),
+            [Ok(StreamEvent::Error { error })] if error.kind == "invalid_request_error"
+        ));
     }
 
     #[tokio::test(start_paused = true)]
