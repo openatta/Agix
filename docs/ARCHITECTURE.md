@@ -729,7 +729,7 @@ Agent 的上下文,本来就该在一处。
 (内存文件树、预置的命令应答、离线网络、诚实地报告自己什么都不约束的沙箱)。
 
 **一个会话一套。** `Builder::build()` 造一次,工具调用、引擎自己的 git 都用它,并经
-`SessionState::bind_exec` 交给权限判断:权限层判路径(`canonicalize`)、判沙箱是否完整兜得住
+引擎挂到会话状态上的 `EngineAttachment`(`SessionState::attach`)交给权限判断:权限层判路径(`canonicalize`)、判沙箱是否完整兜得住
 命令时,问的是这次调用真正要跑在上面的那套,子 Agent 的调用按子 Agent 会话的那套判。
 
 五条容易搞错的:

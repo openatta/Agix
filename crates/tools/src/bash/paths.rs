@@ -39,7 +39,7 @@ pub(crate) fn stays_where_the_session_may_read(line: &str, ctx: &ToolContext) ->
 /// what it matches on disk now, so `.*/x` reaching `../x` and `link*/x`
 /// following a symlink out are seen for what they are.
 fn path_args_stay_within(line: &str, ctx: &ToolContext) -> bool {
-    if ctx.session.read_anywhere {
+    if ctx.session.env().read_anywhere {
         return true;
     }
     let roots = crate::security::readable_roots(ctx);

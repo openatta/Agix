@@ -717,7 +717,7 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
         permissions::ruleset::RuleSet::new(vec![]),
     )));
     let session = Arc::new(
-        base::context::SessionState::new("/tmp".into())
+        base::context::SessionState::for_tests("/tmp".into())
             .with_permission_mode(base::permission::PermissionMode::Plan),
     );
     let decide = |name: &'static str, input: Value| {

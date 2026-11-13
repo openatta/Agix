@@ -207,7 +207,7 @@ mod tests {
 
     #[tokio::test]
     async fn any_returns_when_the_first_task_ends() {
-        let session = Arc::new(SessionState::new(std::env::temp_dir()));
+        let session = Arc::new(SessionState::for_tests(std::env::temp_dir()));
         register(&session, "a");
         register(&session, "b");
         let s = session.clone();
@@ -231,7 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_waits_for_every_task_and_withdraws_their_notices() {
-        let session = Arc::new(SessionState::new(std::env::temp_dir()));
+        let session = Arc::new(SessionState::for_tests(std::env::temp_dir()));
         register(&session, "a");
         register(&session, "b");
         session.finish_task("a", RunningStatus::Completed);
@@ -254,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_wait_that_runs_out_says_so() {
-        let session = Arc::new(SessionState::new(std::env::temp_dir()));
+        let session = Arc::new(SessionState::for_tests(std::env::temp_dir()));
         register(&session, "a");
         let out = wait(&session, json!({"task_ids": ["a"], "timeout_ms": 20})).await;
         assert_eq!(out["timed_out"], true);

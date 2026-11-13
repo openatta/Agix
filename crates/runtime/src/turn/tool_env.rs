@@ -205,7 +205,7 @@ pub(crate) fn attendance_of(
     from_code: bool,
 ) -> base::interface::permission::Attendance {
     use base::interface::permission::Attendance;
-    if session.unattended {
+    if session.env().unattended {
         Attendance::Unattended
     } else if from_code {
         Attendance::NoOneToAsk(
@@ -240,7 +240,7 @@ fn confinement_of(
 /// The context a call to `tool` runs with: the same for validating its input
 /// and for judging it as for running it.
 pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Tool>) -> ToolContext {
-    let additional_writable_dirs = ctx.session_state.additional_writable_dirs.clone();
+    let additional_writable_dirs = ctx.session_state.env().additional_writable_dirs.clone();
     ToolContext {
         cwd: ctx.cwd.clone(),
         session_id: ctx.session_id.clone(),
@@ -292,7 +292,7 @@ impl Agent {
             turn_no: self.session.turn_count,
             sandbox: sandbox_settings_from(&self.config),
             cancel,
-            additional_writable_dirs: self.session_state.additional_writable_dirs.clone(),
+            additional_writable_dirs: self.session_state.env().additional_writable_dirs.clone(),
             snapshot_file: None,
             effects: None,
             running_tasks: Some(self.session_state.clone()),

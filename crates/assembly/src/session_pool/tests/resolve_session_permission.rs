@@ -85,8 +85,9 @@ async fn a_bypass_session_gets_the_hosts_permission_or_else_a_policy_that_consul
     let mode = effective_permission_mode(&settings, None);
     let gate = resolve_session_permission(None, &settings, mode, None);
     let cwd = std::env::temp_dir();
-    let session =
-        Arc::new(base::context::SessionState::new(cwd.clone()).with_permission_mode(mode.into()));
+    let session = Arc::new(
+        base::context::SessionState::for_tests(cwd.clone()).with_permission_mode(mode.into()),
+    );
     let bash_says = |input: serde_json::Value| {
         let (gate, bash, cwd, session) = (gate.clone(), bash.clone(), cwd.clone(), session.clone());
         async move {

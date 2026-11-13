@@ -471,8 +471,10 @@ mod tests {
     async fn a_monitor_always_runs_in_the_background_and_is_inside_only_when_it_reads() {
         let dir = TempDir::new().unwrap();
         let mut unattended = ctx_in(dir.path());
-        let mut session = SessionState::new(dir.path().to_path_buf());
-        session.unattended = true;
+        let session = SessionState::for_tests_in(base::context::SessionEnv {
+            unattended: true,
+            ..base::context::SessionEnv::new(dir.path().to_path_buf())
+        });
         unattended.session = Arc::new(session);
         unattended.dangerously_disable_sandbox = false;
         unattended.exec.sandbox = Arc::new(Holds);

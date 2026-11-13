@@ -248,7 +248,7 @@ impl Coordinator for DefaultCoordinator {
             .flat_map(|s| s.agents.iter().map(|a| a.label.clone()))
             .collect();
         let team_id = format!("team-{}-{}", name, chrono_id());
-        let team_dir = ctx.session.cwd.join(".agix/teams").join(&team_id);
+        let team_dir = ctx.session.env().cwd.join(".agix/teams").join(&team_id);
         let sp_path = team_dir.join("SCRATCHPAD.md");
         if let Some(p) = sp_path.parent() {
             let _ = tokio::fs::create_dir_all(p).await;
@@ -264,7 +264,7 @@ impl Coordinator for DefaultCoordinator {
                 .scene_id
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
-            project_root: ctx.session.cwd.display().to_string(),
+            project_root: ctx.session.env().cwd.display().to_string(),
             owner_session_id: ctx.session_id.clone(),
             created_at: crate::persist::iso_now(),
             mode: crate::persist::TeamMode::Batch,
@@ -741,7 +741,7 @@ impl Coordinator for DefaultCoordinator {
     ) -> Result<ToolResult, ToolError> {
         let start = std::time::Instant::now();
 
-        let team_dir = ctx.session.cwd.join(".agix/teams").join(task_id);
+        let team_dir = ctx.session.env().cwd.join(".agix/teams").join(task_id);
         let sp_path = team_dir.join("SCRATCHPAD.md");
 
         let scratchpad = match tokio::fs::read_to_string(&sp_path).await {

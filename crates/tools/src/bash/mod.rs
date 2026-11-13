@@ -1,7 +1,7 @@
 //! BashTool —— "Bash"。
 //!
 //! ：
-//! - `bash -c <command>` 子进程，cwd = session.cwd
+//! - `bash -c <command>` 子进程，cwd = ctx.cwd
 //! - **平台沙盒包装**（macOS sandbox-exec / Linux bwrap，受 `dangerously_disable_sandbox` 控制）
 //! - stdout / stderr 行级流式喂给 `ProgressSender`
 //! - 超时（默认 120s，上限 600s）+ cancel 通过停掉整个进程组实现；命令退出后仍占着输出管道的

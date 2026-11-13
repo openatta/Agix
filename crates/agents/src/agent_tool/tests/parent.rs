@@ -50,7 +50,7 @@ impl TestParent {
             session_agent_types: Vec::new(),
             host: None,
             permission: None,
-            state: Arc::new(base::context::SessionState::new(std::env::temp_dir())),
+            state: Arc::new(base::context::SessionState::for_tests(std::env::temp_dir())),
             events: None,
             pending: Arc::default(),
             ended: tokio_util::sync::CancellationToken::new(),

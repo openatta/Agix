@@ -825,7 +825,10 @@ mod dynamic_context_tests {
         let tools = base::tool::InMemoryToolRegistry::new();
         tools.register(Arc::new(tools::bash::BashTool));
         let tools: Arc<dyn base::tool::ToolRegistry> = Arc::new(tools);
-        ctx.session.bind_tools(&tools);
+        ctx.session.attach(
+            base::context::EngineAttachment::new((*ctx.session.env()).clone(), ctx.exec.clone(), 1)
+                .with_tools(&tools),
+        );
         (ctx, tools)
     }
 
@@ -1546,7 +1549,7 @@ mod tests {
         bash: &Arc<dyn Tool>,
     ) -> base::interface::permission::PermissionOutcome {
         let input = serde_json::json!({});
-        let session = Arc::new(base::context::SessionState::new("/tmp".into()));
+        let session = Arc::new(base::context::SessionState::for_tests("/tmp".into()));
         policy
             .decide(&base::interface::permission::PermissionRequest::new(
                 "Bash",

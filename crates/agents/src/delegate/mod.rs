@@ -64,7 +64,7 @@ impl Delegator {
 
     fn workdir(&self, workdir: Workdir) -> Result<std::path::PathBuf, DelegateError> {
         match workdir {
-            Workdir::Inherit => Ok(self.env.parent.state.cwd.clone()),
+            Workdir::Inherit => Ok(self.env.parent.state.env().cwd.clone()),
             Workdir::At(dir) => Ok(dir),
             Workdir::Worktree(_) => Err(DelegateError::Unsupported(
                 "a delegate's worktree is made by its caller, which removes it after".into(),

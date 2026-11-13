@@ -116,8 +116,10 @@ fn ctx_in(cwd: &std::path::Path) -> ToolContext {
 fn a_sandboxed_command_may_write_the_cache_directories() {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = ctx_in(dir.path());
-    let mut session = base::context::SessionState::new(dir.path().to_path_buf());
-    session.cache_directories = vec!["~/.npm".into(), "/opt/cache".into()];
+    let session = base::context::SessionState::for_tests_in(base::context::SessionEnv {
+        cache_directories: vec!["~/.npm".into(), "/opt/cache".into()],
+        ..base::context::SessionEnv::new(dir.path().to_path_buf())
+    });
     ctx.session = std::sync::Arc::new(session);
     let writable = sandbox_policy(&ctx).additional_writable;
     assert!(writable.contains(&std::path::PathBuf::from("/opt/cache")));
@@ -132,8 +134,10 @@ fn only_an_unattended_command_is_kept_from_acting_through_other_processes() {
     let dir = tempfile::tempdir().unwrap();
     let mut ctx = ctx_in(dir.path());
     assert!(!sandbox_policy(&ctx).deny_ipc_escapes);
-    let mut session = base::context::SessionState::new(dir.path().to_path_buf());
-    session.unattended = true;
+    let session = base::context::SessionState::for_tests_in(base::context::SessionEnv {
+        unattended: true,
+        ..base::context::SessionEnv::new(dir.path().to_path_buf())
+    });
     ctx.session = std::sync::Arc::new(session);
     assert!(sandbox_policy(&ctx).deny_ipc_escapes);
 }
@@ -143,8 +147,10 @@ fn unattended_in_a_holding_sandbox(
     network: base::context::config::NetworkModeConfig,
 ) -> ToolContext {
     let mut ctx = ctx_in(cwd);
-    let mut session = base::context::SessionState::new(cwd.to_path_buf());
-    session.unattended = true;
+    let session = base::context::SessionState::for_tests_in(base::context::SessionEnv {
+        unattended: true,
+        ..base::context::SessionEnv::new(cwd.to_path_buf())
+    });
     ctx.session = std::sync::Arc::new(session);
     ctx.dangerously_disable_sandbox = false;
     ctx.sandbox.network_mode = network;
@@ -763,7 +769,7 @@ fn every_command_a_line_runs_must_be_read_only_for_the_line_to_be() {
 
 fn ctx_with_running_agent(cwd: &std::path::Path) -> ToolContext {
     let mut ctx = ctx_in(cwd);
-    let session = base::context::SessionState::new(cwd.to_path_buf());
+    let session = base::context::SessionState::for_tests(cwd.to_path_buf());
     session.register_task(
         "agent-1",
         base::context::task::TaskType::Agent,

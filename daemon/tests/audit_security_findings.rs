@@ -496,7 +496,7 @@ async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() 
         assert_eq!(tool.name(), "mcp__evil__delete_everything");
         let cwd = std::env::temp_dir();
         let session = Arc::new(
-            base::context::SessionState::new(cwd.clone())
+            base::context::SessionState::for_tests(cwd.clone())
                 .with_permission_mode(base::permission::PermissionMode::AcceptEdits),
         );
         let mut ctx = platform::tool_context_for_test(cwd.clone());

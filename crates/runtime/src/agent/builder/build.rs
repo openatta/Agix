@@ -254,31 +254,33 @@ impl Builder {
         // from one call to the next.
         prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
         prepare_working_dir(&settings.paths);
-        let session_state = Arc::new({
+        let session_env = {
             let cwd = settings.paths.working_dir().to_path_buf();
             let resolve = |dir: &std::path::PathBuf| cwd.join(dir);
-            let mut state = base::context::SessionState::new(cwd.clone())
-                .with_permission_mode(config.permission_mode);
-            state.additional_writable_dirs = settings
-                .sandbox
-                .additional_directories
-                .iter()
-                .map(resolve)
-                .chain(config.sandbox_policy.paths.state_working_dirs())
-                .collect();
-            state.read_directories = settings
-                .sandbox
-                .read_directories
-                .iter()
-                .map(resolve)
-                .chain(config.sandbox_policy.paths.readable_state_root())
-                .collect();
-            state.read_anywhere = settings.sandbox.read_anywhere;
-            state.cache_directories = settings.sandbox.cache_directories.paths(&cwd);
-            state.unattended = !scene.interactive;
-            state.sandbox_disabled = settings.sandbox.dangerously_disable_sandbox;
-            state
-        });
+            base::context::SessionEnv {
+                additional_writable_dirs: settings
+                    .sandbox
+                    .additional_directories
+                    .iter()
+                    .map(resolve)
+                    .chain(config.sandbox_policy.paths.state_working_dirs())
+                    .collect(),
+                read_directories: settings
+                    .sandbox
+                    .read_directories
+                    .iter()
+                    .map(resolve)
+                    .chain(config.sandbox_policy.paths.readable_state_root())
+                    .collect(),
+                read_anywhere: settings.sandbox.read_anywhere,
+                cache_directories: settings.sandbox.cache_directories.paths(&cwd),
+                unattended: !scene.interactive,
+                sandbox_disabled: settings.sandbox.dangerously_disable_sandbox,
+                base_mode: config.permission_mode,
+                cwd,
+            }
+        };
+        let session_state = Arc::new(base::context::SessionState::new());
         // One set for the session: its tool calls run on it, and a permission
         // judging them reads it back from the session state.
         let exec = match (&self.exec, &self.process_groups) {
@@ -292,7 +294,6 @@ impl Builder {
             (Some(exec), None) => exec.clone(),
             (None, groups) => crate::turn::exec_providers_from(&config, groups.as_ref()),
         };
-        session_state.bind_exec(exec.clone());
         let hook_ambient = hook_ambient(
             session.session_id_str().to_string(),
             settings.paths.working_dir().display().to_string(),
@@ -657,7 +658,10 @@ impl Builder {
                 );
             }
         }
-        session_state.bind_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>));
+        session_state.attach(
+            base::context::EngineAttachment::new(session_env, exec.clone(), next_generation())
+                .with_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>)),
+        );
 
         // Built before the `Agent` literal takes ownership of `scene` and
         // `settings`. The ceilings are read once per session, which is when
@@ -901,6 +905,13 @@ impl Builder {
             input_tx,
         ))
     }
+}
+
+/// Unique in the process, so an engine detaching from a session's state takes
+/// off only itself.
+fn next_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A session without a project works in a directory of its own, which has to

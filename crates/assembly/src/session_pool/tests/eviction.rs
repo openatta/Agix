@@ -98,7 +98,7 @@ fn inserting_over_an_existing_sid_must_cancel_the_replaced_sessions_token() {
 }
 
 fn running_a_task() -> Arc<base::context::SessionState> {
-    let state = Arc::new(base::context::SessionState::new("/tmp".into()));
+    let state = Arc::new(base::context::SessionState::for_tests("/tmp".into()));
     state.register_task(
         "task-1",
         base::context::TaskType::Agent,

@@ -51,14 +51,14 @@ pub(super) fn to_sandbox_policy(settings: &base::tool::SandboxSettings) -> sandb
 pub(super) fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
     let mut policy = to_sandbox_policy(&ctx.sandbox);
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    let caches =
-        ctx.session
-            .cache_directories
-            .iter()
-            .filter_map(|dir| match dir.strip_prefix("~") {
-                Ok(rest) => home.as_ref().map(|h| h.join(rest)),
-                Err(_) => Some(dir.clone()),
-            });
+    let env = ctx.session.env();
+    let caches = env
+        .cache_directories
+        .iter()
+        .filter_map(|dir| match dir.strip_prefix("~") {
+            Ok(rest) => home.as_ref().map(|h| h.join(rest)),
+            Err(_) => Some(dir.clone()),
+        });
     policy.additional_writable = ctx
         .additional_writable_dirs
         .iter()
@@ -66,7 +66,7 @@ pub(super) fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
         .chain(caches)
         .chain([session_temp_dir(&ctx.sandbox, &ctx.session_id)])
         .collect();
-    policy.deny_ipc_escapes = ctx.session.unattended;
+    policy.deny_ipc_escapes = env.unattended;
     policy
 }
 

@@ -1029,7 +1029,7 @@ mod facts_tests {
 
     #[test]
     fn a_request_carries_the_new_inputs_only_when_given() {
-        let session = Arc::new(SessionState::new(PathBuf::from("/tmp")));
+        let session = Arc::new(SessionState::for_tests(PathBuf::from("/tmp")));
         let input = json!({});
         let bare = PermissionRequest::new("Probe", None, &input, Path::new("/tmp"), "s", &session);
         assert!(bare.facts.is_none() && bare.ctx.is_none());

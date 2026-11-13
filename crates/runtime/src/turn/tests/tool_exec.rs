@@ -162,7 +162,7 @@ fn test_exec_ctx_with_permission(
             None,
         ),
         permission: base::interface::permission::PermissionSet::without_grants(permission),
-        session_state: Arc::new(base::context::SessionState::new(std::env::temp_dir())),
+        session_state: Arc::new(base::context::SessionState::for_tests(std::env::temp_dir())),
         elicitation: Arc::new(base::interface::elicitation::DeclineAll),
         tool_middleware: Arc::new(Vec::new()),
         result_transformers: Arc::new(Vec::new()),

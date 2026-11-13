@@ -302,7 +302,7 @@ impl base::tool::Tool for AgentTool {
         let worktree = match &inp.worktree {
             Some(slug) => {
                 let git = tools::bash::engine_exec(&ctx);
-                match create_worktree(&ctx.exec, &git, &ctx.session.cwd, slug).await {
+                match create_worktree(&ctx.exec, &git, &ctx.session.env().cwd, slug).await {
                     Ok(h) => Some(h),
                     Err(e) => {
                         return Err(base::error::ToolError::Execution(anyhow!("worktree: {e}")))

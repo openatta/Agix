@@ -17,7 +17,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use base::context::SessionState;
+use base::context::{EngineAttachment, SessionEnv, SessionState};
 use base::interface::exec::{
     Confined, Enforcement, ExecProviders, ProcessSpec, Sandbox, SandboxMode, SandboxPolicy,
 };
@@ -324,12 +324,19 @@ fn raw(no_hook: &PermissionOutcome, approved: &PermissionOutcome) -> &'static st
 }
 
 fn session(cwd: &Path, mode: PermissionMode, unattended: bool) -> Arc<SessionState> {
-    let mut state = SessionState::new(cwd.to_path_buf()).with_permission_mode(mode);
-    state.unattended = unattended;
-    state.bind_exec(ExecProviders {
-        sandbox: Arc::new(HoldsEverything),
-        ..platform::local_providers()
-    });
+    let state = SessionState::for_tests(cwd.to_path_buf());
+    state.attach(EngineAttachment::new(
+        SessionEnv {
+            unattended,
+            base_mode: mode,
+            ..SessionEnv::new(cwd.to_path_buf())
+        },
+        ExecProviders {
+            sandbox: Arc::new(HoldsEverything),
+            ..platform::local_providers()
+        },
+        1,
+    ));
     Arc::new(state)
 }
 
@@ -454,9 +461,10 @@ fn context_like_the_runtime(session: &Arc<SessionState>, cwd: &Path) -> ToolCont
     };
     ctx.session = session.clone();
     ctx.permission_mode = session.permission_mode();
-    ctx.additional_writable_dirs = session.additional_writable_dirs.clone();
-    ctx.dangerously_disable_sandbox = session.sandbox_disabled;
-    ctx.attendance = if session.unattended {
+    let env = session.env();
+    ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
+    ctx.dangerously_disable_sandbox = env.sandbox_disabled;
+    ctx.attendance = if env.unattended {
         Attendance::Unattended
     } else {
         Attendance::Attended

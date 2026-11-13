@@ -240,8 +240,9 @@ impl Policy {
         ctx.sandbox = self.sandbox.clone();
         ctx.session = judged.clone();
         ctx.permission_mode = mode;
-        ctx.additional_writable_dirs = ctx.session.additional_writable_dirs.clone();
-        ctx.dangerously_disable_sandbox = ctx.session.sandbox_disabled;
+        let env = ctx.session.env();
+        ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
+        ctx.dangerously_disable_sandbox = env.sandbox_disabled;
         if let Some(attendance) = req.attendance {
             ctx.attendance = attendance;
         }

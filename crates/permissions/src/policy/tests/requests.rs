@@ -1,7 +1,7 @@
 use super::*;
 use crate::ruleset::RuleSet;
 use async_trait::async_trait as async_trait2;
-use base::context::SessionState;
+use base::context::{EngineAttachment, SessionEnv, SessionState};
 use base::error::ToolError;
 use base::interface::permission::Delegate;
 use base::permission::PermissionMode;
@@ -108,7 +108,7 @@ fn content_tool(name: &'static str, content: &'static str) -> Arc<dyn Tool> {
 }
 
 fn session(mode: PermissionMode) -> Arc<SessionState> {
-    Arc::new(SessionState::new("/tmp".into()).with_permission_mode(mode))
+    Arc::new(SessionState::for_tests("/tmp".into()).with_permission_mode(mode))
 }
 
 fn empty() -> Policy {
@@ -185,7 +185,7 @@ async fn a_delegate_is_judged_in_its_own_mode_held_to_plan_and_taken_along_by_by
     let perm = empty();
     let write = fake("Write", false);
     let session = session(PermissionMode::Default);
-    let delegate = Arc::new(SessionState::new(std::path::PathBuf::from("/tmp")));
+    let delegate = Arc::new(SessionState::for_tests(std::path::PathBuf::from("/tmp")));
     let input = json!({});
     let judged = || {
         let req = PermissionRequest::new(
@@ -812,12 +812,20 @@ async fn a_call_is_judged_on_the_providers_of_the_session_it_runs_in() {
     let probe = Arc::new(FilesystemProbe(Default::default()));
     let tool: Arc<dyn Tool> = probe.clone();
     let perm = empty();
-    let own = Arc::new(SessionState::new("/tmp".into()));
+    let own = Arc::new(SessionState::for_tests("/tmp".into()));
     let own_exec = base::interface::exec::ExecProviders::in_process();
-    own.bind_exec(own_exec.clone());
-    let delegate = Arc::new(SessionState::new("/tmp".into()));
+    own.attach(EngineAttachment::new(
+        SessionEnv::new("/tmp".into()),
+        own_exec.clone(),
+        1,
+    ));
+    let delegate = Arc::new(SessionState::for_tests("/tmp".into()));
     let delegate_exec = base::interface::exec::ExecProviders::in_process();
-    delegate.bind_exec(delegate_exec.clone());
+    delegate.attach(EngineAttachment::new(
+        SessionEnv::new("/tmp".into()),
+        delegate_exec.clone(),
+        2,
+    ));
     let input = json!({});
     let req = PermissionRequest::new(
         "FilesystemProbe",

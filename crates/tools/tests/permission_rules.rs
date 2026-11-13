@@ -51,7 +51,7 @@ impl Judged {
 
 async fn check(perm: &Judged, tool: &str, input: Value, cwd: &Path) -> PermissionOutcome {
     let session = Arc::new(
-        base::context::SessionState::new(cwd.to_path_buf()).with_permission_mode(perm.mode),
+        base::context::SessionState::for_tests(cwd.to_path_buf()).with_permission_mode(perm.mode),
     );
     let found = perm.tools.get(tool);
     perm.rules

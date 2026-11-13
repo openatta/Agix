@@ -187,7 +187,7 @@ pub fn allowed_domains_name(url: &str, ctx: &base::tool::ToolContext) -> bool {
 pub fn readable_roots(ctx: &base::tool::ToolContext) -> Vec<PathBuf> {
     std::iter::once(ctx.cwd.clone())
         .chain(ctx.additional_writable_dirs.iter().cloned())
-        .chain(ctx.session.read_directories.iter().cloned())
+        .chain(ctx.session.env().read_directories.iter().cloned())
         .collect()
 }
 
@@ -202,7 +202,7 @@ pub fn readable_roots(ctx: &base::tool::ToolContext) -> Vec<PathBuf> {
 /// Never for a [`credentials`] location.
 pub fn read_allowed(path: &Path, ctx: &base::tool::ToolContext) -> bool {
     !credentials(ctx).hold_any(&ctx.cwd.join(path))
-        && (ctx.session.read_anywhere || within_readable_roots(path, ctx))
+        && (ctx.session.env().read_anywhere || within_readable_roots(path, ctx))
 }
 
 /// Where this session's credentials are. The gate refuses a call naming
@@ -327,8 +327,10 @@ mod tests {
         let mut ctx = platform::tool_context_for_test(proj.clone());
         ctx.sandbox.paths =
             std::sync::Arc::new(base::paths::SensitivePaths::new(Some(&state), None));
-        let mut session = base::context::SessionState::new(proj);
-        session.read_anywhere = true;
+        let session = base::context::SessionState::for_tests_in(base::context::SessionEnv {
+            read_anywhere: true,
+            ..base::context::SessionEnv::new(proj)
+        });
         ctx.session = std::sync::Arc::new(session);
 
         assert!(!read_allowed(&state.join("mcp/oauth/x.json"), &ctx));

@@ -45,7 +45,7 @@ fn zero_usage() -> Value {
 
 #[test]
 fn a_sub_agent_task_s_events_keep_their_shape() {
-    let s = SessionState::new(PathBuf::from("/tmp"));
+    let s = SessionState::for_tests(PathBuf::from("/tmp"));
     let mut rx = s.subscribe_tasks();
     let task = s.register_task(
         "ag-1",
@@ -137,7 +137,7 @@ fn a_streamed_task_s_progress_keeps_its_shape() {
 
 #[test]
 fn every_status_and_kind_keeps_its_name() {
-    let s = SessionState::new(PathBuf::from("/tmp"));
+    let s = SessionState::for_tests(PathBuf::from("/tmp"));
     let cases = [
         (TaskType::Teammate, "tm-1", Some(RunningStatus::Completed)),
         (TaskType::CronJob, "cj-1", Some(RunningStatus::Cancelled)),
@@ -179,7 +179,7 @@ fn every_status_and_kind_keeps_its_name() {
 
 #[test]
 fn the_goal_view_keeps_its_shape() {
-    let s = SessionState::new(PathBuf::from("/tmp"));
+    let s = SessionState::for_tests(PathBuf::from("/tmp"));
     let mut rx = s.subscribe_goal();
     assert_eq!(wire(&s.goal_view()), Value::Null);
 

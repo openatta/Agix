@@ -2,18 +2,18 @@
 //! read freely only under the readable roots, and in an unattended session run
 //! a shell command only when the OS sandbox holds it.
 
-use base::context::SessionState;
+use base::context::{SessionEnv, SessionState};
 use base::interface::tool::{PermissionDecision, Tool, ToolContext};
 use std::path::Path;
 use std::sync::Arc;
 
-fn ctx_in(cwd: &Path, state: impl FnOnce(&mut SessionState)) -> ToolContext {
+fn ctx_in(cwd: &Path, state: impl FnOnce(&mut SessionEnv)) -> ToolContext {
     let mut ctx = platform::tool_context_for_test(cwd.to_path_buf());
     ctx.permission_mode = base::permission::PermissionMode::Default;
-    let mut session = SessionState::new(cwd.to_path_buf());
-    state(&mut session);
-    ctx.additional_writable_dirs = session.additional_writable_dirs.clone();
-    ctx.session = Arc::new(session);
+    let mut env = SessionEnv::new(cwd.to_path_buf());
+    state(&mut env);
+    ctx.additional_writable_dirs = env.additional_writable_dirs.clone();
+    ctx.session = Arc::new(SessionState::for_tests_in(env));
     ctx
 }
 
@@ -170,7 +170,7 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
         ),
         [],
     );
-    let session = Arc::new(base::context::SessionState::new(
+    let session = Arc::new(base::context::SessionState::for_tests(
         project.path().to_path_buf(),
     ));
     let config = project
@@ -273,7 +273,7 @@ async fn accept_edits_asks_before_reading_outside_the_readable_roots() {
     let elsewhere = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("notes.txt"), "x").unwrap();
     std::fs::write(elsewhere.path().join("notes.txt"), "x").unwrap();
-    let accept_edits = |state: fn(&mut SessionState, &Path)| {
+    let accept_edits = |state: fn(&mut SessionEnv, &Path)| {
         let mut ctx = ctx_in(project.path(), |s| state(s, elsewhere.path()));
         ctx.permission_mode = base::permission::PermissionMode::AcceptEdits;
         ctx

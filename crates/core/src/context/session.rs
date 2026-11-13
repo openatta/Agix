@@ -16,28 +16,12 @@ use tokio::sync::broadcast;
 
 /// 单次会话的可变状态。
 ///
-/// 多数字段是**裸的** —— 用 `Arc<SessionState>` 共享时不持有内部锁；可变状态
-/// （permission_mode / todos）走 `Mutex` 内部可变性。
+/// 字段全部私有，走内部可变性。由设置推出来的部分在 [`SessionEnv`] 里，引擎
+/// [`attach`](Self::attach) 时整体替换。
 #[derive(Debug)]
 pub struct SessionState {
-    pub cwd: PathBuf,
-    /// 用户级附加可写目录（`additional_directories`）—— Tool 在做路径校验时用
-    pub additional_writable_dirs: Vec<PathBuf>,
-    /// Directories outside the project the file tools may read without
-    /// asking — `sandbox.read_directories`.
-    pub read_directories: Vec<PathBuf>,
-    /// `sandbox.read_anywhere`.
-    pub read_anywhere: bool,
-    /// Package and build caches a sandboxed command may write —
-    /// `sandbox.cache_directories`; a `~/` path is expanded when the command
-    /// runs.
-    pub cache_directories: Vec<PathBuf>,
-    /// Nobody answers this session's questions or permission prompts — see
-    /// `SceneSpec::interactive`.
-    pub unattended: bool,
-    /// `sandbox.dangerously_disable_sandbox`, for checks made before a
-    /// command runs.
-    pub sandbox_disabled: bool,
+    env: std::sync::RwLock<std::sync::Arc<SessionEnv>>,
+    engine: std::sync::RwLock<Option<EngineView>>,
     /// 权限模式（运行时可变；EnterPlanMode / ExitPlanMode 工具会切）。
     /// 私有 + Mutex 内部可变 —— 调用方走 `permission_mode()` / `set_permission_mode()`
     /// / `enter_plan_mode()` / `exit_plan_mode()`。
@@ -73,10 +57,88 @@ pub struct SessionState {
     read_cache: std::sync::Mutex<HashMap<PathBuf, FileReadEntry>>,
     /// 最近一次读取的文件路径，用于连续重复读取检测。
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
-    /// Weak: the registry's tools may hold this session.
-    tools: std::sync::RwLock<Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>>,
-    exec: std::sync::RwLock<Option<crate::interface::exec::ExecProviders>>,
-    confinement: std::sync::OnceLock<crate::interface::exec::ConfinementReport>,
+}
+
+/// What the engine running a session derives from its settings and scene.
+/// Each engine brings its own, and [`SessionState::attach`] replaces the
+/// session's whole.
+#[derive(Debug, Clone, Default)]
+pub struct SessionEnv {
+    pub cwd: PathBuf,
+    /// 用户级附加可写目录（`additional_directories`）—— Tool 在做路径校验时用
+    pub additional_writable_dirs: Vec<PathBuf>,
+    /// Directories outside the project the file tools may read without
+    /// asking — `sandbox.read_directories`.
+    pub read_directories: Vec<PathBuf>,
+    /// `sandbox.read_anywhere`.
+    pub read_anywhere: bool,
+    /// Package and build caches a sandboxed command may write —
+    /// `sandbox.cache_directories`; a `~/` path is expanded when the command
+    /// runs.
+    pub cache_directories: Vec<PathBuf>,
+    /// Nobody answers this session's questions or permission prompts — see
+    /// `SceneSpec::interactive`.
+    pub unattended: bool,
+    /// `sandbox.dangerously_disable_sandbox`, for checks made before a
+    /// command runs.
+    pub sandbox_disabled: bool,
+    /// The permission mode the engine is configured to run in.
+    pub base_mode: PermissionMode,
+}
+
+impl SessionEnv {
+    pub fn new(cwd: PathBuf) -> Self {
+        Self {
+            cwd,
+            ..Self::default()
+        }
+    }
+}
+
+/// What one engine hangs on the session's state while it runs the session:
+/// its [`SessionEnv`], the registry its tool calls dispatch against, and the
+/// providers they run on — so that a permission judging a call on this
+/// session's behalf (a sub-agent's, judged by its parent) judges the tool that
+/// will run, on the machine it will run on.
+#[derive(Debug, Clone)]
+pub struct EngineAttachment {
+    env: std::sync::Arc<SessionEnv>,
+    tools: Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>,
+    exec: crate::interface::exec::ExecProviders,
+    generation: u64,
+}
+
+impl EngineAttachment {
+    pub fn new(
+        env: SessionEnv,
+        exec: crate::interface::exec::ExecProviders,
+        generation: u64,
+    ) -> Self {
+        Self {
+            env: std::sync::Arc::new(env),
+            tools: None,
+            exec,
+            generation,
+        }
+    }
+
+    /// Held weakly: the registry's tools may hold this session.
+    pub fn with_tools(mut self, tools: &std::sync::Arc<dyn crate::tool::ToolRegistry>) -> Self {
+        self.tools = Some(std::sync::Arc::downgrade(tools));
+        self
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+#[derive(Debug)]
+struct EngineView {
+    tools: Option<std::sync::Weak<dyn crate::tool::ToolRegistry>>,
+    exec: crate::interface::exec::ExecProviders,
+    generation: u64,
+    confinement: std::sync::Arc<std::sync::OnceLock<crate::interface::exec::ConfinementReport>>,
 }
 
 /// Log namespace and event under which [`DurableState`] is recorded.
@@ -107,6 +169,19 @@ struct ModeSlot {
     before_plan: Option<PermissionMode>,
 }
 
+impl ModeSlot {
+    /// Take up `base`, the mode an engine is configured with, unless in plan
+    /// mode: that stays on, exiting to where it would have.
+    fn rebase(&mut self, base: PermissionMode) {
+        if self.current != PermissionMode::Plan {
+            *self = ModeSlot {
+                current: base,
+                before_plan: None,
+            };
+        }
+    }
+}
+
 /// 一次文件读取记录，包含读取时的 mtime。
 /// `FileEdit` / `FileWrite` 的 `validate_input` 用它做 staleness 检测。
 #[derive(Debug, Clone)]
@@ -126,15 +201,13 @@ pub struct FileReadEntry {
 }
 
 impl SessionState {
-    pub fn new(cwd: PathBuf) -> Self {
+    /// A state no engine is attached to yet: its [`env`](Self::env) is empty
+    /// until one is.
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
         Self {
-            cwd,
-            additional_writable_dirs: Vec::new(),
-            read_directories: Vec::new(),
-            read_anywhere: false,
-            cache_directories: Vec::new(),
-            unattended: false,
-            sandbox_disabled: false,
+            env: Default::default(),
+            engine: std::sync::RwLock::new(None),
             permission_mode: std::sync::Mutex::new(ModeSlot::default()),
             todos: std::sync::Mutex::new(Vec::new()),
             recorded_durable: std::sync::Mutex::new(DurableState::default()),
@@ -148,10 +221,54 @@ impl SessionState {
             goal_events: tokio::sync::broadcast::channel(64).0,
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
-            tools: std::sync::RwLock::new(None),
-            exec: std::sync::RwLock::new(None),
-            confinement: std::sync::OnceLock::new(),
         }
+    }
+
+    /// A state working in `cwd`, as a test needs one: no engine attached.
+    pub fn for_tests(cwd: PathBuf) -> Self {
+        Self::for_tests_in(SessionEnv::new(cwd))
+    }
+
+    /// A state with `env`, as a test needs one: no engine attached.
+    pub fn for_tests_in(env: SessionEnv) -> Self {
+        let state = Self::new();
+        state.mode_slot().rebase(env.base_mode);
+        *write(&state.env) = std::sync::Arc::new(env);
+        state
+    }
+
+    /// Hang `engine` on this state: its [`SessionEnv`] replaces the one
+    /// before, and the permission mode becomes the one it is configured with
+    /// unless the session is in plan mode.
+    pub fn attach(&self, engine: EngineAttachment) {
+        let EngineAttachment {
+            env,
+            tools,
+            exec,
+            generation,
+        } = engine;
+        self.mode_slot().rebase(env.base_mode);
+        *write(&self.env) = env;
+        *write(&self.engine) = Some(EngineView {
+            tools,
+            exec,
+            generation,
+            confinement: Default::default(),
+        });
+    }
+
+    /// Take off the engine attached as `generation`; one attached since stays.
+    /// The env stays too: what that engine left running still works where it
+    /// did.
+    pub fn detach(&self, generation: u64) {
+        let mut engine = write(&self.engine);
+        if engine.as_ref().is_some_and(|e| e.generation == generation) {
+            *engine = None;
+        }
+    }
+
+    pub fn env(&self) -> std::sync::Arc<SessionEnv> {
+        read(&self.env).clone()
     }
 
     /// Register work this session is running, under `cancel` — the token the
@@ -306,21 +423,13 @@ impl SessionState {
     /// the mode this state was built with, so a settings change reaches it.
     pub fn carry_session_state_from(&self, previous: &SessionState) {
         let SessionState {
-            // Built from the session's settings, which a rebuild re-reads.
-            cwd: _,
-            additional_writable_dirs: _,
-            read_directories: _,
-            read_anywhere: _,
-            cache_directories: _,
-            unattended: _,
-            sandbox_disabled: _,
+            // The new engine's, attached to this state when it was built.
+            env: _,
+            engine: _,
             // Bound to the new engine and the pool's forwarders.
             task_events: _,
             goal_recording: _,
             goal_events: _,
-            tools: _,
-            exec: _,
-            confinement: _,
             // Already in the log, which the resume read the goal back from.
             unrecorded_goal_changes: _,
             // What the log has, which the resume read back.
@@ -815,44 +924,31 @@ impl SessionState {
         last.as_ref().is_some_and(|p| p == path)
     }
 
-    /// Bind the registry this session's tool calls dispatch against, so that
-    /// a permission judging them on this session's behalf — a sub-agent's
-    /// calls, judged by its parent — judges the tool that will run.
-    pub fn bind_tools(&self, tools: &std::sync::Arc<dyn crate::tool::ToolRegistry>) {
-        *self.tools.write().unwrap_or_else(|e| e.into_inner()) =
-            Some(std::sync::Arc::downgrade(tools));
-    }
-
-    /// Bind the providers this session's tool calls run on, so that a
-    /// permission judging a call — the paths it resolves, whether the sandbox
-    /// holds it — judges it against the machine it will run on.
-    pub fn bind_exec(&self, exec: crate::interface::exec::ExecProviders) {
-        *self.exec.write().unwrap_or_else(|e| e.into_inner()) = Some(exec);
-    }
-
-    /// The providers [`bind_exec`](Self::bind_exec) bound, if any.
+    /// The providers the attached engine's tool calls run on, if one is
+    /// attached.
     pub fn exec(&self) -> Option<crate::interface::exec::ExecProviders> {
-        self.exec.read().unwrap_or_else(|e| e.into_inner()).clone()
+        read(&self.engine).as_ref().map(|e| e.exec.clone())
     }
 
-    /// What the session's sandbox holds a command to: `probe`d the first time
-    /// it is asked, the same answer after.
+    /// What the attached engine's sandbox holds a command to: `probe`d the
+    /// first time it is asked, the same answer after until another engine
+    /// attaches. With none attached nothing is kept.
     pub fn confinement(
         &self,
         probe: impl FnOnce() -> crate::interface::exec::ConfinementReport,
     ) -> crate::interface::exec::ConfinementReport {
-        *self.confinement.get_or_init(probe)
+        let kept = read(&self.engine).as_ref().map(|e| e.confinement.clone());
+        match kept {
+            Some(kept) => *kept.get_or_init(probe),
+            None => probe(),
+        }
     }
 
-    /// The tool this session's calls named `name` dispatch to, if a registry
-    /// is bound and holds it.
+    /// The tool this session's calls named `name` dispatch to, if the
+    /// attached engine's registry holds it.
     pub fn tool(&self, name: &str) -> Option<std::sync::Arc<dyn crate::tool::Tool>> {
-        self.tools
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()?
-            .upgrade()?
-            .get(name)
+        let tools = read(&self.engine).as_ref()?.tools.as_ref()?.upgrade()?;
+        tools.get(name)
     }
 
     /// 当前已激活的 deferred 工具名（克隆 set；调用方只读）。
@@ -1039,6 +1135,14 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn read<T>(l: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(|e| e.into_inner())
+}
+
+fn write<T>(l: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1056,16 +1160,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("read.txt");
         std::fs::write(&file, "x").unwrap();
-        let before =
-            SessionState::new(dir.path().into()).with_permission_mode(PermissionMode::AcceptEdits);
+        let before = SessionState::for_tests(dir.path().into())
+            .with_permission_mode(PermissionMode::AcceptEdits);
         before.enter_plan_mode();
         before.set_todos(vec![todo("step one")]);
         before.activate_tools(["TodoWrite".to_string()]);
         before.record_read(&file);
         before.post_notice(None, "unread");
 
-        let after =
-            SessionState::new(dir.path().into()).with_permission_mode(PermissionMode::Default);
+        let after = SessionState::for_tests(dir.path().into())
+            .with_permission_mode(PermissionMode::Default);
         after.carry_session_state_from(&before);
 
         assert_eq!(after.permission_mode(), PermissionMode::Plan);
@@ -1083,17 +1187,18 @@ mod tests {
 
     #[test]
     fn a_rebuilt_state_out_of_plan_mode_takes_the_mode_it_was_built_with() {
-        let before = SessionState::new("/tmp".into())
+        let before = SessionState::for_tests("/tmp".into())
             .with_permission_mode(PermissionMode::BypassPermissions);
-        let after = SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::Default);
+        let after =
+            SessionState::for_tests("/tmp".into()).with_permission_mode(PermissionMode::Default);
         after.carry_session_state_from(&before);
         assert_eq!(after.permission_mode(), PermissionMode::Default);
     }
 
     #[test]
     fn plan_mode_and_todos_come_back_from_what_the_log_recorded() {
-        let before =
-            SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::AcceptEdits);
+        let before = SessionState::for_tests("/tmp".into())
+            .with_permission_mode(PermissionMode::AcceptEdits);
         assert_eq!(before.unrecorded_durable_state(), None);
         before.enter_plan_mode();
         before.set_todos(vec![todo("step one")]);
@@ -1108,8 +1213,8 @@ mod tests {
             })
         );
 
-        let after =
-            SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::AcceptEdits);
+        let after = SessionState::for_tests("/tmp".into())
+            .with_permission_mode(PermissionMode::AcceptEdits);
         after.restore_durable_state(serde_json::from_value(logged).unwrap());
         assert_eq!(after.permission_mode(), PermissionMode::Plan);
         assert_eq!(after.todos(), vec![todo("step one")]);
@@ -1120,10 +1225,52 @@ mod tests {
 
     #[test]
     fn a_session_restored_out_of_plan_mode_keeps_the_mode_it_was_built_with() {
-        let after = SessionState::new("/tmp".into()).with_permission_mode(PermissionMode::Default);
+        let after =
+            SessionState::for_tests("/tmp".into()).with_permission_mode(PermissionMode::Default);
         after.restore_durable_state(serde_json::from_value(serde_json::json!({})).unwrap());
         assert_eq!(after.permission_mode(), PermissionMode::Default);
         assert!(after.todos().is_empty());
+    }
+
+    fn attachment(cwd: &str, base_mode: PermissionMode, generation: u64) -> EngineAttachment {
+        EngineAttachment::new(
+            SessionEnv {
+                base_mode,
+                ..SessionEnv::new(cwd.into())
+            },
+            crate::interface::exec::ExecProviders::in_process(),
+            generation,
+        )
+    }
+
+    #[test]
+    fn an_attached_engine_brings_its_env_and_mode_but_plan_mode_stays() {
+        let state = SessionState::new();
+        state.attach(attachment("/one", PermissionMode::AcceptEdits, 1));
+        assert_eq!(state.env().cwd, PathBuf::from("/one"));
+        assert_eq!(state.permission_mode(), PermissionMode::AcceptEdits);
+
+        state.attach(attachment("/two", PermissionMode::Default, 2));
+        assert_eq!(state.env().cwd, PathBuf::from("/two"));
+        assert_eq!(state.permission_mode(), PermissionMode::Default);
+
+        state.set_permission_mode(PermissionMode::AcceptEdits);
+        state.enter_plan_mode();
+        state.attach(attachment("/three", PermissionMode::BypassPermissions, 3));
+        assert_eq!(state.permission_mode(), PermissionMode::Plan);
+        assert_eq!(state.exit_plan_mode(), PermissionMode::AcceptEdits);
+    }
+
+    #[test]
+    fn an_engine_detaches_only_itself() {
+        let state = SessionState::new();
+        state.attach(attachment("/one", PermissionMode::Default, 1));
+        state.attach(attachment("/two", PermissionMode::Default, 2));
+        state.detach(1);
+        assert!(state.exec().is_some(), "the engine attached since stays");
+        state.detach(2);
+        assert!(state.exec().is_none());
+        assert_eq!(state.env().cwd, PathBuf::from("/two"));
     }
 
     fn leased(session: &std::sync::Arc<SessionState>, id: &str) -> TaskLease {
@@ -1139,7 +1286,7 @@ mod tests {
 
     #[test]
     fn a_concluded_lease_ends_its_task_as_it_says() {
-        let session = std::sync::Arc::new(SessionState::new("/tmp".into()));
+        let session = std::sync::Arc::new(SessionState::for_tests("/tmp".into()));
         leased(&session, "t1").conclude(
             RunningStatus::Failed("boom".into()),
             Some("t1 failed".into()),
@@ -1154,7 +1301,7 @@ mod tests {
 
     #[test]
     fn a_lease_dropped_unconcluded_ends_its_task_stopped_and_says_so() {
-        let session = std::sync::Arc::new(SessionState::new("/tmp".into()));
+        let session = std::sync::Arc::new(SessionState::for_tests("/tmp".into()));
         drop(leased(&session, "t2"));
         let task = session.find_running_task("t2").expect("kept after it ends");
         assert!(task.has_ended());
@@ -1164,7 +1311,7 @@ mod tests {
 
     #[test]
     fn a_task_stopped_from_outside_gets_no_notice_from_its_lease() {
-        let session = std::sync::Arc::new(SessionState::new("/tmp".into()));
+        let session = std::sync::Arc::new(SessionState::for_tests("/tmp".into()));
         let lease = leased(&session, "t3");
         session.finish_task("t3", RunningStatus::Cancelled);
         lease.conclude(RunningStatus::Completed, Some("t3 done".into()));

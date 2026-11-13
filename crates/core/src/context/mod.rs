@@ -50,7 +50,7 @@ mod tests {
     #[test]
     fn tool_ctx_for_test_constructs() {
         let ctx = ToolCtx::for_test(PathBuf::from("/tmp"));
-        assert_eq!(ctx.session.cwd, PathBuf::from("/tmp"));
+        assert_eq!(ctx.session.env().cwd, PathBuf::from("/tmp"));
         assert_eq!(ctx.config.model, "claude-sonnet-4-6");
     }
 
@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stopped_task_finishes_once_its_work_winds_down() {
-        let s = SessionState::new(PathBuf::from("/tmp"));
+        let s = SessionState::for_tests(PathBuf::from("/tmp"));
         let mut rx = s.subscribe_tasks();
         let task = s.register_task(
             "cd-1",
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn a_task_stopped_outside_a_runtime_finishes_at_once() {
-        let s = SessionState::new(PathBuf::from("/tmp"));
+        let s = SessionState::for_tests(PathBuf::from("/tmp"));
         let mut rx = s.subscribe_tasks();
         let task = s.register_task(
             "ag-1",

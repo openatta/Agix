@@ -233,7 +233,7 @@ fn subagent_label_is_stable_and_names_the_agent_type() {
 
 #[test]
 fn a_background_agents_answer_is_its_whole_output_by_offset() {
-    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    let session = Arc::new(base::context::SessionState::for_tests(std::env::temp_dir()));
     let lease = base::context::TaskLease::new(
         session,
         "ag-answer",

@@ -97,7 +97,7 @@ impl ToolCtx {
         cfg.dangerously_disable_sandbox = true;
         Self {
             config: Arc::new(cfg),
-            session: Arc::new(SessionState::new(cwd)),
+            session: Arc::new(SessionState::for_tests(cwd)),
             effects: Arc::new(NoopEffects),
             cancel: CancellationToken::new(),
             tool_use_id: "test_tool_use".to_string(),
@@ -113,7 +113,7 @@ impl std::fmt::Debug for ToolCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolCtx")
             .field("model", &self.config.model)
-            .field("cwd", &self.session.cwd)
+            .field("cwd", &self.session.env().cwd)
             .field("tool_use_id", &self.tool_use_id)
             .field("crate", &self.agent)
             .finish()

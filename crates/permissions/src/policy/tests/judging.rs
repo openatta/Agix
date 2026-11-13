@@ -212,7 +212,8 @@ impl Tool for FakeTool {
 fn ctx_with_mode(mode: PermissionMode) -> base::tool::ToolContext {
     let mut ctx = ToolContext::for_test_with(PathBuf::from("/tmp"), ExecProviders::in_process());
     ctx.permission_mode = mode;
-    ctx.session = Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
+    ctx.session =
+        Arc::new(SessionState::for_tests(PathBuf::from("/tmp")).with_permission_mode(mode));
     ctx.tool_use_id = "test".into();
     ctx
 }
@@ -537,7 +538,7 @@ async fn a_delegations_deny_rules_refuse_its_calls_in_any_mode_and_nothing_else(
     for mode in [PermissionMode::BypassPermissions, PermissionMode::Default] {
         let ctx = ctx_with_mode(mode);
         let delegate =
-            Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
+            Arc::new(SessionState::for_tests(PathBuf::from("/tmp")).with_permission_mode(mode));
         let request = PermissionRequest::new(
             "Bash",
             Some(&bash),
@@ -797,7 +798,8 @@ async fn delegates_call_with(
 ) -> PermissionOutcome {
     let tool: Arc<dyn Tool> = Arc::new(FakeTool::new("X").matches(content));
     let ctx = ctx_with_mode(mode);
-    let delegate = Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
+    let delegate =
+        Arc::new(SessionState::for_tests(PathBuf::from("/tmp")).with_permission_mode(mode));
     let input = json!({});
     let request = PermissionRequest::new(
         "X",

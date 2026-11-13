@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn a_message_reaches_the_inbox_of_a_running_task_only() {
-        let session = SessionState::new(std::env::temp_dir());
+        let session = SessionState::for_tests(std::env::temp_dir());
         let task = session.register_task("ag-1", TaskType::Agent, Default::default(), Value::Null);
         session.register_task("sh-1", TaskType::Shell, Default::default(), Value::Null);
         let recorder = Arc::new(Recorder::default());
