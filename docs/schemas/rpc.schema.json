@@ -5667,7 +5667,7 @@
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "daemon 的 JSON-RPC 2.0 接口。语义见 docs/daemon_rpc_protocol.md;params/result 标着\"未类型化\"的,这里不做约束。带 module 的方法属于可选模块,构建里没有这个模块时答 METHOD_NOT_FOUND。daemon.auth 是连接握手,不在 methods 里(协议文档 §5.1)。",
+  "description": "daemon 的 JSON-RPC 2.0 接口。语义见 docs/daemon_rpc_protocol.md;每个方法都带类型化的 params 和 result;session.event 的 kind 只列名字,字段见协议文档 §7。带 module 的方法属于可选模块,构建里没有这个模块时答 METHOD_NOT_FOUND。daemon.auth 是连接握手,不在 methods 里(协议文档 §5.1)。",
   "errors": [
     {
       "code": -32700,

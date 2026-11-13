@@ -2,8 +2,7 @@
 //! schema），以及各方法的参数和结果类型。
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::Deserialize;
 
 pub struct MethodInfo {
     pub name: &'static str,
@@ -18,27 +17,6 @@ pub struct MethodInfo {
 
 pub fn schema_of<T: JsonSchema>(generator: &mut SchemaGenerator) -> Schema {
     generator.subschema_for::<T>()
-}
-
-/// Params or a result not typed yet: any JSON, passed through as is.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Untyped(pub Value);
-
-impl JsonSchema for Untyped {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "Untyped".into()
-    }
-
-    fn inline_schema() -> bool {
-        true
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        schemars::json_schema!({
-            "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
-        })
-    }
 }
 
 /// Params of a method that takes none: whatever the caller sends is ignored.

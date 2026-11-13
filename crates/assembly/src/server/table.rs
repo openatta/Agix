@@ -3,7 +3,7 @@
 //! 文档对账都从 [`methods`] 派生。`daemon.auth` 是连接握手（协议 §5.1），不在表里。
 
 use super::DaemonServer;
-use crate::rpc::{codes, Client, MethodInfo, RpcError, RpcRequest, RpcResponse, Untyped};
+use crate::rpc::{codes, Client, MethodInfo, RpcError, RpcRequest, RpcResponse};
 use crate::session_pool::api::PoolError;
 use serde_json::Value;
 use std::sync::Arc;
@@ -68,15 +68,6 @@ pub(super) struct Call {
 /// What a handler returns, as the result its table entry declares.
 pub(super) trait Reply<R> {
     fn into_reply(self) -> Result<R, RpcError>;
-}
-
-impl Reply<Untyped> for RpcResponse {
-    fn into_reply(self) -> Result<Untyped, RpcError> {
-        match (self.error, self.result) {
-            (Some(error), _) => Err(error),
-            (None, result) => Ok(Untyped(result.unwrap_or(Value::Null))),
-        }
-    }
 }
 
 impl<R> Reply<R> for Result<R, PoolError> {
