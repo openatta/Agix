@@ -483,3 +483,132 @@ fn every_optional_module_s_methods_are_listed_with_their_module() {
         assert_eq!(schema["methods"][name]["module"].as_str(), module, "{name}");
     }
 }
+
+/// Where the committed schema accepts any JSON, as JSON pointers. Each is
+/// content the daemon does not interpret (settings files, tool input, entry
+/// payloads, a structured output) or the JSON-RPC envelope itself. A new
+/// entry is a decision to leave a place untyped; a method's own params or
+/// result never belongs here.
+const OPAQUE_ALLOWED: &[&str] = &[
+    "/$defs/AppendEntryParams/properties/payload",
+    "/$defs/ConfigSetProviderParams/properties/config",
+    "/$defs/ConfigSetProviderParams/properties/task_models",
+    "/$defs/ConfigTier/properties/managed",
+    "/$defs/ConfigTier/properties/settings",
+    "/$defs/ContentBlock/oneOf/0/properties/cache_control",
+    "/$defs/ContentBlock/oneOf/2/properties/input",
+    "/$defs/DoctorReport/properties/health",
+    "/$defs/DoctorReport/properties/hooks",
+    "/$defs/DoctorReport/properties/providers",
+    "/$defs/DoctorReport/properties/settings_tiers",
+    "/$defs/EntryView/properties/payload",
+    "/$defs/McpPutServerParams/properties/config",
+    "/$defs/RpcError/properties/data",
+    "/$defs/RpcRequest/properties/id",
+    "/$defs/RpcRequest/properties/params",
+    "/$defs/RpcResponse/properties/id",
+    "/$defs/RpcResponse/properties/result",
+    "/$defs/SceneDescription/properties/settings",
+    "/$defs/SceneSource/anyOf/1/additionalProperties",
+    "/$defs/SessionDetail/properties/health",
+    "/$defs/SessionOptions/properties/output_schema",
+    "/$defs/StartAgentParams/properties/output_schema",
+    "/$defs/SubscribeResult/properties/pending_prompts/items",
+    "/$defs/TaskInfo/properties/detail",
+    "/$defs/TaskInfo/properties/structured_output",
+];
+
+/// A schema that says nothing about its value: `true`, or only annotations.
+fn is_opaque(schema: &serde_json::Value) -> bool {
+    const ANNOTATIONS: &[&str] = &["description", "title", "default", "deprecated", "examples"];
+    match schema {
+        serde_json::Value::Bool(allows_all) => *allows_all,
+        serde_json::Value::Object(keywords) => {
+            keywords.keys().all(|k| ANNOTATIONS.contains(&k.as_str()))
+        }
+        _ => false,
+    }
+}
+
+fn collect_opaque(schema: &serde_json::Value, pointer: &str, out: &mut Vec<String>) {
+    if is_opaque(schema) {
+        out.push(pointer.to_string());
+        return;
+    }
+    let Some(keywords) = schema.as_object() else {
+        return;
+    };
+    for keyword in ["properties", "patternProperties", "$defs", "definitions"] {
+        let named = keywords.get(keyword).and_then(|v| v.as_object());
+        for (name, sub) in named.into_iter().flatten() {
+            collect_opaque(sub, &format!("{pointer}/{keyword}/{name}"), out);
+        }
+    }
+    for keyword in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+        let listed = keywords.get(keyword).and_then(|v| v.as_array());
+        for (i, sub) in listed.into_iter().flatten().enumerate() {
+            collect_opaque(sub, &format!("{pointer}/{keyword}/{i}"), out);
+        }
+    }
+    for keyword in [
+        "additionalProperties",
+        "items",
+        "not",
+        "if",
+        "then",
+        "else",
+        "contains",
+        "propertyNames",
+        "unevaluatedProperties",
+    ] {
+        if let Some(sub) = keywords.get(keyword) {
+            collect_opaque(sub, &format!("{pointer}/{keyword}"), out);
+        }
+    }
+}
+
+/// Every method's params and result say what they hold, and the places that
+/// take any JSON are the listed ones. A `$ref` is not followed: each
+/// definition is read once, under `/$defs`.
+#[test]
+fn the_rpc_schema_leaves_only_the_listed_places_untyped() {
+    let text = std::fs::read_to_string(repo_root().join("docs/schemas/rpc.schema.json")).unwrap();
+    let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    let mut found = Vec::new();
+    let methods = root["methods"].as_object().expect("schema has methods");
+    assert!(
+        methods.len() > 50,
+        "only {} methods in the schema",
+        methods.len()
+    );
+    for (name, method) in methods {
+        for side in ["params", "result"] {
+            collect_opaque(
+                &method[side],
+                &format!("/methods/{name}/{side}"),
+                &mut found,
+            );
+        }
+    }
+    collect_opaque(&root["notifications"], "/notifications", &mut found);
+    let defs = root["$defs"].as_object().expect("schema has $defs");
+    assert!(
+        defs.len() > 100,
+        "only {} definitions in the schema",
+        defs.len()
+    );
+    for (name, def) in defs {
+        collect_opaque(def, &format!("/$defs/{name}"), &mut found);
+    }
+    let found = sorted(found);
+
+    let allowed = sorted(OPAQUE_ALLOWED.iter().map(|p| p.to_string()).collect());
+    let new: Vec<&String> = found.iter().filter(|p| !allowed.contains(p)).collect();
+    let stale: Vec<&String> = allowed.iter().filter(|p| !found.contains(p)).collect();
+    assert!(
+        new.is_empty() && stale.is_empty(),
+        "untyped places not in OPAQUE_ALLOWED: {new:?}\n\
+         entries in OPAQUE_ALLOWED that are typed now (delete them): {stale:?}"
+    );
+}
