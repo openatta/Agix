@@ -25,6 +25,7 @@
 //! [`environment`]: crate::interface::environment
 
 pub mod capture;
+pub mod egress;
 pub mod env;
 pub mod filesystem;
 pub mod in_process;
@@ -33,6 +34,7 @@ pub mod process;
 pub mod sandbox;
 
 pub use capture::{capture, Captured};
+pub use egress::{AllowedHosts, EgressHandle, EgressProxy, ProxyEndpoint};
 pub use env::{EnvPlan, SubprocessEnv, SubprocessEnvMode};
 pub use filesystem::{DirEntry, FileSystem, Metadata};
 pub use network::{

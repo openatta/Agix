@@ -36,6 +36,7 @@ pub(super) fn to_sandbox_policy(settings: &base::tool::SandboxSettings) -> sandb
         deny_read,
         network_mode,
         allowed_domains: settings.allowed_domains.clone(),
+        egress: None,
         state_root: settings
             .paths
             .state_root()

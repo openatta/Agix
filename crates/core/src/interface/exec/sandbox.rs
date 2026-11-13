@@ -36,6 +36,10 @@ pub struct SandboxPolicy {
     /// [`NetworkMode::Allowlist`]. Ignored otherwise. What each backend makes
     /// of it is under [`NetworkMode::Allowlist`].
     pub allowed_domains: Vec<String>,
+    /// Under [`NetworkMode::Allowlist`], the proxy that admits only
+    /// `allowed_domains` ([`super::egress`]): the one place the command may
+    /// still connect to. `None` until a proxy provider exists.
+    pub egress: Option<super::egress::ProxyEndpoint>,
     /// Paths outside `cwd` this command may still write to.
     ///
     /// Part of the policy rather than a separate argument because it answers

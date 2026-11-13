@@ -1842,6 +1842,7 @@ mod tests {
             additional_writable: Vec::new(),
             only_additional_writable: false,
             deny_ipc_escapes: false,
+            ..Default::default()
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
@@ -1863,6 +1864,7 @@ mod tests {
             additional_writable: Vec::new(),
             only_additional_writable: false,
             deny_ipc_escapes: false,
+            ..Default::default()
         };
         let cmd = wrap(o);
         let profile = &cmd.spec.args[1];
@@ -2173,6 +2175,7 @@ mod tests {
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
                 deny_ipc_escapes: false,
+                ..Default::default()
             },
         };
         let cmd = wrap(o);
@@ -2209,6 +2212,7 @@ mod tests {
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
                 deny_ipc_escapes: false,
+                ..Default::default()
             },
         };
         let cmd = wrap(o);
@@ -2358,6 +2362,7 @@ mod tests {
                 additional_writable: Vec::new(),
                 only_additional_writable: false,
                 deny_ipc_escapes: false,
+                ..Default::default()
             },
         };
         let cmd = wrap(o);
