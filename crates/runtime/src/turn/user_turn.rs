@@ -15,110 +15,32 @@ use base::event::AgentEvent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, Usage};
 use base::interface::prompt_middleware::PromptDelivery;
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 use std::sync::{Arc, LazyLock};
 use tokio_util::sync::CancellationToken;
 
 /// Empty hashset fallback when frozen context is not yet available.
 static EMPTY: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
 
+type Recall = (Vec<String>, Vec<base::memory::DurableMemory>);
+
+struct PendingRecall {
+    handle: tokio_util::task::AbortOnDropHandle<Recall>,
+    started_at: std::time::Instant,
+}
+
 impl Agent {
     pub(super) async fn run_user_turn_inner(
         &mut self,
-        mut content: String,
+        content: String,
         attachments: Vec<crate::agent::Attachment>,
         cancel: CancellationToken,
         origin: history::entry::MessageOrigin,
     ) -> Result<TurnOutcome, TurnError> {
-        // A script's budget is per turn, and this is where a turn begins.
-        // Without this the counter only ever climbs, so the quota is a
-        // per-session one wearing a per-turn name — and a script bound to a
-        // point that fires per tool call goes quiet in the middle of a long
-        // session with nothing to say why.
-        for turn_start in self.gate.turn_starts.iter() {
-            turn_start();
-        }
-
-        // UserPromptSubmit: where a hook sees the message that opens a turn,
-        // before any turn setup (skills rescan, FrozenContext,
-        // CLAUDE.md injection, ...) has touched anything.
-        //
-        // Reuses the same `HookResponse` fields `PreToolUse`/`PostToolUse`
-        // already use, same soft-fail philosophy (a hook that errors/times
-        // out is treated as "ran and said nothing" — `blocked()`/
-        // `updated_input()` just find nothing, turn proceeds unchanged; see
-        // `HookRunner::run`, not special-cased per event):
-        // - `decision: "block"` refuses to process this message at all —
-        //   the turn ends immediately with `stopped_by_hook`, before a
-        //   single model call, exactly like a `PreToolUse` block ends a
-        //   tool call before it runs.
-        // - `updated_input` (a JSON string) rewrites the message content
-        //   that actually gets processed — the same field name
-        //   `PreToolUse` uses for rewriting tool input, repurposed here for
-        //   the one thing there is to rewrite: the prompt text itself.
-        match self
-            .screen_user_prompt(content, &attachments, PromptDelivery::Turn, &cancel)
-            .await
-        {
-            PromptScreen::Pass(screened) => content = screened,
-            PromptScreen::Blocked(message) => {
-                self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());
-                return Ok(TurnOutcome {
-                    message,
-                    ..TurnOutcome::stopped("stopped_by_hook")
-                });
-            }
-        }
-
-        // TurnStart — fires after UserPromptSubmit has had its chance to block
-        // or rewrite, so a hook here sees the message that will actually be
-        // processed. Notification only: the response is discarded.
-        self.fire_turn_hook(hooks::HookEvent::TurnStart, &cancel, |input| {
-            input.with_turn_id(self.current_turn_id.clone())
-        })
-        .await;
-
-        // Same turn_no every `turn_complete` emitted below this point uses
-        // (`self.session.turn_count` isn't incremented until the very end of
-        // this function, see `increment_turn()`).
-        let _ = self
-            .telemetry
-            .telemetry_handle
-            .record(telemetry::TelemetryEvent::turn_start(
-                &self.session.session_id,
-                self.session.turn_count,
-                Some(self.current_turn_id.clone()),
-                telemetry::TurnStartPayload {
-                    resumed: false,
-                    is_retry: false,
-                },
-            ));
-        let _ =
-            self.telemetry
-                .telemetry_handle
-                .record(telemetry::TelemetryEvent::user_prompt_submit(
-                    &self.session.session_id,
-                    self.session.turn_count,
-                    Some(self.current_turn_id.clone()),
-                    telemetry::UserPromptSubmitPayload {
-                        char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
-                        attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
-                    },
-                ));
-
-        // A skill's `allowed_tools` (see `SkillTool::call`) pre-approves
-        // tools only for the rest of the turn it was invoked in — clear
-        // whatever the *previous* turn granted before this new user message
-        // starts a fresh one.
-        use base::interface::permission::{Grant, GrantScope};
-        let slash_skill_grants = std::mem::take(&mut self.slash_skill_grants);
-        if let Some(grants) = &self.gate.permission.grants {
-            grants.clear(GrantScope::Turn);
-            for (tool, pattern) in slash_skill_grants {
-                let _ = grants
-                    .grant(Grant::new(tool, pattern, GrantScope::Turn))
-                    .await;
-            }
-        }
+        let content = match self.open_turn(content, &attachments, &cancel).await {
+            ControlFlow::Continue(content) => content,
+            ControlFlow::Break(blocked) => return Ok(blocked),
+        };
 
         let _timer = self.telemetry.perf.start_timer("turn", "total");
         let mut api_calls: u32 = 0;
@@ -134,390 +56,13 @@ impl Agent {
         let mut turn_usage = Usage::default();
         let start = std::time::Instant::now();
 
-        // The catalog may be shared with other sessions and swapped in place
-        // by whoever watches the skill directories, so the diff is against
-        // what this session was last shown, not against the catalog as it
-        // stood a moment ago.
-        let changed = self.tooling.skills.reload_changed();
-        if changed > 0 {
-            tracing::debug!(count = changed, "Skills reloaded from file changes");
-        }
-        let skills_now: std::collections::HashSet<String> = self
-            .tooling
-            .skills
-            .list()
-            .iter()
-            .map(|s| s.name.clone())
-            .collect();
-        if let Some(skills_before) = self.prompt.announced_skills.replace(skills_now.clone()) {
-            // Surface the diff as a system-reminder in the conversation itself,
-            // not just a rebuilt static "## Available Skills" list — a model
-            // mid-session tends to trust what it already said over a change
-            // buried in a large prompt block it re-reads every turn without
-            // necessarily re-attending to (observed directly: deepseek-v4-flash
-            // kept asserting a just-deleted skill was still available even
-            // with a "this list supersedes what you said earlier" disclaimer
-            // right above the list; a pointed system-reminder about exactly
-            // what changed is a much stronger, harder-to-ignore signal, the
-            // same pattern already used for git-status/memory reminders).
-            let mut removed: Vec<&String> = skills_before.difference(&skills_now).collect();
-            let mut added: Vec<&String> = skills_now.difference(&skills_before).collect();
-            removed.sort();
-            added.sort();
-            if !removed.is_empty() || !added.is_empty() {
-                let mut note = String::from(
-                    "<system-reminder>\nSkill availability just changed. This is \
-                     authoritative — if you or the user said anything about these \
-                     skills' availability earlier in this conversation, that is now \
-                     outdated:\n",
-                );
-                for name in &removed {
-                    note.push_str(&format!(
-                        "- \"{name}\" was just removed — it no longer exists. Do not \
-                         call it, and if asked whether it's available, say no.\n"
-                    ));
-                }
-                for name in &added {
-                    note.push_str(&format!(
-                        "- \"{name}\" was just added — it's now available.\n"
-                    ));
-                }
-                note.push_str("</system-reminder>");
-                self.session.push_message(ModelMessage {
-                    role: MessageRole::User,
-                    content: vec![ModelContentBlock::Text { text: note }],
-                });
-                // The model is told above; the host is told here. Both need
-                // it for the same reason — a skill list they were shown
-                // earlier is now wrong — but a host cannot read the
-                // conversation, and its slash-command view resolves through
-                // the catalog that just changed underneath it.
-                let _ = self.channels.event_tx.send(AgentEvent::SkillsChanged {
-                    added: added.iter().map(|n| (*n).clone()).collect(),
-                    removed: removed.iter().map(|n| (*n).clone()).collect(),
-                    turn_id: self.current_turn_id.clone(),
-                });
-            }
-        }
-
-        // Compute frozen context lazily on first turn. Includes git status,
-        // branch, platform, etc.
-        let collected_this_turn = self.prompt.frozen.is_none();
-        let engine_git = engine_exec_from(
-            &self.config,
-            &self.exec,
-            &self.session.session_id,
-            self.settings.trust(),
-        );
-        if collected_this_turn {
-            self.prompt.frozen = Some(
-                super::collect_frozen(
-                    &self.settings.paths,
-                    &*self.policies.environment,
-                    &engine_git,
-                )
-                .await,
-            );
-        }
-
-        // `FrozenContext` is a session snapshot on purpose — but the
-        // reminder below re-injects `gitStatus` on *every* turn, and a stale
-        // status is read by the model as current fact, not as a stale hint.
-        // Commit between two turns and it keeps citing files that are no
-        // longer dirty. So refresh precisely the fields that get re-shown
-        // (see `refresh_git_status`); everything else stays frozen, which is
-        // the point of the type. Skipped on the turn that just collected —
-        // that snapshot is seconds old.
-        if !collected_this_turn {
-            if let Some(ref mut frozen) = self.prompt.frozen {
-                frozen.refresh_git_status(&engine_git).await;
-            }
-        }
-
-        if !self.prompt.session_context_injected {
-            self.inject_session_context().await;
-        }
-
-        // Inject system-reminder: git status + memory summary, via the scene's
-        // `reminders` — each scene decides what belongs here.
-        // Called once per
-        // turn, and the git slice it reads was refreshed just above, so the
-        // status shown is this turn's, not the session's opening snapshot.
-        if let Some(ref frozen) = self.prompt.frozen {
-            let ctx = base::interface::scene::ReminderContext {
-                cwd: std::borrow::Cow::Owned(
-                    self.settings
-                        .paths
-                        .working_dir()
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                git_status: frozen.git_status.as_deref().map(std::borrow::Cow::Borrowed),
-                memory_summary: frozen
-                    .memory_index
-                    .as_deref()
-                    .filter(|m| self.settings.values.memory_enabled && !m.is_empty())
-                    .map(std::borrow::Cow::Borrowed),
-            };
-            let reminder = self.scene.reminder(&ctx);
-            if !reminder.is_empty() {
-                self.session.push_message(ModelMessage {
-                    role: MessageRole::User,
-                    content: vec![ModelContentBlock::Text { text: reminder }],
-                });
-            }
-        }
-
-        // Memory prefetch: fire LLM-based relevant memory selection as a
-        // background task. The handle aborts it when dropped, so a recall that
-        // misses its budget stops spending on the selection call.
-        type Recall = (Vec<String>, Vec<base::memory::DurableMemory>);
-        let mut prefetch_handle: Option<tokio_util::task::AbortOnDropHandle<Recall>> =
-            if !self.settings.values.memory_enabled {
-                None
-            } else {
-                let store = self.memory.memory_store.clone();
-                let model = self.llm.model.clone();
-                let query = content.clone();
-                let already_surfaced: HashSet<String> = self
-                    .prompt
-                    .frozen
-                    .as_ref()
-                    .map(|f| f.already_surfaced.clone())
-                    .unwrap_or_default();
-                let recent_tools = self.tooling.tools.names();
-                let model_name = self.settings.values.model.model_name.clone();
-                let session_id = self.session.session_id.clone();
-                let retriever = Arc::clone(&self.memory.memory_retriever);
-                let hooks = Arc::clone(&self.memory.retrieval_hooks);
-                Some(tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
-                    async move {
-                        let memories = tokio::task::spawn_blocking(move || store.load_all())
-                            .await
-                            .unwrap_or_default();
-                        // The retriever reads what was just loaded rather than
-                        // the store, whose reads block.
-                        let snapshot = base::interface::memory_contracts::InMemoryStorage::new(
-                            memories.clone(),
-                        );
-                        let names = base::interface::memory_contracts::retrieve_with_hooks(
-                            retriever.as_ref(),
-                            &hooks,
-                            &snapshot,
-                            model.as_ref(),
-                            base::interface::memory_contracts::RetrievalRequest {
-                                query,
-                                limit: 5,
-                                already_surfaced,
-                                recent_tools,
-                                model_name,
-                                session_id: Some(session_id),
-                            },
-                        )
-                        .await;
-                        (names, memories)
-                    },
-                )))
-            };
-        let prefetch_started_at: std::time::Instant = std::time::Instant::now();
-
-        // Skill discovery prefetch: scan workspace for matching skills as a
-        // background task. Discovery runs while the model streams and tools
-        // execute; the result is consumed post-tool-execution alongside the
-        // memory prefetch.
-        let mut skill_prefetch: Option<
-            tokio_util::task::AbortOnDropHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>,
-        > = {
-            let skills = self.tooling.skills.clone();
-            let local_dir = self.settings.paths.local_data_dir.clone();
-            let invoked_skills: Vec<String> = self.session_state.ledger().invoked_skills.clone();
-            // Only scan when the previous turn produced tool calls that may
-            // have written files that could reveal new skills — skip on
-            // non-write turns. Runs on the first turn too (`last_had_tool_uses`
-            // starts `true`).
-            let should_run = self.last_had_tool_uses;
-            if should_run {
-                Some(tokio_util::task::AbortOnDropHandle::new(
-                    tokio::task::spawn_blocking(move || {
-                        let discovered = skills.discover_for_paths(&[local_dir]);
-                        let new_names: Vec<String> = discovered
-                            .iter()
-                            .filter(|s| !invoked_skills.contains(&s.name))
-                            .map(|s| s.name.clone())
-                            .collect();
-                        (discovered, new_names)
-                    }),
-                ))
-            } else {
-                None
-            }
-        };
-
-        // Push user message. Recalled memories are injected right behind it,
-        // below, so they are part of *this* turn's request.
-        //
-        // Attachments become additional blocks in this same message, after the
-        // text, so the model reads the request and then what it refers to.
-        // Images are only reachable this way — there is no other path by which
-        // a user-supplied image enters the conversation.
-        // `@server:scheme://path` references → MCP `resources/read`, inlined
-        // into this same message so the model reads the request and the thing
-        // it points at together. The matcher is deliberately narrow (see
-        // `mcp::resources` for why: `@` is also emails, decorators, npm
-        // scopes), and returns `None` — no work, no allocation — for the
-        // overwhelmingly common message that contains no reference, or for
-        // any session with no MCP servers connected at all.
-        //
-        // A reference that can't be resolved comes back as a visible error
-        // block, never an error that fails the turn.
-        let mut spans = vec![base::interface::model::InputSpan {
-            source: base::interface::model::input_source::USER_PROMPT.into(),
-            block: 0,
-            range: Some((0, content.len())),
-        }];
-        if let Some(resources) = self.tooling.mcp.resolve_resource_refs(&content).await {
-            let from = content.len();
-            content.push_str(&resources);
-            spans.push(base::interface::model::InputSpan {
-                source: base::interface::model::input_source::MCP_RESOURCE.into(),
-                block: 0,
-                range: Some((from, content.len())),
-            });
-        }
-
-        let mut user_blocks = vec![ModelContentBlock::Text { text: content }];
-        let files = base::paths::PromptFiles::for_project(
-            &base::paths::ConfigPaths::from_settings(&self.settings.paths),
-        );
-        user_blocks.extend(resolve_attachments(&attachments, &files).await);
-        for block in 1..user_blocks.len() {
-            spans.push(base::interface::model::InputSpan {
-                source: base::interface::model::input_source::ATTACHMENT.into(),
-                block,
-                range: None,
-            });
-        }
-        let message = ModelMessage {
-            role: MessageRole::User,
-            content: user_blocks,
-        };
-        self.deliver_notices();
-        self.turn.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
-        self.turn.started_at = Some(std::time::Instant::now());
-        self.session.push_message_from(message, origin);
-        let unannounced = self.session_state.ledger().token_target.take_unannounced();
-        if let Some(target) = unannounced {
-            self.session.push_message(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text {
-                    text: format!(
-                        "<system-reminder>\nThe user set an output token target of {target}. \
-                         Your output token count is shown as you go and work continues \
-                         automatically until the target is met. The target is a hard \
-                         ceiling; let its size set how thorough to be.\n</system-reminder>"
-                    ),
-                }],
-            });
-        }
-
-        // Collected before the first API call, not after tool execution, so a
-        // turn the model answers without tools still sees its memories. The
-        // wait is dead air before the user's first token, hence the short
-        // latency budget. In the common case there is no wait at all —
-        // `select_memories_from` returns without a model call when the
-        // store holds no more candidates than the requested maximum.
-        //
-        // `already_surfaced` / `recall_count` are updated here and only here,
-        // at the point the memories are actually placed in the transcript —
-        // recording a memory as "shown to the model" when it was not
-        // permanently suppresses a legitimate future surfacing of it.
-        const MEMORY_RECALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
-        /// Per-entry cap on inlined memory content. Recall carries at most 5
-        /// entries, so the whole injection stays bounded; the cap only exists
-        /// so one oversized memory cannot dominate the turn.
-        const MEMORY_RECALL_CONTENT_CAP: usize = 1024;
-        if let Some(prefetch) = prefetch_handle.take() {
-            let (prefetch_names, all) =
-                match tokio::time::timeout(MEMORY_RECALL_BUDGET, prefetch).await {
-                    Ok(Ok(recall)) => {
-                        tracing::debug!(
-                            count = recall.0.len(),
-                            latency_ms = prefetch_started_at.elapsed().as_millis(),
-                            "memory recall completed"
-                        );
-                        recall
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(error = %e, "memory recall task failed");
-                        Default::default()
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            budget_ms = MEMORY_RECALL_BUDGET.as_millis(),
-                            "memory recall exceeded its latency budget"
-                        );
-                        Default::default()
-                    }
-                };
-            let relevant: Vec<base::memory::DurableMemory> = {
-                let surfaced: &std::collections::HashSet<String> = self
-                    .prompt
-                    .frozen
-                    .as_ref()
-                    .map(|f| &f.already_surfaced)
-                    .unwrap_or(&EMPTY);
-                prefetch_names
-                    .iter()
-                    .filter_map(|name| all.iter().find(|m| &m.name == name).cloned())
-                    .filter(|m| !surfaced.contains(&m.name))
-                    .take(5)
-                    .collect()
-            };
-            if !relevant.is_empty() {
-                // Mark injected memories as surfaced to avoid repeated injection.
-                if let Some(ref mut frozen) = self.prompt.frozen {
-                    for m in &relevant {
-                        frozen.already_surfaced.insert(m.name.clone());
-                    }
-                }
-                {
-                    let store = self.memory.memory_store.clone();
-                    let names: Vec<String> = relevant.iter().map(|m| m.name.clone()).collect();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = store.record_recalled(&names) {
-                            tracing::debug!(error = %e, "recording a memory recall failed");
-                        }
-                    });
-                }
-
-                // Carry the memory body, not just its one-line description:
-                // the description exists to decide relevance, and a model that
-                // only gets the description has to spend a Read round trip to
-                // learn anything. At ≤5 entries this is the cheaper option.
-                let mut mem_text =
-                    String::from("<system-reminder>\nRelevant memories for this query:\n");
-                for m in &relevant {
-                    mem_text.push_str(&format!("\n## {}\n{}\n", m.name, m.description));
-                    let body = m.content.trim();
-                    if !body.is_empty() {
-                        let shown = truncate_at_char_boundary(body, MEMORY_RECALL_CONTENT_CAP);
-                        mem_text.push_str(shown);
-                        if shown.len() < body.len() {
-                            mem_text.push_str(&format!(
-                                "\n… (truncated — read {}.md for the full memory)",
-                                m.name
-                            ));
-                        }
-                        mem_text.push('\n');
-                    }
-                }
-                mem_text
-                    .push_str("\nUse these memories to inform your response.\n</system-reminder>");
-                self.session.push_message(ModelMessage {
-                    role: MessageRole::User,
-                    content: vec![ModelContentBlock::Text { text: mem_text }],
-                });
-            }
+        self.prepare_turn().await;
+        let recall = self.start_memory_recall(&content);
+        let mut skill_prefetch = self.start_skill_discovery();
+        self.push_user_message(content, &attachments, origin).await;
+        self.announce_output_target();
+        if let Some(recall) = recall {
+            self.inject_recalled_memories(recall).await;
         }
 
         let mut had_tool_uses_this_turn = false;
@@ -1226,6 +771,516 @@ or project context that should survive across sessions.
                 turn_usage,
                 None,
             ));
+        }
+    }
+
+    async fn open_turn(
+        &mut self,
+        mut content: String,
+        attachments: &[crate::agent::Attachment],
+        cancel: &CancellationToken,
+    ) -> ControlFlow<TurnOutcome, String> {
+        // A script's budget is per turn, and this is where a turn begins.
+        // Without this the counter only ever climbs, so the quota is a
+        // per-session one wearing a per-turn name — and a script bound to a
+        // point that fires per tool call goes quiet in the middle of a long
+        // session with nothing to say why.
+        for turn_start in self.gate.turn_starts.iter() {
+            turn_start();
+        }
+
+        // UserPromptSubmit: where a hook sees the message that opens a turn,
+        // before any turn setup (skills rescan, FrozenContext,
+        // CLAUDE.md injection, ...) has touched anything.
+        //
+        // Reuses the same `HookResponse` fields `PreToolUse`/`PostToolUse`
+        // already use, same soft-fail philosophy (a hook that errors/times
+        // out is treated as "ran and said nothing" — `blocked()`/
+        // `updated_input()` just find nothing, turn proceeds unchanged; see
+        // `HookRunner::run`, not special-cased per event):
+        // - `decision: "block"` refuses to process this message at all —
+        //   the turn ends immediately with `stopped_by_hook`, before a
+        //   single model call, exactly like a `PreToolUse` block ends a
+        //   tool call before it runs.
+        // - `updated_input` (a JSON string) rewrites the message content
+        //   that actually gets processed — the same field name
+        //   `PreToolUse` uses for rewriting tool input, repurposed here for
+        //   the one thing there is to rewrite: the prompt text itself.
+        match self
+            .screen_user_prompt(content, attachments, PromptDelivery::Turn, cancel)
+            .await
+        {
+            PromptScreen::Pass(screened) => content = screened,
+            PromptScreen::Blocked(message) => {
+                self.record_turn_complete("stopped_by_hook", 0, 0, std::time::Instant::now());
+                return ControlFlow::Break(TurnOutcome {
+                    message,
+                    ..TurnOutcome::stopped("stopped_by_hook")
+                });
+            }
+        }
+
+        // TurnStart — fires after UserPromptSubmit has had its chance to block
+        // or rewrite, so a hook here sees the message that will actually be
+        // processed. Notification only: the response is discarded.
+        self.fire_turn_hook(hooks::HookEvent::TurnStart, cancel, |input| {
+            input.with_turn_id(self.current_turn_id.clone())
+        })
+        .await;
+
+        // Same turn_no every `turn_complete` emitted below this point uses
+        // (`self.session.turn_count` isn't incremented until the very end of
+        // this function, see `increment_turn()`).
+        let _ = self
+            .telemetry
+            .telemetry_handle
+            .record(telemetry::TelemetryEvent::turn_start(
+                &self.session.session_id,
+                self.session.turn_count,
+                Some(self.current_turn_id.clone()),
+                telemetry::TurnStartPayload {
+                    resumed: false,
+                    is_retry: false,
+                },
+            ));
+        let _ =
+            self.telemetry
+                .telemetry_handle
+                .record(telemetry::TelemetryEvent::user_prompt_submit(
+                    &self.session.session_id,
+                    self.session.turn_count,
+                    Some(self.current_turn_id.clone()),
+                    telemetry::UserPromptSubmitPayload {
+                        char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
+                        attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
+                    },
+                ));
+
+        // A skill's `allowed_tools` (see `SkillTool::call`) pre-approves
+        // tools only for the rest of the turn it was invoked in — clear
+        // whatever the *previous* turn granted before this new user message
+        // starts a fresh one.
+        use base::interface::permission::{Grant, GrantScope};
+        let slash_skill_grants = std::mem::take(&mut self.slash_skill_grants);
+        if let Some(grants) = &self.gate.permission.grants {
+            grants.clear(GrantScope::Turn);
+            for (tool, pattern) in slash_skill_grants {
+                let _ = grants
+                    .grant(Grant::new(tool, pattern, GrantScope::Turn))
+                    .await;
+            }
+        }
+
+        ControlFlow::Continue(content)
+    }
+
+    async fn prepare_turn(&mut self) {
+        self.announce_skill_changes();
+        self.refresh_frozen_context().await;
+
+        if !self.prompt.session_context_injected {
+            self.inject_session_context().await;
+        }
+        self.push_system_reminder();
+    }
+
+    fn announce_skill_changes(&mut self) {
+        // The catalog may be shared with other sessions and swapped in place
+        // by whoever watches the skill directories, so the diff is against
+        // what this session was last shown, not against the catalog as it
+        // stood a moment ago.
+        let changed = self.tooling.skills.reload_changed();
+        if changed > 0 {
+            tracing::debug!(count = changed, "Skills reloaded from file changes");
+        }
+        let skills_now: std::collections::HashSet<String> = self
+            .tooling
+            .skills
+            .list()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        if let Some(skills_before) = self.prompt.announced_skills.replace(skills_now.clone()) {
+            // Surface the diff as a system-reminder in the conversation itself,
+            // not just a rebuilt static "## Available Skills" list — a model
+            // mid-session tends to trust what it already said over a change
+            // buried in a large prompt block it re-reads every turn without
+            // necessarily re-attending to (observed directly: deepseek-v4-flash
+            // kept asserting a just-deleted skill was still available even
+            // with a "this list supersedes what you said earlier" disclaimer
+            // right above the list; a pointed system-reminder about exactly
+            // what changed is a much stronger, harder-to-ignore signal, the
+            // same pattern already used for git-status/memory reminders).
+            let mut removed: Vec<&String> = skills_before.difference(&skills_now).collect();
+            let mut added: Vec<&String> = skills_now.difference(&skills_before).collect();
+            removed.sort();
+            added.sort();
+            if !removed.is_empty() || !added.is_empty() {
+                let mut note = String::from(
+                    "<system-reminder>\nSkill availability just changed. This is \
+                     authoritative — if you or the user said anything about these \
+                     skills' availability earlier in this conversation, that is now \
+                     outdated:\n",
+                );
+                for name in &removed {
+                    note.push_str(&format!(
+                        "- \"{name}\" was just removed — it no longer exists. Do not \
+                         call it, and if asked whether it's available, say no.\n"
+                    ));
+                }
+                for name in &added {
+                    note.push_str(&format!(
+                        "- \"{name}\" was just added — it's now available.\n"
+                    ));
+                }
+                note.push_str("</system-reminder>");
+                self.session.push_message(ModelMessage {
+                    role: MessageRole::User,
+                    content: vec![ModelContentBlock::Text { text: note }],
+                });
+                // The model is told above; the host is told here. Both need
+                // it for the same reason — a skill list they were shown
+                // earlier is now wrong — but a host cannot read the
+                // conversation, and its slash-command view resolves through
+                // the catalog that just changed underneath it.
+                let _ = self.channels.event_tx.send(AgentEvent::SkillsChanged {
+                    added: added.iter().map(|n| (*n).clone()).collect(),
+                    removed: removed.iter().map(|n| (*n).clone()).collect(),
+                    turn_id: self.current_turn_id.clone(),
+                });
+            }
+        }
+    }
+
+    async fn refresh_frozen_context(&mut self) {
+        // Compute frozen context lazily on first turn. Includes git status,
+        // branch, platform, etc.
+        let collected_this_turn = self.prompt.frozen.is_none();
+        let engine_git = engine_exec_from(
+            &self.config,
+            &self.exec,
+            &self.session.session_id,
+            self.settings.trust(),
+        );
+        if collected_this_turn {
+            self.prompt.frozen = Some(
+                super::collect_frozen(
+                    &self.settings.paths,
+                    &*self.policies.environment,
+                    &engine_git,
+                )
+                .await,
+            );
+        }
+
+        // `FrozenContext` is a session snapshot on purpose — but the
+        // reminder below re-injects `gitStatus` on *every* turn, and a stale
+        // status is read by the model as current fact, not as a stale hint.
+        // Commit between two turns and it keeps citing files that are no
+        // longer dirty. So refresh precisely the fields that get re-shown
+        // (see `refresh_git_status`); everything else stays frozen, which is
+        // the point of the type. Skipped on the turn that just collected —
+        // that snapshot is seconds old.
+        if !collected_this_turn {
+            if let Some(ref mut frozen) = self.prompt.frozen {
+                frozen.refresh_git_status(&engine_git).await;
+            }
+        }
+    }
+
+    fn push_system_reminder(&mut self) {
+        // Inject system-reminder: git status + memory summary, via the scene's
+        // `reminders` — each scene decides what belongs here.
+        // Called once per
+        // turn, and the git slice it reads was refreshed just above, so the
+        // status shown is this turn's, not the session's opening snapshot.
+        if let Some(ref frozen) = self.prompt.frozen {
+            let ctx = base::interface::scene::ReminderContext {
+                cwd: std::borrow::Cow::Owned(
+                    self.settings
+                        .paths
+                        .working_dir()
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                git_status: frozen.git_status.as_deref().map(std::borrow::Cow::Borrowed),
+                memory_summary: frozen
+                    .memory_index
+                    .as_deref()
+                    .filter(|m| self.settings.values.memory_enabled && !m.is_empty())
+                    .map(std::borrow::Cow::Borrowed),
+            };
+            let reminder = self.scene.reminder(&ctx);
+            if !reminder.is_empty() {
+                self.session.push_message(ModelMessage {
+                    role: MessageRole::User,
+                    content: vec![ModelContentBlock::Text { text: reminder }],
+                });
+            }
+        }
+    }
+
+    fn start_memory_recall(&self, query: &str) -> Option<PendingRecall> {
+        // Memory prefetch: fire LLM-based relevant memory selection as a
+        // background task. The handle aborts it when dropped, so a recall that
+        // misses its budget stops spending on the selection call.
+        let handle: Option<tokio_util::task::AbortOnDropHandle<Recall>> =
+            if !self.settings.values.memory_enabled {
+                None
+            } else {
+                let store = self.memory.memory_store.clone();
+                let model = self.llm.model.clone();
+                let query = query.to_string();
+                let already_surfaced: HashSet<String> = self
+                    .prompt
+                    .frozen
+                    .as_ref()
+                    .map(|f| f.already_surfaced.clone())
+                    .unwrap_or_default();
+                let recent_tools = self.tooling.tools.names();
+                let model_name = self.settings.values.model.model_name.clone();
+                let session_id = self.session.session_id.clone();
+                let retriever = Arc::clone(&self.memory.memory_retriever);
+                let hooks = Arc::clone(&self.memory.retrieval_hooks);
+                Some(tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
+                    async move {
+                        let memories = tokio::task::spawn_blocking(move || store.load_all())
+                            .await
+                            .unwrap_or_default();
+                        // The retriever reads what was just loaded rather than
+                        // the store, whose reads block.
+                        let snapshot = base::interface::memory_contracts::InMemoryStorage::new(
+                            memories.clone(),
+                        );
+                        let names = base::interface::memory_contracts::retrieve_with_hooks(
+                            retriever.as_ref(),
+                            &hooks,
+                            &snapshot,
+                            model.as_ref(),
+                            base::interface::memory_contracts::RetrievalRequest {
+                                query,
+                                limit: 5,
+                                already_surfaced,
+                                recent_tools,
+                                model_name,
+                                session_id: Some(session_id),
+                            },
+                        )
+                        .await;
+                        (names, memories)
+                    },
+                )))
+            };
+        let started_at = std::time::Instant::now();
+        handle.map(|handle| PendingRecall { handle, started_at })
+    }
+
+    fn start_skill_discovery(
+        &self,
+    ) -> Option<tokio_util::task::AbortOnDropHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>>
+    {
+        // Skill discovery prefetch: scan workspace for matching skills as a
+        // background task. Discovery runs while the model streams and tools
+        // execute; the result is consumed post-tool-execution alongside the
+        // memory prefetch.
+        let skills = self.tooling.skills.clone();
+        let local_dir = self.settings.paths.local_data_dir.clone();
+        let invoked_skills: Vec<String> = self.session_state.ledger().invoked_skills.clone();
+        // Only scan when the previous turn produced tool calls that may
+        // have written files that could reveal new skills — skip on
+        // non-write turns. Runs on the first turn too (`last_had_tool_uses`
+        // starts `true`).
+        let should_run = self.last_had_tool_uses;
+        if should_run {
+            Some(tokio_util::task::AbortOnDropHandle::new(
+                tokio::task::spawn_blocking(move || {
+                    let discovered = skills.discover_for_paths(&[local_dir]);
+                    let new_names: Vec<String> = discovered
+                        .iter()
+                        .filter(|s| !invoked_skills.contains(&s.name))
+                        .map(|s| s.name.clone())
+                        .collect();
+                    (discovered, new_names)
+                }),
+            ))
+        } else {
+            None
+        }
+    }
+
+    async fn push_user_message(
+        &mut self,
+        mut content: String,
+        attachments: &[crate::agent::Attachment],
+        origin: history::entry::MessageOrigin,
+    ) {
+        // Push user message. Recalled memories are injected right behind it,
+        // below, so they are part of *this* turn's request.
+        //
+        // Attachments become additional blocks in this same message, after the
+        // text, so the model reads the request and then what it refers to.
+        // Images are only reachable this way — there is no other path by which
+        // a user-supplied image enters the conversation.
+        // `@server:scheme://path` references → MCP `resources/read`, inlined
+        // into this same message so the model reads the request and the thing
+        // it points at together. The matcher is deliberately narrow (see
+        // `mcp::resources` for why: `@` is also emails, decorators, npm
+        // scopes), and returns `None` — no work, no allocation — for the
+        // overwhelmingly common message that contains no reference, or for
+        // any session with no MCP servers connected at all.
+        //
+        // A reference that can't be resolved comes back as a visible error
+        // block, never an error that fails the turn.
+        let mut spans = vec![base::interface::model::InputSpan {
+            source: base::interface::model::input_source::USER_PROMPT.into(),
+            block: 0,
+            range: Some((0, content.len())),
+        }];
+        if let Some(resources) = self.tooling.mcp.resolve_resource_refs(&content).await {
+            let from = content.len();
+            content.push_str(&resources);
+            spans.push(base::interface::model::InputSpan {
+                source: base::interface::model::input_source::MCP_RESOURCE.into(),
+                block: 0,
+                range: Some((from, content.len())),
+            });
+        }
+
+        let mut user_blocks = vec![ModelContentBlock::Text { text: content }];
+        let files = base::paths::PromptFiles::for_project(
+            &base::paths::ConfigPaths::from_settings(&self.settings.paths),
+        );
+        user_blocks.extend(resolve_attachments(attachments, &files).await);
+        for block in 1..user_blocks.len() {
+            spans.push(base::interface::model::InputSpan {
+                source: base::interface::model::input_source::ATTACHMENT.into(),
+                block,
+                range: None,
+            });
+        }
+        let message = ModelMessage {
+            role: MessageRole::User,
+            content: user_blocks,
+        };
+        self.deliver_notices();
+        self.turn.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
+        self.turn.started_at = Some(std::time::Instant::now());
+        self.session.push_message_from(message, origin);
+    }
+
+    fn announce_output_target(&mut self) {
+        let unannounced = self.session_state.ledger().token_target.take_unannounced();
+        if let Some(target) = unannounced {
+            self.session.push_message(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text {
+                    text: format!(
+                        "<system-reminder>\nThe user set an output token target of {target}. \
+                         Your output token count is shown as you go and work continues \
+                         automatically until the target is met. The target is a hard \
+                         ceiling; let its size set how thorough to be.\n</system-reminder>"
+                    ),
+                }],
+            });
+        }
+    }
+
+    async fn inject_recalled_memories(&mut self, pending: PendingRecall) {
+        // Collected before the first API call, not after tool execution, so a
+        // turn the model answers without tools still sees its memories. The
+        // wait is dead air before the user's first token, hence the short
+        // latency budget. In the common case there is no wait at all —
+        // `select_memories_from` returns without a model call when the
+        // store holds no more candidates than the requested maximum.
+        //
+        // `already_surfaced` / `recall_count` are updated here and only here,
+        // at the point the memories are actually placed in the transcript —
+        // recording a memory as "shown to the model" when it was not
+        // permanently suppresses a legitimate future surfacing of it.
+        const MEMORY_RECALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+        /// Per-entry cap on inlined memory content. Recall carries at most 5
+        /// entries, so the whole injection stays bounded; the cap only exists
+        /// so one oversized memory cannot dominate the turn.
+        const MEMORY_RECALL_CONTENT_CAP: usize = 1024;
+        let (prefetch_names, all) =
+            match tokio::time::timeout(MEMORY_RECALL_BUDGET, pending.handle).await {
+                Ok(Ok(recall)) => {
+                    tracing::debug!(
+                        count = recall.0.len(),
+                        latency_ms = pending.started_at.elapsed().as_millis(),
+                        "memory recall completed"
+                    );
+                    recall
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "memory recall task failed");
+                    Default::default()
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        budget_ms = MEMORY_RECALL_BUDGET.as_millis(),
+                        "memory recall exceeded its latency budget"
+                    );
+                    Default::default()
+                }
+            };
+        let relevant: Vec<base::memory::DurableMemory> = {
+            let surfaced: &std::collections::HashSet<String> = self
+                .prompt
+                .frozen
+                .as_ref()
+                .map(|f| &f.already_surfaced)
+                .unwrap_or(&EMPTY);
+            prefetch_names
+                .iter()
+                .filter_map(|name| all.iter().find(|m| &m.name == name).cloned())
+                .filter(|m| !surfaced.contains(&m.name))
+                .take(5)
+                .collect()
+        };
+        if !relevant.is_empty() {
+            // Mark injected memories as surfaced to avoid repeated injection.
+            if let Some(ref mut frozen) = self.prompt.frozen {
+                for m in &relevant {
+                    frozen.already_surfaced.insert(m.name.clone());
+                }
+            }
+            {
+                let store = self.memory.memory_store.clone();
+                let names: Vec<String> = relevant.iter().map(|m| m.name.clone()).collect();
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = store.record_recalled(&names) {
+                        tracing::debug!(error = %e, "recording a memory recall failed");
+                    }
+                });
+            }
+
+            // Carry the memory body, not just its one-line description:
+            // the description exists to decide relevance, and a model that
+            // only gets the description has to spend a Read round trip to
+            // learn anything. At ≤5 entries this is the cheaper option.
+            let mut mem_text =
+                String::from("<system-reminder>\nRelevant memories for this query:\n");
+            for m in &relevant {
+                mem_text.push_str(&format!("\n## {}\n{}\n", m.name, m.description));
+                let body = m.content.trim();
+                if !body.is_empty() {
+                    let shown = truncate_at_char_boundary(body, MEMORY_RECALL_CONTENT_CAP);
+                    mem_text.push_str(shown);
+                    if shown.len() < body.len() {
+                        mem_text.push_str(&format!(
+                            "\n… (truncated — read {}.md for the full memory)",
+                            m.name
+                        ));
+                    }
+                    mem_text.push('\n');
+                }
+            }
+            mem_text.push_str("\nUse these memories to inform your response.\n</system-reminder>");
+            self.session.push_message(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text { text: mem_text }],
+            });
         }
     }
 }
