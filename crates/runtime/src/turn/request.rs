@@ -334,9 +334,10 @@ impl Agent {
     /// Assemble a step's request and account for what it costs before any
     /// conversation content (see `request_overhead_tokens`).
     ///
-    /// This is also where the pending cache edits are consumed, which is why a
-    /// retry after a failed call must go through [`Agent::prepare_retry`]
-    /// instead: the edits belong to the call that already spent them.
+    /// This is also where the pending cache edits are lent to the request.
+    /// They are spent only once a call carrying them is accepted
+    /// (`CachedMicroCompact::confirm_sent`); a call that fails before that
+    /// leaves them for the next step's request.
     pub(super) async fn prepare_request(
         &mut self,
         model: &str,
@@ -355,7 +356,7 @@ impl Agent {
                 thinking_mode: self.settings.model.thinking_mode.clone(),
                 effort: self.settings.model.effort,
                 fallback_model: self.settings.model.fallback_model.clone(),
-                cache_edits: self.compaction.cached_mc.consume_pending_edits(),
+                cache_edits: self.compaction.cached_mc.lend_pending_edits(),
                 origin,
                 input_map,
                 provider_search: None,
@@ -372,8 +373,9 @@ impl Agent {
     /// a fallback model still gets the skills inventory and MCP guidance the
     /// primary one got.
     ///
-    /// Neither the overhead estimate nor the cache edits are redone — both
-    /// belong to the call that failed.
+    /// Neither the overhead estimate nor the cache edits are redone: the
+    /// estimate belongs to the call that failed, and the edits it carried are
+    /// still pending for the next step's request.
     pub(super) async fn prepare_retry(
         &self,
         model: &str,
@@ -408,11 +410,14 @@ impl Agent {
     /// through here is what keeps them from diverging: a new field on
     /// `StreamParams` is filled once rather than in three places that have to
     /// be found first.
+    ///
+    /// A call the provider accepted spends the cache edits it was lent.
     pub(super) async fn send(
-        &self,
+        &mut self,
         request: ModelRequest,
         cancel: CancellationToken,
     ) -> Result<ModelStream, base::interface::model::ModelError> {
+        let lent = request.params.cache_edits.clone();
         // The last point at which the engine's idea of the request and the
         // provider's can still be made to differ. Once per model call, never
         // per chunk — see `base::interface::model_interceptor`.
@@ -422,7 +427,8 @@ impl Agent {
             &mut request,
         );
         open_conversation_with_user_blocks(&mut request);
-        self.llm
+        let stream = self
+            .llm
             .model
             .stream(
                 request.prompt_blocks,
@@ -431,7 +437,9 @@ impl Agent {
                 request.params,
                 cancel,
             )
-            .await
+            .await?;
+        self.compaction.cached_mc.confirm_sent(&lent);
+        Ok(stream)
     }
 
     /// Total tokens this session is currently sending per API call: the

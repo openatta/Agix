@@ -8,6 +8,15 @@ use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use std::collections::HashSet;
 use tokio_util::sync::CancellationToken;
 
+/// An aging pass already applied to the messages, not yet accounted for.
+struct PendingAging {
+    aging: compaction::compact::Aging,
+    messages: usize,
+    tokens_before: usize,
+    tokens_after: usize,
+    took: std::time::Duration,
+}
+
 impl Agent {
     /// Build the summarizer used by compaction's FullCompact layer.
     ///
@@ -39,26 +48,65 @@ impl Agent {
     }
 
     /// Compact session messages if token budget is exceeded.
+    ///
+    /// The aging passes and the compaction the budget forces are one
+    /// transaction: aging is applied first, because the budget is judged on
+    /// what it leaves, but it is accounted for — reported, and the cached
+    /// pass's clock restarted — only once the rest went through. A compaction
+    /// that was interrupted or failed puts the aged tool results back.
     pub(crate) async fn compact_if_needed(&mut self, cancel: &CancellationToken) {
-        // Every judgement below belongs to the compactor: what has gone stale,
-        // whether to compact early, when to warn, and when the budget forces
-        // it. The order they are asked in is the loop's.
+        let aged = self.age_messages();
+        let abandoned = match self.compact_to_budget(cancel).await {
+            Ok(()) => false,
+            Err(NotCompacted::Cancelled | NotCompacted::Failed(_)) => true,
+            Err(NotCompacted::Declined | NotCompacted::NothingToDrop) => cancel.is_cancelled(),
+        };
+        if abandoned {
+            if !aged.aging.undo.is_empty() {
+                tracing::info!("compaction did not go through; aged tool results put back");
+            }
+            aged.aging.undo.restore(&mut self.session.messages);
+        } else {
+            self.commit_aging(aged);
+        }
+    }
+
+    fn age_messages(&mut self) -> PendingAging {
         let compactor = self.compaction.compactor.clone();
-        let cached_due = self.compaction.cached_mc.should_run();
-        let cached_keep_recent = self.compaction.cached_mc.keep_recent();
         let ages = self.session.message_ages();
-        let time_based = self.compaction.time_based_mc_config.clone();
-        let aging_start = std::time::Instant::now();
-        let aging_from = compaction::grouping::estimate_tokens(&self.session.messages);
+        let started = std::time::Instant::now();
+        let tokens_before = compaction::grouping::estimate_tokens(&self.session.messages);
         let aging = compactor.age(
             &mut self.session.messages,
             &compaction::compact::AgingInput {
                 message_ages: &ages,
-                time_based: &time_based,
-                cached_due,
-                cached_keep_recent,
+                time_based: &self.compaction.time_based_mc_config,
+                cached_due: self.compaction.cached_mc.should_run(),
+                cached_keep_recent: self.compaction.cached_mc.keep_recent(),
             },
         );
+        let tokens_after = if aging.time_based.cleared > 0 {
+            compaction::grouping::estimate_tokens(&self.session.messages)
+        } else {
+            tokens_before
+        };
+        PendingAging {
+            messages: self.session.messages.len(),
+            tokens_before,
+            tokens_after,
+            took: started.elapsed(),
+            aging,
+        }
+    }
+
+    fn commit_aging(&mut self, aged: PendingAging) {
+        let PendingAging {
+            aging,
+            messages,
+            tokens_before,
+            tokens_after,
+            took,
+        } = aged;
         if aging.cleared() > 0 {
             self.compaction.tool_results_ever_cleared = true;
         }
@@ -68,17 +116,17 @@ impl Agent {
                 skipped = aging.time_based.skipped,
                 "time-based micro-compact applied"
             );
-            let messages = self.session.messages.len();
+            let now = std::time::Instant::now();
             self.report_compaction(
                 &CompactSummary {
                     strategy: format!("{:?}", compaction::compact::CompactStrategy::MicroCompact),
                     messages_before: messages,
                     messages_after: messages,
-                    tokens_before: aging_from,
-                    tokens_after: compaction::grouping::estimate_tokens(&self.session.messages),
+                    tokens_before,
+                    tokens_after,
                 },
                 None,
-                aging_start,
+                now.checked_sub(took).unwrap_or(now),
             );
         }
         if let Some(ids) = aging.cache_edits {
@@ -88,6 +136,16 @@ impl Agent {
             );
             self.compaction.cached_mc.record_pass(ids);
         }
+    }
+
+    /// Everything after aging: the tool result budget, the predictive pass,
+    /// the warning, and the compaction the budget forces. `Ok` when no
+    /// compaction was due or one went through.
+    async fn compact_to_budget(&mut self, cancel: &CancellationToken) -> Result<(), NotCompacted> {
+        // Every judgement below belongs to the compactor: what has gone stale,
+        // whether to compact early, when to warn, and when the budget forces
+        // it. The order they are asked in is the loop's.
+        let compactor = self.compaction.compactor.clone();
 
         // Enforce per-message tool result budget BEFORE compaction.
         let budget_modified = compactor.trim_tool_results(&mut self.session.messages);
@@ -160,7 +218,7 @@ impl Agent {
             threshold,
             warned_already: self.compaction.compact_warning_issued,
         }) {
-            return;
+            return Ok(());
         }
         // The threshold is on the whole request, so the conversation gets what
         // the fixed part of it leaves. Where that is nothing, no conversation
@@ -168,11 +226,11 @@ impl Agent {
         let room = match threshold.checked_sub(self.compaction.request_overhead_tokens) {
             Some(room) if room > 0 => room,
             _ if self.session.token_count() > threshold => threshold,
-            _ => return,
+            _ => return Ok(()),
         };
         let context_tokens = self.context_tokens();
         if self.compaction.auto_backoff.holds(context_tokens) {
-            return;
+            return Ok(());
         }
         let target = room.saturating_sub(self.recovery_reserve());
         match self
@@ -184,7 +242,8 @@ impl Agent {
             )
             .await
         {
-            Ok(_) | Err(NotCompacted::Cancelled) => {}
+            Ok(_) => Ok(()),
+            Err(NotCompacted::Cancelled) => Err(NotCompacted::Cancelled),
             Err(e) => {
                 self.compaction
                     .auto_backoff
@@ -195,6 +254,7 @@ impl Agent {
                     threshold,
                     "automatic compaction {e}; not tried again for a while"
                 );
+                Err(e)
             }
         }
     }

@@ -56,7 +56,7 @@ fn    crates/ptc/src/lib.rs                                execute              
 fn    crates/runtime/src/agent/builder/build.rs            Builder::build                           868
 fn    crates/runtime/src/agent/run.rs                      Agent::run                               285
 fn    crates/runtime/src/streaming.rs                      execute_stream                           330
-fn    crates/runtime/src/turn/compact.rs                   Agent::compact_if_needed                 159
+fn    crates/runtime/src/turn/compact.rs                   Agent::compact_to_budget                 117
 fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction                    202
 fn    crates/runtime/src/turn/memory_extraction.rs         extract_memories_after_turn              224
 fn    crates/runtime/src/turn/process.rs                   Agent::process_turn                      253

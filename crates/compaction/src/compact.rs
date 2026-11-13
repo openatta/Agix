@@ -22,10 +22,8 @@ use async_trait::async_trait;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use base::text::truncate_at_char_boundary;
 
-use std::time::Instant;
-
+pub use crate::aging::{Aging, AgingInput, AgingUndo};
 use crate::grouping::{estimate_tokens, group_by_api_round, ApiRound};
-use crate::time_based_mc::{TimeBasedMcConfig, TimeBasedMcResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactStrategy {
@@ -94,38 +92,6 @@ pub enum CompactError {
     Cancelled,
 }
 
-/// What the aging passes may look at.
-///
-/// Neither pass is about the token budget: one clears tool results that have
-/// simply grown old, the other keeps the server-side cache from carrying
-/// results nobody will read again. They run before anything consults the
-/// budget, which is why they get their own input.
-pub struct AgingInput<'a> {
-    /// `(message index, when it was pushed)` for every message.
-    pub message_ages: &'a [(usize, Instant)],
-    pub time_based: &'a TimeBasedMcConfig,
-    /// Whether the cached pass's interval has elapsed. The interval and the
-    /// clock stay with the caller, which owns the pass's pending cache edits.
-    pub cached_due: bool,
-    pub cached_keep_recent: usize,
-}
-
-/// What one aging pass did.
-#[derive(Debug, Default)]
-pub struct Aging {
-    pub time_based: TimeBasedMcResult,
-    pub cached_cleared: usize,
-    /// `Some` when the cached pass ran: the `tool_use_id`s whose results it
-    /// blanked, which the next request sends as `cache_edits`.
-    pub cache_edits: Option<Vec<String>>,
-}
-
-impl Aging {
-    pub fn cleared(&self) -> usize {
-        self.time_based.cleared + self.cached_cleared
-    }
-}
-
 /// What the predictive pass may look at.
 pub struct ReactiveInput {
     pub context_tokens: usize,
@@ -186,15 +152,19 @@ pub trait Compactor: Send + Sync {
     fn age(&self, messages: &mut [ModelMessage], input: &AgingInput<'_>) -> Aging {
         let mut out = Aging::default();
         if input.time_based.max_age.is_some() {
-            out.time_based = crate::time_based_mc::apply_time_based_mc(
+            out.time_based = crate::time_based_mc::apply_time_based_mc_undoably(
                 messages,
                 input.time_based,
                 input.message_ages,
+                &mut out.undo,
             );
         }
         if input.cached_due {
-            let (cleared, ids) =
-                crate::cached::clear_stale_tool_results(messages, input.cached_keep_recent);
+            let (cleared, ids) = crate::cached::clear_stale_tool_results_undoably(
+                messages,
+                input.cached_keep_recent,
+                &mut out.undo,
+            );
             out.cached_cleared = cleared;
             out.cache_edits = Some(ids);
         }
@@ -1159,6 +1129,8 @@ fn head_chars(s: &str, n: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time_based_mc::TimeBasedMcConfig;
+    use std::time::Instant;
 
     fn text_user(s: &str) -> ModelMessage {
         ModelMessage {
@@ -1441,6 +1413,37 @@ mod tests {
             aging.cache_edits.as_deref(),
             Some(["t2", "t1", "t0"].map(String::from).as_slice()),
             "newest first, and only the ones that were blanked"
+        );
+    }
+
+    /// What both passes overwrote goes back as it was, the result a pass
+    /// blanked twice included.
+    #[test]
+    fn an_aging_pass_is_undone_exactly() {
+        let mut messages = read_rounds(4);
+        let untouched = messages.clone();
+        let ages: Vec<_> = (0..messages.len())
+            .map(|i| (i, Instant::now() - std::time::Duration::from_secs(3600)))
+            .collect();
+        let aging = DefaultCompactor.age(
+            &mut messages,
+            &AgingInput {
+                message_ages: &ages,
+                time_based: &TimeBasedMcConfig {
+                    max_age: Some(std::time::Duration::from_secs(60)),
+                    min_messages: 0,
+                },
+                cached_due: true,
+                cached_keep_recent: 1,
+            },
+        );
+        assert!(aging.time_based.cleared > 0 && aging.cached_cleared > 0);
+        assert_ne!(result_bodies(&messages), result_bodies(&untouched));
+
+        aging.undo.restore(&mut messages);
+        assert_eq!(
+            messages.iter().map(|m| &m.content).collect::<Vec<_>>(),
+            untouched.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
     }
 

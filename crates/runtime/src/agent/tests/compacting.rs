@@ -477,3 +477,105 @@ async fn a_failed_automatic_compaction_backs_off_too() {
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(agent.compaction.auto_backoff.misses(), 1);
 }
+
+/// Opens a stream that never yields, and says when it was asked.
+struct NeverAnswers {
+    asked: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl Model for NeverAnswers {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        _messages: Vec<base::interface::model::ModelMessage>,
+        _params: base::interface::model::StreamParams,
+        _cancel: CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        self.asked.notify_one();
+        Ok(Box::new(futures::stream::pending()))
+    }
+}
+
+/// Aging and the compaction the budget forces are one: when the summary
+/// is interrupted, the tool results time-based micro-compact had already
+/// blanked are put back and nothing reports a compaction.
+#[tokio::test]
+async fn an_interrupted_compaction_leaves_the_aged_tool_results_as_they_were() {
+    use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
+    let asked = Arc::new(tokio::sync::Notify::new());
+    let (mut agent, mut rx, _tx) = Builder::new()
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
+        .model(Arc::new(NeverAnswers {
+            asked: asked.clone(),
+        }))
+        .settings(Arc::new({
+            let mut s = test_settings();
+            s.values.compaction.threshold_tokens = Some(2_000);
+            s.values.compaction.keep_recent = Some(4);
+            s.values.compaction.reactive = false;
+            s
+        }))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    // The questions are what keeps the conversation over the threshold
+    // once aging has blanked every tool result.
+    for i in 0..40 {
+        agent.session.push_message(text_message(
+            MessageRole::User,
+            &format!("question {i}: {}", "words ".repeat(60)),
+        ));
+        let id = format!("toolu_{i}");
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![ModelContentBlock::ToolUse {
+                id: id.clone(),
+                name: "Bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        });
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::ToolResult {
+                tool_use_id: id,
+                content: format!("output {i}: {}", "listing ".repeat(75)),
+                is_error: Some(false),
+            }],
+        });
+    }
+    agent.compaction.time_based_mc_config = compaction::time_based_mc::TimeBasedMcConfig {
+        max_age: Some(std::time::Duration::ZERO),
+        min_messages: 100,
+    };
+    let blocks = |agent: &Agent| -> Vec<Vec<ModelContentBlock>> {
+        agent
+            .session
+            .messages()
+            .iter()
+            .map(|m| m.content.clone())
+            .collect()
+    };
+    let before = blocks(&agent);
+    assert!(before.len() >= 100 && agent.context_tokens() > 2_000);
+
+    let cancel = CancellationToken::new();
+    {
+        let compacting = agent.compact_if_needed(&cancel);
+        tokio::pin!(compacting);
+        tokio::select! {
+            _ = &mut compacting => panic!("the compaction finished without asking for a summary"),
+            _ = asked.notified() => cancel.cancel(),
+        }
+        compacting.await;
+    }
+
+    assert_eq!(blocks(&agent), before);
+    assert_eq!(compact_frames(&mut rx), 0);
+}

@@ -4,6 +4,7 @@
 //! clears old tool result content on a time interval. This keeps the context
 //! window manageable between full compactions without burning API calls.
 
+use crate::aging::AgingUndo;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use std::time::{Duration, Instant};
 
@@ -34,8 +35,8 @@ pub struct CachedMicroCompact {
     config: CachedMcConfig,
     last_run: Instant,
     run_count: u64,
-    /// Tool_use_ids of results cleared in the most recent `run()` pass,
-    /// pending consumption by the next API request.
+    /// Tool_use_ids of results cleared in the most recent pass, until a
+    /// request carrying them is accepted.
     pending_edits: Vec<String>,
 }
 
@@ -87,10 +88,18 @@ impl CachedMicroCompact {
         self.config.keep_recent
     }
 
-    /// Consume and clear the pending cache edits (tool_use_ids).
-    /// Returns the list of IDs that should be deleted via cache_edits in the next API call.
-    pub fn consume_pending_edits(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pending_edits)
+    /// The pending cache edits (tool_use_ids), for the next request to carry.
+    /// They stay pending until [`Self::confirm_sent`]: a request that fails
+    /// before it is accepted spent nothing, and the next one carries them.
+    pub fn lend_pending_edits(&self) -> Vec<String> {
+        self.pending_edits.clone()
+    }
+
+    /// A request carrying `sent` was accepted: those edits are spent.
+    pub fn confirm_sent(&mut self, sent: &[String]) {
+        if !sent.is_empty() {
+            self.pending_edits.retain(|id| !sent.contains(id));
+        }
     }
 }
 
@@ -104,6 +113,16 @@ impl CachedMicroCompact {
 pub fn clear_stale_tool_results(
     messages: &mut [ModelMessage],
     keep_recent: usize,
+) -> (usize, Vec<String>) {
+    clear_stale_tool_results_undoably(messages, keep_recent, &mut AgingUndo::default())
+}
+
+/// [`clear_stale_tool_results`], noting in `undo` what each blanked result
+/// held.
+pub(crate) fn clear_stale_tool_results_undoably(
+    messages: &mut [ModelMessage],
+    keep_recent: usize,
+    undo: &mut AgingUndo,
 ) -> (usize, Vec<String>) {
     let mut result_positions: Vec<(usize, usize)> = Vec::new();
     let mut cleared_ids: Vec<String> = Vec::new();
@@ -134,6 +153,7 @@ pub fn clear_stale_tool_results(
         if content == CLEARED {
             continue;
         }
+        undo.note(msg_idx, block_idx, tool_use_id, content, *is_error);
         *content = CLEARED.to_string();
         *is_error = Some(false);
         cleared += 1;
@@ -211,13 +231,19 @@ mod tests {
             },
             "the body goes, the id that pairs it with its tool_use stays"
         );
-        assert_eq!(mc.consume_pending_edits(), vec!["t1".to_string()]);
+        assert_eq!(mc.lend_pending_edits(), vec!["t1".to_string()]);
+        assert_eq!(
+            mc.lend_pending_edits(),
+            vec!["t1".to_string()],
+            "lent, not spent, until a request carrying them is accepted"
+        );
+        mc.confirm_sent(&["t1".to_string()]);
         assert_eq!(
             mc.run(&mut msgs),
             0,
             "a blanked result is not blanked again"
         );
-        assert!(mc.consume_pending_edits().is_empty());
+        assert!(mc.lend_pending_edits().is_empty());
         // Second (recent) result should be intact
         assert_eq!(
             msgs[1].content[0],
