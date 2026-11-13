@@ -8,7 +8,7 @@
 
 use crate::cache::PluginCache;
 use crate::disclosure::Disclosure;
-use crate::manifest::Plugin;
+use crate::manifest::{Plugin, PluginError};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -61,8 +61,10 @@ pub fn scan_plugins(global_plugins_dir: &Path, scene_plugins_dir: &Path) -> Disc
 }
 
 /// Load every plugin installed in one tier's versioned cache
-/// (`<tier_dir>/cache/{name}/{version}/plugin.toml`), picking the highest
-/// version per name (semver order — see `PluginCache::list_versions`).
+/// (`<tier_dir>/cache/{name}/{version}/plugin.toml`), picking per name the
+/// highest version (semver order — see `PluginCache::list_versions`) whose
+/// `requires_engine` this build meets. Each higher version that does not meet
+/// it is refused, and the next one down is tried.
 ///
 /// A manifest that fails to load — unsupported `api_version`, malformed
 /// TOML, an event outside the subscribable set — or whose disclosure is over
@@ -87,31 +89,35 @@ fn load_installed_tier(cache: &PluginCache) -> (Vec<Plugin>, Vec<Refused>) {
         if name.starts_with('.') {
             continue;
         }
-        let versions = cache.list_versions(name);
-        let Some(version) = versions.first() else {
-            continue;
-        };
-        let Some(manifest_path) = cache.cached_manifest(name, version) else {
-            continue;
-        };
-        let loaded = Plugin::load(&path.join(version), &manifest_path).and_then(|plugin| {
-            Disclosure::from_plugin(&plugin)?;
-            Ok(plugin)
-        });
-        match loaded {
-            Ok(plugin) => plugins.push(plugin),
-            Err(e) => {
-                tracing::warn!(
-                    plugin = name,
-                    version = version.as_str(),
-                    error = %e,
-                    "failed to load installed plugin, skipping"
-                );
-                refused.push(Refused {
-                    name: name.to_string(),
-                    version: version.clone(),
-                    reason: e.to_string(),
-                });
+        for version in cache.list_versions(name) {
+            let Some(manifest_path) = cache.cached_manifest(name, &version) else {
+                break;
+            };
+            let loaded = Plugin::load(&path.join(&version), &manifest_path).and_then(|plugin| {
+                Disclosure::from_plugin(&plugin)?;
+                Ok(plugin)
+            });
+            let e = match loaded {
+                Ok(plugin) => {
+                    plugins.push(plugin);
+                    break;
+                }
+                Err(e) => e,
+            };
+            tracing::warn!(
+                plugin = name,
+                version = version.as_str(),
+                error = %e,
+                "failed to load installed plugin, skipping"
+            );
+            let older_may_load = matches!(e, PluginError::EngineVersion { .. });
+            refused.push(Refused {
+                name: name.to_string(),
+                version,
+                reason: e.to_string(),
+            });
+            if !older_may_load {
+                break;
             }
         }
     }
@@ -271,6 +277,65 @@ mod tests {
             .map(|p| p.manifest.plugin.name)
             .collect();
         assert_eq!(names, ["from-global", "from-scene"]);
+    }
+
+    #[test]
+    fn the_highest_version_this_engine_meets_is_picked_and_the_rest_refused() {
+        let global = TempDir::new().unwrap();
+        let scene = TempDir::new().unwrap();
+        write_plugin(global.path(), "p", "1.0.0", "");
+        write_plugin(global.path(), "p", "2.0.0", "requires_engine = \">=0.1\"\n");
+        write_plugin(
+            global.path(),
+            "p",
+            "3.0.0",
+            "requires_engine = \">=99.0.0\"\n",
+        );
+        write_plugin(
+            global.path(),
+            "only-future",
+            "1.0.0",
+            "requires_engine = \">=99\"\n",
+        );
+
+        let found = scan_plugins(global.path(), scene.path());
+        let loaded: Vec<_> = found
+            .plugins
+            .iter()
+            .map(|p| (p.name(), p.manifest.plugin.version.as_str()))
+            .collect();
+        assert_eq!(loaded, [("p", "2.0.0")]);
+
+        let mut refused: Vec<_> = found
+            .refused
+            .iter()
+            .map(|r| (r.name.as_str(), r.version.as_str()))
+            .collect();
+        refused.sort();
+        assert_eq!(refused, [("only-future", "1.0.0"), ("p", "3.0.0")]);
+        assert!(
+            found.refused[0].reason.starts_with("requires engine `>=99"),
+            "{:?}",
+            found.refused
+        );
+    }
+
+    #[test]
+    fn a_higher_version_that_fails_otherwise_does_not_fall_back() {
+        let global = TempDir::new().unwrap();
+        let scene = TempDir::new().unwrap();
+        write_plugin(global.path(), "p", "1.0.0", "");
+        let long = "x".repeat(crate::disclosure::MAX_DESCRIPTION_CHARS + 1);
+        write_plugin(
+            global.path(),
+            "p",
+            "2.0.0",
+            &format!("description = \"{long}\"\n"),
+        );
+        let found = scan_plugins(global.path(), scene.path());
+        assert!(found.plugins.is_empty());
+        assert_eq!(found.refused.len(), 1);
+        assert_eq!(found.refused[0].version, "2.0.0");
     }
 
     #[test]

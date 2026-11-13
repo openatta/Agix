@@ -263,6 +263,8 @@ frontmatter 拼错一个键、`name` 与目录名不一致、少了 `description
 
 `Plugin`、`PluginSession`、`Registrar` 的方法,九个脚本点的 JSON 形状,脚本绑定的字段,以及 `plugin.toml` 的写法(`api_version = "0.1"`),原则上只做增量,不改已有的含义;但 `api_version` 还是 `0.1`,这条原则不是保证。破坏兼容的改动不会静默发生,每次都列在发布对应的迁移文档(`migrating_to_0.3.md`)里,升级前先读那一节。
 
+包用到了某个版本之后才有的东西(新的脚本点、新的绑定字段),在 `[plugin]` 里写 `requires_engine = ">=0.3.12"`:更早的引擎装它时直接拒,报出要求的版本和自己的版本,而不是装上之后那一处静默不生效。比较只看引擎版本的 `x.y.z`,不看日期序号;装了几个版本时用满足条件的最高版本。规则见 `plugin_packages.md`「`api_version` 与 `requires_engine`」。Rust 插件编进二进制,不用写。
+
 0.3.10 就有这样的改动:`[[mcp]] kind = "dsh"` 被拒(引擎不再带 DSH 桥);披露里超限的文本从警告变成拒装;`[[agent]] prompt` 与 `[[mcp]] config` 必须在包内,与 `[[script]]` 一样;`[[mcp]] config` 里写 `oauth_provider` 的被拒,改用 `oauth`;`plugin.install` 的 `name`、`version` 只收 1–128 个 ASCII 字母、数字与 `.`、`_`、`-`、`+`。0.3.11 新增 `[skills]` 段,只增不改:没写它的包不受影响。
 
 各个点背后的 trait(`ToolMiddleware`、`ModelInterceptor`……)按 `extension_points.md` 里各自的说明。

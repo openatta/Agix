@@ -60,6 +60,10 @@ pub struct PluginMeta {
     pub version: String,
     /// Which [`SUPPORTED_API_VERSIONS`] entry this plugin was built against.
     pub api_version: String,
+    /// The engine versions this plugin needs, for capabilities that arrived
+    /// after its `api_version` did. Matched against [`engine_release`].
+    #[serde(default, deserialize_with = "version_requirement")]
+    pub requires_engine: Option<semver::VersionReq>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -175,6 +179,53 @@ pub enum PluginError {
     Checksum(String),
     #[error("unsupported api_version `{found}` (this build supports {supported})")]
     ApiVersion { found: String, supported: String },
+    #[error(
+        "requires engine `{required}`, this is {} ({running})",
+        release_of(running)
+    )]
+    EngineVersion {
+        required: semver::VersionReq,
+        running: String,
+    },
+}
+
+/// This build's version as a plugin's `requires_engine` sees it: `x.y.z`.
+///
+/// The release's date suffix (`0.3.12-2026111001`) is dropped, because semver
+/// reads it as a pre-release and orders `0.3.12-2026111001` before `0.3.12`:
+/// `>=0.3.12` would refuse the very release it names.
+pub fn engine_release() -> semver::Version {
+    release_of(env!("CARGO_PKG_VERSION"))
+}
+
+fn release_of(version: &str) -> semver::Version {
+    let core = version.split(['-', '+']).next().unwrap_or(version);
+    semver::Version::parse(core).unwrap_or(semver::Version::new(0, 0, 0))
+}
+
+/// Whether an engine at `running` (a full version, suffix and all) meets
+/// `required`.
+pub fn check_engine(required: &semver::VersionReq, running: &str) -> Result<(), PluginError> {
+    if required.matches(&release_of(running)) {
+        Ok(())
+    } else {
+        Err(PluginError::EngineVersion {
+            required: required.clone(),
+            running: running.to_string(),
+        })
+    }
+}
+
+fn version_requirement<'de, D>(deserializer: D) -> Result<Option<semver::VersionReq>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(text) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    semver::VersionReq::parse(&text)
+        .map(Some)
+        .map_err(|e| serde::de::Error::custom(format!("requires_engine `{text}`: {e}")))
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +383,15 @@ fn validate(m: &PluginManifest) -> Result<(), PluginError> {
             found: m.plugin.api_version.clone(),
             supported: SUPPORTED_API_VERSIONS.join(", "),
         });
+    }
+    if let Some(required) = &m.plugin.requires_engine {
+        if required.comparators.iter().any(|c| !c.pre.is_empty()) {
+            return Err(PluginError::Schema(format!(
+                "requires_engine `{required}` names a pre-release; the engine is compared by \
+                 its x.y.z alone, so write the requirement without a suffix"
+            )));
+        }
+        check_engine(required, env!("CARGO_PKG_VERSION"))?;
     }
     for s in &m.script {
         if s.point.trim().is_empty() {
@@ -504,6 +564,68 @@ api_version = "0.1"
         let p = Plugin::load(dir.path(), &dir.path().join("plugin.toml")).unwrap();
         let err = p.path(Path::new("skills")).unwrap_err().to_string();
         assert!(err.contains("outside the package"), "{err}");
+    }
+
+    fn requiring(req: &str) -> Result<PluginManifest, PluginError> {
+        load_str(&MINIMAL.replace(
+            "api_version = \"0.1\"\n",
+            &format!("api_version = \"0.1\"\nrequires_engine = \"{req}\"\n"),
+        ))
+    }
+
+    /// This build's own version carries its date suffix, which semver would
+    /// read as a pre-release ordered before the release it names.
+    #[test]
+    fn requires_engine_is_compared_by_this_builds_x_y_z() {
+        let running = env!("CARGO_PKG_VERSION");
+        assert!(running.contains('-'), "{running} has its date suffix");
+        let release = engine_release();
+        assert!(release.pre.is_empty() && release.build.is_empty());
+        let (major, minor, patch) = (release.major, release.minor, release.patch);
+
+        for met in [
+            format!("^{major}.{minor}"),
+            format!(">={major}.{minor}.{patch}"),
+            format!("={major}.{minor}.{patch}"),
+            format!(">={major}.{minor}.{patch}, <{}", major + 1),
+        ] {
+            let m = requiring(&met).unwrap_or_else(|e| panic!("{met}: {e}"));
+            assert!(m.plugin.requires_engine.is_some());
+        }
+
+        let higher = format!(">={major}.{minor}.{}", patch + 1);
+        let e = requiring(&higher).unwrap_err();
+        assert!(matches!(e, PluginError::EngineVersion { .. }), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            format!("requires engine `{higher}`, this is {release} ({running})")
+        );
+    }
+
+    #[test]
+    fn requires_engine_is_optional_and_must_parse() {
+        assert!(load_str(MINIMAL).unwrap().plugin.requires_engine.is_none());
+        let e = requiring("not a version").unwrap_err().to_string();
+        assert!(e.contains("requires_engine `not a version`"), "{e}");
+    }
+
+    #[test]
+    fn a_pre_release_requirement_is_refused() {
+        let e = requiring(">=0.3.12-2026111001").unwrap_err();
+        assert!(matches!(e, PluginError::Schema(_)), "{e:?}");
+        assert!(e.to_string().contains("requires_engine"), "{e}");
+    }
+
+    #[test]
+    fn the_date_suffix_never_decides() {
+        let req = semver::VersionReq::parse(">=0.3.12").unwrap();
+        check_engine(&req, "0.3.12-2026111001").unwrap();
+        check_engine(&req, "0.3.12").unwrap();
+        let e = check_engine(&req, "0.3.11-2026111901").unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "requires engine `>=0.3.12`, this is 0.3.11 (0.3.11-2026111901)"
+        );
     }
 
     #[test]

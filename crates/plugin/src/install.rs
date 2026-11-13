@@ -594,6 +594,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_package_for_a_later_engine_never_reaches_the_cache() {
+        let tmp = TempDir::new().unwrap();
+        let cache = PluginCache::new(tmp.path().join("cache"));
+        let manifest = DEMO_MANIFEST.replace(
+            "api_version = \"0.1\"\n",
+            "api_version = \"0.1\"\nrequires_engine = \">=99.0.0\"\n",
+        );
+        let archive = zip_bytes(&[("plugin.toml", manifest.as_str())]);
+        let source = file_source(tmp.path(), &archive, None);
+        let e = install(&cache, "demo", &source)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("requires engine `>=99.0.0`")
+                && e.contains(&crate::manifest::engine_release().to_string())
+                && e.contains(env!("CARGO_PKG_VERSION")),
+            "{e}"
+        );
+        assert!(!cache.version_dir("demo", "1.0.0").exists());
+        assert!(walkdir_files(&tmp.path().join("cache").join("demo")).is_empty());
+    }
+
+    #[tokio::test]
     async fn one_skill_with_bad_frontmatter_keeps_the_whole_package_out() {
         let tmp = TempDir::new().unwrap();
         let cache = PluginCache::new(tmp.path().join("cache"));

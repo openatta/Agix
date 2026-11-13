@@ -1,7 +1,8 @@
 //! Skills a plugin package ships, seen from a host: installed over RPC they
 //! reach the session's `Skill` tool and `commands.list`, go away with
 //! `plugin.disable`, give way to a skill of the same name on disk, and a
-//! package with a broken one does not install at all.
+//! package with a broken one does not install at all — nor does one whose
+//! `requires_engine` this build does not meet.
 #![cfg(all(feature = "plugin-packages", feature = "skills"))]
 
 use std::io::Write;
@@ -375,4 +376,39 @@ async fn a_package_with_a_broken_skill_does_not_install() {
     );
     assert!(!daemon.global.join("plugins/cache/broken/1.0.0").exists());
     assert!(daemon.command("tour").await.is_none());
+}
+
+/// `requires_engine` is met by this build's `x.y.z` whatever its date suffix,
+/// and a package for a later engine is refused at install with both versions
+/// named, leaving nothing in the cache.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_package_for_a_later_engine_does_not_install() {
+    let daemon = Daemon::start().await;
+    let running = env!("CARGO_PKG_VERSION");
+    let release = running.split('-').next().unwrap();
+    let mut parts = release.split('.');
+    let (major, minor) = (parts.next().unwrap(), parts.next().unwrap());
+    let requiring = |name: &str, req: &str| {
+        format!(
+            "[plugin]\nname = \"{name}\"\nversion = \"1.0.0\"\napi_version = \"0.1\"\n\
+             requires_engine = \"{req}\"\n"
+        )
+    };
+
+    let current = requiring("current", &format!("^{major}.{minor}"));
+    let met = daemon
+        .install("current", &[("plugin.toml", &current)])
+        .await;
+    assert!(met["result"]["success"] == true, "{met}");
+
+    let future = requiring("future", ">=99.0.0");
+    let refused = daemon.install("future", &[("plugin.toml", &future)]).await;
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&format!(
+            "requires engine `>=99.0.0`, this is {release} ({running})"
+        )),
+        "{refused}"
+    );
+    assert!(!daemon.global.join("plugins/cache/future").exists());
 }
