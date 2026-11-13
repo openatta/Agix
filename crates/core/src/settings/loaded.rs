@@ -62,14 +62,6 @@ pub struct LoadedSettings {
     project_layer: ProjectLayer,
 }
 
-impl std::ops::Deref for LoadedSettings {
-    type Target = Settings;
-
-    fn deref(&self) -> &Settings {
-        &self.values
-    }
-}
-
 impl LoadedSettings {
     /// Settings that were not loaded from any tier: no rules, no managed
     /// layer, and no project tier of their own.

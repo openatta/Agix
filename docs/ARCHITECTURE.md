@@ -1487,6 +1487,12 @@ warn。全局层 `settings.json` 与 `settings.local.json` 的
 `trusted` 清单相加,不是后者盖前者。合并时的判定结果在 `LoadedSettings::trust`、`LoadedSettings::requires_trust`:
 信任状态、命中的那条、以及项目层里哪些东西要信任才生效(`requires_trust`)。
 
+`LoadedSettings` 是加载的结果,不是 `Settings` 的别名:`values` 是合并后的值(`Settings`),`paths` 是本场景
+数据的位置,`rules` 带层归属的权限规则,`managed` 是部署方的托管层,`ignored` 是被丢掉的值;项目层的
+判定结果是私有字段,只经 `trust()` / `requires_trust()` / `project_mcp_servers()` 读,装配层写不出对它的访问。
+`LoadedSettings` 没有 `Deref`:只读值的函数收 `&Settings`,调用方传 `&loaded.values`;持有方读
+`loaded.values.x` 与 `loaded.paths.x`。
+
 宿主经 `project.status` 读状态与 `requires_trust`(用来画"信任这个项目吗"的对话框),经
 `project.trust` 把项目根加进或移出全局 `settings.local.json` 的 `trusted`,之后这个项目的
 绑定与 MCP 连接重建,发 `project_trust_changed` 通知。`project.trust` 只收绝对路径,记下的是
