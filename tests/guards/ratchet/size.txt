@@ -40,7 +40,6 @@ fn    crates/core/src/prompt.rs                            assemble_prompt_with 
 fn    crates/core/src/settings/loaded.rs                   LoadedSettings::load_from                198
 fn    crates/hooks/src/catalog.rs                          HookEvent::spec                          179
 fn    crates/mcp/src/manager.rs                            McpManager::connect_all_within           105
-fn    crates/model/src/adapter.rs                          AnthropicModel::stream                   159
 fn    crates/model/src/adapter.rs                          map_stream_event                         173
 fn    crates/permissions/src/invocation.rs                 resolve_command                          117
 fn    crates/permissions/src/path_safety.rs                check_write_for                          146

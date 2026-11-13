@@ -58,18 +58,7 @@ impl Model for AnthropicModel {
         params: StreamParams,
         cancel: CancellationToken,
     ) -> Result<ModelStream, ModelError> {
-        let system: Vec<SystemBlock> = prompt_blocks
-            .into_iter()
-            .map(|pb| match pb.cache_strategy {
-                Some(CacheStrategy::Ephemeral) => {
-                    SystemBlock::text_cached(pb.content, CacheControl::ephemeral_1h())
-                }
-                Some(CacheStrategy::Global) => {
-                    SystemBlock::text_cached(pb.content, CacheControl::ephemeral_1h_global())
-                }
-                None => SystemBlock::text(pb.content),
-            })
-            .collect();
+        let system = system_blocks(prompt_blocks);
 
         let mut message_params: Vec<MessageParam> = messages
             .into_iter()
@@ -77,62 +66,18 @@ impl Model for AnthropicModel {
             .filter(|m| !m.content.is_empty())
             .collect();
 
-        // Wire cache_edits into the API request.
-        // When the compaction system has cleared old tool results, we send their
-        // tool_use_ids as `cache_edits` to the Anthropic API so the server can
-        // delete those results from its cached prefix without invalidating the
-        // global cache. Requires the `context-management-2025-06-27` beta header.
         let has_cache_edits = !params.cache_edits.is_empty();
         if has_cache_edits {
-            if let Some(last_user) = message_params
-                .iter_mut()
-                .rev()
-                .find(|m| m.role == Role::User)
-            {
-                last_user.content.push(ContentBlock::CacheEdits {
-                    cache_edits: params
-                        .cache_edits
-                        .iter()
-                        .map(|id| CacheEdit::DeleteToolResult {
-                            tool_use_id: id.clone(),
-                        })
-                        .collect(),
-                });
-            }
+            attach_cache_edits(&mut message_params, &params.cache_edits);
         }
 
-        let anthropic_builtins: Vec<BuiltinTool> = params
-            .provider_search
-            .map(|search| BuiltinTool::WebSearch {
-                name: PROVIDER_SEARCH_TOOL.into(),
-                allowed_domains: None,
-                blocked_domains: None,
-                max_uses: Some(search.max_uses),
-            })
-            .into_iter()
-            .collect();
+        let anthropic_builtins = provider_search_builtins(params.provider_search);
         let mut betas: Vec<String> = Vec::new();
         if has_cache_edits {
             betas.push("context-management-2025-06-27".into());
         }
-        let anthropic_tools: Vec<crate::types::ToolDef> = tools
-            .into_iter()
-            .map(|t| crate::types::ToolDef {
-                name: t.name,
-                description: t.description,
-                input_schema: t.input_schema,
-                cache_control: None,
-                defer_loading: None,
-                strict: None,
-            })
-            .collect();
-
-        let thinking = match params.thinking_mode {
-            ThinkingMode::Auto => None,
-            ThinkingMode::Off => Some(ThinkingConfig::Disabled),
-            ThinkingMode::On => Some(ThinkingConfig::Adaptive),
-            ThinkingMode::OnBudget(n) => Some(ThinkingConfig::Enabled { budget_tokens: n }),
-        };
+        let anthropic_tools = wire_tools(tools);
+        let thinking = thinking_config(params.thinking_mode);
 
         // A call that is only a search has nothing else to do, so it is told
         // to search rather than left to decide whether to.
@@ -175,21 +120,7 @@ impl Model for AnthropicModel {
         // refusal — a status, a connection that never opened — is waited
         // for, and returned from here, where a caller's recovery looks.
         let mut raw = self.inner.stream_messages(req);
-        let first = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(ModelError::cancelled()),
-            first = raw.next() => first,
-        };
-        let first = match first {
-            Some(Ok(crate::stream::StreamEvent::Error { error })) => return Err(api_error(error)),
-            Some(Ok(event)) => event,
-            Some(Err(e)) => return Err(e.into()),
-            None => {
-                return Err(ModelError::stream_interrupted(
-                    "the provider closed the response without sending anything",
-                ))
-            }
-        };
+        let first = first_event(&mut raw, &cancel).await?;
         // `scan` carries the per-block tool_use JSON accumulator across raw
         // events (needed because one incoming `StreamEvent` can produce
         // zero or several `ModelEvent`s — see `map_stream_event`'s doc
@@ -208,6 +139,97 @@ impl Model for AnthropicModel {
         Ok(Box::new(Box::pin(crate::cancel::until_cancelled(
             mapped, cancel,
         ))))
+    }
+}
+
+fn system_blocks(prompt_blocks: Vec<PromptBlock>) -> Vec<SystemBlock> {
+    prompt_blocks
+        .into_iter()
+        .map(|pb| match pb.cache_strategy {
+            Some(CacheStrategy::Ephemeral) => {
+                SystemBlock::text_cached(pb.content, CacheControl::ephemeral_1h())
+            }
+            Some(CacheStrategy::Global) => {
+                SystemBlock::text_cached(pb.content, CacheControl::ephemeral_1h_global())
+            }
+            None => SystemBlock::text(pb.content),
+        })
+        .collect()
+}
+
+/// Once compaction has cleared old tool results, their ids go out as
+/// `cache_edits` so the server drops them from its cached prefix without
+/// invalidating the global cache; this needs the `context-management-2025-06-27` beta.
+fn attach_cache_edits(message_params: &mut [MessageParam], cache_edits: &[String]) {
+    if let Some(last_user) = message_params
+        .iter_mut()
+        .rev()
+        .find(|m| m.role == Role::User)
+    {
+        last_user.content.push(ContentBlock::CacheEdits {
+            cache_edits: cache_edits
+                .iter()
+                .map(|id| CacheEdit::DeleteToolResult {
+                    tool_use_id: id.clone(),
+                })
+                .collect(),
+        });
+    }
+}
+
+fn provider_search_builtins(
+    search: Option<base::interface::model::ProviderSearch>,
+) -> Vec<BuiltinTool> {
+    search
+        .map(|search| BuiltinTool::WebSearch {
+            name: PROVIDER_SEARCH_TOOL.into(),
+            allowed_domains: None,
+            blocked_domains: None,
+            max_uses: Some(search.max_uses),
+        })
+        .into_iter()
+        .collect()
+}
+
+fn wire_tools(tools: Vec<ToolDef>) -> Vec<crate::types::ToolDef> {
+    tools
+        .into_iter()
+        .map(|t| crate::types::ToolDef {
+            name: t.name,
+            description: t.description,
+            input_schema: t.input_schema,
+            cache_control: None,
+            defer_loading: None,
+            strict: None,
+        })
+        .collect()
+}
+
+fn thinking_config(mode: ThinkingMode) -> Option<ThinkingConfig> {
+    match mode {
+        ThinkingMode::Auto => None,
+        ThinkingMode::Off => Some(ThinkingConfig::Disabled),
+        ThinkingMode::On => Some(ThinkingConfig::Adaptive),
+        ThinkingMode::OnBudget(n) => Some(ThinkingConfig::Enabled { budget_tokens: n }),
+    }
+}
+
+async fn first_event(
+    raw: &mut crate::client::EventStream,
+    cancel: &CancellationToken,
+) -> Result<crate::stream::StreamEvent, ModelError> {
+    let first = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ModelError::cancelled()),
+        first = raw.next() => first,
+    };
+    match first {
+        Some(Ok(crate::stream::StreamEvent::Error { error })) => Err(api_error(error)),
+        Some(Ok(event)) => Ok(event),
+        Some(Err(e)) => Err(e.into()),
+        None => Err(ModelError::stream_interrupted(
+            "the provider closed the response without sending anything",
+        )),
     }
 }
 
