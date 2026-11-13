@@ -6,7 +6,7 @@ impl SessionPool {
     /// See [`SceneCheck`]. Safe to call unconditionally, including for a
     /// session id with no on-disk history at all (degrades to `Inferred`).
     ///
-    /// Matches against any *currently active* scene (`self.active_scenes`),
+    /// Matches against any *currently active* scene (`SceneCatalog::is_active`),
     /// not just this pool's default — a session legitimately created via
     /// `session.create {scene: "harnix"}` after `scene.activate {scene:
     /// "harnix"}` is exactly as resumable/closeable/forkable as one under the
@@ -15,7 +15,7 @@ impl SessionPool {
     pub(in crate::session_pool) async fn check_scene(&self, session_id: &str) -> SceneCheck {
         match self.facts_of(session_id).await.scene {
             None => SceneCheck::Inferred,
-            Some(s) if self.active_scenes.read().await.contains_key(&s) => SceneCheck::Matches,
+            Some(s) if self.scenes.is_active(&s) => SceneCheck::Matches,
             Some(s) => SceneCheck::Mismatch(s),
         }
     }
@@ -369,7 +369,7 @@ impl SessionPool {
             name,
             created_at,
             last_active,
-            scene: self.scene.id.clone(),
+            scene: self.scenes.default_id().to_string(),
             project_trust: project_trust.into(),
             permission: api::PermissionReport {
                 mode,
@@ -452,7 +452,7 @@ impl SessionPool {
         // reaching here, so an inactive scene at this point is a race, and
         // refusing is the only answer that doesn't silently change what the
         // session is.
-        let Some(scene) = self.resolve_scene(Some(&scene_id)).await else {
+        let Some(scene) = self.scenes.resolve(Some(&scene_id)) else {
             return Err(format!(
                 "session `{sid}` was recorded under scene `{scene_id}`, which is not active on this daemon"
             )

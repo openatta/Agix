@@ -26,21 +26,7 @@ impl SessionPool {
     /// built with and run to completion — the alternative would be pulling a
     /// session's system prompt out from under it mid-turn.
     pub(in crate::session_pool) async fn adopt_plugin_scenes(&self) {
-        let plugin_scenes = self.plugins.scenes();
-
-        let (registry, _) = self.scene_registry_now(&plugin_scenes);
-        let plugin_ids: std::collections::HashSet<String> =
-            plugin_scenes.iter().map(|s| s.id.clone()).collect();
-        *self
-            .scene_registry
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = Arc::new(registry);
-
-        let mut active = self.active_scenes.write().await;
-        active.retain(|id, _| !id.starts_with("plugin:") || plugin_ids.contains(id));
-        for s in plugin_scenes {
-            active.insert(s.id.clone(), s);
-        }
+        self.scenes.adopt_plugin_scenes(self.plugins.scenes());
     }
 
     /// Whether this binary has the plugin subsystem, and whether it is on —

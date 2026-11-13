@@ -95,7 +95,7 @@ impl SessionPool {
                 let sid = Id::new().to_string();
                 self.create(
                     sid.clone(),
-                    self.scene.clone(),
+                    self.scenes.default().clone(),
                     self.default_binding().await,
                     Some(self.cwd.clone()),
                     options.as_ref(),

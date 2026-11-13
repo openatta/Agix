@@ -41,7 +41,6 @@ mod mcp_status;
 mod parts;
 mod permission_scripts;
 mod pool_telemetry;
-mod scenes;
 #[cfg(test)]
 mod tests;
 
@@ -56,13 +55,14 @@ use facade::settings_reload::*;
 use mcp_status::*;
 use parts::hub::SessionHub;
 use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
+use parts::scenes::SceneCatalog;
 use parts::scheduler::{Scheduler, TurnLauncher};
 use parts::specs::{SessionSpec, SpecStore};
 use permission_scripts::*;
 use pool_telemetry::*;
 
 /// Outcome of comparing a session's recorded `Meta.scene` (if any) against
-/// every scene this daemon currently serves (`SessionPool::active_scenes`) —
+/// every scene this daemon currently serves (`SceneCatalog::is_active`) —
 /// see docs/ARCHITECTURE.md §3.1.
 /// Resume/fork/close/delete don't yet take a per-request `scene` param
 /// (every caller implicitly means "whichever active scene this session was
@@ -279,12 +279,6 @@ fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::ent
         .iter()
         .map(|env| &env.entry)
         .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
-}
-
-struct SceneTableChange {
-    added: Vec<String>,
-    removed: Vec<String>,
-    refused: Vec<String>,
 }
 
 /// What a [`SessionCustomizer`] is told about the session being built.
@@ -535,32 +529,9 @@ pub struct SessionPool {
     /// running keep whatever `Arc<LoadedSettings>` snapshot they were built
     /// with — only new `create()` calls observe the update.
     settings: AsyncRwLock<Arc<LoadedSettings>>,
-    /// This daemon instance's *default* scene (resolved + validated from
-    /// `--scene` at startup — see `main.rs::resolve_scene`). Every session
-    /// created without an explicit `scene` uses this one.
-    scene: Arc<SceneSpec>,
-    /// Every scene this daemon instance currently serves, keyed by id —
-    /// always at least `{self.scene.id(): self.scene}`, plus whatever
-    /// `--scenes` added at startup or `scene.activate` added at runtime.
-    /// `session.create`'s optional `scene` param resolves against this, not
-    /// `self.scene` — the pool's *default* scene concept and *which scenes
-    /// are currently servable* are related but distinct (the default is
-    /// always servable; not everything servable is the default).
-    active_scenes: AsyncRwLock<HashMap<String, Arc<SceneSpec>>>,
-    /// Every scene this pool can serve, active or not — what `scene.list`
-    /// enumerates and `scene.activate` resolves against: the built-in ones,
-    /// the host's and the plugins'. Swapped wholesale when the plugin set
-    /// changes or the host registers a scene; a session already running
-    /// holds its own `Arc<SceneSpec>` and is unaffected.
-    scene_registry: std::sync::RwLock<Arc<scene::SceneRegistry>>,
-    /// Scenes the host defined rather than the binary or a plugin: the one
-    /// the pool was started with, and every one passed to
-    /// [`register_scene`](Self::register_scene). Kept so each rebuild of the
-    /// registry has them; without that, a host scene once deactivated could
-    /// never be activated again.
-    host_scenes: std::sync::RwLock<Vec<Arc<SceneSpec>>>,
-    /// Scenes `scene.register` added, held in memory only.
-    registered_scenes: std::sync::RwLock<Vec<Arc<SceneSpec>>>,
+    /// The default scene, the scenes served now, and every scene this pool
+    /// can serve.
+    scenes: SceneCatalog,
     /// The host's own permission, handed to a session whose effective mode
     /// is `bypassPermissions` in place of the rule gate (see
     /// `resolve_session_permission`). `None` when the host supplied none:

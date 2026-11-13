@@ -1,45 +1,6 @@
-//! 池内通用的自由函数：scene 注册表、事件中继与发布、LRU 驱逐、空闲判定等。
+//! 池内通用的自由函数：事件中继与发布、LRU 驱逐、空闲判定等。
 
 use crate::session_pool::*;
-
-/// The scenes a pool can serve: built-ins, then the host's, then the
-/// declarative scenes under `user_scenes` (`<state root>/scenes/<id>/`), then
-/// those `scene.register` added, then the plugins'. A declarative or
-/// registered scene cannot take an id already there; one that does not load
-/// is left out, named in the returned list, and the rest load.
-pub(in crate::session_pool) fn registry_of(
-    host_scenes: &[Arc<SceneSpec>],
-    plugin_scenes: &[Arc<SceneSpec>],
-    user_scenes: &std::path::Path,
-    registered: &[Arc<SceneSpec>],
-) -> (scene::SceneRegistry, Vec<String>) {
-    let mut registry = scene::SceneRegistry::new();
-    let mut refused = Vec::new();
-    registry.register_builtin();
-    for s in host_scenes {
-        registry.register(s.clone());
-    }
-    for e in registry.register_declarative_dir(user_scenes) {
-        warn!(error = %e, "a declarative scene was not loaded");
-        refused.push(e.to_string());
-    }
-    for s in registered {
-        if registry.resolve(&s.id).is_some() {
-            let e = format!(
-                "scene `{}` (scene.register): the id is already registered",
-                s.id.as_str()
-            );
-            warn!(error = %e, "a registered scene was not loaded");
-            refused.push(e);
-        } else {
-            registry.register(s.clone());
-        }
-    }
-    for s in plugin_scenes {
-        registry.register(s.clone());
-    }
-    (registry, refused)
-}
 
 /// A goal round as its own boxed future: `run_turn` starts rounds and rounds
 /// run `run_turn`, so the `Send` of one cannot be inferred from the other.
@@ -111,7 +72,9 @@ pub(in crate::session_pool) fn evict_lru(
 
 /// The ask `event` raises — its `prompt_id`, the background task asking it
 /// when one does, and what kind of answer it wants.
-pub(in crate::session_pool) fn ask_of(event: &AgentEvent) -> Option<(String, Option<String>, AskKind)> {
+pub(in crate::session_pool) fn ask_of(
+    event: &AgentEvent,
+) -> Option<(String, Option<String>, AskKind)> {
     match event {
         AgentEvent::PermissionPrompt {
             prompt_id, task_id, ..
@@ -146,7 +109,10 @@ pub(in crate::session_pool) fn publish_agent_event(
 }
 
 /// A frame of `session_id` that belongs to no turn.
-pub(in crate::session_pool) fn frame_between_turns(session_id: &str, event: SessionEvent) -> SessionFrame {
+pub(in crate::session_pool) fn frame_between_turns(
+    session_id: &str,
+    event: SessionEvent,
+) -> SessionFrame {
     SessionFrame {
         session_id: Arc::from(session_id),
         turn_id: None,

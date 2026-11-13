@@ -83,7 +83,7 @@ impl SessionPool {
         project_root: Option<&Path>,
         include_secrets: bool,
     ) -> Result<api::SceneDescription, PoolError> {
-        let Some(scene) = self.scene_registry().resolve(scene_id) else {
+        let Some(scene) = self.scenes.registry().resolve(scene_id) else {
             return Err(PoolError::SceneNotFound {
                 scene: scene_id.to_string(),
             });
@@ -99,7 +99,7 @@ impl SessionPool {
             name: scene.name.clone(),
             description: scene.description.clone(),
             project_root: project_root.map(|p| p.display().to_string()),
-            active: self.active_scenes.read().await.contains_key(scene_id),
+            active: self.scenes.is_active(scene_id),
             capabilities: api::SceneCapabilities {
                 requires_project: scene.requires_project,
                 supports_team: scene.supports_team,
@@ -132,7 +132,7 @@ impl SessionPool {
         include_secrets: bool,
     ) -> Result<api::ConfigTier, PoolError> {
         use api::ConfigTierName as Tier;
-        if self.scene_registry().resolve(scene_id).is_none() {
+        if self.scenes.registry().resolve(scene_id).is_none() {
             return Err(PoolError::SceneNotFound {
                 scene: scene_id.to_string(),
             });
@@ -202,7 +202,7 @@ impl SessionPool {
         // disagreeing with the `session.list` entry for the same session is
         // the failure this whole assembly is arranged to prevent.
         let scene_active = match &info.scene {
-            Some(id) => self.active_scenes.read().await.contains_key(id),
+            Some(id) => self.scenes.is_active(id),
             None => false,
         };
         let current_turn_id = self.current_turn_of(session_id).await;

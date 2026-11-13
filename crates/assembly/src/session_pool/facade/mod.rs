@@ -9,6 +9,7 @@ pub(super) mod history_rpc;
 mod listing;
 mod plugins;
 mod resume;
+mod scenes;
 mod session_ops;
 pub(super) mod settings_reload;
 mod subscribers;

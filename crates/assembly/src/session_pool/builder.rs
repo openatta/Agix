@@ -176,17 +176,11 @@ impl SessionPoolBuilder {
         let scheduler = Scheduler::load(settings.paths.user_data_dir.join("scheduled_tasks.json"));
 
         let paths = self.paths;
-        let scene = self.scene;
         let plugins = crate::plugins::PluginSubsystem::new(paths.clone(), settings.plugins.clone());
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools::register_builtin_tools(&tools);
 
-        let host_scenes = vec![scene.clone()];
-        let scene_registry = std::sync::RwLock::new(Arc::new(
-            registry_of(&host_scenes, &[], &paths.global_root().join("scenes"), &[]).0,
-        ));
-        let mut active_scenes = HashMap::new();
-        active_scenes.insert(scene.id.clone(), scene.clone());
+        let scenes = SceneCatalog::new(self.scene, paths.global_root().join("scenes"));
 
         let pool_telemetry = build_pool_telemetry(&settings);
         let specs = SpecStore::new(self.history_store.clone(), self.cap);
@@ -198,11 +192,7 @@ impl SessionPoolBuilder {
             idle_timeout: self.idle_timeout,
             client: self.client,
             settings: AsyncRwLock::new(settings),
-            scene,
-            active_scenes: AsyncRwLock::new(active_scenes),
-            scene_registry,
-            host_scenes: std::sync::RwLock::new(host_scenes),
-            registered_scenes: std::sync::RwLock::new(Vec::new()),
+            scenes,
             permission: self.permission,
             tools,
             cwd: self.cwd,

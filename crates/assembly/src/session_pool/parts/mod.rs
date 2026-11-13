@@ -3,5 +3,6 @@
 
 pub(super) mod hub;
 pub(super) mod phase;
+pub(super) mod scenes;
 pub(super) mod scheduler;
 pub(super) mod specs;

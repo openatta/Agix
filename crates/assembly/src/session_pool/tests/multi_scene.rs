@@ -87,15 +87,15 @@ async fn the_startup_scene_keeps_its_injected_config_root() {
 async fn creating_a_session_in_an_inactive_scene_is_refused() {
     let (pool, _dir) = test_pool().await;
     assert!(
-        pool.resolve_scene(Some("mini")).await.is_none(),
+        pool.scenes.resolve(Some("mini")).is_none(),
         "mini was never activated on this pool"
     );
     assert!(
-        pool.resolve_scene(Some("harnix")).await.is_none(),
+        pool.scenes.resolve(Some("harnix")).is_none(),
         "harnix was never activated either"
     );
     assert!(
-        pool.resolve_scene(None).await.is_some(),
+        pool.scenes.resolve(None).is_some(),
         "no scene named falls back to the daemon's own"
     );
 }
@@ -110,8 +110,8 @@ async fn two_scenes_can_be_active_in_one_process() {
         .await
         .expect("activate harnix");
 
-    let code = pool.resolve_scene(Some("code")).await.expect("code");
-    let harnix = pool.resolve_scene(Some("harnix")).await.expect("harnix");
+    let code = pool.scenes.resolve(Some("code")).expect("code");
+    let harnix = pool.scenes.resolve(Some("harnix")).expect("harnix");
     assert_eq!(code.id, "code");
     assert_eq!(harnix.id, "harnix");
 

@@ -4,8 +4,8 @@ use crate::session_pool::*;
 
 impl SessionPool {
     /// `session.create` — the explicit multi-project entry point, with an
-    /// optional `scene` (resolved against `active_scenes` — see
-    /// `resolve_scene`; omitted means the pool's default scene). Builds and
+    /// optional `scene` (resolved against the active scenes — see
+    /// `SceneCatalog::resolve`; omitted means the pool's default scene). Builds and
     /// starts a new primary session bound to `project_root`, or this pool's
     /// default project for `ProjectSelector::Default`. Unlike the implicit
     /// `run_turn(session_id: None)` path, this is the one place a caller
@@ -17,7 +17,7 @@ impl SessionPool {
         project_root: ProjectSelector,
         options: Option<&SessionOptions>,
     ) -> Result<api::SessionCreated, PoolError> {
-        let Some(scene) = self.resolve_scene(scene_id).await else {
+        let Some(scene) = self.scenes.resolve(scene_id) else {
             return Err(PoolError::SceneNotActive {
                 scene: scene_id.unwrap_or("").to_string(),
             });
@@ -248,7 +248,7 @@ impl SessionPool {
         if let Some(router) = task_router {
             builder = builder.task_router(router);
         }
-        builder = builder.scene_registry(self.scene_registry());
+        builder = builder.scene_registry(self.scenes.registry());
         // A project's scripts belong to that project: the paths in its
         // settings resolve against it, and so does the question of whether a
         // file is inside it — which is what decides whether the script may
