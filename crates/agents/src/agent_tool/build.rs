@@ -1,79 +1,63 @@
-//! The one place a delegated session is assembled — foreground and background
-//! one-shot sub-agents and persistent team members all come through
-//! `Inner::build_delegate` — and the one-shot run around it.
+//! The one place a delegated session is assembled — every mode's delegate
+//! comes through `Delegator::build_delegate` — and the one-shot run around it.
 
 use super::*;
 
-/// Where a delegate's permission comes from.
-pub(super) enum Grant {
-    /// The caller's, under the run's deny rules.
-    Given(PermissionSet),
-    /// A team member's, judged in the member's final mode.
-    TeamMember,
+/// What a delegate is, as its request and mode decided it; everything else
+/// about it is decided in `build_delegate`.
+pub(crate) struct Spec {
+    pub(crate) session_id: String,
+    pub(crate) agent_type: Option<String>,
+    /// Over the agent type's model.
+    pub(crate) model: Option<String>,
+    pub(crate) tools: ToolSelector,
+    pub(crate) output_schema: Option<Value>,
+    /// A mode the caller asked for (a team's), held to the parent's.
+    pub(crate) permission_mode: Option<base::settings::PermissionMode>,
+    pub(crate) seat: Option<TeamSeat>,
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) called_from: Option<CallSite>,
 }
 
-/// What differs between spawn sites; everything else about a delegate is
-/// decided in `build_delegate`.
-pub(super) struct DelegatePlan<'a> {
-    pub(super) tools: Arc<InMemoryToolRegistry>,
-    pub(super) cwd: std::path::PathBuf,
-    pub(super) depth: u32,
-    pub(super) subagent_type: Option<&'a str>,
-    pub(super) grant: Grant,
-    pub(super) parent: Option<(&'a str, u32, &'a str)>,
-    pub(super) run: &'a SubRun,
-    pub(super) extracts_memories: bool,
+pub(crate) struct Delegate {
+    pub(crate) agent: Agent,
+    pub(crate) event_rx: EventReceiver,
+    pub(crate) input_tx: InputSender,
+    pub(crate) def: Option<AgentTypeDefinition>,
+    pub(crate) settings: Arc<LoadedSettings>,
+    pub(crate) payload: SubagentPayload,
+    pub(crate) history_store: Option<Arc<dyn HistoryStore>>,
 }
 
-pub(super) struct Delegate {
-    pub(super) agent: Agent,
-    pub(super) event_rx: EventReceiver,
-    pub(super) input_tx: InputSender,
-    pub(super) def: Option<AgentTypeDefinition>,
-    pub(super) settings: Arc<LoadedSettings>,
-    pub(super) payload: SubagentPayload,
-    pub(super) history_store: Option<Arc<dyn HistoryStore>>,
+/// One prompt, one turn, then the delegate ends.
+pub(crate) struct OneShot {
+    pub(crate) spec: Spec,
+    pub(crate) prompt: String,
+    pub(crate) cancel: tokio_util::sync::CancellationToken,
+    pub(crate) permission: PermissionSet,
+    /// The task the run's cost, structured output and questions show on.
+    pub(crate) task: Option<Arc<base::context::RunningTask>>,
+    /// Registered into this delegate's own tool registry only.
+    pub(crate) extra_tools: Vec<Arc<dyn base::tool::Tool>>,
+    /// Already on a task of its own, with its steering inbox open; otherwise
+    /// the caller awaits it and it runs on a task it is aborted with.
+    pub(crate) background: bool,
+    /// The team coordinator records a stage member's spawn itself.
+    pub(crate) records_spawn: bool,
 }
 
-/// How a one-shot run is driven.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum RunsOn {
-    /// The caller awaits it, on a task of its own.
-    Foreground,
-    /// Already on its own task; its steering inbox is open.
-    Background,
-}
-
-/// A one-shot sub-agent run: one prompt, one turn, then it ends.
-pub(super) struct OneShot<'a> {
-    pub(super) prompt: String,
-    pub(super) tools: Arc<InMemoryToolRegistry>,
-    pub(super) cwd: std::path::PathBuf,
-    pub(super) cancel: tokio_util::sync::CancellationToken,
-    pub(super) subagent_type: Option<&'a str>,
-    pub(super) grant: Grant,
-    pub(super) parent: Option<(&'a str, u32, &'a str)>,
-    pub(super) run: SubRun,
-    pub(super) runs_on: RunsOn,
-}
-
-impl Inner {
-    pub(super) async fn build_delegate(
+impl Delegator {
+    pub(crate) async fn build_delegate(
         &self,
-        plan: DelegatePlan<'_>,
+        spec: &Spec,
+        depth: u32,
+        tools: Arc<InMemoryToolRegistry>,
+        permission: PermissionSet,
+        extracts_memories: bool,
     ) -> Result<Delegate, base::error::ToolError> {
-        let DelegatePlan {
-            tools,
-            cwd,
-            depth,
-            subagent_type,
-            grant,
-            parent,
-            run,
-            extracts_memories,
-        } = plan;
-        let def = subagent_type.and_then(|t| self.agent_type_def(t));
-        let model_override = run
+        let agent_type = spec.agent_type.as_deref();
+        let def = agent_type.and_then(|t| self.agent_type_def(t));
+        let model_override = spec
             .model
             .clone()
             .or_else(|| def.as_ref().and_then(|d| d.model.clone()));
@@ -81,29 +65,14 @@ impl Inner {
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings.values, d);
         }
-        if let Some(mode) = run.permission_mode {
+        if let Some(mode) = spec.permission_mode {
             sub_settings.values.permission_mode = mode.min_permissive(sub_settings.permission_mode);
         }
         let scene = self.scene_for_subagent(def.as_ref());
         let scene_id = scene.id().to_string();
-        let permission = match grant {
-            Grant::Given(perm) => run.permission(perm),
-            Grant::TeamMember => self.permission_handler(),
-        };
         let settings = Arc::new(sub_settings);
-
-        let sid = run
-            .session_id
-            .clone()
-            .unwrap_or_else(|| base::id::Id::new().to_string());
-        // Resolved once and shared by the sub-agent's own lineage and its `Meta`
-        // line — two answers to "who spawned this" that must not be able to
-        // disagree.
-        let parent_session_id = Some(
-            parent
-                .map(|(sid, _, _)| sid.to_string())
-                .unwrap_or_else(|| self.env.parent.id.clone()),
-        );
+        let sid = spec.session_id.clone();
+        let parent_session_id = Some(self.env.parent.id.clone());
         // First, so that what the delegate decides for itself below — its
         // permission, narrowed from the parent's — replaces what it inherits.
         let builder = Builder::new().inherit(self.env.host.clone());
@@ -112,32 +81,33 @@ impl Inner {
             None => builder,
         }
         .session_id(sid.clone())
-        .lineage(parent_session_id.clone(), subagent_type)
+        .lineage(parent_session_id.clone(), agent_type)
         .scene(scene)
-        .contributed_tool_filter(contributed_tool_filter(def.as_ref(), run))
+        .contributed_tool_filter(contributed_tool_filter(def.as_ref(), &spec.tools))
         .model(self.model_for_subagent())
         .tools(tools)
         .settings(settings.clone())
         .agent_depth(depth)
         .memory_extraction(extracts_memories)
         .permission(permission);
-        if let Some(schema) = &run.output_schema {
+        if let Some(schema) = &spec.output_schema {
             builder = builder.output_schema(schema.clone());
         }
-        if let Some(seat) = run.seat.clone() {
+        if let Some(seat) = spec.seat.clone() {
             builder = builder.team_seat(seat);
         }
-        if let Some(servers) = self.mcp_granted_to(def.as_ref(), run) {
+        if let Some(servers) = self.mcp_granted_to(def.as_ref(), &spec.tools) {
             builder = builder.mcp_servers(servers);
         }
         let history_store = self.env.host.history_store.clone();
         let (agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
+        let cwd = &spec.cwd;
         if let Some(store) = &history_store {
-            write_sidechain_meta(store, &sid, parent_session_id, &scene_id, &cwd, &settings).await;
+            write_sidechain_meta(store, &sid, parent_session_id, &scene_id, cwd, &settings).await;
         }
-        let payload = SubagentPayload::of(&sid, &cwd, &settings, subagent_type);
+        let payload = SubagentPayload::of(&sid, cwd, &settings, agent_type);
         Ok(Delegate {
             agent,
             event_rx,
@@ -151,29 +121,31 @@ impl Inner {
 
     /// Build a one-shot delegate, run its turn between `SubagentStart` and
     /// `SubagentStop`, and mark its sidechain ended. `admission`'s slot is
-    /// held until the run ends. Returns the answer and whether `cancel`
-    /// stopped the run.
+    /// held until the run ends.
     ///
     /// The delegate extracts no memories: it is dropped as soon as its turn
     /// returns, which would abandon an extraction already paid for. What it
     /// learned reaches the parent as its answer.
-    pub(super) async fn run_delegate(
+    pub(crate) async fn run_delegate(
         &self,
         admission: Admission,
-        spawn: OneShot<'_>,
-    ) -> (Result<String, base::error::ToolError>, bool) {
+        shot: OneShot,
+    ) -> (String, DelegateEnd) {
         let Admission { depth, _slot } = admission;
         let OneShot {
+            spec,
             prompt,
-            tools,
-            cwd,
             cancel,
-            subagent_type,
-            grant,
-            parent,
-            run,
-            runs_on,
-        } = spawn;
+            permission,
+            task,
+            extra_tools,
+            background,
+            records_spawn,
+        } = shot;
+        let tools = self.delegate_tools(spec.agent_type.as_deref(), &spec.tools);
+        for t in extra_tools {
+            tools.register(t);
+        }
         let Delegate {
             mut agent,
             mut event_rx,
@@ -183,89 +155,67 @@ impl Inner {
             payload,
             history_store,
         } = match self
-            .build_delegate(DelegatePlan {
-                tools,
-                cwd,
-                depth,
-                subagent_type,
-                grant,
-                parent,
-                run: &run,
-                extracts_memories: false,
-            })
+            .build_delegate(&spec, depth, tools, permission, false)
             .await
         {
             Ok(delegate) => delegate,
-            Err(e) => return (Err(e), false),
+            Err(e) => return (String::new(), DelegateEnd::Failed(e.to_string())),
         };
         let sid = payload.session_id.clone();
-
+        let agent_type = spec.agent_type.as_deref();
         let prompt = match &def {
             Some(d) if !d.skills.is_empty() => {
                 preload_skills_text(self.env.skills.as_ref(), &d.skills) + &prompt
             }
             _ => prompt,
         };
-        let tag =
-            Some(SubagentTag::new(self, &sid, subagent_type, parent).for_task(run.task.as_ref()));
+        let called_from = spec.called_from.as_ref();
+        let tag = SubagentTag::new(self, &sid, agent_type, called_from).for_task(task.as_ref());
 
         // `Stop` fires on both success and failure — a hook that cleans up
         // after a sub-agent must not be skipped just because it errored.
         self.fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
             .await;
-        if runs_on == RunsOn::Background {
-            open_inbox(run.task.as_deref(), &agent);
-        }
-        let spawned = (!run.team_member).then(|| {
-            SpawnTelemetry::start(
-                self,
-                parent,
-                &sid,
-                subagent_type,
-                &settings.model.model_name,
-                runs_on == RunsOn::Background,
-            )
+        let spawned = records_spawn.then(|| {
+            let model = &settings.model.model_name;
+            SpawnTelemetry::start(self, called_from, &sid, agent_type, model, background)
         });
-        let (result, cancelled) = match runs_on {
-            RunsOn::Foreground => {
-                run_one_turn_detached(
-                    &sid,
-                    agent,
-                    event_rx,
-                    input_tx,
-                    prompt,
-                    cancel,
-                    tag,
-                    run.task.clone(),
-                )
-                .await
-            }
-            RunsOn::Background => {
-                let outcome = run_one_turn(
-                    &mut agent,
-                    &mut event_rx,
-                    &input_tx,
-                    prompt,
-                    cancel,
-                    tag,
-                    run.task.as_deref(),
-                )
-                .await;
-                drop(input_tx);
-                outcome
-            }
+        let (text, end) = if background {
+            open_inbox(task.as_deref(), &agent);
+            let ran = run_one_turn(
+                &mut agent,
+                &mut event_rx,
+                &input_tx,
+                prompt,
+                cancel,
+                Some(tag),
+                task.as_deref(),
+            )
+            .await;
+            drop(input_tx);
+            ran
+        } else {
+            run_one_turn_detached(
+                &sid,
+                agent,
+                event_rx,
+                input_tx,
+                prompt,
+                cancel,
+                Some(tag),
+                task,
+            )
+            .await
         };
         if let Some(spawned) = spawned {
-            spawned.finish(result.is_err());
+            spawned.finish(matches!(end, DelegateEnd::Failed(_)));
         }
-        self.fire_subagent_hook(
-            hooks::HookEvent::SubagentStop,
-            &payload.stopped(stop_reason_of(&result, cancelled)),
-        )
-        .await;
+        let stopped = payload.stopped(stop_reason_of(&end));
+        self.fire_subagent_hook(hooks::HookEvent::SubagentStop, &stopped)
+            .await;
         // Marked terminal on failure too, so a stale `session.resume` against
         // it is rejected instead of silently continuing a "finished" sub-agent.
-        mark_sidechain_terminal(history_store.as_ref(), &sid, &result, cancelled).await;
-        (result, cancelled)
+        mark_sidechain_terminal(history_store.as_ref(), &sid, &end).await;
+        (text, end)
     }
 }

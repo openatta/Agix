@@ -381,7 +381,7 @@ impl Builder {
         let event_tx = crate::event_bus::EventBus::with_sinks(primary_tx, self.event_sinks);
         // Created before the modules run, because a sub-agent's permission
         // prompts are registered in this same map — see
-        // `AgentTool::set_parent_pending_permissions`.
+        // `agents::delegate::DelegateEnv::capture`.
         let pending_permissions: PendingPermissions =
             Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let pending_questions: crate::elicitation::PendingQuestions = Default::default();

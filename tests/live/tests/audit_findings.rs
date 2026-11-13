@@ -1194,7 +1194,6 @@ async fn audit2_a_turn_cut_off_by_close_ends_with_a_terminal_frame_for_its_watch
 /// A `context: fork` skill the turn waits on is a task of the session while it
 /// runs: `session.tasks` lists it, and stopping it hands the turn back.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: a waited-on forked skill registers no task and cannot be stopped (A3, C2)"]
 async fn a_waited_on_forked_skill_is_a_task_the_host_can_stop() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("fork-task", &stub)
@@ -1266,7 +1265,6 @@ async fn a_waited_on_forked_skill_is_a_task_the_host_can_stop() -> anyhow::Resul
 /// A persistent member stopped with a message still queued for it ends that
 /// message's task too, so nothing is left running to hold off a rebuild.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: a stopped member's queued message leaves its task running (A3, MemberInbox)"]
 async fn a_member_stopped_with_a_queued_message_leaves_no_task_running() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let mut run = stubbed("member-queue", &stub)

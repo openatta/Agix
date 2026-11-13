@@ -18,7 +18,7 @@ use base::context::EngineConfig;
 use runtime::module::{Module, ModuleError, SessionContext};
 
 use crate::agent_tool::{AgentCatalog, AgentTool, SharedAgentTypeMap};
-use crate::delegate::{DelegateEnv, Limits, PersistentMembers, SubagentSlots, ToolPool};
+use crate::delegate::{DelegateEnv, Delegator, Limits, PersistentMembers, SubagentSlots, ToolPool};
 use crate::spawner::RuntimeAgentSpawner;
 
 pub const MODULE_ID: &str = "agents";
@@ -101,10 +101,11 @@ impl Module for AgentsModule {
         let limits = Limits::new(&env.config, env.depth, slots);
         let pool = ToolPool::new(template, cx.tools.clone(), cx.plugin_tools);
         let members = PersistentMembers::new(team_registry.clone());
-        let tool = Arc::new(AgentTool::new(env, catalog, pool, limits, members));
+        let delegator = Delegator::new(env, catalog, pool, limits, members);
+        let tool = Arc::new(AgentTool::new(delegator.clone()));
 
         let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-            Arc::new(RuntimeAgentSpawner::new(tool.clone()));
+            Arc::new(RuntimeAgentSpawner::new(delegator));
         cx.provide_agent_spawner(spawner.clone());
 
         // Withheld at the depth limit, so the deepest agents are never even

@@ -535,7 +535,7 @@ fn a_session_plugins_agent_types_sit_between_the_shared_catalog_and_the_disk() {
     }
     .agent_tool();
 
-    let prompt = |name: &str| tool.inner.agent_type_def(name).map(|d| d.system_prompt);
+    let prompt = |name: &str| tool.delegator.agent_type_def(name).map(|d| d.system_prompt);
     assert_eq!(prompt("builtin").as_deref(), Some("plugin"));
     assert_eq!(prompt("on-disk").as_deref(), Some("disk"));
     assert_eq!(prompt("new").as_deref(), Some("plugin"));

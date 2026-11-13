@@ -22,8 +22,6 @@ file  crates/runtime/src/turn/user_turn.rs                 -                    
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
-fn    crates/agents/src/agent_tool/build.rs                Inner::run_delegate                      113
-fn    crates/agents/src/agent_tool/members.rs              AgentTool::spawn_or_message_team_member  171
 fn    crates/agents/src/agent_tool/mod.rs                  AgentTool::call                          187
 fn    crates/agents/src/agent_tool/permission.rs           ParentPermission::decide                 134
 fn    crates/agents/src/lib.rs                             AgentsModule::on_session                 111

@@ -75,7 +75,7 @@ pub(super) async fn wait_until_idle(agent_tool: &AgentTool, key: &(String, Strin
     loop {
         let idle = {
             let members = agent_tool
-                .inner
+                .delegator
                 .members
                 .live
                 .read()
@@ -125,9 +125,7 @@ async fn call_rejects_team_name_given_without_name() {
 #[tokio::test]
 async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
     let agent_tool = team_enabled_agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     let key = team_key("t1", "worker");
 
     let tid1 = agent_tool
@@ -144,7 +142,7 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
         .expect("first spawn should succeed");
     wait_until_idle(&agent_tool, &key).await;
     let id1 = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -155,7 +153,7 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
         .clone();
     assert_eq!(
         agent_tool
-            .inner
+            .delegator
             .members
             .live
             .read()
@@ -180,7 +178,7 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
     wait_until_idle(&agent_tool, &key).await;
 
     let members = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -196,9 +194,7 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
 #[tokio::test]
 async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
     let agent_tool = team_enabled_agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     let key = team_key("t2", "worker");
 
     agent_tool
@@ -215,7 +211,7 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
         .unwrap();
     wait_until_idle(&agent_tool, &key).await;
     let id1 = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -227,7 +223,7 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
 
     agent_tool.stop_team_member("t2", "worker").await;
     assert!(agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -249,7 +245,7 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
         .unwrap();
     wait_until_idle(&agent_tool, &key).await;
     let id2 = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -272,9 +268,7 @@ async fn reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap() {
     config.team_max_persistent_members = 2;
     config.team_member_idle_timeout_secs = 1_000_000; // effectively disabled here
     let agent_tool = agent_tool_with_config(config);
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
 
     for name in ["a", "b", "c", "d"] {
         agent_tool
@@ -293,7 +287,7 @@ async fn reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap() {
     }
 
     let members = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -327,9 +321,7 @@ async fn reclaim_evicts_a_member_idle_past_the_timeout_regardless_of_total_count
     config.team_max_persistent_members = 100; // effectively disabled here
     config.team_member_idle_timeout_secs = 0; // any idle time at all reclaims
     let agent_tool = agent_tool_with_config(config);
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
 
     agent_tool
         .spawn_or_message_team_member(
@@ -360,7 +352,7 @@ async fn reclaim_evicts_a_member_idle_past_the_timeout_regardless_of_total_count
         .unwrap();
 
     let members = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -381,9 +373,7 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
     let mut config = EngineConfig::defaults_for("test");
     config.team_member_idle_timeout_secs = 0;
     let agent_tool = agent_tool_with_config(config);
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     let key_a = team_key("team", "a");
 
     agent_tool
@@ -400,7 +390,7 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
         .unwrap();
     wait_until_idle(&agent_tool, &key_a).await;
     let id_a_before = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -425,7 +415,7 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
     wait_until_idle(&agent_tool, &key_a).await;
 
     let members = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -443,9 +433,7 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
 #[tokio::test]
 async fn concurrent_first_calls_for_a_new_key_spawn_exactly_one_member() {
     let agent_tool = Arc::new(team_enabled_agent_tool());
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     let key = team_key("t4", "worker");
 
     let (r1, r2) = tokio::join!(
@@ -477,7 +465,7 @@ async fn concurrent_first_calls_for_a_new_key_spawn_exactly_one_member() {
 
     wait_until_idle(&agent_tool, &key).await;
     let members = agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -497,9 +485,7 @@ async fn concurrent_first_calls_for_a_new_key_spawn_exactly_one_member() {
 #[tokio::test]
 async fn team_delete_cleanup_stops_a_persistent_member() {
     let agent_tool = Arc::new(team_enabled_agent_tool());
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     let key = team_key("t3", "worker");
 
     agent_tool
@@ -516,7 +502,7 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
         .unwrap();
     wait_until_idle(&agent_tool, &key).await;
     assert!(agent_tool
-        .inner
+        .delegator
         .members
         .live
         .read()
@@ -524,13 +510,14 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
         .contains_key(&key));
 
     let registry = agent_tool
-        .inner
+        .delegator
         .members
         .registry
         .clone()
         .expect("team_enabled_agent_tool sets a registry");
-    let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
-        Arc::new(crate::spawner::RuntimeAgentSpawner::new(agent_tool.clone()));
+    let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> = Arc::new(
+        crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone()),
+    );
     let coordinator =
         team::coordinator::DefaultCoordinator::with_agent_spawner(spawner).with_registry(registry);
 
@@ -541,7 +528,7 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
 
     assert!(
         agent_tool
-            .inner
+            .delegator
             .members
             .live
             .read()
@@ -565,7 +552,7 @@ async fn auto_for_a_persistent_member_is_bypass() {
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t-auto", "worker")).await;
 
-    let registry = agent_tool.inner.members.registry.clone().unwrap();
+    let registry = agent_tool.delegator.members.registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t-auto"),
         Some(base::settings::PermissionMode::BypassPermissions)
@@ -593,9 +580,7 @@ async fn call_rejects_bubble_permission_mode_for_persistent_members() {
 #[tokio::test]
 async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later_spawns() {
     let agent_tool = team_enabled_agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
 
     agent_tool
         .spawn_or_message_team_member(
@@ -626,7 +611,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t4", "b")).await;
 
-    let registry = agent_tool.inner.members.registry.clone().unwrap();
+    let registry = agent_tool.delegator.members.registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t4"),
         Some(base::settings::PermissionMode::BypassPermissions),
@@ -642,9 +627,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
 #[tokio::test]
 async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() {
     let agent_tool = team_enabled_agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
 
     agent_tool
         .spawn_or_message_team_member(
@@ -660,7 +643,7 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t5", "a")).await;
 
-    let registry = agent_tool.inner.members.registry.clone().unwrap();
+    let registry = agent_tool.delegator.members.registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t5"),
         Some(base::settings::PermissionMode::Plan),
@@ -828,7 +811,6 @@ impl Model for HoldsUntilCancelled {
 /// waiting messages' tasks as stopped: none is left running for `TaskWait`
 /// to hang on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "D2: a stopped member drops its queued messages with their tasks still running (A3)"]
 async fn stopping_a_member_ends_the_tasks_of_its_queued_messages() {
     let held = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(team::registry::TeamRegistry::new());
@@ -840,7 +822,7 @@ async fn stopping_a_member_ends_the_tasks_of_its_queued_messages() {
         }))
     }
     .agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    let session = agent_tool.parent_state();
     let send = |prompt: &str| {
         agent_tool.spawn_or_message_team_member(
             "team".into(),

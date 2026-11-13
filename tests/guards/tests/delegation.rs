@@ -11,6 +11,14 @@
 //! session is assembled. Nothing in `agents` or `team` is a slot filled in
 //! after construction: no `SetLater`, no `RwLock<Option<…>>` field, no
 //! `set_*` on `AgentTool` or `Delegator`.
+//!
+//! DLG-6: `DelegateMode` is a closed enum, and every `match` on it in
+//! production code names each mode: no `_` arm stands in for one a new mode
+//! would fall into.
+//!
+//! DLG-7: in `agents`, a task is registered only through `TaskLease`, which
+//! ends it however its holder goes away; nothing calls `register_task` or
+//! holds a `TaskScope`.
 
 use std::collections::BTreeSet;
 
@@ -322,5 +330,120 @@ fn delegation_binds_nothing_late() {
             ));
         }
     }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// Enums in `base` matched exhaustively across crates, so without
+/// `#[non_exhaustive]`: `(enum, file, why)`. D5's base-wide list takes these
+/// over when it lands.
+const CLOSED_ENUMS: &[(&str, &str, &str)] = &[(
+    "DelegateMode",
+    "crates/core/src/interface/delegate.rs",
+    "the engine's one dispatch, `agents::delegate::Delegator::delegate`, matches it exhaustively",
+)];
+
+#[test]
+fn closed_enums_are_not_non_exhaustive() {
+    for (name, file, _) in CLOSED_ENUMS {
+        let found = scan::enums(ws().file(file), View::Prod)
+            .into_iter()
+            .find(|e| e.name == *name)
+            .unwrap_or_else(|| panic!("CLOSED_ENUMS names {name}, which {file} no longer has"));
+        assert!(
+            !found.attrs.iter().any(|a| a.contains("non_exhaustive")),
+            "{}: `{name}` is on CLOSED_ENUMS; a `#[non_exhaustive]` would make every \
+             match on it across crates take a `_` arm",
+            found.hit
+        );
+    }
+}
+
+/// `match` expressions with a `DelegateMode::` pattern, and whether one of
+/// their arms is a wildcard.
+#[derive(Default)]
+struct ModeMatches(Vec<(proc_macro2::Span, bool)>);
+
+fn names_mode(p: &syn::Pat) -> bool {
+    struct Finds(bool);
+    impl<'ast> Visit<'ast> for Finds {
+        fn visit_path(&mut self, path: &'ast syn::Path) {
+            if path.segments.iter().any(|s| s.ident == "DelegateMode") {
+                self.0 = true;
+            }
+            syn::visit::visit_path(self, path);
+        }
+    }
+    let mut f = Finds(false);
+    f.visit_pat(p);
+    f.0
+}
+
+fn is_catch_all(p: &syn::Pat) -> bool {
+    match p {
+        syn::Pat::Wild(_) => true,
+        syn::Pat::Ident(i) => i.subpat.is_none(),
+        _ => false,
+    }
+}
+
+impl<'ast> Visit<'ast> for ModeMatches {
+    fn visit_expr_match(&mut self, m: &'ast syn::ExprMatch) {
+        if m.arms.iter().any(|a| names_mode(&a.pat)) {
+            let wild = m.arms.iter().any(|a| is_catch_all(&a.pat));
+            self.0.push((m.match_token.span, wild));
+        }
+        syn::visit::visit_expr_match(self, m);
+    }
+}
+
+#[test]
+fn every_match_on_a_delegate_mode_names_each_mode() {
+    let mut matches = 0;
+    let mut problems = Vec::new();
+    for f in ws().production() {
+        if !f.text.contains("DelegateMode") {
+            continue;
+        }
+        let mut v = ModeMatches::default();
+        v.visit_file(&f.tree(View::Prod));
+        for (span, wild) in v.0 {
+            matches += 1;
+            if wild {
+                problems.push(format!(
+                    "{}: a `match` on `DelegateMode` with a catch-all arm",
+                    f.hit(span)
+                ));
+            }
+        }
+    }
+    guards::allow::non_vacuous("delegation::mode_matches", matches, 1);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[test]
+fn agents_register_tasks_only_through_a_lease() {
+    let mut problems = Vec::new();
+    let mut scanned = 0;
+    for f in ws().production().filter(|f| f.package == "agents") {
+        scanned += 1;
+        for call in scan::calls(f, View::Prod) {
+            let name = match &call.callee {
+                scan::Callee::Path(p) => p.last().cloned(),
+                scan::Callee::Method(m) => Some(m.clone()),
+            };
+            if name.as_deref() == Some("register_task") {
+                problems.push(format!(
+                    "{}: `register_task` outside a `TaskLease`",
+                    call.hit
+                ));
+            }
+        }
+        for (path, hit) in scan::paths(f, View::Prod) {
+            if path.iter().any(|s| s == "TaskScope") {
+                problems.push(format!("{hit}: a `TaskScope`; take a `TaskLease`"));
+            }
+        }
+    }
+    guards::allow::non_vacuous("delegation::agents_files", scanned, 10);
     assert!(problems.is_empty(), "{problems:#?}");
 }

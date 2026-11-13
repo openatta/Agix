@@ -62,8 +62,8 @@ fn a_callers_lists_narrow_the_agent_types_tools() {
 #[test]
 fn model_for_subagent_uses_parent_model_when_no_router_configured() {
     let agent_tool = test_agent_tool();
-    let picked = agent_tool.inner.model_for_subagent();
-    assert!(Arc::ptr_eq(&picked, &agent_tool.inner.env.model));
+    let picked = agent_tool.delegator.model_for_subagent();
+    assert!(Arc::ptr_eq(&picked, &agent_tool.delegator.env.model));
 }
 
 #[test]
@@ -94,9 +94,9 @@ fn model_for_subagent_routes_through_task_router_when_configured() {
         ..test_parent()
     }
     .agent_tool();
-    let picked = agent_tool.inner.model_for_subagent();
+    let picked = agent_tool.delegator.model_for_subagent();
     assert!(Arc::ptr_eq(&picked, &routed_model));
-    assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.env.model));
+    assert!(!Arc::ptr_eq(&picked, &agent_tool.delegator.env.model));
 }
 
 #[test]
@@ -119,9 +119,9 @@ fn model_for_subagent_falls_back_to_default_when_no_subagent_override() {
         ..test_parent()
     }
     .agent_tool();
-    let picked = agent_tool.inner.model_for_subagent();
+    let picked = agent_tool.delegator.model_for_subagent();
     assert!(Arc::ptr_eq(&picked, &router_default));
-    assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.env.model));
+    assert!(!Arc::ptr_eq(&picked, &agent_tool.delegator.env.model));
 }
 
 #[test]
@@ -131,14 +131,14 @@ fn delegate_tools_full_access_excludes_agent_itself() {
     // simulating `Builder::build()`'s self-registration.
     let self_arc = Arc::new(
         TestParent {
-            config: agent_tool.inner.env.config.clone(),
-            tools: agent_tool.inner.pool.parent_tools.clone(),
-            template: agent_tool.inner.pool.template.clone(),
-            ..TestParent::new(agent_tool.inner.env.model.clone())
+            config: agent_tool.delegator.env.config.clone(),
+            tools: agent_tool.delegator.pool.parent_tools.clone(),
+            template: agent_tool.delegator.pool.template.clone(),
+            ..TestParent::new(agent_tool.delegator.env.model.clone())
         }
         .agent_tool(),
     );
-    agent_tool.inner.pool.parent_tools.register(self_arc);
+    agent_tool.delegator.pool.parent_tools.register(self_arc);
 
     // "general-purpose" is a full-access type (empty allowed_tools).
     let resolved = agent_tool.delegate_tools(Some("general-purpose"), &[], &[]);
@@ -249,10 +249,10 @@ const GITHUB_AGENT: &str =
 #[test]
 fn a_types_mcp_servers_are_granted_as_servers_not_as_tools() {
     let (agent_tool, asked, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
-    let def = agent_tool.inner.agent_type_def("github-agent");
+    let def = agent_tool.delegator.agent_type_def("github-agent");
     let granted = agent_tool
-        .inner
-        .mcp_granted_to(def.as_ref(), &SubRun::default())
+        .delegator
+        .mcp_granted_to(def.as_ref(), &ToolSelector::all())
         .expect("a grant");
     let names: Vec<String> = granted
         .tools()
@@ -268,14 +268,14 @@ fn a_types_mcp_servers_are_granted_as_servers_not_as_tools() {
 #[test]
 fn a_type_without_mcp_servers_is_granted_none() {
     let (agent_tool, asked, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
-    let def = agent_tool.inner.agent_type_def("general-purpose");
+    let def = agent_tool.delegator.agent_type_def("general-purpose");
     assert!(agent_tool
-        .inner
-        .mcp_granted_to(def.as_ref(), &SubRun::default())
+        .delegator
+        .mcp_granted_to(def.as_ref(), &ToolSelector::all())
         .is_none());
     assert!(agent_tool
-        .inner
-        .mcp_granted_to(None, &SubRun::default())
+        .delegator
+        .mcp_granted_to(None, &ToolSelector::all())
         .is_none());
     assert!(asked.lock().unwrap().is_empty());
 }
@@ -283,12 +283,12 @@ fn a_type_without_mcp_servers_is_granted_none() {
 #[test]
 fn a_hosts_tool_lists_hold_the_granted_servers_tools() {
     let (agent_tool, _, _tmp) = agent_tool_with_servers(GITHUB_AGENT);
-    let def = agent_tool.inner.agent_type_def("github-agent");
-    let run = SubRun {
-        disallowed_tools: vec!["mcp__github__list_prs".into()],
-        ..SubRun::default()
-    };
-    let granted = agent_tool.inner.mcp_granted_to(def.as_ref(), &run).unwrap();
+    let def = agent_tool.delegator.agent_type_def("github-agent");
+    let run = ToolSelector::from_lists(&[], &["mcp__github__list_prs".to_string()]);
+    let granted = agent_tool
+        .delegator
+        .mcp_granted_to(def.as_ref(), &run)
+        .unwrap();
     assert!(granted.tools().is_empty());
 }
 
@@ -309,7 +309,7 @@ fn delegate_tools_disallowed_tools_removes_from_full_access_pool() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools,
         agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
@@ -349,7 +349,7 @@ fn delegate_tools_disallowed_tools_applied_before_allowed_tools() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools,
         agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
@@ -380,7 +380,7 @@ fn custom_agent_type_model_override_is_applied_to_sub_settings() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools,
         agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
@@ -391,7 +391,7 @@ fn custom_agent_type_model_override_is_applied_to_sub_settings() {
     // Same lookup `run_sub`/`run_sub_inner` perform: resolve the type's
     // `model` override, then thread it into `sub_settings()`.
     let model_override = agent_tool
-        .inner
+        .delegator
         .agent_type_def("opus-reviewer")
         .and_then(|d| d.model);
     assert_eq!(model_override.as_deref(), Some("claude-opus-4-8"));
@@ -587,7 +587,7 @@ fn run_sub_applies_permission_mode_and_max_turns_override_end_to_end() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools,
         agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
@@ -595,7 +595,7 @@ fn run_sub_applies_permission_mode_and_max_turns_override_end_to_end() {
     }
     .agent_tool();
 
-    let def = agent_tool.inner.agent_type_def("cautious").unwrap();
+    let def = agent_tool.delegator.agent_type_def("cautious").unwrap();
     let mut settings = agent_tool.sub_settings(None);
     apply_agent_type_overrides(&mut settings.values, &def);
     assert_eq!(

@@ -38,7 +38,7 @@ pub(crate) async fn finish_within(
 /// `TaskRouter::model_for("memory")` / `model_name_for("memory")` when a
 /// `task_models.memory` override is configured, falling
 /// back to the main conversation model otherwise, mirroring
-/// `AgentTool::Inner::model_for_subagent`'s pattern for the `"subagent"`
+/// `agents::delegate::Delegator::model_for_subagent`'s pattern for the `"subagent"`
 /// task type. `prompt_intro` is the scene's `memory_extraction_prompt()`
 /// override, if any — see `Scene::memory_extraction_prompt`.
 pub(crate) async fn extract_memories_after_turn(

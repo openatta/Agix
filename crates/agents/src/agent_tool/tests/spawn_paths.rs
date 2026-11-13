@@ -56,7 +56,7 @@ fn parent_ctx() -> ToolContext {
 }
 
 async fn start_in_background(agent_tool: &AgentTool, ctx: ToolContext) {
-    let session = ctx.session.clone();
+    let session = agent_tool.parent_state();
     base::tool::Tool::call(
         agent_tool,
         serde_json::json!({
@@ -97,7 +97,7 @@ async fn a_background_sub_agent_and_a_team_member_record_who_spawned_them_and_as
     );
 
     seen.lock().unwrap().clear();
-    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    let session = agent_tool.parent_state();
     agent_tool
         .spawn_or_message_team_member(
             "team".into(),
@@ -122,6 +122,7 @@ async fn a_background_sub_agents_progress_names_the_call_that_started_it() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let agent_tool = TestParent {
         events: Some(runtime::event_bus::EventBus::new(tx)),
+        id: "parent-session-1".into(),
         ..parent
     }
     .agent_tool();
@@ -224,7 +225,7 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
         }
         .agent_tool();
 
-        crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
+        crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone())
             .spawn(
                 SpawnRequest::new(
                     "probe",
@@ -234,7 +235,10 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
                 .mode(SpawnMode::TeamMember {
                     extra_tools: vec![Arc::new(AskingProbe { runs: runs.clone() })],
                     permission_mode: Some(PermissionMode::BypassPermissions),
-                    seat: None,
+                    seat: Some(base::interface::agent_spawner::TeamSeat {
+                        team: "team".into(),
+                        member: "member".into(),
+                    }),
                 }),
             )
             .await
@@ -315,7 +319,7 @@ async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_
     }
     .agent_tool();
     let spawner: Arc<dyn AgentSpawner> = Arc::new(crate::spawner::RuntimeAgentSpawner::new(
-        Arc::new(agent_tool),
+        agent_tool.delegator.clone(),
     ));
     let _ = spawner_cell.set(spawner.clone());
     let _held = slots.slots.clone().try_acquire_owned().unwrap();
@@ -405,15 +409,12 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
     .agent_tool();
 
     let ran = agent_tool
-        .run_sub(
-            "look".into(),
-            Arc::new(InMemoryToolRegistry::new()),
+        .wait_for(
+            "look",
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             None,
             None,
-            Vec::new(),
         )
         .await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -433,56 +434,62 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
     );
 }
 
-/// The `Delegator` a session's agents module serves, over the same runs as
-/// its `AgentSpawner`: a waited delegate finishes with its answer, a
-/// background one needs the parent session it is a task of, and a narrowed
-/// tool selector is refused rather than ignored.
+/// The one dispatch: a waited delegate finishes with its answer, a
+/// background one is a task of the parent session, and a narrowed selector
+/// narrows what the delegate is offered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_delegator_maps_each_mode_onto_the_existing_runs() {
-    use base::interface::delegate::*;
-    let agent_tool = Arc::new(agent_tool_with_model(Arc::new(LineageModel {
-        seen: Default::default(),
-    })));
-    let delegator = crate::spawner::RuntimeAgentSpawner::new(agent_tool.clone());
+async fn the_delegator_runs_every_mode_through_one_dispatch() {
+    let offered = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tools = Arc::new(InMemoryToolRegistry::new());
+    tools.register(Arc::new(NamedTool("Read")));
+    tools.register(Arc::new(NamedTool("Bash")));
+    let agent_tool = TestParent::on(
+        Arc::new(super::lifecycle::ToolCensusModel {
+            offered: offered.clone(),
+        }),
+        tools,
+    )
+    .agent_tool();
     let call = || StopsWith::Call(tokio_util::sync::CancellationToken::new());
-    let mut waited = DelegateRequest::new("look", DelegateMode::Wait, call());
-    waited.workdir = Workdir::At(std::env::temp_dir());
-    match delegator.delegate(waited).await {
+    match agent_tool
+        .delegate(DelegateRequest::new("look", DelegateMode::Wait, call()))
+        .await
+    {
         Ok(Delegated::Finished(outcome)) => {
-            assert_eq!(outcome.text, "done");
             assert_eq!(outcome.end, DelegateEnd::Completed);
+            assert!(!outcome.session_id.is_empty());
         }
         Ok(Delegated::Started(_)) => panic!("a waited delegate was started in the background"),
         Err(e) => panic!("the waited delegate did not run: {e}"),
     }
 
-    let background = || {
-        DelegateRequest::new(
-            "look",
-            DelegateMode::Background {
-                notify_parent: false,
-            },
-            call(),
-        )
-    };
-    let session = agent_tool.parent_session_state();
-    let Ok(Delegated::Started(started)) = delegator.delegate(background()).await else {
+    let background = DelegateRequest::new(
+        "look",
+        DelegateMode::Background {
+            notify_parent: false,
+        },
+        call(),
+    );
+    let Ok(Delegated::Started(started)) = agent_tool.delegate(background).await else {
         panic!("the background delegate was not started");
     };
-    let task = session
+    let task = agent_tool
+        .parent_state()
         .find_running_task(&started.task_id)
         .expect("a task of the parent session");
     tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
         .await
         .expect("the background delegate finishes");
 
+    offered.lock().unwrap().clear();
     let mut narrowed = DelegateRequest::new("look", DelegateMode::Wait, call());
-    narrowed.tools =
-        base::interface::tool_selector::ToolSelector::from_lists(&["Read".to_string()], &[]);
-    assert!(matches!(
-        delegator.delegate(narrowed).await,
-        Err(DelegateError::Unsupported(_))
-    ));
+    narrowed.tools = ToolSelector::from_lists(&["Read".to_string()], &[]);
+    agent_tool.delegate(narrowed).await.expect("it runs");
+    let offered = offered.lock().unwrap();
+    assert!(
+        offered[0].contains(&"Read".to_string()) && !offered[0].contains(&"Bash".to_string()),
+        "{offered:?}"
+    );
 }
 
 struct KeepsEverything;
@@ -659,5 +666,51 @@ async fn a_root_sessions_team_waits_for_slots_and_every_member_runs() {
         reported.matches("MEMBER-FINISHED").count(),
         3,
         "not every member ran: {reported}"
+    );
+}
+
+/// A team stage's member stopped mid-turn says it was stopped, rather than
+/// handing its partial text back as an answer, and its task ends stopped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stage_member_stopped_mid_turn_ends_cancelled() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let agent_tool = TestParent::new(Arc::new(AnswersOnlyCancellation {
+        started: started.clone(),
+        dropped: Default::default(),
+    }))
+    .agent_tool();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let mode = DelegateMode::TeamMember {
+        seat: TeamSeat {
+            team: "crew".into(),
+            member: "a".into(),
+        },
+        permission_mode: None,
+        lifetime: MemberLifetime::Stage {
+            extra_tools: Vec::new(),
+        },
+    };
+    let run = agent_tool.delegate(DelegateRequest::new(
+        "work",
+        mode,
+        StopsWith::Call(cancel.clone()),
+    ));
+    tokio::pin!(run);
+    tokio::select! {
+        _ = &mut run => panic!("the model never answers"),
+        _ = started.notified() => {}
+    }
+    cancel.cancel();
+    let Ok(Delegated::Finished(outcome)) = run.await else {
+        panic!("a stage member finishes");
+    };
+    assert_eq!(outcome.end, DelegateEnd::Cancelled);
+    let tasks = agent_tool.parent_state().task_infos();
+    assert!(
+        tasks
+            .iter()
+            .any(|t| t.kind == base::context::TaskType::Teammate
+                && t.status == base::context::task::TaskStatus::Stopped),
+        "{tasks:?}"
     );
 }

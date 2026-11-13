@@ -6,29 +6,27 @@ use super::*;
 /// The `agent_spawned` / `agent_completed` pair for one sub-agent run, in
 /// the telemetry of the session that spawned it. The sub-agent's own events
 /// go to the same handle under its own session id, which is `agent_id`.
-pub(super) struct SpawnTelemetry {
-    pub(super) handle: TelemetryHandle,
-    pub(super) parent_session_id: String,
-    pub(super) parent_turn: u32,
-    pub(super) agent_id: String,
-    pub(super) role: String,
-    pub(super) started: std::time::Instant,
+pub(crate) struct SpawnTelemetry {
+    pub(crate) handle: TelemetryHandle,
+    pub(crate) parent_session_id: String,
+    pub(crate) parent_turn: u32,
+    pub(crate) agent_id: String,
+    pub(crate) role: String,
+    pub(crate) started: std::time::Instant,
 }
 
 impl SpawnTelemetry {
-    pub(super) fn start(
-        inner: &Inner,
-        parent: Option<(&str, u32, &str)>,
+    pub(crate) fn start(
+        delegator: &Delegator,
+        called_from: Option<&CallSite>,
         agent_session_id: &str,
         agent_type: Option<&str>,
         model: &str,
         background: bool,
     ) -> Self {
-        let handle = inner.env.host.telemetry.clone();
-        let (parent_session_id, parent_turn) = match parent {
-            Some((sid, turn, _)) => (sid.to_string(), turn),
-            None => (inner.env.parent.id.clone(), 0),
-        };
+        let handle = delegator.env.host.telemetry.clone();
+        let parent_session_id = delegator.env.parent.id.clone();
+        let parent_turn = called_from.map_or(0, |c| c.turn);
         let role = agent_type.unwrap_or("default").to_string();
         let _ = handle.record(telemetry::TelemetryEvent::agent_spawned(
             &parent_session_id,
@@ -52,7 +50,7 @@ impl SpawnTelemetry {
         }
     }
 
-    pub(super) fn finish(self, had_error: bool) {
+    pub(crate) fn finish(self, had_error: bool) {
         let _ = self
             .handle
             .record(telemetry::TelemetryEvent::agent_completed(
@@ -71,16 +69,16 @@ impl SpawnTelemetry {
 
 /// What a sub-agent's `SubagentStart` / `SubagentStop` payload says about it.
 #[derive(Clone)]
-pub(super) struct SubagentPayload {
-    pub(super) session_id: String,
-    pub(super) cwd: std::path::PathBuf,
-    pub(super) permission_mode: base::settings::PermissionMode,
-    pub(super) agent_type: Option<String>,
-    pub(super) stop_reason: Option<String>,
+pub(crate) struct SubagentPayload {
+    pub(crate) session_id: String,
+    pub(crate) cwd: std::path::PathBuf,
+    pub(crate) permission_mode: base::settings::PermissionMode,
+    pub(crate) agent_type: Option<String>,
+    pub(crate) stop_reason: Option<String>,
 }
 
 impl SubagentPayload {
-    pub(super) fn of(
+    pub(crate) fn of(
         session_id: &str,
         cwd: &std::path::Path,
         settings: &Settings,
@@ -95,7 +93,7 @@ impl SubagentPayload {
         }
     }
 
-    pub(super) fn stopped(mut self, reason: &str) -> Self {
+    pub(crate) fn stopped(mut self, reason: &str) -> Self {
         self.stop_reason = Some(reason.to_string());
         self
     }
@@ -103,7 +101,7 @@ impl SubagentPayload {
     /// Fire one sub-agent lifecycle hook about this sub-agent. Notification
     /// only — the response is discarded, so a hook cannot veto a spawn or a
     /// completion.
-    pub(super) async fn fire(&self, runner: &hooks::HookRunner, event: hooks::HookEvent) {
+    pub(crate) async fn fire(&self, runner: &hooks::HookRunner, event: hooks::HookEvent) {
         if !runner.has_hooks_for(event) {
             return;
         }
@@ -125,58 +123,55 @@ impl SubagentPayload {
 }
 
 /// How a one-shot sub-agent's run ended, as `SubagentStop` reports it.
-pub(super) fn stop_reason_of(
-    result: &Result<String, base::error::ToolError>,
-    cancelled: bool,
-) -> &'static str {
-    match (result, cancelled) {
-        (_, true) => "cancelled",
-        (Ok(_), _) => "end_turn",
-        (Err(_), _) => "error",
+pub(crate) fn stop_reason_of(end: &DelegateEnd) -> &'static str {
+    match end {
+        DelegateEnd::Cancelled => "cancelled",
+        DelegateEnd::Failed(_) => "error",
+        DelegateEnd::Completed | DelegateEnd::CutShort(_) => "end_turn",
     }
 }
 
 /// Everything needed to re-emit one sub-agent's events on the parent's
 /// channel. Built once per spawn; cloned into the collector task.
 #[derive(Clone)]
-pub(super) struct SubagentTag {
-    pub(super) parent_tx: runtime::agent::EventSender,
-    pub(super) agent_label: String,
-    pub(super) agent_session_id: String,
-    pub(super) agent_type: Option<String>,
-    pub(super) parent_session_id: String,
-    pub(super) parent_turn: u32,
-    pub(super) parent_tool_use_id: Option<String>,
-    pub(super) task_id: Option<String>,
+pub(crate) struct SubagentTag {
+    pub(crate) parent_tx: runtime::agent::EventSender,
+    pub(crate) agent_label: String,
+    pub(crate) agent_session_id: String,
+    pub(crate) agent_type: Option<String>,
+    pub(crate) parent_session_id: String,
+    pub(crate) parent_turn: u32,
+    pub(crate) parent_tool_use_id: Option<String>,
+    pub(crate) task_id: Option<String>,
 }
 
 impl SubagentTag {
-    pub(super) fn new(
-        inner: &Inner,
+    pub(crate) fn new(
+        delegator: &Delegator,
         agent_session_id: &str,
         agent_type: Option<&str>,
-        parent: Option<(&str, u32, &str)>,
+        called_from: Option<&CallSite>,
     ) -> Self {
-        let (parent_session_id, parent_turn, parent_tool_use_id) = parent.unwrap_or(("", 0, ""));
         Self {
-            parent_tx: inner.env.parent.events.clone(),
+            parent_tx: delegator.env.parent.events.clone(),
             agent_label: subagent_label(agent_type, agent_session_id),
             agent_session_id: agent_session_id.to_string(),
             agent_type: agent_type.map(str::to_string),
-            parent_session_id: parent_session_id.to_string(),
-            parent_turn,
-            parent_tool_use_id: (!parent_tool_use_id.is_empty())
-                .then(|| parent_tool_use_id.to_string()),
+            parent_session_id: delegator.env.parent.id.clone(),
+            parent_turn: called_from.map_or(0, |c| c.turn),
+            parent_tool_use_id: called_from
+                .map(|c| c.tool_use_id.clone())
+                .filter(|id| !id.is_empty()),
             task_id: None,
         }
     }
 
-    pub(super) fn for_task(mut self, task: Option<&Arc<base::context::RunningTask>>) -> Self {
+    pub(crate) fn for_task(mut self, task: Option<&Arc<base::context::RunningTask>>) -> Self {
         self.task_id = task.map(|t| t.task_id.clone());
         self
     }
 
-    pub(super) fn forward(&self, event: AgentEvent) {
+    pub(crate) fn forward(&self, event: AgentEvent) {
         let _ = self.parent_tx.send(AgentEvent::SubagentProgress {
             agent_label: self.agent_label.clone(),
             agent_session_id: self.agent_session_id.clone(),
@@ -200,7 +195,7 @@ impl SubagentTag {
     ///
     /// `agent_id` is the same `agent_label` every `SubagentProgress` for
     /// this run carries, so the three correlate without extra bookkeeping.
-    pub(super) fn spawned(&self) {
+    pub(crate) fn spawned(&self) {
         let _ = self.parent_tx.send(AgentEvent::AgentSpawned {
             agent_id: self.agent_label.clone(),
             parent_turn: self.parent_turn,
@@ -208,7 +203,7 @@ impl SubagentTag {
         });
     }
 
-    pub(super) fn completed(&self, outcome: &str) {
+    pub(crate) fn completed(&self, outcome: &str) {
         let _ = self.parent_tx.send(AgentEvent::AgentCompleted {
             agent_id: self.agent_label.clone(),
             outcome: outcome.to_string(),
@@ -219,7 +214,7 @@ impl SubagentTag {
 
 /// Stable, human-readable label for one sub-agent run — identical on every
 /// event that run emits, so a host can fold them under a single node.
-pub(super) fn subagent_label(agent_type: Option<&str>, session_id: &str) -> String {
+pub(crate) fn subagent_label(agent_type: Option<&str>, session_id: &str) -> String {
     let short: String = session_id.chars().filter(|c| *c != '-').take(8).collect();
     format!("{}#{short}", agent_type.unwrap_or("agent"))
 }
@@ -233,7 +228,7 @@ pub(super) fn subagent_label(agent_type: Option<&str>, session_id: &str) -> Stri
 /// the whole spawn.
 /// Returns an empty string when nothing resolved, so callers can
 /// unconditionally prepend the result without an extra branch.
-pub(super) fn preload_skills_text(
+pub(crate) fn preload_skills_text(
     mgr: &dyn base::interface::skill_catalog::SkillCatalog,
     skill_names: &[String],
 ) -> String {

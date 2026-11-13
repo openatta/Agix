@@ -989,6 +989,79 @@ impl Drop for TaskScope {
     }
 }
 
+/// A task whose holder says how it ended: registered on creation, ended by
+/// [`conclude`](Self::conclude). One dropped without concluding — its work
+/// panicked, was dropped from a queue, or its holder simply went away — ends
+/// as stopped, and the parent hears so when the lease was taken
+/// [notifying](Self::notifying) it. No task held by a lease is left running.
+pub struct TaskLease {
+    session: std::sync::Arc<SessionState>,
+    task: std::sync::Arc<RunningTask>,
+    stopped_notice: Option<StoppedNotice>,
+    concluded: bool,
+}
+
+type StoppedNotice = Box<dyn Fn(&RunningTask) -> String + Send + Sync>;
+
+impl TaskLease {
+    pub fn new(
+        session: std::sync::Arc<SessionState>,
+        task_id: impl Into<String>,
+        task_type: TaskType,
+        cancel: tokio_util::sync::CancellationToken,
+        detail: serde_json::Value,
+    ) -> Self {
+        let task = session.register_task(task_id, task_type, cancel, detail);
+        Self {
+            session,
+            task,
+            stopped_notice: None,
+            concluded: false,
+        }
+    }
+
+    /// The notice the parent is posted when the lease is dropped unconcluded.
+    pub fn notifying(
+        mut self,
+        notice: impl Fn(&RunningTask) -> String + Send + Sync + 'static,
+    ) -> Self {
+        self.stopped_notice = Some(Box::new(notice));
+        self
+    }
+
+    pub fn task(&self) -> &std::sync::Arc<RunningTask> {
+        &self.task
+    }
+
+    /// End the task with `status`. `notice` is posted to the session first,
+    /// so whoever wakes on the task's end finds it there to withdraw; a task
+    /// already stopped from outside gets none, since whoever stopped it knows.
+    pub fn conclude(mut self, status: RunningStatus, notice: Option<String>) {
+        self.concluded = true;
+        if let Some(notice) = notice.filter(|_| !self.task.has_ended()) {
+            self.session
+                .post_notice(Some(self.task.task_id.clone()), notice);
+        }
+        self.session.finish_task(&self.task.task_id, status);
+    }
+}
+
+impl Drop for TaskLease {
+    fn drop(&mut self) {
+        if self.concluded {
+            return;
+        }
+        if let Some(notice) = self.stopped_notice.as_ref() {
+            if !self.task.has_ended() {
+                self.session
+                    .post_notice(Some(self.task.task_id.clone()), notice(&self.task));
+            }
+        }
+        self.session
+            .finish_task(&self.task.task_id, RunningStatus::Cancelled);
+    }
+}
+
 fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -1078,5 +1151,50 @@ mod tests {
         after.restore_durable_state(serde_json::from_value(serde_json::json!({})).unwrap());
         assert_eq!(after.permission_mode(), PermissionMode::Default);
         assert!(after.todos().is_empty());
+    }
+
+    fn leased(session: &std::sync::Arc<SessionState>, id: &str) -> TaskLease {
+        TaskLease::new(
+            session.clone(),
+            id,
+            TaskType::Agent,
+            tokio_util::sync::CancellationToken::new(),
+            serde_json::json!({}),
+        )
+        .notifying(|task| format!("{} stopped", task.task_id))
+    }
+
+    #[test]
+    fn a_concluded_lease_ends_its_task_as_it_says() {
+        let session = std::sync::Arc::new(SessionState::new("/tmp".into()));
+        leased(&session, "t1").conclude(
+            RunningStatus::Failed("boom".into()),
+            Some("t1 failed".into()),
+        );
+        let task = session.find_running_task("t1").expect("kept after it ends");
+        assert_eq!(
+            *task.status.lock().unwrap(),
+            RunningStatus::Failed("boom".into())
+        );
+        assert_eq!(session.take_notices(), ["t1 failed"]);
+    }
+
+    #[test]
+    fn a_lease_dropped_unconcluded_ends_its_task_stopped_and_says_so() {
+        let session = std::sync::Arc::new(SessionState::new("/tmp".into()));
+        drop(leased(&session, "t2"));
+        let task = session.find_running_task("t2").expect("kept after it ends");
+        assert!(task.has_ended());
+        assert_eq!(*task.status.lock().unwrap(), RunningStatus::Cancelled);
+        assert_eq!(session.take_notices(), ["t2 stopped"]);
+    }
+
+    #[test]
+    fn a_task_stopped_from_outside_gets_no_notice_from_its_lease() {
+        let session = std::sync::Arc::new(SessionState::new("/tmp".into()));
+        let lease = leased(&session, "t3");
+        session.finish_task("t3", RunningStatus::Cancelled);
+        lease.conclude(RunningStatus::Completed, Some("t3 done".into()));
+        assert!(session.take_notices().is_empty());
     }
 }

@@ -20,17 +20,15 @@ async fn spawn_background_returns_immediately_with_a_registered_task() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools.clone(),
         ..TestParent::new(model)
     }
     .agent_tool();
     use base::interface::agent_spawner::AgentSpawner as _;
-    let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let spawner = crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone());
+    let session = agent_tool.parent_state();
 
     let start = std::time::Instant::now();
     let task_id = spawner
@@ -86,7 +84,7 @@ fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools,
         agent_dirs: vec![(dir.clone(), AgentTypeSource::User)],
@@ -96,7 +94,7 @@ fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
 
     assert_eq!(
         agent_tool
-            .inner
+            .delegator
             .agent_type_def("watched-reviewer")
             .unwrap()
             .model
@@ -115,7 +113,7 @@ fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
     let mut picked_up = false;
     while std::time::Instant::now() < deadline {
         if agent_tool
-            .inner
+            .delegator
             .agent_type_def("watched-reviewer")
             .and_then(|d| d.model)
             .as_deref()
@@ -140,20 +138,15 @@ fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
 #[tokio::test]
 async fn run_sub_returns_promptly_on_a_plain_model_error_instead_of_hanging() {
     let agent_tool = test_agent_tool();
-    let tools = Arc::new(InMemoryToolRegistry::new());
-    let perm = PermissionSet::without_grants(Arc::new(AlwaysPermit));
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        agent_tool.run_sub(
-            "do the thing".into(),
-            tools,
+        agent_tool.wait_for(
+            "do the thing",
             std::path::PathBuf::from("/tmp"),
             tokio_util::sync::CancellationToken::new(),
-            perm,
             None,
             None,
-            Vec::new(),
         ),
     )
     .await
@@ -173,15 +166,12 @@ pub(super) fn agent_tool_with_model(model: Arc<dyn Model>) -> AgentTool {
 
 pub(super) async fn run_sub_with(agent_tool: &AgentTool) -> Result<String, base::error::ToolError> {
     agent_tool
-        .run_sub(
-            "do the thing".into(),
-            Arc::new(InMemoryToolRegistry::new()),
+        .wait_for(
+            "do the thing",
             std::path::PathBuf::from("/tmp"),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             None,
             None,
-            Vec::new(),
         )
         .await
 }

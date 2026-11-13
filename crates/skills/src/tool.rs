@@ -1665,7 +1665,7 @@ mod tests {
     }
 
     /// A `context: fork` skill with no `agent:` field passes `None` through
-    /// — the spawner (and ultimately `AgentTool::run_sub`) decides the
+    /// — the spawner (and ultimately `Delegator::delegate`) decides the
     /// default (general-purpose), this tool doesn't hardcode one.
     #[tokio::test]
     async fn fork_context_without_agent_field_passes_none() {

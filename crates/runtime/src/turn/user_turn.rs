@@ -1159,7 +1159,7 @@ impl Agent {
                 // extraction call at a different vendor/model than the main
                 // conversation — same TaskRouter mechanism already proven
                 // for the "subagent" task type (see
-                // `AgentTool::Inner::model_for_subagent`). No override
+                // `agents::delegate::Delegator::model_for_subagent`). No override
                 // configured → falls back to the main model.
                 let (model, model_name) = match &self.llm.task_router {
                     Some(router) => (

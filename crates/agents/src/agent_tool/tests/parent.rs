@@ -127,6 +127,175 @@ impl TestParent {
         let limits = crate::delegate::Limits::new(&env.config, env.depth, self.slots);
         let pool = crate::delegate::ToolPool::new(self.template, self.tools, &self.plugin_tools);
         let members = crate::delegate::PersistentMembers::new(self.team_registry);
-        AgentTool::new(env, catalog, pool, limits, members)
+        AgentTool::new(Delegator::new(env, catalog, pool, limits, members))
+    }
+}
+
+/// What a test asks of an `AgentTool` it holds, in the terms of the calls it
+/// makes, each one a `DelegateRequest` through the one dispatch.
+impl AgentTool {
+    pub(super) fn parent_state(&self) -> Arc<base::context::SessionState> {
+        self.delegator.env.parent.state.clone()
+    }
+
+    fn assert_parent(&self, session: &Arc<base::context::SessionState>) {
+        assert!(
+            Arc::ptr_eq(session, &self.delegator.env.parent.state),
+            "a delegate's task is the parent session's: pass `agent_tool.parent_state()`"
+        );
+    }
+
+    pub(super) fn sub_permission(&self) -> PermissionSet {
+        self.delegator.permission_handler()
+    }
+
+    pub(super) fn sub_settings(&self, model_name: Option<&str>) -> LoadedSettings {
+        self.delegator.sub_settings(model_name)
+    }
+
+    pub(super) fn delegate_tools(
+        &self,
+        agent_type: Option<&str>,
+        allowed: &[String],
+        disallowed: &[String],
+    ) -> Arc<InMemoryToolRegistry> {
+        self.delegator
+            .delegate_tools(agent_type, &ToolSelector::from_lists(allowed, disallowed))
+    }
+
+    pub(super) async fn delegate(&self, req: DelegateRequest) -> Result<Delegated, DelegateError> {
+        self.delegator.delegate(req).await
+    }
+
+    /// `prompt` waited on, as `called_from`, in `cwd`.
+    pub(super) async fn wait_for(
+        &self,
+        prompt: &str,
+        cwd: std::path::PathBuf,
+        cancel: tokio_util::sync::CancellationToken,
+        agent_type: Option<&str>,
+        called_from: Option<(u32, &str)>,
+    ) -> Result<String, base::error::ToolError> {
+        let mut req = DelegateRequest::new(prompt, DelegateMode::Wait, StopsWith::Call(cancel));
+        req.workdir = Workdir::At(cwd);
+        req.agent_type = agent_type.map(str::to_string);
+        req.called_from = called_from.map(|(turn, id)| CallSite {
+            turn,
+            tool_use_id: id.to_string(),
+        });
+        finished_text(self.delegate(req).await)
+    }
+
+    pub(super) async fn start_in_background_for_test(
+        &self,
+        prompt: &str,
+        session: &Arc<base::context::SessionState>,
+    ) -> Result<String, base::error::ToolError> {
+        self.assert_parent(session);
+        let mode = DelegateMode::Background {
+            notify_parent: true,
+        };
+        let req = DelegateRequest::new(prompt, mode, StopsWith::Session);
+        match self.delegate(req).await.map_err(tool_error)? {
+            Delegated::Started(started) => Ok(started.task_id),
+            Delegated::Finished(_) => panic!("a background delegate finished at once"),
+        }
+    }
+
+    pub(super) async fn run_stage_member(
+        &self,
+        prompt: &str,
+        cancel: tokio_util::sync::CancellationToken,
+        permission_mode: Option<base::settings::PermissionMode>,
+        extra_tools: Vec<Arc<dyn base::tool::Tool>>,
+    ) -> Result<String, base::error::ToolError> {
+        let mode = DelegateMode::TeamMember {
+            seat: TeamSeat {
+                team: "team".into(),
+                member: "member".into(),
+            },
+            permission_mode,
+            lifetime: MemberLifetime::Stage { extra_tools },
+        };
+        finished_text(
+            self.delegate(DelegateRequest::new(prompt, mode, StopsWith::Call(cancel)))
+                .await,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn spawn_or_message_team_member(
+        &self,
+        team: String,
+        member: String,
+        prompt: String,
+        agent_type: Option<String>,
+        cwd: std::path::PathBuf,
+        session: Arc<base::context::SessionState>,
+        permission_mode: Option<base::settings::PermissionMode>,
+    ) -> Result<String, base::error::ToolError> {
+        self.assert_parent(&session);
+        let mode = DelegateMode::TeamMember {
+            seat: TeamSeat { team, member },
+            permission_mode,
+            lifetime: MemberLifetime::Persistent,
+        };
+        let mut req = DelegateRequest::new(prompt, mode, StopsWith::Session);
+        req.agent_type = agent_type;
+        req.workdir = Workdir::At(cwd);
+        match self.delegate(req).await.map_err(tool_error)? {
+            Delegated::Started(started) => Ok(started.task_id),
+            Delegated::Finished(_) => panic!("a member answered instead of queuing"),
+        }
+    }
+
+    pub(super) async fn stop_team_member(&self, team: &str, member: &str) {
+        self.delegator
+            .stop_member(&TeamSeat {
+                team: team.into(),
+                member: member.into(),
+            })
+            .await;
+    }
+
+    /// A persistent member's session, built and not yet run.
+    pub(super) async fn build_team_member_agent(
+        &self,
+        tools: Arc<InMemoryToolRegistry>,
+        cwd: std::path::PathBuf,
+        agent_type: Option<&str>,
+        permission_mode: base::settings::PermissionMode,
+        seat: Option<TeamSeat>,
+    ) -> Result<(Agent, EventReceiver, InputSender, SubagentPayload), base::error::ToolError> {
+        let d = &self.delegator;
+        let depth = d.limits.spawn_guard().map_err(tool_error)?;
+        let spec = Spec {
+            session_id: base::id::Id::new().to_string(),
+            agent_type: agent_type.map(str::to_string),
+            model: None,
+            tools: ToolSelector::all(),
+            output_schema: None,
+            permission_mode: Some(permission_mode),
+            seat,
+            cwd,
+            called_from: None,
+        };
+        let built = d
+            .build_delegate(&spec, depth, tools, d.permission_handler(), true)
+            .await?;
+        Ok((built.agent, built.event_rx, built.input_tx, built.payload))
+    }
+}
+
+/// A finished delegate's answer, a failed one's error.
+pub(super) fn finished_text(
+    delegated: Result<Delegated, DelegateError>,
+) -> Result<String, base::error::ToolError> {
+    match delegated.map_err(tool_error)? {
+        Delegated::Finished(outcome) => match outcome.end {
+            DelegateEnd::Failed(e) => Err(base::error::ToolError::Execution(anyhow!(e))),
+            _ => Ok(outcome.text),
+        },
+        Delegated::Started(_) => panic!("a waited delegate was started in the background"),
     }
 }

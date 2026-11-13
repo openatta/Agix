@@ -230,7 +230,7 @@ pub(super) fn wired_agent_tool(
 /// `session.list {parent_session_id}`) find it.
 #[tokio::test]
 async fn subagent_transcript_is_written_as_a_linked_sidechain() {
-    let (parent, tools, _runs, dir) = wired_parent("code");
+    let (parent, _, _runs, dir) = wired_parent("code");
     let history_dir = std::env::temp_dir().join(format!(
         "agix-subagent-history-test-{}-{}",
         std::process::id(),
@@ -258,15 +258,12 @@ async fn subagent_transcript_is_written_as_a_linked_sidechain() {
     .agent_tool();
 
     let _text = agent_tool
-        .run_sub_tagged(
-            "go".into(),
-            tools,
+        .wait_for(
+            "go",
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
-            Some(("parent-session-1", 1, "")),
-            SubRun::default(),
+            Some((1, "")),
         )
         .await
         .expect("sub-agent turn should complete");
@@ -303,7 +300,7 @@ async fn subagent_transcript_is_written_as_a_linked_sidechain() {
 /// than being rejected as `SIDECHAIN_TERMINAL`.
 #[tokio::test]
 async fn cancelled_subagent_run_writes_no_terminal_marker() {
-    let (parent, tools, _runs, dir) = wired_parent("code");
+    let (parent, _, _runs, dir) = wired_parent("code");
     let history_dir = std::env::temp_dir().join(format!(
         "agix-subagent-cancelled-test-{}-{}",
         std::process::id(),
@@ -333,16 +330,7 @@ async fn cancelled_subagent_run_writes_no_terminal_marker() {
     let cancel = tokio_util::sync::CancellationToken::new();
     cancel.cancel();
     let _text = agent_tool
-        .run_sub_tagged(
-            "go".into(),
-            tools,
-            dir.clone(),
-            cancel,
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
-            Some("explore"),
-            Some(("parent-session-1", 1, "")),
-            SubRun::default(),
-        )
+        .wait_for("go", dir.clone(), cancel, Some("explore"), Some((1, "")))
         .await
         .expect("a cancelled turn still resolves Ok — cancellation isn't an error");
 
@@ -366,7 +354,7 @@ async fn cancelled_subagent_run_writes_no_terminal_marker() {
 /// reattaching to it.
 #[tokio::test]
 async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
-    let (parent, tools, _runs, dir) = wired_parent("code");
+    let (parent, _, _runs, dir) = wired_parent("code");
     let history_dir = std::env::temp_dir().join(format!(
         "agix-subagent-terminal-test-{}-{}",
         std::process::id(),
@@ -394,15 +382,12 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
     .agent_tool();
 
     let _text = agent_tool
-        .run_sub_tagged(
-            "go".into(),
-            tools,
+        .wait_for(
+            "go",
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
-            Some(("parent-session-1", 1, "")),
-            SubRun::default(),
+            Some((1, "")),
         )
         .await
         .expect("sub-agent turn should complete");
@@ -432,7 +417,7 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
 /// ever recorded" from the outside.
 #[tokio::test]
 async fn subagent_telemetry_events_reach_the_parents_sink() {
-    let (parent, tools, _runs, dir) = wired_parent("code");
+    let (parent, _, _runs, dir) = wired_parent("code");
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let agent_tool = TestParent {
         host: Some(runtime::agent::HostContracts {
@@ -444,15 +429,12 @@ async fn subagent_telemetry_events_reach_the_parents_sink() {
     .agent_tool();
 
     let _text = agent_tool
-        .run_sub_tagged(
-            "go".into(),
-            tools,
+        .wait_for(
+            "go",
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
-            Some(("parent-session-1", 1, "")),
-            SubRun::default(),
+            Some((1, "")),
         )
         .await
         .expect("sub-agent turn should complete");
@@ -470,24 +452,22 @@ async fn subagent_telemetry_events_reach_the_parents_sink() {
 /// unchanged by that forwarding.
 #[tokio::test]
 async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_text_result() {
-    let (parent, tools, _runs, dir) = wired_parent("code");
+    let (parent, _, _runs, dir) = wired_parent("code");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let agent_tool = TestParent {
         events: Some(runtime::event_bus::EventBus::new(tx)),
+        id: "parent-session".into(),
         ..parent
     }
     .agent_tool();
 
     let text = agent_tool
-        .run_sub_tagged(
-            "go".into(),
-            tools,
+        .wait_for(
+            "go",
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
-            Some(("parent-session", 7, "toolu_parent")),
-            SubRun::default(),
+            Some((7, "toolu_parent")),
         )
         .await
         .expect("sub-agent turn should complete");
@@ -495,17 +475,14 @@ async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_te
 
     // Forwarding is additive: the value handed back to the model must be
     // byte-identical to what the un-forwarded path produces.
-    let (plain_tool, plain_tools, _r, plain_dir) = wired_agent_tool("code");
+    let (plain_tool, _, _r, plain_dir) = wired_agent_tool("code");
     let baseline = plain_tool
-        .run_sub_tagged(
-            "go".into(),
-            plain_tools,
+        .wait_for(
+            "go",
             plain_dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            PermissionSet::without_grants(Arc::new(AlwaysPermit)),
             Some("explore"),
             None,
-            SubRun::default(),
         )
         .await
         .expect("baseline sub-agent turn should complete");
@@ -626,7 +603,7 @@ pub(super) async fn sub_decides(
 /// policy, and a `Deny` there must actually stop the tool.
 #[tokio::test]
 async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
-    let (parent, tools, runs, dir) = wired_parent("code");
+    let (parent, _, runs, dir) = wired_parent("code");
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let agent_tool = TestParent {
         permission: Some(PermissionSet::without_grants(Arc::new(
@@ -640,18 +617,13 @@ async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
     }
     .agent_tool();
 
-    // This is the handler the `Agent` tool itself uses for a spawn.
-    let perm = agent_tool.sub_permission();
     let _ = agent_tool
-        .run_sub_tagged(
-            "go".into(),
-            tools,
+        .wait_for(
+            "go",
             dir.clone(),
             tokio_util::sync::CancellationToken::new(),
-            perm,
             None,
             None,
-            SubRun::default(),
         )
         .await;
     let _ = std::fs::remove_dir_all(&dir);
@@ -860,7 +832,7 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
         ..test_parent()
     }
     .agent_tool();
-    let member = agent_tool.inner.permission_handler();
+    let member = agent_tool.delegator.permission_handler();
     let write = registry.get("Write");
     let outcome = sub_decides(
         &member,
@@ -1033,7 +1005,7 @@ async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
         tokio_util::sync::CancellationToken::new(),
         serde_json::json!({}),
     );
-    let sub = agent_tool.inner.permission_handler_for(Some(task));
+    let sub = agent_tool.delegator.permission_handler_for(Some(task));
     let asked = tokio::spawn(async move {
         sub_decides(
             &sub,

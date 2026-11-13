@@ -25,8 +25,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 /// Kept alive only to hold the underlying `notify` watcher (and thus its
-/// background thread) open — see `Inner::_agent_type_watcher`'s doc comment
-/// for why it's otherwise never read from directly.
+/// background thread) open; nothing reads from it.
 pub(crate) struct AgentTypeWatcher {
     #[allow(dead_code)]
     watcher_handle: notify::RecommendedWatcher,
@@ -35,10 +34,9 @@ pub(crate) struct AgentTypeWatcher {
 impl AgentTypeWatcher {
     /// Start watching `dirs` for `.md` changes. On any change, re-runs
     /// `merge_agent_types(dirs, plugin_types)` and swaps `target`'s content
-    /// with the fresh result — `target` is the same `Arc<RwLock<..>>`
-    /// `Inner::agent_types` holds, so every clone of `Inner` (and thus every
-    /// `AgentTool`/sub-agent-spawn call sharing it) observes the update on
-    /// its next lookup, no session rebuild required.
+    /// with the fresh result — `target` is the same `Arc<RwLock<..>>` the
+    /// session's `AgentCatalog` holds, so every delegation observes the
+    /// update on its next lookup, no session rebuild required.
     ///
     /// Returns `Err` if `notify` setup fails (inotify/kqueue limits,
     /// permissions) — callers should treat that as non-fatal (log a warning,

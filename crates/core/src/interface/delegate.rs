@@ -100,7 +100,8 @@ pub enum AskRoute {
     Refuse,
 }
 
-#[non_exhaustive]
+/// Matched exhaustively by the one dispatch in `agents`, across crates, so a
+/// new mode cannot compile without its rules.
 pub enum DelegateMode {
     /// Run it and wait for its answer.
     Wait,

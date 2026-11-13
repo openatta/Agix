@@ -56,9 +56,7 @@ pub(super) async fn message_member(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
     let (agent_tool, started, _) = hanging_team_tool(1);
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     message_member(&agent_tool, &session, "a").await.unwrap();
     started.notified().await;
 
@@ -71,7 +69,7 @@ async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
     );
     assert_eq!(
         agent_tool
-            .inner
+            .delegator
             .members
             .live
             .read()
@@ -95,9 +93,7 @@ async fn a_persistent_member_is_in_its_sessions_telemetry_from_start_to_stop() {
         ..test_parent().with_team()
     }
     .agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     message_member(&agent_tool, &session, "a").await.unwrap();
     wait_until_idle(&agent_tool, &team_key("team", "a")).await;
     agent_tool.stop_team_member("team", "a").await;
@@ -124,9 +120,7 @@ async fn the_end_of_the_parent_session_stops_a_member_mid_turn() {
         ..parent
     }
     .agent_tool();
-    let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
-        "/tmp",
-    )));
+    let session = agent_tool.parent_state();
     message_member(&agent_tool, &session, "a").await.unwrap();
     started.notified().await;
 
@@ -274,18 +268,9 @@ async fn a_background_sub_agent_reads_its_messages_and_reports_back_when_done() 
         go: go.clone(),
         seen_later: seen_later.clone(),
     }));
-    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    let session = agent_tool.parent_state();
     let tid = agent_tool
-        .spawn_background(
-            "look into it".into(),
-            Arc::new(InMemoryToolRegistry::new()),
-            std::env::temp_dir(),
-            tokio_util::sync::CancellationToken::new(),
-            None,
-            None,
-            Vec::new(),
-            session.clone(),
-        )
+        .start_in_background_for_test("look into it", &session)
         .await
         .unwrap();
     started.notified().await;
@@ -422,7 +407,7 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
         }))
     }
     .agent_tool();
-    let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
+    let spawner = crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone());
 
     let answer = spawner
         .spawn(
@@ -458,8 +443,8 @@ pub(super) fn agent_tool_on_a_scene_with_a_tool(
     tools.register(Arc::new(NamedTool("scene_probe")));
     let agent_tool = TestParent {
         config: Arc::new(EngineConfig::defaults_for("test-model")),
-        tools: tools,
-        template: template,
+        tools,
+        template,
         plugin_agent_types: (types).to_vec(),
         scene: Arc::new(SceneWithProbe),
         ..TestParent::new(Arc::new(ToolCensusModel {
@@ -497,7 +482,7 @@ async fn a_foreground_sub_agent_on_its_parents_scene_gets_the_scenes_tools_once(
 async fn a_background_sub_agent_and_a_spawned_one_get_the_scenes_tools_once() {
     let (agent_tool, offered) = agent_tool_on_a_scene_with_a_tool(&[]);
     let ctx = platform::tool_context_for_test(std::env::temp_dir());
-    let session = ctx.session.clone();
+    let session = agent_tool.parent_state();
     base::tool::Tool::call(
         &agent_tool,
         serde_json::json!({ "prompt": "look", "description": "look", "background": true }),
@@ -519,7 +504,7 @@ async fn a_background_sub_agent_and_a_spawned_one_get_the_scenes_tools_once() {
 
     offered.lock().unwrap().clear();
     use base::interface::agent_spawner::AgentSpawner as _;
-    crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
+    crate::spawner::RuntimeAgentSpawner::new(agent_tool.delegator.clone())
         .spawn(base::interface::agent_spawner::SpawnRequest::new(
             "look",
             std::env::temp_dir(),
@@ -598,15 +583,11 @@ async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() 
         "{refused}"
     );
 
-    let member = agent_tool.run_team_member(
-        "member task".into(),
-        Arc::new(InMemoryToolRegistry::new()),
-        std::path::PathBuf::from("/tmp"),
+    let member = agent_tool.run_stage_member(
+        "member task",
         tokio_util::sync::CancellationToken::new(),
         None,
-        None,
-        None,
-        None,
+        Vec::new(),
     );
     tokio::select! {
         _ = member => panic!("the model never answers"),

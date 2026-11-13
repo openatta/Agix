@@ -543,7 +543,7 @@ impl Builder {
 
     /// Position of the agent being built in the delegation chain: `0` for a
     /// root session, `parent + 1` for anything spawned through
-    /// `AgentTool::run_sub` and friends.
+    /// `agents::delegate::Delegator::delegate`.
     ///
     /// `build()` stops registering the `Agent` tool once this reaches
     /// `EngineConfig::max_agent_depth`, so the deepest agents simply never
@@ -695,7 +695,7 @@ impl Builder {
     /// Multi-provider per-task-type model routing (see
     /// `base::provider::TaskRouter`). When set, forwarded to the
     /// `AgentTool` this session's engine builds so its sub-agent spawn
-    /// points (`run_sub`/`run_sub_inner`/resume) route through
+    /// points (`Delegator::delegate`, resume) route through
     /// `TaskRouter::model_for("subagent")` instead of always inheriting
     /// this session's own `model`. Unset (the default) preserves prior
     /// behavior exactly — sub-agents always use the parent's model.

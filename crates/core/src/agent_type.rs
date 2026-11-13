@@ -84,7 +84,7 @@ pub struct AgentTypeDefinition {
     pub mcp_servers: Vec<String>,
     /// Scene id (`code`/`harnix`/`mini`) this agent type forces
     /// its sub-agents into, overriding the scene inherited from the parent.
-    /// `None` (the default) inherits — see `Inner::scene_for_subagent`. An
+    /// `None` (the default) inherits — see `Delegator::scene_for_subagent`. An
     /// unknown id is ignored with a `tracing::warn!` and the inherited scene
     /// is kept, same non-fatal handling as an unrecognized `effort`.
     pub scene: Option<String>,

@@ -1,5 +1,5 @@
 //! Driving one sub-agent turn: sidechain transcript markers, foreground and detached
-//! turn runners, panic containment, and the persistent team-member loop.
+//! turn runners, and panic containment.
 
 use super::*;
 
@@ -15,7 +15,7 @@ use super::*;
 /// Best-effort: a failure here does not fail the spawn. The sub-agent still
 /// runs and its `User`/`Assistant` entries still persist via
 /// `SessionManager::persist` — it just isn't linkable back to its parent.
-pub(super) async fn write_sidechain_meta(
+pub(crate) async fn write_sidechain_meta(
     store: &Arc<dyn HistoryStore>,
     session_id: &str,
     parent_session_id: Option<String>,
@@ -47,15 +47,13 @@ pub(super) async fn write_sidechain_meta(
     }
 }
 
-/// Marks a one-shot sub-agent session as having run its task to conclusion
-/// (`SIDECHAIN_TERMINAL` in `docs/daemon_rpc_protocol.md`). Called only
-/// through `mark_sidechain_terminal`
-/// (from `run_sub_inner`/`run_sub_tagged`) once their turn has
+/// Marks a sub-agent session as having run its task to conclusion
+/// (`SIDECHAIN_TERMINAL` in `docs/daemon_rpc_protocol.md`), once its turn has
 /// returned — a session with no such marker was either never a sidechain, is
 /// still running, was cancelled mid-flight, or was cut off from outside
 /// (process exit, a future `agent.stop`, parent crash), all of which must
 /// stay resumable. Best-effort, same rationale as `write_sidechain_meta`.
-pub(super) async fn write_sidechain_terminal_marker(
+pub(crate) async fn write_sidechain_terminal_marker(
     store: &Arc<dyn HistoryStore>,
     session_id: &str,
     state: history::entry::SessionEndState,
@@ -70,7 +68,7 @@ pub(super) async fn write_sidechain_terminal_marker(
 }
 
 /// Run one turn against a sub-agent and collect its response text — the
-/// shared core of `run_sub`/`run_sub_inner`/the persistent team-member loop.
+/// shared core of every one-shot delegate and of the persistent member loop.
 /// Takes `event_rx` **borrowed**, not owned, specifically so a persistent
 /// team member can call this repeatedly across many turns against the same
 /// `Agent`/channel pair instead of a fresh one being built per message.
@@ -91,11 +89,8 @@ pub(super) async fn write_sidechain_terminal_marker(
 /// `runtime::turn` (a plain model error is enough to trigger it), not specific to
 /// any one caller.
 ///
-/// Returns the collected text alongside whether the turn ended because
-/// `cancel` fired (`TurnOutcome::stop_reason == "cancelled"`) rather than
-/// running to a real conclusion — callers that mark sidechain terminal state
-/// need to tell the two apart (see `mark_sidechain_terminal`).
-pub(super) async fn run_one_turn(
+/// Returns the collected text and how the turn ended.
+pub(crate) async fn run_one_turn(
     agent: &mut Agent,
     event_rx: &mut EventReceiver,
     input_tx: &InputSender,
@@ -107,7 +102,7 @@ pub(super) async fn run_one_turn(
     // text return value is identical either way.
     tag: Option<SubagentTag>,
     task: Option<&base::context::RunningTask>,
-) -> (Result<String, base::error::ToolError>, bool) {
+) -> (String, DelegateEnd) {
     let turn_id = uuid::Uuid::new_v4().to_string();
     let _ = input_tx.send(InputMessage::User {
         content: prompt.clone(),
@@ -167,26 +162,45 @@ pub(super) async fn run_one_turn(
         }
     }
 
-    let cancelled = matches!(&outcome, Ok(o) if o.stop_reason == "cancelled");
-    let result = match outcome {
-        Ok(o) => Ok(with_stop_note(text, &o.stop_reason)),
-        Err(runtime::turn::TurnError::Shutdown) => Ok(text),
-        Err(e) => Err(base::error::ToolError::Execution(anyhow!("sub: {e}"))),
+    let ran = match outcome {
+        Ok(o) if o.stop_reason == "cancelled" => {
+            (with_stop_note(text, &o.stop_reason), DelegateEnd::Cancelled)
+        }
+        Ok(o) => {
+            let end = match o.stop_reason.as_str() {
+                "max_turns" | "host_ceiling" => DelegateEnd::CutShort("max_turns"),
+                "max_structured_output_retries" => {
+                    DelegateEnd::CutShort("max_structured_output_retries")
+                }
+                _ => DelegateEnd::Completed,
+            };
+            (with_stop_note(text, &o.stop_reason), end)
+        }
+        Err(runtime::turn::TurnError::Shutdown) => (text, DelegateEnd::Completed),
+        Err(e) => failed(anyhow!("sub: {e}")),
     };
     if let Some(tag) = &tag {
-        tag.completed(match (&result, cancelled) {
-            (_, true) => "cancelled",
-            (Ok(_), _) => "completed",
-            (Err(_), _) => "failed",
+        tag.completed(match &ran.1 {
+            DelegateEnd::Cancelled => "cancelled",
+            DelegateEnd::Failed(_) => "failed",
+            DelegateEnd::Completed | DelegateEnd::CutShort(_) => "completed",
         });
     }
-    (result, cancelled)
+    ran
+}
+
+/// A run that failed with `e`, as the tool error the parent reads.
+pub(crate) fn failed(e: anyhow::Error) -> (String, DelegateEnd) {
+    (
+        String::new(),
+        DelegateEnd::Failed(base::error::ToolError::Execution(e).to_string()),
+    )
 }
 
 /// A sub-agent's answer, with a line saying so when its turn was cut off by
 /// a limit rather than finished — without it the parent reads a partial or
 /// empty answer as the whole one.
-pub(super) fn with_stop_note(text: String, stop_reason: &str) -> String {
+pub(crate) fn with_stop_note(text: String, stop_reason: &str) -> String {
     let note = match stop_reason {
         "max_turns" | "host_ceiling" => {
             "The sub-agent reached its limit of model calls (max_turns) before it finished"
@@ -209,7 +223,7 @@ pub(super) fn with_stop_note(text: String, stop_reason: &str) -> String {
 /// dropped instead, the guard aborts the sub-agent rather than leaving it
 /// running unobserved.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_one_turn_detached(
+pub(crate) async fn run_one_turn_detached(
     session_id: &str,
     mut agent: Agent,
     mut event_rx: EventReceiver,
@@ -218,7 +232,7 @@ pub(super) async fn run_one_turn_detached(
     cancel: tokio_util::sync::CancellationToken,
     tag: Option<SubagentTag>,
     task: Option<Arc<base::context::RunningTask>>,
-) -> (Result<String, base::error::ToolError>, bool) {
+) -> (String, DelegateEnd) {
     use tracing::Instrument;
     let span = tracing::info_span!("subagent", session = %session_id);
     let mut task = AbortOnDrop(tokio::spawn(
@@ -238,50 +252,29 @@ pub(super) async fn run_one_turn_detached(
         }
         .instrument(span),
     ));
-    match (&mut task.0).await {
+    joined((&mut task.0).await)
+}
+
+fn joined(outcome: Result<(String, DelegateEnd), tokio::task::JoinError>) -> (String, DelegateEnd) {
+    match outcome {
         Ok(outcome) => outcome,
-        Err(e) if e.is_panic() => (
-            Err(base::error::ToolError::Execution(anyhow!(
-                "sub-agent panicked: {}",
-                panic_message(e.into_panic())
-            ))),
-            false,
-        ),
-        Err(_) => (
-            Err(base::error::ToolError::Execution(anyhow!(
-                "sub-agent task was aborted"
-            ))),
-            true,
-        ),
+        Err(e) if e.is_panic() => failed(anyhow!(
+            "sub-agent panicked: {}",
+            panic_message(e.into_panic())
+        )),
+        Err(_) => (String::new(), DelegateEnd::Cancelled),
     }
 }
 
 /// A background sub-agent's run, ending in the error its panic left rather
 /// than unwinding past the bookkeeping that ends its task.
-pub(super) async fn without_panics(
-    run: impl std::future::Future<Output = (Result<String, base::error::ToolError>, bool)>
-        + Send
-        + 'static,
-) -> (Result<String, base::error::ToolError>, bool) {
-    match tokio::spawn(run).await {
-        Ok(outcome) => outcome,
-        Err(e) if e.is_panic() => (
-            Err(base::error::ToolError::Execution(anyhow!(
-                "sub-agent panicked: {}",
-                panic_message(e.into_panic())
-            ))),
-            false,
-        ),
-        Err(_) => (
-            Err(base::error::ToolError::Execution(anyhow!(
-                "sub-agent task was aborted"
-            ))),
-            true,
-        ),
-    }
+pub(crate) async fn without_panics(
+    run: impl std::future::Future<Output = (String, DelegateEnd)> + Send + 'static,
+) -> (String, DelegateEnd) {
+    joined(tokio::spawn(run).await)
 }
 
-pub(super) struct AbortOnDrop<T>(pub(super) tokio::task::JoinHandle<T>);
+pub(crate) struct AbortOnDrop<T>(pub(crate) tokio::task::JoinHandle<T>);
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
@@ -289,7 +282,7 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
-pub(super) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+pub(crate) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| s.to_string())
@@ -305,136 +298,18 @@ pub(super) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 /// work was interrupted, not that the conversation reached a real endpoint,
 /// so the sidechain must stay resumable exactly like one that's still
 /// mid-flight.
-pub(super) async fn mark_sidechain_terminal(
+pub(crate) async fn mark_sidechain_terminal(
     store: Option<&Arc<dyn HistoryStore>>,
     session_id: &str,
-    result: &Result<String, base::error::ToolError>,
-    cancelled: bool,
+    end: &DelegateEnd,
 ) {
     let Some(store) = store else { return };
-    if cancelled {
-        return;
-    }
-    let state = if result.is_ok() {
-        history::entry::SessionEndState::Completed
-    } else {
-        history::entry::SessionEndState::Failed
+    let state = match end {
+        DelegateEnd::Cancelled => return,
+        DelegateEnd::Failed(_) => history::entry::SessionEndState::Failed,
+        DelegateEnd::Completed | DelegateEnd::CutShort(_) => {
+            history::entry::SessionEndState::Completed
+        }
     };
     write_sidechain_terminal_marker(store, session_id, state).await;
-}
-
-pub(super) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// The persistent-member counterpart to `run_sub_inner` — instead of one
-/// `run_one_turn` call and done, this loops for as long as messages keep
-/// arriving on `message_rx`, reusing the same `Agent`/`event_rx`/`input_tx`
-/// across every one of them (that reuse *is* the persistence — a fresh
-/// `Agent` per message would have no memory of the previous ones). Exits
-/// when `cancel` fires (`AgentTool::stop_team_member`/reclaim) or
-/// `message_rx` closes (sender side — the map entry in
-/// `Inner::team_members` — dropped, which shouldn't happen while this loop
-/// is still registered there, but is handled instead of assumed).
-///
-/// Each message gets its own `RunningTask` (registered by the caller before
-/// queuing it) — status/output are written there exactly like
-/// `AgentTool::launch_bg`'s one-shot background tasks, so the model polls a
-/// specific message's reply via the ordinary `TaskOutput`/`TaskStop`
-/// mechanism, not a new one invented for this.
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_persistent_member_loop(
-    mut agent: Agent,
-    mut event_rx: EventReceiver,
-    input_tx: InputSender,
-    mut message_rx: tokio::sync::mpsc::UnboundedReceiver<PersistentMessage>,
-    cancel: tokio_util::sync::CancellationToken,
-    registry: Option<Arc<team::registry::TeamRegistry>>,
-    team_name: String,
-    member_name: String,
-    idle_since: Arc<std::sync::atomic::AtomicI64>,
-    idle_seq: Arc<std::sync::atomic::AtomicU64>,
-    idle_seq_counter: Arc<std::sync::atomic::AtomicU64>,
-    session: Arc<base::context::SessionState>,
-    stopped: Option<(std::sync::Weak<hooks::HookRunner>, SubagentPayload)>,
-    spawned: Option<SpawnTelemetry>,
-) {
-    let mut last_failed = false;
-    loop {
-        let msg = tokio::select! {
-            _ = cancel.cancelled() => break,
-            m = message_rx.recv() => m,
-        };
-        let Some(PersistentMessage { prompt, task }) = msg else {
-            break;
-        };
-
-        idle_since.store(i64::MAX, std::sync::atomic::Ordering::SeqCst);
-        idle_seq.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
-        if let Some(r) = &registry {
-            r.update_member_lifecycle(
-                &team_name,
-                &member_name,
-                team::coordinator::TeammateLifecycle::Active,
-                None,
-            );
-        }
-
-        open_inbox(Some(&task), &agent);
-        let (result, cancelled) = run_one_turn(
-            &mut agent,
-            &mut event_rx,
-            &input_tx,
-            prompt,
-            task.cancel.clone(),
-            // No `SubagentTag`: this loop outlives any single parent turn (it
-            // is a persistent team member, driven by `message_rx`, not by one
-            // `Agent` tool call), so there is no parent turn to attribute its
-            // events to. Persistent members surface through `TeamProgress`
-            // and `TeamList` instead.
-            None,
-            Some(task.as_ref()),
-        )
-        .await;
-
-        last_failed = result.is_err();
-        conclude_background_task(&session, &task, &result, cancelled, true);
-
-        let now = now_secs();
-        idle_since.store(now, std::sync::atomic::Ordering::SeqCst);
-        idle_seq.store(
-            idle_seq_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-            std::sync::atomic::Ordering::SeqCst,
-        );
-        if let Some(r) = &registry {
-            r.update_member_lifecycle(
-                &team_name,
-                &member_name,
-                team::coordinator::TeammateLifecycle::Idle,
-                Some(now as u64),
-            );
-        }
-    }
-    if let Some(r) = &registry {
-        r.update_member_lifecycle(
-            &team_name,
-            &member_name,
-            team::coordinator::TeammateLifecycle::Shutdown,
-            None,
-        );
-    }
-    if let Some(spawned) = spawned {
-        spawned.finish(last_failed);
-    }
-    if let Some((runner, payload)) = stopped {
-        if let Some(runner) = runner.upgrade() {
-            payload
-                .stopped("shutdown")
-                .fire(&runner, hooks::HookEvent::SubagentStop)
-                .await;
-        }
-    }
 }

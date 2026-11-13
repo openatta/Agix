@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use base::interface::delegate::DelegateError;
+
 pub const DEFAULT_MAX_CONCURRENT_SUBAGENTS: usize = 6;
 
 /// The cap on sub-agents running at once in one session tree.
@@ -110,15 +112,15 @@ impl Limits {
     /// module registers an `Agent` of its own below the limit: tool
     /// filtering cannot bound them. Refusing with a tool error lets the model
     /// do the work itself instead of recursing until the process dies.
-    pub(crate) fn spawn_guard(&self) -> Result<u32, String> {
+    pub(crate) fn spawn_guard(&self) -> Result<u32, DelegateError> {
         let max = self.max_depth;
         if self.depth >= max {
-            return Err(format!(
+            return Err(DelegateError::Depth(format!(
                 "Delegation depth limit reached ({max}). This agent is already {} \
                  level(s) deep and cannot spawn another sub-agent. Complete the \
                  task directly instead of delegating it.",
                 self.depth
-            ));
+            )));
         }
         Ok(self.depth + 1)
     }
@@ -126,7 +128,7 @@ impl Limits {
     /// Refuses rather than waits when the session is at its cap: an agent
     /// holding a slot while it waits for one for its own child could
     /// deadlock a tree whose every slot is held that way.
-    pub(crate) fn admit(&self) -> Result<Admission, String> {
+    pub(crate) fn admit(&self) -> Result<Admission, DelegateError> {
         let depth = self.spawn_guard()?;
         let slot = self
             .subagent_slots
@@ -134,12 +136,12 @@ impl Limits {
             .clone()
             .try_acquire_owned()
             .map_err(|_| {
-                format!(
+                DelegateError::Limit(format!(
                     "{} sub-agents are already running in this session, the most it allows \
                      (execution.max_concurrent_subagents). Wait for one to finish (TaskWait), \
                      or do this part yourself.",
                     self.subagent_slots.cap
-                )
+                ))
             })?;
         Ok(Admission {
             depth,
@@ -153,14 +155,16 @@ impl Limits {
     pub(crate) async fn admit_waiting(
         &self,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Admission, String> {
+    ) -> Result<Admission, DelegateError> {
         let depth = self.spawn_guard()?;
         let slot = tokio::select! {
-            slot = self.subagent_slots.slots.clone().acquire_owned() => {
-                slot.map_err(|_| "the session's sub-agent slots are closed".to_string())?
-            }
+            slot = self.subagent_slots.slots.clone().acquire_owned() => slot.map_err(|_| {
+                DelegateError::Limit("the session's sub-agent slots are closed".into())
+            })?,
             _ = cancel.cancelled() => {
-                return Err("stopped while waiting for a sub-agent slot".into());
+                return Err(DelegateError::Limit(
+                    "stopped while waiting for a sub-agent slot".into(),
+                ));
             }
         };
         Ok(Admission {
@@ -172,7 +176,7 @@ impl Limits {
     /// Leave that takes no slot: for `TeamCreate` members, bounded by
     /// `team_stage_concurrency` instead, and for hook agents, which are the
     /// session's configuration rather than the model's to start.
-    pub(crate) fn admit_unslotted(&self) -> Result<Admission, String> {
+    pub(crate) fn admit_unslotted(&self) -> Result<Admission, DelegateError> {
         Ok(Admission {
             depth: self.spawn_guard()?,
             _slot: None,

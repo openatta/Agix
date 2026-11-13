@@ -13,7 +13,7 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
     .agent_tool();
 
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(None).id(),
+        agent_tool.delegator.scene_for_subagent(None).id(),
         "harnix",
         "a harnix-scene parent must not hand its sub-agent the code scene"
     );
@@ -30,7 +30,10 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(Some(&widening)).id(),
+        agent_tool
+            .delegator
+            .scene_for_subagent(Some(&widening))
+            .id(),
         "harnix",
         "an agent type must not be able to widen the parent scene's tool surface"
     );
@@ -43,7 +46,10 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(Some(&narrowing)).id(),
+        agent_tool
+            .delegator
+            .scene_for_subagent(Some(&narrowing))
+            .id(),
         "mini",
         "an agent type narrowing the parent scene must still be honored"
     );
@@ -55,7 +61,7 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(Some(&bogus)).id(),
+        agent_tool.delegator.scene_for_subagent(Some(&bogus)).id(),
         "harnix",
         "an unknown scene id is ignored, not fatal — inherited scene is kept"
     );
@@ -84,7 +90,7 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
     .agent_tool();
 
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(Some(&named)).id(),
+        agent_tool.delegator.scene_for_subagent(Some(&named)).id(),
         "mini",
         "without a registry, a non-builtin id is unresolvable and the parent scene is kept"
     );
@@ -106,7 +112,7 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
     .agent_tool();
 
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(Some(&named)).id(),
+        agent_tool.delegator.scene_for_subagent(Some(&named)).id(),
         "plugin:demo",
         "a registry-only scene id must resolve once the registry is wired in"
     );
@@ -161,7 +167,7 @@ fn subagent_inherits_the_parent_instruction_file() {
     );
     parent.values.instruction_file = Some(std::path::PathBuf::from("/proj/AGENTS.md"));
     let agent_tool = TestParent {
-        config: config,
+        config,
         tools: tools.clone(),
         template: tools,
         settings: Some(parent),
@@ -248,15 +254,17 @@ fn subagent_label_is_stable_and_names_the_agent_type() {
 
 #[test]
 fn a_background_agents_answer_is_its_whole_output_by_offset() {
-    let session = base::context::SessionState::new(std::env::temp_dir());
-    let task = session.register_task(
+    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
+    let lease = base::context::TaskLease::new(
+        session,
         "ag-answer",
         base::context::TaskType::Agent,
         tokio_util::sync::CancellationToken::new(),
         serde_json::Value::Null,
     );
+    let task = lease.task().clone();
     let answer = "the answer, \u{4e2d}".to_string();
-    super::conclude_background_task(&session, &task, &Ok(answer.clone()), false, false);
+    super::conclude(lease, &answer, &DelegateEnd::Completed, false);
     let read = task.output_from(0).unwrap();
     assert_eq!(read.text, answer);
     assert_eq!(read.next_byte, answer.len() as u64);

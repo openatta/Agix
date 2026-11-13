@@ -44,10 +44,7 @@ pub use base::agent_type::{parse_permission_mode, AgentTypeDefinition, AgentType
 
 mod build;
 mod catalog;
-mod delegate;
-mod inner;
 mod mcp_grant;
-mod members;
 mod permission;
 mod resolve;
 mod settings;
@@ -57,17 +54,22 @@ mod task;
 mod tests;
 mod turn;
 
-use crate::delegate::{Admission, PersistentMember, PersistentMessage, AGENT_TOOL_NAME};
+use crate::delegate::{Admission, Delegator, AGENT_TOOL_NAME};
 pub use crate::delegate::{SubagentSlots, DEFAULT_MAX_CONCURRENT_SUBAGENTS};
-use build::*;
+use base::interface::delegate::Delegator as _;
+use base::interface::delegate::{
+    AskRoute, CallSite, DelegateEnd, DelegateError, DelegateMode, DelegateRequest, Delegated,
+    MemberLifetime, StopsWith, TeamSeat, Workdir,
+};
+use base::interface::tool_selector::ToolSelector;
+pub(crate) use build::*;
 pub use catalog::*;
-use inner::*;
 use mcp_grant::*;
 use permission::*;
 use settings::*;
-use spawn_meta::*;
+pub(crate) use spawn_meta::*;
 pub(crate) use task::*;
-use turn::*;
+pub(crate) use turn::*;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AgentInput {
@@ -109,26 +111,124 @@ pub struct AgentInput {
 }
 
 pub struct AgentTool {
-    inner: Arc<Inner>,
+    delegator: Arc<Delegator>,
 }
 
 impl AgentTool {
-    pub(crate) fn new(
-        env: crate::delegate::DelegateEnv,
-        catalog: AgentCatalog,
-        pool: crate::delegate::ToolPool,
-        limits: crate::delegate::Limits,
-        members: crate::delegate::PersistentMembers,
-    ) -> Self {
-        Self {
-            inner: Arc::new(Inner {
-                env,
-                catalog,
-                pool,
-                limits,
-                members,
-            }),
+    pub(crate) fn new(delegator: Arc<Delegator>) -> Self {
+        Self { delegator }
+    }
+
+    async fn message_member(
+        &self,
+        input: AgentInput,
+        mut req: DelegateRequest,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        let (Some(team), Some(member)) = (input.team_name, input.name) else {
+            return Err(base::error::ToolError::Validation(
+                "team_name and name must both be given together, or neither".into(),
+            ));
+        };
+        // The schema offers `team_name`/`name` whether or not this session
+        // has team coordination on; with it off they are refused here, as
+        // `TeamCreate` is by not being registered.
+        if self.delegator.members.registry.is_none() {
+            return Err(base::error::ToolError::Validation(
+                "team_name/name require team coordination to be enabled for this \
+                 session (settings.execution.team_enabled)"
+                    .into(),
+            ));
         }
+        if matches!(
+            input.permission_mode,
+            Some(base::settings::PermissionMode::Bubble)
+        ) {
+            return Err(base::error::ToolError::Validation(
+                "permission_mode: \"bubble\" is not valid here — it needs an available \
+                 lead, which a persistent member's lead (only runs code during its own \
+                 turns) doesn't reliably have"
+                    .into(),
+            ));
+        }
+        req.prompt = input.prompt;
+        req.stops_with = StopsWith::Session;
+        req.mode = DelegateMode::TeamMember {
+            seat: TeamSeat { team, member },
+            permission_mode: input.permission_mode,
+            lifetime: MemberLifetime::Persistent,
+        };
+        match self.delegator.delegate(req).await.map_err(tool_error)? {
+            Delegated::Started(started) => {
+                Ok(bg_result(&started.task_id, "queued for team member"))
+            }
+            Delegated::Finished(_) => Err(base::error::ToolError::Execution(anyhow!(
+                "a team member answered instead of queuing the message"
+            ))),
+        }
+    }
+
+    async fn start_in_background(
+        &self,
+        mut req: DelegateRequest,
+        worktree: Option<tools::worktree::WorktreeHandle>,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        req.mode = DelegateMode::Background {
+            notify_parent: true,
+        };
+        let started = match self.delegator.delegate(req).await {
+            Ok(Delegated::Started(started)) => started,
+            Ok(Delegated::Finished(_)) => {
+                return Err(base::error::ToolError::Execution(anyhow!(
+                    "a background sub-agent finished before it was started"
+                )))
+            }
+            Err(e) => {
+                if let Some(mut h) = worktree {
+                    h.cleanup().await;
+                }
+                return Err(tool_error(e));
+            }
+        };
+        if let Some(mut h) = worktree {
+            match self
+                .delegator
+                .env
+                .parent
+                .state
+                .find_running_task(&started.task_id)
+            {
+                Some(task) => {
+                    tokio::spawn(async move {
+                        task.wait_ended().await;
+                        h.cleanup().await;
+                    });
+                }
+                None => h.cleanup().await,
+            }
+        }
+        Ok(bg_result(&started.task_id, "spawned"))
+    }
+}
+
+/// How a delegate that could not be started reads as the tool's error.
+pub(crate) fn tool_error(e: DelegateError) -> base::error::ToolError {
+    match e {
+        DelegateError::Limit(m) | DelegateError::Depth(m) | DelegateError::Invalid(m) => {
+            base::error::ToolError::Denied(m)
+        }
+        DelegateError::Build(m) | DelegateError::Unsupported(m) => {
+            base::error::ToolError::Execution(anyhow!(m))
+        }
+    }
+}
+
+fn sub_agent_error(e: impl std::fmt::Display) -> base::tool::ToolResult {
+    base::tool::ToolResult {
+        content: ToolResultContent::Text(format!("sub-agent error: {e}")),
+        is_error: true,
+        structured_content: None,
+        mcp_meta: None,
+        new_messages: None,
     }
 }
 
@@ -147,7 +247,7 @@ impl base::tool::Tool for AgentTool {
         AGENT_TOOL_NAME
     }
     fn description(&self) -> &str {
-        self.inner.catalog.description()
+        self.delegator.catalog.description()
     }
     fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(AgentInput)).unwrap_or(Value::Null)
@@ -182,153 +282,63 @@ impl base::tool::Tool for AgentTool {
                 )));
             }
         }
-
-        // The schema offers `team_name`/`name` whether or not this session
-        // has team coordination on; with it off they are refused here, as
-        // `TeamCreate` is by not being registered.
-        match (&inp.team_name, &inp.name) {
-            (Some(team_name), Some(name)) => {
-                if self.inner.members.registry.is_none() {
-                    return Err(base::error::ToolError::Validation(
-                        "team_name/name require team coordination to be enabled for this \
-                         session (settings.execution.team_enabled)"
-                            .into(),
-                    ));
-                }
-                if matches!(
-                    inp.permission_mode,
-                    Some(base::settings::PermissionMode::Bubble)
-                ) {
-                    return Err(base::error::ToolError::Validation(
-                        "permission_mode: \"bubble\" is not valid here — it needs an available \
-                         lead, which a persistent member's lead (only runs code during its own \
-                         turns) doesn't reliably have"
-                            .into(),
-                    ));
-                }
-                let tid = self
-                    .spawn_or_message_team_member(
-                        team_name.clone(),
-                        name.clone(),
-                        inp.prompt.clone(),
-                        inp.subagent_type.clone(),
-                        ctx.cwd.clone(),
-                        ctx.session.clone(),
-                        inp.permission_mode,
-                    )
-                    .await?;
-                return Ok(bg_result(&tid, "queued for team member"));
-            }
-            (None, None) => {}
-            _ => {
-                return Err(base::error::ToolError::Validation(
-                    "team_name and name must both be given together, or neither".into(),
-                ));
-            }
+        let mut req = DelegateRequest::new(
+            String::new(),
+            DelegateMode::Wait,
+            StopsWith::Call(ctx.cancel.clone()),
+        );
+        req.description = inp.description.clone();
+        req.agent_type = inp.subagent_type.clone();
+        req.model = inp.model.clone();
+        req.output_schema = inp.output_schema.clone();
+        req.called_from = Some(CallSite {
+            turn: ctx.turn_no,
+            tool_use_id: ctx.tool_use_id.clone(),
+        });
+        if inp.team_name.is_some() || inp.name.is_some() {
+            return self.message_member(inp, req).await;
         }
-
-        // Background
-        if inp.background {
-            return self.launch_bg(&inp, &ctx).await;
-        }
-
-        // Sync
-        let mut worktree_handle = match &inp.worktree {
-            Some(s) => match create_worktree(
-                &ctx.exec,
-                &tools::bash::engine_exec(&ctx),
-                &ctx.session.cwd,
-                s,
-            )
-            .await
-            {
-                Ok(h) => Some(h),
-                Err(e) => return Err(base::error::ToolError::Execution(anyhow!("worktree: {e}"))),
-            },
+        req.prompt = self
+            .delegator
+            .build_prompt(inp.subagent_type.as_deref(), &inp.prompt);
+        let worktree = match &inp.worktree {
+            Some(slug) => {
+                let git = tools::bash::engine_exec(&ctx);
+                match create_worktree(&ctx.exec, &git, &ctx.session.cwd, slug).await {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        return Err(base::error::ToolError::Execution(anyhow!("worktree: {e}")))
+                    }
+                }
+            }
             None => None,
         };
-        let cwd = worktree_handle
-            .as_ref()
-            .map(|h| h.path().to_path_buf())
-            .unwrap_or_else(|| ctx.session.cwd.clone());
-        let tools = self.delegate_tools(inp.subagent_type.as_deref(), &[], &[]);
-        let prompt = self.build_prompt(inp.subagent_type.as_deref(), &inp.prompt);
-        let sid = base::id::Id::new().to_string();
-
-        // Bound rather than matched inline so the worktree is cleaned up
-        // before the result is turned into a ToolResult — the sub-agent may
-        // have failed, and the temporary worktree must go either way.
-        let run_cancel = ctx.cancel.child_token();
-        let task_scope = base::context::TaskScope::new(
-            ctx.session.clone(),
-            ctx.tool_use_id.clone(),
-            base::context::TaskType::Agent,
-            run_cancel.clone(),
-            serde_json::json!({
-                "agent_type": inp.subagent_type,
-                "description": inp.description,
-                "background": false,
-                "tool_use_id": ctx.tool_use_id,
-                "agent_session_id": sid,
-            }),
-        );
-        let perm = self
-            .inner
-            .permission_handler_asking(Some(task_scope.task().clone()), !ctx.from_code);
-        let admission = if ctx.from_code {
-            self.inner.limits.admit_waiting(&run_cancel).await
-        } else {
-            self.inner.limits.admit()
-        };
-        let result = match admission {
-            Ok(admission) => {
-                self.run_sub_admitted(
-                    admission,
-                    prompt,
-                    tools,
-                    cwd,
-                    run_cancel,
-                    perm,
-                    inp.subagent_type.as_deref(),
-                    Some((
-                        ctx.session_id.as_str(),
-                        ctx.turn_no,
-                        ctx.tool_use_id.as_str(),
-                    )),
-                    SubRun {
-                        model: inp.model.clone(),
-                        output_schema: inp.output_schema.clone(),
-                        ..SubRun::for_task(task_scope.task(), &sid)
-                    },
-                )
-                .await
-            }
-            Err(refused) => Err(base::error::ToolError::Denied(refused)),
-        };
-
-        if let Some(h) = worktree_handle.as_mut() {
+        if let Some(h) = &worktree {
+            req.workdir = Workdir::At(h.path().to_path_buf());
+        }
+        if inp.background {
+            return self.start_in_background(req, worktree).await;
+        }
+        if ctx.from_code {
+            req.asks = AskRoute::Refuse;
+        }
+        let delegated = self.delegator.delegate(req).await;
+        if let Some(mut h) = worktree {
             h.cleanup().await;
         }
-        if let Ok(text) = &result {
-            task_scope.task().append_output(text);
-        }
-        let structured = task_scope.task().structured_output.get().cloned();
-
-        match result {
-            Ok(text) => Ok(base::tool::ToolResult {
-                content: ToolResultContent::Text(text),
-                is_error: false,
-                structured_content: structured,
-                mcp_meta: None,
-                new_messages: None,
-            }),
-            Err(e) => Ok(base::tool::ToolResult {
-                content: ToolResultContent::Text(format!("sub-agent error: {e}")),
-                is_error: true,
-                structured_content: None,
-                mcp_meta: None,
-                new_messages: None,
-            }),
-        }
+        Ok(match delegated {
+            Ok(Delegated::Finished(outcome)) => match outcome.end {
+                DelegateEnd::Failed(e) => sub_agent_error(e),
+                _ => base::tool::ToolResult {
+                    content: ToolResultContent::Text(outcome.text),
+                    is_error: false,
+                    structured_content: outcome.structured,
+                    mcp_meta: None,
+                    new_messages: None,
+                },
+            },
+            Ok(Delegated::Started(_)) => sub_agent_error("it was started instead of waited on"),
+            Err(e) => sub_agent_error(tool_error(e)),
+        })
     }
 }

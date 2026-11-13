@@ -214,7 +214,7 @@ async fn a_program_cannot_start_a_background_team_or_worktree_sub_agent() {
 async fn a_panicking_background_sub_agent_ends_its_task_failed_and_says_so() {
     let agent_tool = agent_tool_with_model(Arc::new(PanickingModel));
     let ctx = platform::tool_context_for_test(std::env::temp_dir());
-    let session = ctx.session.clone();
+    let session = agent_tool.parent_state();
     let started = base::tool::Tool::call(
         &agent_tool,
         serde_json::json!({"prompt": "go", "description": "bg", "background": true}),

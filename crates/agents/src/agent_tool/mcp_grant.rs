@@ -1,4 +1,4 @@
-//! A delegate's MCP grant held to a caller's tool lists: `session.startAgent`'s
+//! A delegate's MCP grant held to its caller's tool selector: `session.startAgent`'s
 //! `allowed_tools` / `disallowed_tools` reach the granted servers' tools too.
 
 use super::*;
@@ -6,8 +6,7 @@ use base::interface::mcp_servers::{McpPromptCommand, McpPromptInvocation, McpSer
 
 pub(super) struct ListedMcp {
     pub(super) servers: Box<dyn McpServers>,
-    pub(super) allowed: Vec<String>,
-    pub(super) disallowed: Vec<String>,
+    pub(super) selector: ToolSelector,
 }
 
 #[async_trait]
@@ -16,7 +15,7 @@ impl McpServers for ListedMcp {
         self.servers
             .tools()
             .into_iter()
-            .filter(|t| lists_admit_tool(&self.allowed, &self.disallowed, t.name()))
+            .filter(|t| self.selector.admits(t.name(), &t.spec().origin))
             .collect()
     }
     async fn refresh_tools(&mut self) {
@@ -43,8 +42,7 @@ impl McpServers for ListedMcp {
     fn granted(&self, servers: Option<&[String]>) -> Box<dyn McpServers> {
         Box::new(ListedMcp {
             servers: self.servers.granted(servers),
-            allowed: self.allowed.clone(),
-            disallowed: self.disallowed.clone(),
+            selector: self.selector.clone(),
         })
     }
 }

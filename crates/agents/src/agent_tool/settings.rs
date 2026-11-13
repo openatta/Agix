@@ -18,14 +18,18 @@ pub(super) fn lists_admit_tool(allowed: &[String], disallowed: &[String], name: 
     !listed(disallowed) && (allowed.is_empty() || listed(allowed))
 }
 
+/// What the delegate's scene and plugins contribute, held to its type's lists
+/// and its caller's selector. Their origin is not known here; none of them is
+/// an MCP server's.
 pub(super) fn contributed_tool_filter(
     def: Option<&AgentTypeDefinition>,
-    run: &SubRun,
+    selector: &ToolSelector,
 ) -> runtime::agent::ToolFilter {
     let def = def.cloned();
-    let (allowed, disallowed) = (run.allowed_tools.clone(), run.disallowed_tools.clone());
+    let selector = selector.clone();
     Arc::new(move |name| {
-        type_admits_tool(def.as_ref(), name) && lists_admit_tool(&allowed, &disallowed, name)
+        type_admits_tool(def.as_ref(), name)
+            && selector.admits(name, &base::interface::tool::ToolOrigin::Builtin)
     })
 }
 
