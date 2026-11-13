@@ -137,7 +137,7 @@ impl Delegator {
         admission: Admission,
         shot: OneShot,
     ) -> (String, DelegateEnd) {
-        let Admission { depth, _slot } = admission;
+        let depth = admission.depth();
         let OneShot {
             spec,
             prompt,

@@ -580,7 +580,7 @@ async fn an_agent_types_tool_lists_narrow_the_scenes_tools_too() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() {
+async fn the_session_cap_refuses_one_sub_agent_too_many_and_a_root_team_member_waits_for_one() {
     let started = Arc::new(tokio::sync::Notify::new());
     let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let slots = SubagentSlots::new(1);
@@ -606,18 +606,28 @@ async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() 
         "{refused}"
     );
 
-    let member = agent_tool.run_stage_member(
+    let mut member = Box::pin(agent_tool.run_stage_member(
         "member task",
         tokio_util::sync::CancellationToken::new(),
         None,
         Vec::new(),
-    );
+    ));
     tokio::select! {
-        _ = member => panic!("the model never answers"),
-        _ = started.notified() => {}
+        biased;
+        refused = &mut member => panic!("the member did not wait for a slot: {refused:?}"),
+        _ = tokio::task::yield_now() => {}
     }
-    assert_eq!(slots.running(), 1, "a team member holds no slot");
 
     drop(first);
-    assert_eq!(slots.running(), 0, "an ended sub-agent gives its slot back");
+    tokio::select! {
+        _ = &mut member => panic!("the model never answers"),
+        _ = started.notified() => {}
+    }
+    assert_eq!(
+        slots.running(),
+        1,
+        "the member runs on the slot the first sub-agent gave back"
+    );
+    drop(member);
+    assert_eq!(slots.running(), 0, "an ended member gives its slot back");
 }

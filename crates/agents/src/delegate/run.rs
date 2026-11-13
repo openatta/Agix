@@ -70,8 +70,9 @@ impl Delegator {
         })
     }
 
-    /// A program's delegate has nobody to ask, and a root session holds no
-    /// slot: it waits for one instead of being refused.
+    /// A program's delegate has nobody to ask; it may wait for a slot, as far
+    /// as the slot rule lets this session wait. One that can ask is refused
+    /// at the cap, so the model hears it and can do the work itself.
     pub(super) async fn wait(
         &self,
         spec: Spec,
@@ -81,8 +82,8 @@ impl Delegator {
         ask: Ask,
     ) -> Result<Delegated, DelegateError> {
         let admission = match ask.asks {
-            AskRoute::Refuse => self.limits.admit_waiting(&stop).await?,
-            AskRoute::Host => self.limits.admit()?,
+            AskRoute::Refuse => self.limits.admit(&stop).await?,
+            AskRoute::Host => self.limits.admit_now()?,
         };
         let tool_use_id = spec.called_from.as_ref().map(|c| c.tool_use_id.clone());
         let task_id = tool_use_id
@@ -124,7 +125,7 @@ impl Delegator {
         started: Started,
     ) -> Result<Delegated, DelegateError> {
         let me = self.me()?;
-        let admission = self.limits.admit()?;
+        let admission = self.limits.admit_now()?;
         let mut detail = serde_json::json!({
             "agent_type": spec.agent_type,
             "description": started.description,
@@ -165,8 +166,9 @@ impl Delegator {
         Ok(Delegated::Started(agent))
     }
 
-    /// A member of one team stage. It takes no slot: `team_stage_concurrency`
-    /// bounds a stage instead.
+    /// A member of one team stage, on a slot of the session's like any other
+    /// delegate: a lead that holds one is refused at the cap, a root lead
+    /// waits for one.
     pub(super) async fn stage_member(
         &self,
         spec: Spec,
@@ -176,7 +178,18 @@ impl Delegator {
         stage: String,
         extra_tools: Vec<Arc<dyn base::tool::Tool>>,
     ) -> Result<Delegated, DelegateError> {
-        let admission = self.limits.admit_unslotted()?;
+        let admission = match self.limits.admit(&stop).await {
+            Ok(admission) => admission,
+            Err(_) if stop.is_cancelled() => {
+                return Ok(Delegated::Finished(DelegateOutcome {
+                    text: String::new(),
+                    end: DelegateEnd::Cancelled,
+                    structured: None,
+                    session_id: spec.session_id,
+                }));
+            }
+            Err(e) => return Err(e),
+        };
         let seat = spec.seat.as_ref();
         let detail = serde_json::json!({
             "team": seat.map(|s| s.team.clone()),

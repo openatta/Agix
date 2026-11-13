@@ -19,7 +19,7 @@ use base::interface::delegate::{
     Workdir,
 };
 
-pub(crate) use admission::{Admission, Limits};
+pub(crate) use admission::{Admission, Limits, SlotRule};
 pub use admission::{SubagentSlots, DEFAULT_MAX_CONCURRENT_SUBAGENTS};
 pub(crate) use env::*;
 pub(crate) use members::*;

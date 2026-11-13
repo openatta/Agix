@@ -870,3 +870,106 @@ async fn stopping_a_member_ends_the_tasks_of_its_queued_messages() {
         "queued messages' tasks left running: {still_running:?}"
     );
 }
+
+/// Waits, within a bound, for the parent's task `task_id` to end, and says
+/// how it ended.
+async fn ended_status(agent_tool: &AgentTool, task_id: &str) -> base::context::task::TaskStatus {
+    use base::context::task::TaskStatus;
+    let state = agent_tool.parent_state();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = state
+            .task_infos()
+            .into_iter()
+            .find(|t| t.task_id == task_id)
+            .map(|t| t.status);
+        match status {
+            Some(TaskStatus::Running | TaskStatus::Waiting) => {}
+            Some(ended) => return ended,
+            None => panic!("task {task_id} is not the parent's"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "task {task_id} never ended"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// A root session holds no slot, so its member waits for one; the member
+/// runs its message's turn on it and gives it back when the turn ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_root_sessions_member_holds_a_slot_only_for_its_turn() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let slots = SubagentSlots::new(1);
+    let agent_tool = TestParent {
+        slots: slots.clone(),
+        ..TestParent::new(Arc::new(AnswersOnlyCancellation {
+            started: started.clone(),
+            dropped: Default::default(),
+        }))
+    }
+    .with_team()
+    .agent_tool();
+    let held = slots.slots.clone().try_acquire_owned().unwrap();
+    let task_id = agent_tool
+        .spawn_or_message_team_member(
+            "crew".into(),
+            "a".into(),
+            "work".into(),
+            None,
+            std::env::temp_dir(),
+            agent_tool.parent_state(),
+            None,
+        )
+        .await
+        .expect("the message is queued");
+
+    drop(held);
+    tokio::time::timeout(std::time::Duration::from_secs(10), started.notified())
+        .await
+        .expect("the member's turn starts once the slot is free");
+    assert_eq!(slots.running(), 1, "the member's turn runs on a slot");
+
+    agent_tool.stop_team_member("crew", "a").await;
+    assert_eq!(
+        ended_status(&agent_tool, &task_id).await,
+        base::context::task::TaskStatus::Stopped
+    );
+    assert_eq!(
+        slots.running(),
+        0,
+        "a member that is not running holds no slot"
+    );
+}
+
+/// A member of a session that runs on a slot itself is refused at the cap,
+/// rather than waiting on a slot only that session can give back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delegates_member_is_refused_at_the_cap() {
+    let slots = SubagentSlots::new(1);
+    let agent_tool = TestParent {
+        slots: slots.clone(),
+        depth: 1,
+        ..TestParent::new(Arc::new(DummyModel))
+    }
+    .with_team()
+    .agent_tool();
+    let _held = slots.slots.clone().try_acquire_owned().unwrap();
+    let task_id = agent_tool
+        .spawn_or_message_team_member(
+            "crew".into(),
+            "a".into(),
+            "work".into(),
+            None,
+            std::env::temp_dir(),
+            agent_tool.parent_state(),
+            None,
+        )
+        .await
+        .expect("the message is queued");
+    assert_eq!(
+        ended_status(&agent_tool, &task_id).await,
+        base::context::task::TaskStatus::Failed
+    );
+}

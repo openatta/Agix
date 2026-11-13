@@ -25,8 +25,17 @@ pub(super) fn call(tool: &str, input: Value) -> Step {
 pub(super) struct Gate {
     barrier: tokio::sync::Barrier,
     bound: std::time::Duration,
-    at: std::sync::atomic::AtomicUsize,
+    at: Arc<std::sync::atomic::AtomicUsize>,
     pub(super) peak: std::sync::atomic::AtomicUsize,
+}
+
+/// One call at a gate, counted off however its future ends.
+struct AtGate(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for AtGate {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl Gate {
@@ -46,9 +55,9 @@ impl Gate {
     async fn pass(&self) {
         use std::sync::atomic::Ordering::SeqCst;
         let now = self.at.fetch_add(1, SeqCst) + 1;
+        let _at = AtGate(self.at.clone());
         self.peak.fetch_max(now, SeqCst);
         let _ = tokio::time::timeout(self.bound, self.barrier.wait()).await;
-        self.at.fetch_sub(1, SeqCst);
     }
 }
 

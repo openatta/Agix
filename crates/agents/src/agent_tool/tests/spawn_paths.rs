@@ -569,7 +569,6 @@ fn team_of(members: &[&str]) -> Value {
 /// members without waiting, so they are refused, and the refusal is what
 /// its team reports.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "D2: TeamCreate members take no sub-agent slot (T2)"]
 async fn a_team_started_by_a_sub_agent_holding_the_only_slot_is_refused_its_members() {
     use super::scripted::*;
     let members = Gate::new(2, std::time::Duration::from_secs(5));
@@ -623,7 +622,6 @@ async fn a_team_started_by_a_sub_agent_holding_the_only_slot_is_refused_its_memb
 /// A root session holds no slot, so the members of a team it starts wait
 /// for one: every member runs, never more at once than the cap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "D2: TeamCreate members take no sub-agent slot (T2)"]
 async fn a_root_sessions_team_waits_for_slots_and_every_member_runs() {
     use super::scripted::*;
     let members = Gate::new(3, std::time::Duration::from_secs(3));

@@ -10,7 +10,7 @@ use base::context::{TaskLease, TaskType};
 use base::interface::delegate::{DelegateEnd, DelegateError, Delegated, StartedAgent, TeamSeat};
 use tokio_util::sync::CancellationToken;
 
-use super::Delegator;
+use super::{Delegator, SlotRule};
 use crate::agent_tool::{
     bg_task_id, conclude, mark_sidechain_terminal, open_inbox, run_one_turn, task_notification,
     Delegate, SpawnTelemetry, Spec, SubagentPayload,
@@ -243,6 +243,7 @@ impl Delegator {
             idle_since,
             idle_seq,
             idle_seq_counter: self.members.idle_seq_counter.clone(),
+            slots: self.limits.slots.clone(),
             hooks: me.env.hooks.clone(),
             spawned,
         }));
@@ -323,6 +324,9 @@ struct MemberLoop {
     idle_since: Arc<AtomicI64>,
     idle_seq: Arc<AtomicU64>,
     idle_seq_counter: Arc<AtomicU64>,
+    /// The spawning session's: a member runs each message on a slot, taken
+    /// as that session may take one, and holds none while idle.
+    slots: SlotRule,
     hooks: std::sync::Weak<hooks::HookRunner>,
     spawned: SpawnTelemetry,
 }
@@ -355,21 +359,29 @@ async fn member_loop(mut m: MemberLoop) {
         m.lifecycle(TeammateLifecycle::Active, None);
 
         let task = lease.task().clone();
-        let d = &mut m.delegate;
-        open_inbox(Some(&task), &d.agent);
-        // No `SubagentTag`: a member outlives any one parent turn, so there
-        // is no turn to attribute its events to; it shows through
-        // `TeamProgress` and `TeamList` instead.
-        let (text, end) = run_one_turn(
-            &mut d.agent,
-            &mut d.event_rx,
-            &d.input_tx,
-            prompt,
-            task.cancel.clone(),
-            None,
-            Some(&task),
-        )
-        .await;
+        let (text, end) = match m.slots.take(&task.cancel).await {
+            Ok(slot) => {
+                let d = &mut m.delegate;
+                open_inbox(Some(&task), &d.agent);
+                // No `SubagentTag`: a member outlives any one parent turn, so
+                // there is no turn to attribute its events to; it shows
+                // through `TeamProgress` and `TeamList` instead.
+                let ran = run_one_turn(
+                    &mut d.agent,
+                    &mut d.event_rx,
+                    &d.input_tx,
+                    prompt,
+                    task.cancel.clone(),
+                    None,
+                    Some(&task),
+                )
+                .await;
+                drop(slot);
+                ran
+            }
+            Err(_) if task.cancel.is_cancelled() => (String::new(), DelegateEnd::Cancelled),
+            Err(e) => (String::new(), DelegateEnd::Failed(e.to_string())),
+        };
         conclude(lease, &text, &end, true);
         last = end;
 
