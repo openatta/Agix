@@ -436,6 +436,10 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 - **占槽与命名是一次转换。** `run_turn` 在一次锁里判定目标轮、占槽,`Idle` 直接进 `Running`,
   回合从占住那一刻起就有名字:这时到达的 `session.interrupt` 发的是 `CancelTurn { turn_id }`,
   引擎在消息到达时记得它已被取消,这一轮以 `cancelled` 结束。
+- **占槽之后的部分由池 spawn 的回合驱动跑。** `run_turn` 只等它的 `JoinHandle`:调用方的 future
+  被丢下,这一轮照样跑完、还槽。驱动没还槽就结束(panic)时,`TurnTicket` 的 `Drop` 把这个条目
+  按 `engine_fault` 移出内存 —— 引擎的事件接收端跟着驱动没了,这个引擎不能再用;`run_turn` 得到
+  `kind: internal` 的失败。
 - **重建是 `Idle → Rebuilding`。** 先按同一个 `SessionCore` 造好下一代引擎(状态经
   `Builder::session_state` 注入,还没挂上),造不出来就回到 `Idle`、旧引擎照跑;造好了才停旧引擎,
   旧引擎停下之后新引擎 `attach_session`,只读回 transcript,不再从日志恢复状态,最后在同一个

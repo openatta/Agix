@@ -77,7 +77,7 @@ impl SessionPool {
                 .live
                 .with_session_lock(&child_str, async {
                     if let Some(live) = self.live.remove(&child_str).await {
-                        self.end_cut_off_turn(&child_str, &live);
+                        self.end_cut_off_turn(&child_str, &live, SessionEvent::Closed);
                         self.live.stop_removed(&child_str, &live);
                         live.core.reap_process_groups_later();
                     }
@@ -119,7 +119,7 @@ impl SessionPool {
         children: Vec<base::session::SessionId>,
     ) -> usize {
         if let Some(live) = self.live.remove(session_id).await {
-            self.end_cut_off_turn(session_id, &live);
+            self.end_cut_off_turn(session_id, &live, SessionEvent::Closed);
             self.live.stop_removed(session_id, &live);
             info!(%session_id, "session removed");
             self.emit_event(api::DaemonEvent::SessionClosed {
@@ -243,7 +243,7 @@ impl SessionPool {
         let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = self
             .live
             .drain(|sid, live| {
-                self.end_cut_off_turn(&sid, &live);
+                self.end_cut_off_turn(&sid, &live, SessionEvent::Closed);
                 live.engine.cancel.cancel();
                 live.core.hub().clear();
                 info!(%sid, "session removed (shutdown)");

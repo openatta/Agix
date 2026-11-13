@@ -1,4 +1,6 @@
-//! 回合执行：`run_turn` 及其回合槽位、自动命名的采纳。
+//! 回合执行：`run_turn` 占住回合槽，把这一轮交给池 spawn 的回合驱动（`drive_turn`）
+//! 跑完，自己只等它的结局；调用方被丢下，回合照样跑完并还槽。另有回合槽的归还与
+//! 自动命名的采纳。
 
 use crate::session_pool::parts::live::SessionCore;
 use crate::session_pool::*;
@@ -8,6 +10,26 @@ enum Claim {
     Taken(TurnTicket, InputSender),
     Busy(Busy, Arc<SessionCore>),
     Skipped,
+}
+
+/// A claimed turn, for its driver to run.
+pub(in crate::session_pool) struct ClaimedTurn {
+    ticket: TurnTicket,
+    input_tx: InputSender,
+    message: String,
+    attachments: Vec<runtime::agent::Attachment>,
+    initiator: Initiator,
+    initiator_id: Option<WatcherId>,
+}
+
+/// A turn's driver as its own boxed future: the driver may start a goal
+/// round, and a goal round runs `run_turn`, so the `Send` of one cannot be
+/// inferred from the other.
+fn turn_driver(
+    pool: Arc<SessionPool>,
+    turn: ClaimedTurn,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TurnOutcome, PoolError>> + Send>> {
+    Box::pin(async move { pool.drive_turn(turn).await })
 }
 
 impl SessionPool {
@@ -21,6 +43,7 @@ impl SessionPool {
         ticket: &TurnTicket,
         event_rx: EventReceiver,
     ) -> bool {
+        ticket.settle();
         *ticket.rx.lock().await = Some(event_rx);
         let released = self
             .live
@@ -164,12 +187,12 @@ impl SessionPool {
                     if let Some(watcher) = &watcher {
                         live.core.hub().subscribe(watcher.clone());
                     }
-                    let ticket = TurnTicket {
-                        core: live.core.clone(),
-                        generation: live.engine.generation,
-                        turn_id: turn_id.clone(),
-                        rx: live.turn.rx.clone(),
-                    };
+                    let ticket = TurnTicket::new(
+                        live.core.clone(),
+                        live.engine.generation,
+                        turn_id.clone(),
+                        live.turn.rx.clone(),
+                    );
                     Claim::Taken(ticket, input_tx)
                 })
                 .await
@@ -214,93 +237,185 @@ impl SessionPool {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         };
+        let (sid, generation) = (ticket.sid().to_string(), ticket.generation);
+        let weak = self.this.clone();
         let core = ticket.core.clone();
+        ticket.on_abandon(move || {
+            let (Some(pool), Ok(runtime)) = (weak.upgrade(), tokio::runtime::Handle::try_current())
+            else {
+                return;
+            };
+            runtime.spawn(async move { pool.evict_faulted(&core, generation).await });
+        });
+        let Some(pool) = self.this.upgrade() else {
+            self.release_claimed(&ticket).await;
+            return Err(PoolError::Internal("the pool is going away".into()));
+        };
+        let claimed = ClaimedTurn {
+            ticket,
+            input_tx,
+            message,
+            attachments,
+            initiator,
+            initiator_id,
+        };
+        match tokio::spawn(turn_driver(pool, claimed)).await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                warn!(%sid, error = %e, "the turn's driver failed");
+                Err(PoolError::Engine(base::event::TurnFailure::new(
+                    base::event::FailureKind::Internal,
+                    format!("the turn's driver failed: {e}"),
+                )))
+            }
+        }
+    }
+
+    /// Give back the slot `ticket` claimed, for a turn that never ran.
+    async fn release_claimed(&self, ticket: &TurnTicket) {
+        ticket.settle();
+        self.live
+            .with_live_mut(ticket.sid(), |live| {
+                if live.runs(&ticket.core, ticket.generation) {
+                    live.turn.release(&ticket.turn_id);
+                }
+            })
+            .await;
+    }
+
+    /// Take out the entry a turn left without giving its slot back — its
+    /// driver failed, and the engine's receiver went with it — and tell the
+    /// session's watchers its turn is over.
+    pub(in crate::session_pool) async fn evict_faulted(
+        &self,
+        core: &Arc<SessionCore>,
+        generation: Generation,
+    ) {
+        let sid = core.id();
+        let Some(live) = self
+            .live
+            .remove_if(sid, |live| live.runs(core, generation))
+            .await
+        else {
+            return;
+        };
+        self.end_cut_off_turn(sid, &live, SessionEvent::EngineStopped);
+        self.evict(sid, &live);
+        live.turn.idle.notify_waiters();
+        warn!(%sid, "session evicted: its turn ended without giving its slot back");
+        self.emit_event(api::DaemonEvent::SessionEvicted {
+            session_id: sid.to_string(),
+            reason: api::EvictReason::EngineFault,
+        });
+    }
+
+    /// Run a claimed turn to its end: send the message, hand the engine's
+    /// events to the session's watchers, give the slot back, start the goal
+    /// round that follows, name the session after its first turn.
+    async fn drive_turn(&self, turn: ClaimedTurn) -> Result<TurnOutcome, PoolError> {
+        let ClaimedTurn {
+            ticket,
+            input_tx,
+            message,
+            attachments,
+            initiator,
+            initiator_id,
+        } = turn;
+        let sid = ticket.sid().to_string();
+        let turn_id = ticket.turn_id.clone();
         let taken = ticket.rx.lock().await.take();
-        let Some(mut event_rx) = taken else {
-            self.live
-                .with_live_mut(&sid, |live| {
-                    if live.runs(&core, ticket.generation) {
-                        live.turn.release(&turn_id);
-                    }
-                })
-                .await;
+        let Some(event_rx) = taken else {
+            self.release_claimed(&ticket).await;
             return Err(PoolError::Internal(format!(
                 "session `{sid}` claimed a turn with no event receiver in its slot"
             )));
         };
         if initiator == Initiator::Goal {
-            self.record_goal_changes(&sid, core.state()).await;
+            self.record_goal_changes(&sid, ticket.core.state()).await;
         }
 
-        // 发送用户消息
         let _ = input_tx.send(InputMessage::User {
             content: message.clone(),
             attachments,
             turn_id: turn_id.clone(),
         });
+        let (api_calls, ended_with, event_rx) =
+            self.relay_turn(&ticket, event_rx, initiator_id).await?;
 
-        let session_key: Arc<str> = Arc::from(sid.as_str());
-        let turn_key: Arc<str> = Arc::from(turn_id.as_str());
+        // The turn is over. A client that vanished mid-stream is not part of
+        // this: the turn ran to completion and landed in the transcript, and
+        // whoever comes back reads it there. Cancelling on a broken writer
+        // would cascade into deleting sidechain transcripts another tab is
+        // still watching.
+        let next_round = self
+            .goal_round_after(&sid, ticket.core.state(), &ended_with)
+            .await;
+        let ours = self.release_turn_slot(&ticket, event_rx).await;
+        if let (true, Some(round)) = (ours, next_round) {
+            self.start_goal_round(&sid, round);
+        }
+        let name = self.name_after_turn(&ticket, &message).await;
+
+        Ok(TurnOutcome::Completed {
+            session_id: sid,
+            turn_id,
+            name,
+            api_calls,
+        })
+    }
+
+    /// Hand the turn's events to the session's watchers until it completes,
+    /// with its model call count and stop reason. A turn that fails, an
+    /// engine that goes away and a session closed under the turn end it
+    /// here, the slot given back or gone.
+    async fn relay_turn(
+        &self,
+        ticket: &TurnTicket,
+        mut event_rx: EventReceiver,
+        initiator_id: Option<WatcherId>,
+    ) -> Result<(u32, String, EventReceiver), PoolError> {
+        let core = &ticket.core;
+        let session_key: Arc<str> = Arc::from(ticket.sid());
+        let turn_key: Arc<str> = Arc::from(ticket.turn_id.as_str());
         let frame_of = |event| SessionFrame {
             session_id: session_key.clone(),
             turn_id: Some(turn_key.clone()),
             event,
         };
-        let api_calls;
-        let ended_with;
         let mut tools_ran = false;
         loop {
             let Some(event) = event_rx.recv().await else {
-                // The engine is gone. Dropping the entry is what lets the
-                // next call on this id resume it from its transcript instead
-                // of sending into a closed channel.
-                self.publish_terminal(
-                    &ticket,
-                    &frame_of(SessionEvent::EngineStopped),
-                    initiator_id,
-                )
-                .await;
-                let dead = self
-                    .live
-                    .remove_if(&sid, |live| live.runs(&core, ticket.generation))
+                let stopped = frame_of(SessionEvent::EngineStopped);
+                self.engine_gone_mid_turn(ticket, &stopped, initiator_id)
                     .await;
-                if let Some(dead) = dead {
-                    self.evict(&sid, &dead);
-                    dead.turn.idle.notify_waiters();
-                    self.emit_event(api::DaemonEvent::SessionClosed {
-                        session_id: sid.to_string(),
-                        reason: api::CloseReason::EngineStopped,
-                    });
-                }
-                warn!(%sid, "engine stopped before the turn completed");
                 return Err(PoolError::engine_stopped(tools_ran));
             };
             match event {
                 AgentEvent::SystemInit { .. } => continue,
                 AgentEvent::TurnComplete {
                     ref stop_reason,
-                    api_calls: ac,
+                    api_calls,
                     context,
                     ..
                 } => {
-                    api_calls = ac;
-                    ended_with = stop_reason.clone();
+                    let ended_with = stop_reason.clone();
                     if let Some(context) = context {
                         core.set_context(context);
                     }
                     let last = frame_of(SessionEvent::Agent(event));
-                    if !self.publish_terminal(&ticket, &last, None).await {
+                    if !self.publish_terminal(ticket, &last, None).await {
+                        ticket.settle();
                         return Err(PoolError::session_closed(tools_ran));
                     }
-                    break;
+                    return Ok((api_calls, ended_with, event_rx));
                 }
                 AgentEvent::Error { ref failure, .. } => {
                     let failure = failure.clone();
                     // The caller learns this from its own result; every other
                     // watcher would otherwise see a turn that never ends.
                     let last = frame_of(SessionEvent::Agent(event));
-                    self.publish_terminal(&ticket, &last, initiator_id).await;
-                    self.release_turn_slot(&ticket, event_rx).await;
+                    self.publish_terminal(ticket, &last, initiator_id).await;
+                    self.release_turn_slot(ticket, event_rx).await;
                     return Err(PoolError::Engine(failure));
                 }
                 event => {
@@ -309,71 +424,74 @@ impl SessionPool {
                 }
             }
         }
+    }
 
-        // The turn is over. A client that vanished mid-stream is not part of
-        // this: the turn ran to completion and landed in the transcript, and
-        // whoever comes back reads it there. Cancelling on a broken writer
-        // would cascade into deleting sidechain transcripts another tab is
-        // still watching.
-
-        let next_round = self.goal_round_after(&sid, core.state(), &ended_with).await;
-        let ours = self.release_turn_slot(&ticket, event_rx).await;
-        if let (true, Some(round)) = (ours, next_round) {
-            self.start_goal_round(&sid, round);
+    /// The engine went away mid-turn. Dropping the entry is what lets the
+    /// next call on this id resume it from its transcript instead of sending
+    /// into a closed channel.
+    async fn engine_gone_mid_turn(
+        &self,
+        ticket: &TurnTicket,
+        stopped: &SessionFrame,
+        initiator_id: Option<WatcherId>,
+    ) {
+        let sid = ticket.sid();
+        self.publish_terminal(ticket, stopped, initiator_id).await;
+        ticket.settle();
+        let dead = self
+            .live
+            .remove_if(sid, |live| live.runs(&ticket.core, ticket.generation))
+            .await;
+        if let Some(dead) = dead {
+            self.evict(sid, &dead);
+            dead.turn.idle.notify_waiters();
+            self.emit_event(api::DaemonEvent::SessionClosed {
+                session_id: sid.to_string(),
+                reason: api::CloseReason::EngineStopped,
+            });
         }
+        warn!(%sid, "engine stopped before the turn completed");
+    }
 
-        // Whether a session names itself is its *own* scene's call, not this
-        // pool's default scene's: a `harnix` session created on a `--scene
-        // code` daemon is still a harnix session, and the two scenes disagree
-        // about this exactly as they disagree about the system prompt.
-        //
-        // The naming call is made with no lock held — it is a model call.
-        let naming = {
+    /// The session's name after a turn that opened with `message`: guessed
+    /// now when this was its first turn and nobody named it, else the one it
+    /// has.
+    ///
+    /// Whether a session names itself is its *own* scene's call, not this
+    /// pool's default scene's: a `harnix` session created on a `--scene code`
+    /// daemon is still a harnix session, and the two scenes disagree about
+    /// this exactly as they disagree about the system prompt. The naming call
+    /// is made with no lock held — it is a model call.
+    async fn name_after_turn(&self, ticket: &TurnTicket, message: &str) -> Option<String> {
+        let core = &ticket.core;
+        let prompt = {
             let mut naming = core.naming();
             // A slash command is not what the conversation is about.
-            if naming.is_first_turn && !message.starts_with('/') {
-                naming.is_first_turn = false;
-                if naming.named_by_user {
-                    Err(None)
-                } else {
-                    Ok(core.scene().session_name_prompt(&message))
-                }
-            } else {
-                Err(naming.name.clone())
+            if !naming.is_first_turn || message.starts_with('/') {
+                return naming.name.clone();
             }
+            naming.is_first_turn = false;
+            if naming.named_by_user {
+                return None;
+            }
+            core.scene().session_name_prompt(message)?
         };
-        let session_name = match naming {
-            Err(name) => name,
+        let namer = self
+            .live
+            .with_live(ticket.sid(), |live| {
+                live.runs(core, ticket.generation)
+                    .then(|| live.engine.namer.clone())
+            })
+            .await
+            .flatten()?;
+        match namer.name(&prompt).await {
+            Ok(Some(name)) => self.adopt_generated_name(core, name).await,
             Ok(None) => None,
-            Ok(Some(prompt)) => {
-                let namer = self
-                    .live
-                    .with_live(&sid, |live| {
-                        live.runs(&core, ticket.generation)
-                            .then(|| live.engine.namer.clone())
-                    })
-                    .await
-                    .flatten();
-                match namer {
-                    None => None,
-                    Some(namer) => match namer.name(&prompt).await {
-                        Ok(Some(name)) => self.adopt_generated_name(&core, name).await,
-                        Ok(None) => None,
-                        Err(e) => {
-                            warn!(%sid, error=%e, "session name generation failed");
-                            None
-                        }
-                    },
-                }
+            Err(e) => {
+                warn!(sid = %ticket.sid(), error=%e, "session name generation failed");
+                None
             }
-        };
-
-        Ok(TurnOutcome::Completed {
-            session_id: sid,
-            turn_id,
-            name: session_name,
-            api_calls,
-        })
+        }
     }
 
     /// A name somebody typed while the naming call was out wins over the

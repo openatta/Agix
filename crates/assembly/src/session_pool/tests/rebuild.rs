@@ -350,12 +350,7 @@ async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() 
     raise_ask(&hub, &sid, "own", None);
     raise_ask(&hub, &sid, "background", Some("task-1"));
 
-    let ticket = TurnTicket {
-        core,
-        generation,
-        turn_id: "t1".into(),
-        rx: slot,
-    };
+    let ticket = TurnTicket::new(core, generation, "t1".into(), slot);
     assert!(pool.release_turn_slot(&ticket, rx).await);
     assert_eq!(
         pending_ids(&pool, &sid).await,

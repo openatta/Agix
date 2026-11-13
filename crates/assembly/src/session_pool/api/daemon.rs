@@ -143,6 +143,9 @@ pub enum EvictReason {
     Capacity,
     /// The old engine of an in-place rebuild did not stop in time.
     Rebuild,
+    /// A turn ended without giving the session back — what ran it failed —
+    /// and the engine it ran on could not be used again.
+    EngineFault,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]

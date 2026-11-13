@@ -65,16 +65,61 @@ impl RunningTurn {
 /// on and the receiver it took. What it writes back goes to `core`; the slot
 /// it gives back is the one of `core`'s entry while that entry still runs
 /// engine `generation`.
+///
+/// A ticket dropped before it is [settled](Self::settle) runs what
+/// [`Self::on_abandon`] gave it: the turn's receiver went with it, so the
+/// engine it ran on has nobody left to read it.
 pub(in crate::session_pool) struct TurnTicket {
     pub(in crate::session_pool) core: Arc<SessionCore>,
     pub(in crate::session_pool) generation: Generation,
     pub(in crate::session_pool) turn_id: String,
     pub(in crate::session_pool) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
+    abandoned: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl TurnTicket {
+    pub(in crate::session_pool) fn new(
+        core: Arc<SessionCore>,
+        generation: Generation,
+        turn_id: String,
+        rx: Arc<AsyncMutex<Option<EventReceiver>>>,
+    ) -> Self {
+        Self {
+            core,
+            generation,
+            turn_id,
+            rx,
+            abandoned: std::sync::Mutex::new(None),
+        }
+    }
+
     pub(in crate::session_pool) fn sid(&self) -> &str {
         self.core.id()
+    }
+
+    pub(in crate::session_pool) fn on_abandon(&self, f: impl FnOnce() + Send + 'static) {
+        *self.abandoned.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(f));
+    }
+
+    /// The turn gave its slot back, or has none left to give.
+    pub(in crate::session_pool) fn settle(&self) {
+        self.abandoned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+    }
+}
+
+impl Drop for TurnTicket {
+    fn drop(&mut self) {
+        let abandoned = self
+            .abandoned
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(abandoned) = abandoned {
+            abandoned();
+        }
     }
 }
 

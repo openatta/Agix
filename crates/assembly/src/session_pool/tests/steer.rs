@@ -3,68 +3,8 @@
 
 use super::mcp_for_project::test_pool;
 use super::*;
-use std::sync::Mutex;
 
 const MARKER: &str = "STEERED-7f3a";
-
-/// Holds its first turn-loop call until released, and keeps the conversation
-/// every turn-loop call was sent.
-#[derive(Default)]
-struct HoldsTheFirstCall {
-    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-    holding: tokio::sync::Notify,
-    sent: Mutex<Vec<String>>,
-}
-
-#[async_trait::async_trait]
-impl base::interface::model::Model for HoldsTheFirstCall {
-    fn api_type(&self) -> base::provider::ApiType {
-        base::provider::ApiType::Anthropic
-    }
-
-    async fn stream(
-        &self,
-        _: Vec<base::prompt::PromptBlock>,
-        _: Vec<base::interface::model::ToolDef>,
-        messages: Vec<base::interface::model::ModelMessage>,
-        params: base::interface::model::StreamParams,
-        _: tokio_util::sync::CancellationToken,
-    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
-        use base::interface::model::ModelEvent;
-        if params
-            .origin
-            .as_ref()
-            .is_some_and(|o| o.purpose().is_none())
-        {
-            self.sent.lock().unwrap().push(format!("{messages:?}"));
-            let held = self.release.lock().unwrap().take();
-            if let Some(release) = held {
-                self.holding.notify_one();
-                let _ = release.await;
-            }
-        }
-        let events = vec![
-            Ok(ModelEvent::TextDelta { text: "ok".into() }),
-            Ok(ModelEvent::EndTurn {
-                stop_reason: "end_turn".into(),
-                usage: Default::default(),
-            }),
-        ];
-        Ok(Box::new(futures::stream::iter(events)))
-    }
-}
-
-fn turn(sid: &str, turn_id: &str, message: &str, on_busy: OnBusy) -> TurnRequest {
-    TurnRequest {
-        session_id: Some(sid.to_string()),
-        message: message.to_string(),
-        attachments: Vec::new(),
-        turn_id: turn_id.to_string(),
-        options: None,
-        on_busy,
-        initiator: Initiator::Client,
-    }
-}
 
 /// The engine reads its input channel six seconds late — longer than the
 /// five a steer used to wait for the engine's answer before giving up and
@@ -74,18 +14,8 @@ fn turn(sid: &str, turn_id: &str, message: &str, on_busy: OnBusy) -> TurnRequest
 async fn a_steered_message_reaches_the_conversation_once_however_slow_the_engine_reads() {
     let (pool, _dir) = test_pool().await;
     let model = Arc::new(HoldsTheFirstCall::default());
-    let (release, released) = tokio::sync::oneshot::channel();
-    *model.release.lock().unwrap() = Some(released);
-    let mut settings = (*pool.bindings.pool_settings().await).clone();
-    settings.values.memory_enabled = false;
-    let mut binding = pool.bindings.binding_from(settings);
-    binding.model = model.clone();
-    pool.bindings
-        .insert(
-            (Some(pool.cwd().to_path_buf()), "code".to_string()),
-            binding,
-        )
-        .await;
+    let release = model.hold_the_first_call();
+    answered_by(&pool, model.clone()).await;
     let sid = pool
         .create_session(None, ProjectSelector::Default, None)
         .await

@@ -141,15 +141,21 @@ impl SessionPool {
 
     /// `live`, just taken out of the map, was running a turn whose last
     /// frame has not gone out: send its watchers an `error` frame in its
-    /// place. Its initiator learns the same from its `run_turn` result.
-    pub(in crate::session_pool) fn end_cut_off_turn(&self, session_id: &str, live: &LiveSession) {
+    /// place — `event` says why. Its initiator learns the same from its
+    /// `run_turn` result.
+    pub(in crate::session_pool) fn end_cut_off_turn(
+        &self,
+        session_id: &str,
+        live: &LiveSession,
+        event: SessionEvent,
+    ) {
         let Some(turn) = live.turn.running().filter(|turn| !turn.terminated) else {
             return;
         };
         let frame = SessionFrame {
             session_id: Arc::from(session_id),
             turn_id: Some(Arc::from(turn.turn_id.as_str())),
-            event: SessionEvent::Closed,
+            event,
         };
         live.core.hub().publish_except(&frame, turn.origin);
     }
