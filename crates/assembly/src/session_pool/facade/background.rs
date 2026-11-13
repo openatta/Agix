@@ -130,25 +130,17 @@ impl SessionPool {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(sweep_interval).await;
-                let mut sessions = pool.live.lock().await;
-                let to_evict =
-                    idle_session_ids(&sessions, Instant::now(), pool.live.idle_timeout());
-                for sid in &to_evict {
-                    if let Some(live) = sessions.remove(sid) {
-                        pool.evict(sid, &live);
-                        info!(%sid, "session evicted (idle timeout)");
-                        pool.emit_event(api::DaemonEvent::SessionEvicted {
-                            session_id: sid.to_string(),
-                            reason: api::EvictReason::Idle,
-                        });
-                    }
+                let (evicted, remaining) = pool.live.take_idle(Instant::now()).await;
+                for (sid, live) in &evicted {
+                    pool.evict(sid, live);
+                    info!(%sid, "session evicted (idle timeout)");
+                    pool.emit_event(api::DaemonEvent::SessionEvicted {
+                        session_id: sid.to_string(),
+                        reason: api::EvictReason::Idle,
+                    });
                 }
-                if !to_evict.is_empty() {
-                    debug!(
-                        evicted = to_evict.len(),
-                        remaining = sessions.len(),
-                        "janitor run"
-                    );
+                if !evicted.is_empty() {
+                    debug!(evicted = evicted.len(), remaining, "janitor run");
                 }
             }
         });

@@ -1,83 +1,226 @@
 //! 内存里的会话 `LiveSessions`：会话表、每会话的磁盘临界区锁、容量与空闲超时、
-//! 刚被拿出表还在停的引擎、整池关闭的状态，以及引擎的代际号。每个会话的
-//! `LiveSession` 带着它的回合槽 `TurnSlot`（`phase.rs`）和事件出口 `SessionHub`。
+//! 刚被拿出表还在停的引擎、整池关闭的状态，以及引擎的代际号。
 //!
-//! 锁序：`session_locks[sid]` → `sessions` → `TurnSlot.rx` → `SessionHub.inner`（叶子）。
+//! 表里每个会话是一个 `LiveSession`：会话本身的 `SessionCore`（状态、事件出口、
+//! steer 队列、进程组、名字与上下文用量；建会话或冷恢复时建，关闭、驱逐、整池
+//! 关闭时丢，重建不换）、当前这一代引擎的 `EngineSlot`，以及回合槽 `TurnSlot`
+//! （`phase.rs`）。门面经这里的窄方法读写这张表，拿不到表本身。
+//!
+//! 锁序：`session_locks[sid]` → `sessions` → `TurnSlot.rx` →
+//! { `SessionHub.inner` | `SessionCore.*` | `SessionState.*` }，叶子锁之间互不嵌套。
 //! `session_locks` 的表锁和 `stopping` 只在取、放的那一下持有。
-//!
-//! D3 会把 `LiveSession` 分成会话的 `SessionCore` 与引擎的 `EngineSlot`，那是这个
-//! 模块内部的事；门面经 `lock()` 看到的仍是一张以会话 id 为键的表。
 
 use crate::session_pool::parts::hub::SessionHub;
 use crate::session_pool::parts::phase::{Generation, Generations, TurnSlot};
 use crate::session_pool::{CreateError, SessionNamer, AGENT_EXIT_GRACE, PROCESS_GROUP_GRACE};
+use base::context::SessionState;
+use base::event::ContextUsage;
 use base::interface::scene::SceneSpec;
 use runtime::agent::InputSender;
+use runtime::steering::SteerHandle;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::warn;
 
-pub(in crate::session_pool) struct LiveSession {
+/// What a session is called, and whether it may still name itself.
+#[derive(Debug, Clone, Default)]
+pub(in crate::session_pool) struct Naming {
+    /// Set by the first-turn namer or `session.rename`.
+    pub(in crate::session_pool) name: Option<String>,
+    /// The name was typed by somebody: a guess the namer makes later does not
+    /// replace it.
+    pub(in crate::session_pool) named_by_user: bool,
+    pub(in crate::session_pool) is_first_turn: bool,
+}
+
+/// The session itself, whichever engine runs it.
+pub(in crate::session_pool) struct SessionCore {
+    id: Arc<str>,
+    /// The scene this session was created under — the one its `Meta` records,
+    /// not this pool's default.
+    scene: Arc<SceneSpec>,
+    /// `None` for a no-project session.
+    project: Option<PathBuf>,
+    created_at: Instant,
+    state: Arc<SessionState>,
+    /// Who watches this session, what it is still asking, and when it was
+    /// last active.
+    hub: Arc<SessionHub>,
+    steer: SteerHandle,
+    /// The process groups this session's commands started, recorded when
+    /// `sandbox.reap_process_groups` is on and stopped when the session ends.
+    process_groups: Arc<platform::GroupLedger>,
+    naming: Mutex<Naming>,
+    /// How full the context was after the last turn that called the model.
+    context: Mutex<Option<ContextUsage>>,
+}
+
+impl SessionCore {
+    pub(in crate::session_pool) fn new(
+        id: &str,
+        scene: Arc<SceneSpec>,
+        project: Option<PathBuf>,
+        naming: Naming,
+    ) -> Arc<Self> {
+        Self::active_at(id, scene, project, naming, Instant::now())
+    }
+
+    pub(in crate::session_pool) fn active_at(
+        id: &str,
+        scene: Arc<SceneSpec>,
+        project: Option<PathBuf>,
+        naming: Naming,
+        at: Instant,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            id: Arc::from(id),
+            scene,
+            project,
+            created_at: at,
+            state: Arc::new(SessionState::new()),
+            hub: Arc::new(SessionHub::active_at(at)),
+            steer: SteerHandle::default(),
+            process_groups: platform::GroupLedger::new(),
+            naming: Mutex::new(naming),
+            context: Mutex::new(None),
+        })
+    }
+
+    pub(in crate::session_pool) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(in crate::session_pool) fn scene(&self) -> &Arc<SceneSpec> {
+        &self.scene
+    }
+
+    pub(in crate::session_pool) fn project(&self) -> Option<&Path> {
+        self.project.as_deref()
+    }
+
+    pub(in crate::session_pool) fn created_at(&self) -> Instant {
+        self.created_at
+    }
+
+    pub(in crate::session_pool) fn state(&self) -> &Arc<SessionState> {
+        &self.state
+    }
+
+    pub(in crate::session_pool) fn hub(&self) -> &Arc<SessionHub> {
+        &self.hub
+    }
+
+    pub(in crate::session_pool) fn steer(&self) -> &SteerHandle {
+        &self.steer
+    }
+
+    pub(in crate::session_pool) fn process_groups(&self) -> &Arc<platform::GroupLedger> {
+        &self.process_groups
+    }
+
+    pub(in crate::session_pool) fn naming(&self) -> MutexGuard<'_, Naming> {
+        self.naming.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(in crate::session_pool) fn context(&self) -> Option<ContextUsage> {
+        *self.context.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(in crate::session_pool) fn set_context(&self, context: ContextUsage) {
+        *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some(context);
+    }
+
+    pub(in crate::session_pool) fn reap_process_groups_later(&self) {
+        let ledger = self.process_groups.clone();
+        tokio::spawn(async move { ledger.reap(PROCESS_GROUP_GRACE).await });
+    }
+}
+
+/// One engine of a session: the `generation`-th the pool brought up, and
+/// what the session reaches it by.
+pub(in crate::session_pool) struct EngineSlot {
+    pub(in crate::session_pool) generation: Generation,
     pub(in crate::session_pool) input_tx: InputSender,
-    /// Which engine this entry is, what it is doing, and the receiver its
-    /// turns take. A session runs one turn at a time; the running one is
-    /// named here, so a refusal can name it
-    /// (`SESSION_BUSY.data.current_turn_id`) and `session.get` can report
-    /// `turn_state`.
-    pub(in crate::session_pool) turn: TurnSlot,
     pub(in crate::session_pool) cancel: CancellationToken,
     /// Cancelled once the Agent's task has returned and dropped the Agent.
     pub(in crate::session_pool) exited: CancellationToken,
-    /// How full the context was after the last turn that called the model.
-    pub(in crate::session_pool) context: Option<base::event::ContextUsage>,
-    /// The scene this session was created under — the one its `Meta` records,
-    /// not this pool's default. Auto-naming is the one behaviour decided per
-    /// turn rather than at build time, so it is the one that needs the scene
-    /// kept here to ask.
-    pub(in crate::session_pool) scene: Arc<SceneSpec>,
-    /// The project this session is bound to, `None` for a no-project session.
-    pub(in crate::session_pool) project: Option<PathBuf>,
-    /// Session name（CHAT 场景首轮后由 LLM 生成；CODING 为 None）。
-    pub(in crate::session_pool) name: Option<String>,
-    pub(in crate::session_pool) created_at: Instant,
-    /// 用于首轮命名判断。
-    pub(in crate::session_pool) is_first_turn: bool,
-    /// Set by `session.rename`. The first-turn auto-namer skips a session
-    /// that has one: a name somebody typed outranks a name a model guessed,
-    /// and the guess arrives later.
-    pub(in crate::session_pool) named_by_user: bool,
     pub(in crate::session_pool) namer: SessionNamer,
-    /// The stamp of the binding this Agent was built from. `run_turn`
+    /// The stamp of the binding this engine was built from. `run_turn`
     /// rebuilds the session before its next turn once the cache no longer
     /// considers it current — lazily, so an invalidation never has to walk
     /// the sessions.
     pub(in crate::session_pool) binding: super::bindings::BindingStamp,
-    /// The engine's own session state: the tasks `session.tasks` lists.
-    pub(in crate::session_pool) state: Option<Arc<base::context::SessionState>>,
     /// How the engine delegates, for `session.startAgent`.
     pub(in crate::session_pool) delegator: Option<Arc<dyn base::interface::delegate::Delegator>>,
-    /// What this session's bound scripts did, if it bound any.
+    /// What this engine's bound scripts did, if it bound any.
     ///
     /// Kept because a script that quietly does nothing is the failure mode of
     /// this whole tier, and a log line on the daemon's stderr is not something
     /// the person asking "why is my script not working" has. `session.get`
     /// reads it.
     pub(in crate::session_pool) scripts: Option<Arc<base::interface::script::ScriptLedger>>,
-    /// The checks this session's plugins registered, for `session.get`.
+    /// The checks this engine's plugins registered, for `session.get`.
     pub(in crate::session_pool) health: Arc<base::interface::health::HealthChecks>,
-    /// Who watches this session, what it is still asking, and when it was
-    /// last active. Every frame the session produces goes to all of its
-    /// watchers; a turn is not owned by the one that started it. Kept across
-    /// a rebuild, so the watchers and the open asks go on with the session.
-    pub(in crate::session_pool) hub: Arc<SessionHub>,
-    /// The process groups this session's commands started, kept when
-    /// `sandbox.reap_process_groups` is on and stopped when the session ends.
-    pub(in crate::session_pool) process_groups: Option<Arc<platform::GroupLedger>>,
+}
+
+pub(in crate::session_pool) struct LiveSession {
+    pub(in crate::session_pool) core: Arc<SessionCore>,
+    pub(in crate::session_pool) engine: EngineSlot,
+    /// What the session is doing, and the receiver its turns take. A session
+    /// runs one turn at a time; the running one is named here, so a refusal
+    /// can name it (`SESSION_BUSY.data.current_turn_id`) and `session.get`
+    /// can report `turn_state`.
+    pub(in crate::session_pool) turn: TurnSlot,
+}
+
+impl LiveSession {
+    /// Whether this is `core`'s entry, still on engine `generation`.
+    pub(in crate::session_pool) fn runs(
+        &self,
+        core: &Arc<SessionCore>,
+        generation: Generation,
+    ) -> bool {
+        Arc::ptr_eq(&self.core, core) && self.engine.generation == generation
+    }
+
+    /// Out of `Rebuilding` onto `engine`, whose events arrive on `rx`,
+    /// handing back the engine it replaced.
+    pub(in crate::session_pool) fn replace_engine(
+        &mut self,
+        engine: EngineSlot,
+        rx: runtime::agent::EventReceiver,
+    ) -> Option<EngineSlot> {
+        if !self.turn.finish_rebuild(rx) {
+            return None;
+        }
+        Some(std::mem::replace(&mut self.engine, engine))
+    }
+
+    /// Whether eviction would cut something off: a turn, a rebuild, or
+    /// background tasks.
+    pub(in crate::session_pool) fn is_busy(&self) -> bool {
+        !self.turn.is_idle()
+            || self
+                .core
+                .state
+                .list_running_tasks()
+                .iter()
+                .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
+    }
+}
+
+/// What making room for a session took out of the table.
+#[derive(Default)]
+pub(in crate::session_pool) struct Displaced {
+    /// The least recently active idle session, for a full table.
+    pub(in crate::session_pool) evicted: Option<(String, LiveSession)>,
+    /// An entry already under the same id.
+    pub(in crate::session_pool) replaced: Option<LiveSession>,
 }
 
 pub(in crate::session_pool) struct LiveSessions {
@@ -98,8 +241,8 @@ pub(in crate::session_pool) struct LiveSessions {
     shutting_down: AtomicBool,
     /// Cancelled when the shutdown has finished.
     shut_down: CancellationToken,
-    /// Numbers every engine this pool brings up, so a turn can tell the entry
-    /// it started on from one brought up later under the same id.
+    /// Numbers every engine this pool brings up; the number is also the one
+    /// the engine attaches to its session's state under.
     generations: Generations,
 }
 
@@ -117,11 +260,114 @@ impl LiveSessions {
         }
     }
 
-    /// The table of sessions in memory, keyed by id.
-    pub(in crate::session_pool) async fn lock(
+    pub(in crate::session_pool) async fn with_live<T>(
         &self,
-    ) -> MutexGuard<'_, HashMap<String, LiveSession>> {
-        self.sessions.lock().await
+        sid: &str,
+        f: impl FnOnce(&LiveSession) -> T,
+    ) -> Option<T> {
+        self.sessions.lock().await.get(sid).map(f)
+    }
+
+    pub(in crate::session_pool) async fn with_live_mut<T>(
+        &self,
+        sid: &str,
+        f: impl FnOnce(&mut LiveSession) -> T,
+    ) -> Option<T> {
+        self.sessions.lock().await.get_mut(sid).map(f)
+    }
+
+    pub(in crate::session_pool) async fn core_of(&self, sid: &str) -> Option<Arc<SessionCore>> {
+        self.with_live(sid, |live| live.core.clone()).await
+    }
+
+    /// Whether `core` is still the session in memory under its id.
+    pub(in crate::session_pool) async fn holds(&self, core: &Arc<SessionCore>) -> bool {
+        self.with_live(core.id(), |live| Arc::ptr_eq(&live.core, core))
+            .await
+            .unwrap_or(false)
+    }
+
+    pub(in crate::session_pool) async fn contains(&self, sid: &str) -> bool {
+        self.sessions.lock().await.contains_key(sid)
+    }
+
+    pub(in crate::session_pool) async fn ids(&self) -> Vec<String> {
+        self.sessions.lock().await.keys().cloned().collect()
+    }
+
+    pub(in crate::session_pool) async fn len(&self) -> usize {
+        self.sessions.lock().await.len()
+    }
+
+    pub(in crate::session_pool) async fn map_all<T>(
+        &self,
+        f: impl FnMut(&LiveSession) -> T,
+    ) -> Vec<T> {
+        self.sessions.lock().await.values().map(f).collect()
+    }
+
+    /// Put `live` in the table under `sid`, making room for it. Refused once
+    /// the pool is shutting down — checked under the lock `shutdown_all`
+    /// drains the table with, so nothing inserted outlives the shutdown.
+    pub(in crate::session_pool) async fn insert_evicting(
+        &self,
+        sid: &str,
+        live: LiveSession,
+    ) -> Result<Displaced, String> {
+        let mut sessions = self.sessions.lock().await;
+        self.refuse_while_shutting_down()?;
+        let evicted = if sessions.contains_key(sid) || sessions.len() < self.cap {
+            None
+        } else {
+            evict_lru(&mut sessions)
+        };
+        let replaced = sessions.insert(sid.to_string(), live);
+        Ok(Displaced { evicted, replaced })
+    }
+
+    pub(in crate::session_pool) async fn remove(&self, sid: &str) -> Option<LiveSession> {
+        self.sessions.lock().await.remove(sid)
+    }
+
+    /// Take `sid` out of the table if its entry is the one `pred` accepts.
+    pub(in crate::session_pool) async fn remove_if(
+        &self,
+        sid: &str,
+        pred: impl FnOnce(&LiveSession) -> bool,
+    ) -> Option<LiveSession> {
+        let mut sessions = self.sessions.lock().await;
+        if sessions.get(sid).is_some_and(pred) {
+            sessions.remove(sid)
+        } else {
+            None
+        }
+    }
+
+    /// Take every session out, each handed to `f` under the same lock.
+    pub(in crate::session_pool) async fn drain<T>(
+        &self,
+        mut f: impl FnMut(String, LiveSession) -> T,
+    ) -> Vec<T> {
+        self.sessions
+            .lock()
+            .await
+            .drain()
+            .map(|(sid, live)| f(sid, live))
+            .collect()
+    }
+
+    /// Take out the sessions idle for longer than `idle_timeout` at `now`,
+    /// and say how many are left.
+    pub(in crate::session_pool) async fn take_idle(
+        &self,
+        now: Instant,
+    ) -> (Vec<(String, LiveSession)>, usize) {
+        let mut sessions = self.sessions.lock().await;
+        let taken = idle_session_ids(&sessions, now, self.idle_timeout)
+            .into_iter()
+            .filter_map(|sid| sessions.remove_entry(&sid))
+            .collect();
+        (taken, sessions.len())
     }
 
     #[cfg(test)]
@@ -137,33 +383,19 @@ impl LiveSessions {
         self.generations.next()
     }
 
-    /// Make room for one more session in `sessions`: take out the least
-    /// recently active idle one when the table is full and `sid` is not
-    /// already in it (an in-place rebuild replaces, it does not add).
-    pub(in crate::session_pool) fn make_room(
-        &self,
-        sessions: &mut HashMap<String, LiveSession>,
-        sid: &str,
-    ) -> Option<(String, LiveSession)> {
-        if sessions.contains_key(sid) || sessions.len() < self.cap {
-            return None;
-        }
-        evict_lru(sessions)
-    }
-
     /// Stop `live`, just taken out of `sessions` under `sid`, without
     /// waiting for it: whoever brings `sid` back waits instead
     /// ([`Self::wait_until_stopped`]). Nothing it still produces reaches its
     /// watchers.
     pub(in crate::session_pool) fn stop_removed(&self, sid: &str, live: &LiveSession) {
-        live.cancel.cancel();
-        live.hub.clear();
+        live.engine.cancel.cancel();
+        live.core.hub.clear();
         let mut stopping = self
             .stopping
             .lock()
             .expect("stopping is never held across a panic");
         stopping.retain(|_, exited| !exited.is_cancelled());
-        stopping.insert(sid.to_string(), live.exited.clone());
+        stopping.insert(sid.to_string(), live.engine.exited.clone());
     }
 
     /// Wait, within [`AGENT_EXIT_GRACE`], for the engine `sid` last ran on
@@ -265,18 +497,6 @@ impl LiveSessions {
     }
 }
 
-/// Whether `live` is doing anything eviction would cut off: running a turn,
-/// being rebuilt, or running background tasks.
-pub(in crate::session_pool) fn is_busy(live: &LiveSession) -> bool {
-    !live.turn.is_idle()
-        || live.state.as_ref().is_some_and(|state| {
-            state
-                .list_running_tasks()
-                .iter()
-                .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
-        })
-}
-
 /// Take the least recently active idle session out of `sessions`, or `None`
 /// when every session is busy — the pool then runs over its cap rather than
 /// cut one off.
@@ -285,22 +505,15 @@ pub(in crate::session_pool) fn evict_lru(
 ) -> Option<(String, LiveSession)> {
     let sid = sessions
         .iter()
-        .filter(|(_, live)| !is_busy(live))
-        .min_by_key(|(_, live)| live.hub.last_active())
+        .filter(|(_, live)| !live.is_busy())
+        .min_by_key(|(_, live)| live.core.hub.last_active())
         .map(|(k, _)| k.clone())?;
     sessions.remove_entry(&sid)
 }
 
-pub(in crate::session_pool) fn reap_process_groups_later(live: &LiveSession) {
-    if let Some(ledger) = live.process_groups.clone() {
-        tokio::spawn(async move { ledger.reap(PROCESS_GROUP_GRACE).await });
-    }
-}
-
-/// Session id 列表：`last_active` 距 `now` 超过 `timeout`、且手上没有活的那些。拆成纯函数
-/// （不做任何驱逐动作，只挑出 id）——原逻辑内嵌在 `start_janitor` 真实跑
-/// 300 秒一次的循环体里，没法在测试里等 5 分钟去验证；抽出来之后可以直接用
-/// 人为构造的" last_active 已经很旧"的 session 测，不用真的睡觉。
+/// The ids of the sessions whose `last_active` is more than `timeout` before
+/// `now` and that have nothing running. A pure function so a test can hand it
+/// a session that went quiet long ago instead of waiting for the janitor.
 pub(in crate::session_pool) fn idle_session_ids(
     sessions: &HashMap<String, LiveSession>,
     now: Instant,
@@ -309,7 +522,7 @@ pub(in crate::session_pool) fn idle_session_ids(
     sessions
         .iter()
         .filter(|(_, live)| {
-            now.saturating_duration_since(live.hub.last_active()) > timeout && !is_busy(live)
+            now.saturating_duration_since(live.core.hub.last_active()) > timeout && !live.is_busy()
         })
         .map(|(sid, _)| sid.clone())
         .collect()

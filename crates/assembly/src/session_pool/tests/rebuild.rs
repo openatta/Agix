@@ -37,9 +37,12 @@ async fn slot_and_state(
     pool: &SessionPool,
     sid: &str,
 ) -> (Generation, Arc<base::context::SessionState>) {
-    let sessions = pool.live.lock().await;
-    let live = sessions.get(sid).expect("the session is live");
-    (live.turn.generation, live.state.clone().expect("a state"))
+    pool.live
+        .with_live(sid, |live| {
+            (live.engine.generation, live.core.state().clone())
+        })
+        .await
+        .expect("the session is live")
 }
 
 fn append(prompt: &mut runtime::agent::SessionPrompt) {
@@ -62,7 +65,12 @@ async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_ses
     let with_turn = |change: fn(&mut TurnSlot)| {
         let pool = &pool;
         let sid = &sid;
-        async move { change(&mut pool.live.lock().await.get_mut(sid).unwrap().turn) }
+        async move {
+            pool.live
+                .with_live_mut(sid, |live| change(&mut live.turn))
+                .await
+                .unwrap()
+        }
     };
 
     with_turn(|turn| {
@@ -75,8 +83,7 @@ async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_ses
     assert_eq!(busy.current_turn_id.as_deref(), Some("t1"));
 
     with_turn(|turn| {
-        let g = turn.generation;
-        turn.release(g, "t1").unwrap();
+        turn.release("t1").unwrap();
         turn.begin_rebuild().unwrap();
     })
     .await;
@@ -90,8 +97,7 @@ async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_ses
     );
 
     with_turn(|turn| {
-        let g = turn.generation;
-        assert!(turn.abort_rebuild(g));
+        assert!(turn.abort_rebuild());
     })
     .await;
     pool.set_session_prompt(&sid, append)
@@ -105,7 +111,7 @@ async fn a_prompt_change_is_refused_while_a_turn_runs_or_a_rebuild_holds_the_ses
 async fn a_prompt_set_on_a_session_out_of_memory_leaves_no_spec_behind() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let live = pool.live.lock().await.remove(&sid).unwrap();
+    let live = pool.live.remove(&sid).await.unwrap();
     pool.evict(&sid, &live);
     assert!(!pool.specs.contains(&sid));
 
@@ -130,7 +136,7 @@ async fn a_prompt_set_on_a_session_out_of_memory_leaves_no_spec_behind() {
 async fn a_rebuild_keeps_the_goal_armed_and_the_round_it_was_about_to_start() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let (_, before) = slot_and_state(&pool, &sid).await;
+    let (generation, before) = slot_and_state(&pool, &sid).await;
     before
         .goal_create("keep going".into(), Some(3), TurnOrigin::Human)
         .unwrap();
@@ -140,8 +146,9 @@ async fn a_rebuild_keeps_the_goal_armed_and_the_round_it_was_about_to_start() {
     pool.set_session_prompt(&sid, append)
         .await
         .unwrap_or_else(|_| panic!("an idle session takes the change"));
-    let (_, after) = slot_and_state(&pool, &sid).await;
-    assert!(!Arc::ptr_eq(&before, &after), "the session was rebuilt");
+    let (rebuilt, after) = slot_and_state(&pool, &sid).await;
+    assert_ne!(generation, rebuilt, "the session was rebuilt");
+    assert!(Arc::ptr_eq(&before, &after), "on the state it had before");
     assert_eq!(
         after.goal_view().map(|view| view.armed),
         Some(true),
@@ -168,10 +175,9 @@ async fn a_rebuild_moves_the_sessions_watchers_and_open_questions_along() {
     pool.set_session_prompt(&sid, append)
         .await
         .unwrap_or_else(|_| panic!("an idle session takes the change"));
-    let sessions = pool.live.lock().await;
-    let live = sessions.get(&sid).unwrap();
-    assert!(live.hub.is_watched_by(WatcherId(7)));
-    assert_eq!(live.hub.pending_prompt_ids(), ["p1"]);
+    let hub = pool.hub_of(&sid).await.unwrap();
+    assert!(hub.is_watched_by(WatcherId(7)));
+    assert_eq!(hub.pending_prompt_ids(), ["p1"]);
 }
 
 #[tokio::test]
@@ -183,7 +189,7 @@ async fn eviction_keeps_only_the_specs_a_log_cannot_give_back() {
         spec.recorder = Some(telemetry::recorder::Recorder::new())
     });
     for sid in [&logged, &recording] {
-        let live = pool.live.lock().await.remove(sid).unwrap();
+        let live = pool.live.remove(sid).await.unwrap();
         pool.evict(sid, &live);
     }
     assert!(!pool.specs.contains(&logged));
@@ -217,7 +223,7 @@ async fn two_callers_reviving_one_cold_session_build_one_engine() {
         .build();
     let sid = new_session(&pool).await;
     pool.shutdown_session(&sid).await.unwrap();
-    assert!(!pool.live.lock().await.contains_key(&sid));
+    assert!(!pool.live.contains(&sid).await);
 
     let (a, b) = tokio::join!(pool.ensure_live(&sid, None), pool.ensure_live(&sid, None));
     assert_eq!((a.unwrap(), b.unwrap()), (sid.clone(), sid.clone()));
@@ -254,12 +260,18 @@ async fn a_late_turn_complete_of_a_closed_session_leaves_the_resumed_one_alone()
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
     let (late_tx, late_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (old_generation, _engine_events) = {
-        let sessions = pool.live.lock().await;
-        let live = &sessions[&sid];
-        let engine_events = live.turn.rx.lock().await.replace(late_rx);
-        (live.turn.generation, engine_events)
-    };
+    let (old_core, old_generation, rx) = pool
+        .live
+        .with_live(&sid, |live| {
+            (
+                live.core.clone(),
+                live.engine.generation,
+                live.turn.rx.clone(),
+            )
+        })
+        .await
+        .unwrap();
+    let _engine_events = rx.lock().await.replace(late_rx);
     let old_turn = {
         let pool = pool.clone();
         let request = TurnRequest {
@@ -293,38 +305,53 @@ async fn a_late_turn_complete_of_a_closed_session_leaves_the_resumed_one_alone()
         "the closed turn completed"
     );
     assert_eq!(
-        pool.adopt_generated_name(&sid, old_generation, "a guess".into())
-            .await,
+        pool.adopt_generated_name(&old_core, "a guess".into()).await,
         None
     );
 
-    let sessions = pool.live.lock().await;
-    let live = &sessions[&sid];
-    assert_eq!(live.turn.generation, resumed);
-    assert!(live.turn.is_idle());
-    assert_eq!(live.context, None, "the old turn wrote its context");
-    assert_eq!(live.name, None, "the old turn named the session");
+    let (core, generation, idle) = pool
+        .live
+        .with_live(&sid, |live| {
+            (
+                live.core.clone(),
+                live.engine.generation,
+                live.turn.is_idle(),
+            )
+        })
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&core, &old_core), "a resume brings a new core");
+    assert_eq!(generation, resumed);
+    assert!(idle);
+    assert_eq!(core.context(), None, "the old turn wrote its context");
+    assert_eq!(core.naming().name, None, "the old turn named the session");
 }
 
 #[tokio::test]
 async fn a_background_tasks_question_outlives_the_turn_and_goes_with_its_task() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let (generation, slot) = {
-        let mut sessions = pool.live.lock().await;
-        let turn = &mut sessions.get_mut(&sid).unwrap().turn;
-        let generation = turn
-            .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
-            .unwrap();
-        (generation, turn.rx.clone())
-    };
+    let (core, generation, slot) = pool
+        .live
+        .with_live_mut(&sid, |live| {
+            live.turn
+                .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+                .unwrap();
+            (
+                live.core.clone(),
+                live.engine.generation,
+                live.turn.rx.clone(),
+            )
+        })
+        .await
+        .unwrap();
     let rx = slot.lock().await.take().unwrap();
     let hub = pool.hub_of(&sid).await.unwrap();
     raise_ask(&hub, &sid, "own", None);
     raise_ask(&hub, &sid, "background", Some("task-1"));
 
     let ticket = TurnTicket {
-        sid: sid.clone(),
+        core,
         generation,
         turn_id: "t1".into(),
         rx: slot,
@@ -385,7 +412,7 @@ async fn session_resume_refuses_a_log_that_does_not_load_even_with_create_if_mis
             Ok(v) => panic!("resumed a log that does not load: {v:?}"),
         }
     }
-    assert!(!pool.live.lock().await.contains_key(&sid));
+    assert!(!pool.live.contains(&sid).await);
     assert_eq!(
         std::fs::read(transcript_of(store.path(), &sid)).unwrap(),
         broken
@@ -406,7 +433,96 @@ async fn a_rebuild_whose_log_does_not_load_leaves_the_session_running_as_it_was(
     let (still_generation, still_state) = slot_and_state(&pool, &sid).await;
     assert!(generation == still_generation && Arc::ptr_eq(&state, &still_state));
     assert!(
-        pool.live.lock().await[&sid].turn.is_idle(),
+        pool.live
+            .with_live(&sid, |live| live.turn.is_idle())
+            .await
+            .unwrap(),
         "the session was given back"
     );
+}
+
+/// The kinds of the task frames a watcher was handed, in order.
+#[derive(Default)]
+struct TaskFrames(std::sync::Mutex<Vec<&'static str>>);
+
+impl SessionWatcher for TaskFrames {
+    fn id(&self) -> WatcherId {
+        WatcherId(11)
+    }
+
+    fn deliver(&self, frame: &SessionFrame) -> bool {
+        use base::context::TaskEvent;
+        if let SessionEvent::Task(event) = &frame.event {
+            self.0.lock().unwrap().push(match event {
+                TaskEvent::Started { .. } => "task_started",
+                TaskEvent::Updated { .. } => "task_updated",
+                TaskEvent::Progress { .. } => "task_progress",
+                TaskEvent::Finished { .. } => "task_finished",
+            });
+        }
+        true
+    }
+}
+
+#[tokio::test]
+async fn a_session_rebuilt_twice_hands_on_each_task_frame_once() {
+    let (pool, _dir, _store) = pool_with_history().await;
+    let sid = new_session(&pool).await;
+    for _ in 0..2 {
+        pool.set_session_prompt(&sid, append)
+            .await
+            .unwrap_or_else(|_| panic!("an idle session takes the change"));
+    }
+    let frames = Arc::new(TaskFrames::default());
+    pool.subscribe_session(&sid, frames.clone()).await.unwrap();
+
+    let (_, state) = slot_and_state(&pool, &sid).await;
+    state.register_task(
+        "task-1",
+        base::context::TaskType::Agent,
+        CancellationToken::new(),
+        serde_json::json!({}),
+    );
+    state.finish_task("task-1", base::context::RunningStatus::Completed);
+    // Single-threaded runtime: every forwarder woken by the two events has
+    // run before the last of these yields returns.
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(*frames.0.lock().unwrap(), ["task_started", "task_finished"]);
+}
+
+#[tokio::test]
+async fn every_engine_a_session_runs_on_works_in_the_sessions_directory() {
+    let (pool, _dir, _store) = pool_with_history().await;
+    let sid = new_session(&pool).await;
+    let project = pool
+        .bindings
+        .pool_settings()
+        .await
+        .paths
+        .working_dir()
+        .to_path_buf();
+
+    let (_, state) = slot_and_state(&pool, &sid).await;
+    assert_eq!(state.env().cwd, project);
+    assert!(state.exec().is_some(), "a new session's engine is attached");
+
+    pool.set_session_prompt(&sid, append)
+        .await
+        .unwrap_or_else(|_| panic!("an idle session takes the change"));
+    assert!(
+        state.exec().is_some(),
+        "the rebuilt engine is attached to the state the session kept"
+    );
+    assert_eq!(state.env().cwd, project);
+
+    pool.shutdown_session(&sid).await.unwrap();
+    pool.ensure_live(&sid, None).await.unwrap();
+    let (_, resumed) = slot_and_state(&pool, &sid).await;
+    assert!(
+        resumed.exec().is_some(),
+        "a resumed session's engine is attached"
+    );
+    assert_eq!(resumed.env().cwd, project);
 }

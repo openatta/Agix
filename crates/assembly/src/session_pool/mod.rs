@@ -13,7 +13,7 @@ use base::interface::scene::SceneSpec;
 use base::settings::{LoadedSettings, Settings};
 use base::settings::{RecorderConfig, RecorderMode};
 use model::client::AnthropicClient;
-use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage};
+use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage, InputSender};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -52,7 +52,7 @@ use parts::factory::{
     effective_permission_mode, BuildRequest, BuiltEngine, EngineFactory, SessionNamer,
 };
 use parts::hub::SessionHub;
-use parts::live::{idle_session_ids, reap_process_groups_later, LiveSession, LiveSessions};
+use parts::live::{LiveSession, LiveSessions, SessionCore};
 use parts::phase::{Generation, RunningTurn, TurnSlot, TurnTicket};
 use parts::scenes::SceneCatalog;
 use parts::scheduler::{Scheduler, TurnLauncher};

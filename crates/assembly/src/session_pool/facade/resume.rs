@@ -112,17 +112,10 @@ impl SessionPool {
         // Already live: report state, touch nothing. The lock is released
         // before the (disk-reading) history lookup — `sessions` is the
         // pool's hottest mutex and every other holder keeps it CPU-only.
-        let already_active = {
-            let mut sessions = self.live.lock().await;
-            sessions.get_mut(session_id).map(|live| {
-                live.hub.touch();
-                (
-                    live.name.clone(),
-                    format_instant(live.created_at),
-                    format_instant(live.hub.last_active()),
-                )
-            })
-        };
+        let already_active = self.live.core_of(session_id).await.map(|core| {
+            core.hub().touch();
+            active_times(&core)
+        });
         if let Some((name, created_at, last_active)) = already_active {
             let (message_count, entry_count) = self.directory.history_counts(session_id).await;
             self.events.record(telemetry::TelemetryEvent::resume_action(
@@ -194,13 +187,11 @@ impl SessionPool {
                     ));
                 }
 
-                let raced = self.live.lock().await.get(session_id).map(|live| {
-                    (
-                        live.name.clone(),
-                        format_instant(live.created_at),
-                        format_instant(live.hub.last_active()),
-                    )
-                });
+                let raced = self
+                    .live
+                    .core_of(session_id)
+                    .await
+                    .map(|core| active_times(&core));
                 if let Some((name, created_at, last_active)) = raced {
                     return Ok(self
                         .resume_report(
@@ -215,25 +206,15 @@ impl SessionPool {
                         )
                         .await);
                 }
-                let sid = self
+                let core = self
                     .resume_or_create(session_id.to_string(), options)
                     .await
                     .map_err(PoolError::from)?;
-
-                let (created_at, last_active) = {
-                    let sessions = self.live.lock().await;
-                    match sessions.get(&sid) {
-                        Some(live) => (
-                            format_instant(live.created_at),
-                            format_instant(live.hub.last_active()),
-                        ),
-                        None => (String::new(), String::new()),
-                    }
-                };
+                let (_, created_at, last_active) = active_times(&core);
 
                 Ok(self
                     .resume_report(
-                        &sid,
+                        core.id(),
                         api::ResumeStatus::loaded(has_history),
                         message_count,
                         entry_count,
@@ -279,14 +260,15 @@ impl SessionPool {
         last_active: String,
         mode: base::settings::PermissionMode,
     ) -> api::ResumeReport {
-        let (mode, project) = {
-            let sessions = self.live.lock().await;
-            let live = sessions.get(session_id);
-            (
-                live.and_then(|live| live.state.as_ref())
-                    .map_or(mode, |state| state.permission_mode().into()),
-                live.map(|live| (live.project.clone(), live.scene.id.clone())),
-            )
+        let (mode, project) = match self.live.core_of(session_id).await {
+            Some(core) => (
+                core.state().permission_mode().into(),
+                Some((
+                    core.project().map(Path::to_path_buf),
+                    core.scene().id.clone(),
+                )),
+            ),
+            None => (mode, None),
         };
         let (project_trust, settings) = match project {
             Some((project, scene)) => {
@@ -354,7 +336,7 @@ impl SessionPool {
         &self,
         sid: String,
         options: Option<&SessionOptions>,
-    ) -> Result<String, CreateError> {
+    ) -> Result<Arc<SessionCore>, CreateError> {
         let _claim = self.claim_log(&sid).await?;
         let has_history = self.directory.has_history(&sid).await?;
 
@@ -425,10 +407,12 @@ impl SessionPool {
     ) -> Result<String, CreateError> {
         self.live
             .with_session_lock(sid, async {
-                if self.live.lock().await.contains_key(sid) {
+                if self.live.contains(sid).await {
                     return Ok(sid.to_string());
                 }
-                self.resume_or_create(sid.to_string(), options).await
+                self.resume_or_create(sid.to_string(), options)
+                    .await
+                    .map(|core| core.id().to_string())
             })
             .await
     }
@@ -458,23 +442,24 @@ impl SessionPool {
         &self,
         sid: &str,
     ) -> Result<HeldSlot, Rebuild> {
-        let mut sessions = self.live.lock().await;
-        let live = sessions.get_mut(sid).ok_or(Rebuild::NotLive)?;
-        if let Some(busy) = live.turn.busy(sid) {
-            return Err(Rebuild::Busy(busy));
-        }
-        let running_tasks = live
-            .state
-            .as_ref()
-            .map(|state| state.running_background_task_ids())
-            .unwrap_or_default();
-        if !running_tasks.is_empty() {
-            return Err(Rebuild::Busy(Busy::background_tasks(sid, running_tasks)));
-        }
-        live.turn
-            .begin_rebuild()
-            .map(|generation| HeldSlot { generation })
-            .map_err(|_| Rebuild::Busy(Busy::rebuilding(sid)))
+        self.live
+            .with_live_mut(sid, |live| {
+                if let Some(busy) = live.turn.busy(sid) {
+                    return Err(Rebuild::Busy(busy));
+                }
+                let running_tasks = live.core.state().running_background_task_ids();
+                if !running_tasks.is_empty() {
+                    return Err(Rebuild::Busy(Busy::background_tasks(sid, running_tasks)));
+                }
+                live.turn
+                    .begin_rebuild()
+                    .map(|()| HeldSlot {
+                        generation: live.engine.generation,
+                    })
+                    .map_err(|_| Rebuild::Busy(Busy::rebuilding(sid)))
+            })
+            .await
+            .ok_or(Rebuild::NotLive)?
     }
 
     /// Rebuild `sid` on its spec as `change` leaves it, recording the change
@@ -490,7 +475,7 @@ impl SessionPool {
         let (previous, spec) = self.specs.update(sid, change);
         if let Err(e) = self.rebuild_holding(sid, held, None).await {
             self.specs.restore(sid, previous);
-            if !self.live.lock().await.contains_key(sid) {
+            if !self.live.contains(sid).await {
                 self.specs.release(sid);
             }
             return Err(e);
@@ -507,12 +492,26 @@ impl SessionPool {
         held: HeldSlot,
         options: Option<&SessionOptions>,
     ) -> Result<String, Rebuild> {
-        let rebuilt = self.resume_or_create(sid.to_string(), options).await;
+        let rebuilt = self.rebuild_engine(sid, &held, options).await;
         if rebuilt.is_err() {
-            if let Some(live) = self.live.lock().await.get_mut(sid) {
-                live.turn.abort_rebuild(held.generation);
-            }
+            self.live
+                .with_live_mut(sid, |live| {
+                    if live.engine.generation == held.generation {
+                        live.turn.abort_rebuild();
+                    }
+                })
+                .await;
         }
-        rebuilt.map_err(Rebuild::Failed)
+        rebuilt.map(|()| sid.to_string()).map_err(Rebuild::Failed)
     }
+}
+
+/// A live session's name, and when it was created and last active, as
+/// `session.resume` reports them.
+fn active_times(core: &SessionCore) -> (Option<String>, String, String) {
+    (
+        core.naming().name.clone(),
+        format_instant(core.created_at()),
+        format_instant(core.hub().last_active()),
+    )
 }

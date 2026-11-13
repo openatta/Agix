@@ -1,6 +1,9 @@
 //! A plugin's tools in a scene with a tool whitelist: the ones the plugin
 //! admits with `Registrar::admit_tools` reach the model and can be called,
-//! the ones it does not are left out like any tool the whitelist omits.
+//! the ones it does not are left out like any tool the whitelist omits. And a
+//! plugin's tool sees the session it runs in as every engine of that session
+//! sets it up — the one it was created on, one rebuilt for a new prompt, and
+//! one brought back after a close.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -258,4 +261,140 @@ async fn an_admitted_plugin_tool_passes_the_scene_whitelist_and_the_rest_do_not(
     let y = tool_result_of(&model, "call-y");
     assert_eq!(y["is_error"], true, "{y}");
     assert!(!y.to_string().contains("demo__y ran"), "{y}");
+}
+
+const PROBE: &str = "probe__where";
+
+/// Answers with the working directory the session's state gives it, and
+/// whether an engine is attached to that state.
+struct Where;
+
+#[async_trait::async_trait]
+impl base::tool::Tool for Where {
+    fn name(&self) -> &str {
+        PROBE
+    }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "Says where the session works."
+    }
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+    async fn call(
+        &self,
+        _: serde_json::Value,
+        ctx: base::tool::ToolContext,
+        _: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        Ok(base::tool::ToolResult::text(format!(
+            "cwd={} attached={}",
+            ctx.session.env().cwd.display(),
+            ctx.session.exec().is_some()
+        )))
+    }
+}
+
+struct Probe;
+
+impl Plugin for Probe {
+    fn name(&self) -> &str {
+        "probe"
+    }
+    fn register(&self, _: &PluginSession<'_>, r: &mut Registrar) {
+        r.tool(Arc::new(Where));
+    }
+}
+
+#[tokio::test]
+async fn a_tool_works_where_the_session_does_on_every_engine_it_runs_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("where.sock");
+    let cwd = dir.path().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let mut config = load_daemon_config(
+        "claude-sonnet-4-6",
+        2000,
+        Some(&sock),
+        "code",
+        &StaticDaemonPaths::new(dir.path().to_path_buf()),
+    );
+    config.settings.values.memory_enabled = false;
+    config.settings.rules = vec![base::settings::LoadedRule::new(
+        PermissionRule {
+            tool: PROBE.into(),
+            action: PermissionAction::Allow,
+            matching: Default::default(),
+        },
+        base::interface::config_source::Tier::Project,
+        false,
+    )];
+    let model = Arc::new(MockAnthropicClient::new());
+    let pool = daemon::assemble::pool(
+        &config,
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
+        daemon::Assembly {
+            cwd: Some(cwd),
+            model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
+            plugins: vec![Arc::new(Probe)],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the daemon assembles");
+    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+    let bind = sock.clone();
+    tokio::spawn(async move {
+        let _ = server.serve_unix(&bind).await;
+    });
+    for _ in 0..80 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    let session = call(&sock, "session.create", json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ask_where = |id: &'static str| {
+        model.push_turn(tool_round(id, PROBE));
+        model.push_turn(text_round("noted"));
+        call(
+            &sock,
+            "session.run_turn",
+            json!({"session_id": session, "message": "where are you?"}),
+        )
+    };
+
+    ask_where("created").await;
+    call(
+        &sock,
+        "session.setPrompt",
+        json!({"session_id": session, "append": "Answer briefly."}),
+    )
+    .await;
+    ask_where("rebuilt").await;
+    call(&sock, "session.close", json!({"session_id": session})).await;
+    ask_where("resumed").await;
+
+    let first = tool_result_of(&model, "created")["content"].clone();
+    let first = first.as_str().unwrap_or_else(|| panic!("{first}"));
+    let (dir_of_first, attached) = first
+        .strip_prefix("cwd=")
+        .and_then(|rest| rest.split_once(" attached="))
+        .unwrap_or_else(|| panic!("{first}"));
+    assert!(
+        std::path::Path::new(dir_of_first).is_absolute(),
+        "a new session's engine is attached with a working directory: {first}"
+    );
+    assert_eq!(attached, "true", "{first}");
+    for id in ["rebuilt", "resumed"] {
+        let answer = tool_result_of(&model, id);
+        assert_ne!(answer["is_error"], true, "{id}: {answer}");
+        assert_eq!(answer["content"], first, "{id}");
+    }
 }

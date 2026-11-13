@@ -261,7 +261,7 @@ fn a_kept_module_whose_requirement_the_scene_excludes_is_refused() {
 fn a_session_state_handed_in_is_attached_only_when_the_engine_takes_it_over() {
     let state = Arc::new(base::context::SessionState::new());
     let (agent, _rx, _tx) = probe_builder(vec![])
-        .session_state(state.clone())
+        .session_state(state.clone(), 1)
         .build()
         .expect("build should succeed");
     assert!(Arc::ptr_eq(&agent.session_state(), &state));
@@ -282,7 +282,7 @@ fn a_session_state_handed_in_is_attached_only_when_the_engine_takes_it_over() {
 fn what_a_session_spent_and_asked_for_outlives_its_engine() {
     let state = Arc::new(base::context::SessionState::new());
     let (first, _rx, _tx) = probe_builder(vec![])
-        .session_state(state.clone())
+        .session_state(state.clone(), 1)
         .build()
         .expect("build should succeed");
     first.attach_session();
@@ -295,7 +295,7 @@ fn what_a_session_spent_and_asked_for_outlives_its_engine() {
     drop(first);
 
     let (second, _rx, _tx) = probe_builder(vec![])
-        .session_state(state.clone())
+        .session_state(state.clone(), 2)
         .build()
         .expect("build should succeed");
     second.attach_session();

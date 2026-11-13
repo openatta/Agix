@@ -9,10 +9,9 @@ impl SessionPool {
         session_id: &str,
     ) -> Option<Arc<SessionHub>> {
         self.live
-            .lock()
+            .core_of(session_id)
             .await
-            .get(session_id)
-            .map(|live| live.hub.clone())
+            .map(|core| core.hub().clone())
     }
 
     /// Hand `event`, which belongs to no turn, to whoever watches
@@ -92,9 +91,8 @@ impl SessionPool {
     /// another connection may be watching and a teardown would cascade into
     /// deleting the session's sidechain transcripts.
     pub async fn drop_watcher(&self, watcher: WatcherId) {
-        let sessions = self.live.lock().await;
-        for live in sessions.values() {
-            live.hub.unsubscribe(watcher);
+        for hub in self.live.map_all(|live| live.core.hub().clone()).await {
+            hub.unsubscribe(watcher);
         }
     }
 
@@ -128,16 +126,17 @@ impl SessionPool {
         frame: &SessionFrame,
         except: Option<WatcherId>,
     ) -> bool {
-        let mut sessions = self.live.lock().await;
-        let Some(live) = sessions
-            .get_mut(&ticket.sid)
-            .filter(|live| live.turn.generation == ticket.generation)
-        else {
-            return false;
-        };
-        live.turn.mark_terminated(ticket.generation);
-        live.hub.publish_except(frame, except);
-        true
+        self.live
+            .with_live_mut(ticket.sid(), |live| {
+                if !live.runs(&ticket.core, ticket.generation) {
+                    return false;
+                }
+                live.turn.mark_terminated();
+                live.core.hub().publish_except(frame, except);
+                true
+            })
+            .await
+            .unwrap_or(false)
     }
 
     /// `live`, just taken out of the map, was running a turn whose last
@@ -152,7 +151,7 @@ impl SessionPool {
             turn_id: Some(Arc::from(turn.turn_id.as_str())),
             event: SessionEvent::Closed,
         };
-        live.hub.publish_except(&frame, turn.origin);
+        live.core.hub().publish_except(&frame, turn.origin);
     }
 
     /// The turn currently running on `session_id`, if any. `session.get`
@@ -160,10 +159,9 @@ impl SessionPool {
     /// same as one sitting between turns.
     pub async fn current_turn_of(&self, session_id: &str) -> Option<String> {
         self.live
-            .lock()
+            .with_live(session_id, |live| live.turn.current_turn_id())
             .await
-            .get(session_id)
-            .and_then(|live| live.turn.current_turn_id())
+            .flatten()
     }
 
     /// Cancel the in-flight turn, keeping the session.
@@ -185,23 +183,21 @@ impl SessionPool {
         &self,
         session_id: &str,
     ) -> Result<bool, PoolError> {
-        let (input_tx, running, state) = {
-            let sessions = self.live.lock().await;
-            let Some(live) = sessions.get(session_id) else {
-                return Err(PoolError::session_not_found(session_id));
-            };
-            (
-                live.input_tx.clone(),
-                live.turn.current_turn_id(),
-                live.state.clone(),
-            )
-        };
+        let (input_tx, running, core) = self
+            .live
+            .with_live(session_id, |live| {
+                (
+                    live.engine.input_tx.clone(),
+                    live.turn.current_turn_id(),
+                    live.core.clone(),
+                )
+            })
+            .await
+            .ok_or_else(|| PoolError::session_not_found(session_id))?;
         let Some(turn_id) = running else {
             return Ok(false);
         };
-        if let Some(state) = state {
-            state.goal_disarm();
-        }
+        core.state().goal_disarm();
         let _ = input_tx.send(InputMessage::System {
             kind: EngineCommand::CancelTurn {
                 turn_id: Some(turn_id),
@@ -224,24 +220,23 @@ impl SessionPool {
         prompt_id: String,
         answer: PromptAnswer,
     ) -> Result<(), PoolError> {
-        let (input_tx, hub) = {
-            let sessions = self.live.lock().await;
-            let Some(live) = sessions.get(session_id) else {
-                return Err(PoolError::session_not_found(session_id));
-            };
-            if let Some(asked) = live
-                .hub
-                .ask_kind(&prompt_id)
-                .filter(|asked| *asked != answer.kind())
-            {
-                return Err(PoolError::InvalidRequest(format!(
-                    "prompt `{prompt_id}` is a {} prompt, not a {}",
-                    asked.as_str(),
-                    answer.kind().as_str()
-                )));
-            }
-            (live.input_tx.clone(), live.hub.clone())
-        };
+        let (input_tx, hub) = self
+            .live
+            .with_live(session_id, |live| {
+                (live.engine.input_tx.clone(), live.core.hub().clone())
+            })
+            .await
+            .ok_or_else(|| PoolError::session_not_found(session_id))?;
+        if let Some(asked) = hub
+            .ask_kind(&prompt_id)
+            .filter(|asked| *asked != answer.kind())
+        {
+            return Err(PoolError::InvalidRequest(format!(
+                "prompt `{prompt_id}` is a {} prompt, not a {}",
+                asked.as_str(),
+                answer.kind().as_str()
+            )));
+        }
 
         // Straight to the engine, whose input demultiplexer wakes the blocked
         // tool call. A `prompt_id` nobody is waiting on (already answered,

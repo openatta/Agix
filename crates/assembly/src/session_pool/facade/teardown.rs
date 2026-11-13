@@ -7,7 +7,7 @@ impl SessionPool {
     /// session that may be brought back.
     pub(in crate::session_pool) fn evict(&self, sid: &str, live: &LiveSession) {
         self.live.stop_removed(sid, live);
-        reap_process_groups_later(live);
+        live.core.reap_process_groups_later();
         self.specs.release(sid);
     }
 
@@ -76,13 +76,10 @@ impl SessionPool {
             let ok = self
                 .live
                 .with_session_lock(&child_str, async {
-                    {
-                        let mut sessions = self.live.lock().await;
-                        if let Some(live) = sessions.remove(&child_str) {
-                            self.end_cut_off_turn(&child_str, &live);
-                            self.live.stop_removed(&child_str, &live);
-                            reap_process_groups_later(&live);
-                        }
+                    if let Some(live) = self.live.remove(&child_str).await {
+                        self.end_cut_off_turn(&child_str, &live);
+                        self.live.stop_removed(&child_str, &live);
+                        live.core.reap_process_groups_later();
                     }
                     match store.delete(child).await {
                         Ok(()) => {
@@ -121,27 +118,19 @@ impl SessionPool {
         session_id: &str,
         children: Vec<base::session::SessionId>,
     ) -> usize {
-        let removed = {
-            let mut sessions = self.live.lock().await;
-            sessions.remove(session_id).map(|live| {
-                self.end_cut_off_turn(session_id, &live);
-                self.live.stop_removed(session_id, &live);
-                info!(%session_id, "session removed");
-                self.emit_event(api::DaemonEvent::SessionClosed {
-                    session_id: session_id.to_string(),
-                    reason: api::CloseReason::Closed,
-                });
-                (live.state, live.process_groups)
-            })
-        };
-        let (state, process_groups) = removed.unwrap_or_default();
-        // Its engine also writes them as it stops, but a caller that reads
-        // the log as soon as this returns must find them there.
-        if let Some(state) = state {
-            self.record_goal_changes(session_id, &state).await;
-        }
-        if let Some(ledger) = process_groups {
-            ledger.reap(PROCESS_GROUP_GRACE).await;
+        if let Some(live) = self.live.remove(session_id).await {
+            self.end_cut_off_turn(session_id, &live);
+            self.live.stop_removed(session_id, &live);
+            info!(%session_id, "session removed");
+            self.emit_event(api::DaemonEvent::SessionClosed {
+                session_id: session_id.to_string(),
+                reason: api::CloseReason::Closed,
+            });
+            // Its engine also writes them as it stops, but a caller that
+            // reads the log as soon as this returns must find them there.
+            self.record_goal_changes(session_id, live.core.state())
+                .await;
+            live.core.process_groups().reap(PROCESS_GROUP_GRACE).await;
         }
         // The in-memory copy only: a session resumed later reads its spec back
         // from its log.
@@ -251,19 +240,18 @@ impl SessionPool {
             self.live.shut_down().await;
             return;
         };
-        let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = {
-            let mut sessions = self.live.lock().await;
-            sessions
-                .drain()
-                .map(|(sid, live)| {
-                    self.end_cut_off_turn(&sid, &live);
-                    live.cancel.cancel();
-                    live.hub.clear();
-                    info!(%sid, "session removed (shutdown)");
-                    (live.exited, live.process_groups)
-                })
-                .unzip()
-        };
+        let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = self
+            .live
+            .drain(|sid, live| {
+                self.end_cut_off_turn(&sid, &live);
+                live.engine.cancel.cancel();
+                live.core.hub().clear();
+                info!(%sid, "session removed (shutdown)");
+                (live.engine.exited, live.core.process_groups().clone())
+            })
+            .await
+            .into_iter()
+            .unzip();
         let all = futures::future::join_all(exits.iter().map(|e| e.cancelled()));
         if tokio::time::timeout(AGENT_EXIT_GRACE, all).await.is_err() {
             warn!("some sessions did not stop within the grace period");
@@ -271,7 +259,6 @@ impl SessionPool {
         futures::future::join_all(
             ledgers
                 .iter()
-                .flatten()
                 .map(|ledger| ledger.reap(PROCESS_GROUP_GRACE)),
         )
         .await;
@@ -288,30 +275,29 @@ impl SessionPool {
         &self,
         session_id: &str,
     ) -> Result<(), CreateError> {
-        let (exited, generation) = {
-            let sessions = self.live.lock().await;
-            let Some(live) = sessions.get(session_id) else {
-                return Ok(());
-            };
-            live.cancel.cancel();
-            (live.exited.clone(), live.turn.generation)
+        let Some((exited, core, generation)) = self
+            .live
+            .with_live(session_id, |live| {
+                live.engine.cancel.cancel();
+                (
+                    live.engine.exited.clone(),
+                    live.core.clone(),
+                    live.engine.generation,
+                )
+            })
+            .await
+        else {
+            return Ok(());
         };
         if tokio::time::timeout(AGENT_EXIT_GRACE, exited.cancelled())
             .await
             .is_err()
         {
             warn!(%session_id, "previous agent did not stop within the grace period");
-            let stopping = {
-                let mut sessions = self.live.lock().await;
-                let ours = sessions
-                    .get(session_id)
-                    .is_some_and(|live| live.turn.generation == generation);
-                if ours {
-                    sessions.remove(session_id)
-                } else {
-                    None
-                }
-            };
+            let stopping = self
+                .live
+                .remove_if(session_id, |live| live.runs(&core, generation))
+                .await;
             if let Some(stopping) = stopping {
                 self.evict(session_id, &stopping);
                 stopping.turn.idle.notify_waiters();

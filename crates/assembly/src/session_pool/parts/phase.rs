@@ -1,8 +1,10 @@
-//! 会话的回合槽 `TurnSlot`：这个条目是第几代引擎（`Generation`）、正处在哪个
-//! 阶段（`SessionPhase`：空闲 / 回合中 / 重建中），以及引擎事件接收端的存放处。
-//! 阶段说了算，接收端只是放在这里；所有转换都在池的 `sessions` 锁里同步完成。
+//! 会话的回合槽 `TurnSlot`：正处在哪个阶段（`SessionPhase`：空闲 / 回合中 /
+//! 重建中），以及当前这一代引擎事件接收端的存放处；`Generation` 给会话的每一代
+//! 引擎编号。阶段说了算，接收端只是放在这里；所有转换都在池的 `sessions` 锁里
+//! 同步完成，代际的比对由持有槽的 `LiveSession` 做。
 
 use crate::session_pool::api::{Busy, Initiator, WatcherId};
+use crate::session_pool::parts::live::SessionCore;
 use runtime::agent::EventReceiver;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -10,6 +12,12 @@ use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::session_pool) struct Generation(u64);
+
+impl Generation {
+    pub(in crate::session_pool) fn get(self) -> u64 {
+        self.0
+    }
+}
 
 #[derive(Default)]
 pub(in crate::session_pool) struct Generations(AtomicU64);
@@ -53,18 +61,24 @@ impl RunningTurn {
     }
 }
 
-/// What a running turn holds: the entry it started on and the receiver it
-/// took. Everything it writes back to the session is checked against
-/// `generation`, so an entry brought up later under the same id is left alone.
+/// What a running turn holds: the session it runs in, the engine it started
+/// on and the receiver it took. What it writes back goes to `core`; the slot
+/// it gives back is the one of `core`'s entry while that entry still runs
+/// engine `generation`.
 pub(in crate::session_pool) struct TurnTicket {
-    pub(in crate::session_pool) sid: String,
+    pub(in crate::session_pool) core: Arc<SessionCore>,
     pub(in crate::session_pool) generation: Generation,
     pub(in crate::session_pool) turn_id: String,
     pub(in crate::session_pool) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
 }
 
+impl TurnTicket {
+    pub(in crate::session_pool) fn sid(&self) -> &str {
+        self.core.id()
+    }
+}
+
 pub(in crate::session_pool) struct TurnSlot {
-    pub(in crate::session_pool) generation: Generation,
     pub(in crate::session_pool) phase: SessionPhase,
     pub(in crate::session_pool) rx: Arc<AsyncMutex<Option<EventReceiver>>>,
     /// Woken whenever the session stops running a turn — a `run_turn` with
@@ -73,9 +87,8 @@ pub(in crate::session_pool) struct TurnSlot {
 }
 
 impl TurnSlot {
-    pub(in crate::session_pool) fn new(generation: Generation, rx: EventReceiver) -> Self {
+    pub(in crate::session_pool) fn new(rx: EventReceiver) -> Self {
         Self {
-            generation,
             phase: SessionPhase::Idle,
             rx: Arc::new(AsyncMutex::new(Some(rx))),
             idle: Arc::new(tokio::sync::Notify::new()),
@@ -100,17 +113,17 @@ impl TurnSlot {
     pub(in crate::session_pool) fn claim(
         &mut self,
         turn: RunningTurn,
-    ) -> Result<Generation, &SessionPhase> {
+    ) -> Result<(), &SessionPhase> {
         if !self.is_idle() {
             return Err(&self.phase);
         }
         self.phase = SessionPhase::Running(turn);
-        Ok(self.generation)
+        Ok(())
     }
 
-    pub(in crate::session_pool) fn mark_terminated(&mut self, g: Generation) -> bool {
+    pub(in crate::session_pool) fn mark_terminated(&mut self) -> bool {
         match &mut self.phase {
-            SessionPhase::Running(turn) if g == self.generation => {
+            SessionPhase::Running(turn) => {
                 turn.terminated = true;
                 true
             }
@@ -118,15 +131,11 @@ impl TurnSlot {
         }
     }
 
-    /// Back to `Idle` from the turn `turn_id` of generation `g`, handing back
-    /// what that turn was.
-    pub(in crate::session_pool) fn release(
-        &mut self,
-        g: Generation,
-        turn_id: &str,
-    ) -> Option<RunningTurn> {
+    /// Back to `Idle` from the turn `turn_id`, handing back what that turn
+    /// was.
+    pub(in crate::session_pool) fn release(&mut self, turn_id: &str) -> Option<RunningTurn> {
         match &self.phase {
-            SessionPhase::Running(turn) if g == self.generation && turn.turn_id == turn_id => {}
+            SessionPhase::Running(turn) if turn.turn_id == turn_id => {}
             _ => return None,
         }
         let SessionPhase::Running(turn) = std::mem::replace(&mut self.phase, SessionPhase::Idle)
@@ -137,18 +146,29 @@ impl TurnSlot {
         Some(turn)
     }
 
-    pub(in crate::session_pool) fn begin_rebuild(&mut self) -> Result<Generation, &SessionPhase> {
+    pub(in crate::session_pool) fn begin_rebuild(&mut self) -> Result<(), &SessionPhase> {
         if !self.is_idle() {
             return Err(&self.phase);
         }
         self.phase = SessionPhase::Rebuilding;
-        Ok(self.generation)
+        Ok(())
     }
 
-    pub(in crate::session_pool) fn abort_rebuild(&mut self, g: Generation) -> bool {
-        if g != self.generation || !matches!(self.phase, SessionPhase::Rebuilding) {
+    pub(in crate::session_pool) fn abort_rebuild(&mut self) -> bool {
+        if !matches!(self.phase, SessionPhase::Rebuilding) {
             return false;
         }
+        self.phase = SessionPhase::Idle;
+        self.idle.notify_waiters();
+        true
+    }
+
+    /// Out of `Rebuilding` onto the next engine, whose events arrive on `rx`.
+    pub(in crate::session_pool) fn finish_rebuild(&mut self, rx: EventReceiver) -> bool {
+        if !matches!(self.phase, SessionPhase::Rebuilding) {
+            return false;
+        }
+        self.rx = Arc::new(AsyncMutex::new(Some(rx)));
         self.phase = SessionPhase::Idle;
         self.idle.notify_waiters();
         true
@@ -169,7 +189,7 @@ mod tests {
 
     fn slot() -> TurnSlot {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        TurnSlot::new(Generations::default().next(), rx)
+        TurnSlot::new(rx)
     }
 
     fn turn(id: &str) -> RunningTurn {
@@ -185,8 +205,7 @@ mod tests {
     #[test]
     fn only_an_idle_slot_is_claimed() {
         let mut slot = slot();
-        let g = slot.claim(turn("t1")).expect("idle");
-        assert_eq!(g, slot.generation);
+        slot.claim(turn("t1")).expect("idle");
         assert!(
             matches!(slot.claim(turn("t2")), Err(SessionPhase::Running(t)) if t.turn_id == "t1")
         );
@@ -194,43 +213,50 @@ mod tests {
     }
 
     #[test]
-    fn a_release_lands_only_on_its_own_turn_and_generation() {
+    fn a_release_lands_only_on_its_own_turn() {
         let mut slot = slot();
-        let g = slot.claim(turn("t1")).unwrap();
-        assert!(slot.release(Generation(g.0 + 1), "t1").is_none());
-        assert!(slot.release(g, "t2").is_none());
-        assert_eq!(
-            slot.release(g, "t1").map(|t| t.turn_id).as_deref(),
-            Some("t1")
-        );
+        slot.claim(turn("t1")).unwrap();
+        assert!(slot.release("t2").is_none());
+        assert_eq!(slot.release("t1").map(|t| t.turn_id).as_deref(), Some("t1"));
         assert!(slot.is_idle());
-        assert!(slot.release(g, "t1").is_none());
+        assert!(slot.release("t1").is_none());
     }
 
     #[test]
-    fn terminated_is_marked_on_the_running_turn_of_its_generation() {
+    fn terminated_is_marked_on_the_running_turn() {
         let mut slot = slot();
-        assert!(!slot.mark_terminated(slot.generation));
-        let g = slot.claim(turn("t1")).unwrap();
-        assert!(!slot.mark_terminated(Generation(g.0 + 1)));
-        assert!(slot.mark_terminated(g));
+        assert!(!slot.mark_terminated());
+        slot.claim(turn("t1")).unwrap();
+        assert!(slot.mark_terminated());
         assert!(slot.running().is_some_and(|t| t.terminated));
     }
 
     #[test]
-    fn a_rebuild_holds_the_slot_until_it_is_aborted() {
+    fn a_rebuild_holds_the_slot_until_it_is_aborted_or_finished() {
         let mut slot = slot();
-        let g = slot.begin_rebuild().expect("idle");
+        slot.begin_rebuild().expect("idle");
         assert!(matches!(
             slot.claim(turn("t1")),
             Err(SessionPhase::Rebuilding)
         ));
-        assert!(!slot.abort_rebuild(Generation(g.0 + 1)));
-        assert!(slot.abort_rebuild(g));
+        assert!(slot.abort_rebuild());
         assert!(slot.is_idle());
-        assert!(!slot.abort_rebuild(g));
+        assert!(!slot.abort_rebuild());
         slot.claim(turn("t1")).unwrap();
         assert!(slot.begin_rebuild().is_err());
+        slot.release("t1").unwrap();
+
+        let before = slot.rx.clone();
+        slot.begin_rebuild().unwrap();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(slot.finish_rebuild(rx));
+        assert!(slot.is_idle());
+        assert!(
+            !Arc::ptr_eq(&before, &slot.rx),
+            "the next engine's receiver"
+        );
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(!slot.finish_rebuild(rx));
     }
 
     #[test]
@@ -238,11 +264,11 @@ mod tests {
         use crate::session_pool::api::BusyReason;
         let mut slot = slot();
         assert!(slot.busy("S1").is_none());
-        let g = slot.claim(turn("t1")).unwrap();
+        slot.claim(turn("t1")).unwrap();
         let busy = slot.busy("S1").expect("busy");
         assert_eq!(busy.reason, BusyReason::TurnRunning);
         assert_eq!(busy.current_turn_id.as_deref(), Some("t1"));
-        slot.release(g, "t1");
+        slot.release("t1");
         slot.begin_rebuild().unwrap();
         let busy = slot.busy("S1").expect("busy");
         assert_eq!(busy.reason, BusyReason::Rebuilding);

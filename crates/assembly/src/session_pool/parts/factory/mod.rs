@@ -1,6 +1,7 @@
 //! 造引擎的 `EngineFactory`：按一个会话的规格、它那一对的绑定和门面备好的部件
-//! （场景表、定时任务表、MCP 模块、进程组账本、插件脚本）配好 `Builder` 建出 Agent。
-//! 只负责构造，不往会话表里插，也不写日志；不持锁。
+//! （会话的状态与 steer 队列、场景表、定时任务表、MCP 模块、进程组账本、插件脚本）
+//! 配好 `Builder` 建出 Agent。建出来的引擎还没挂到会话状态上，由门面在上一代引擎
+//! 停下之后 `attach_session`。只负责构造，不往会话表里插，也不写日志；不持锁。
 
 mod namer;
 mod permission_scripts;
@@ -10,6 +11,7 @@ pub(in crate::session_pool) use permission_scripts::*;
 
 use crate::session_pool::api::SessionOptions;
 use crate::session_pool::parts::bindings::ProjectBinding;
+use crate::session_pool::parts::phase::Generation;
 use crate::session_pool::parts::specs::SessionSpec;
 use crate::session_pool::pool_telemetry::{otel_sink, recordings_root, session_clock};
 use crate::session_pool::{CreateError, SessionCtx, SessionCustomizer};
@@ -45,10 +47,33 @@ pub(in crate::session_pool) struct EngineFactory {
     run_slots: Arc<tokio::sync::Semaphore>,
 }
 
+/// What an engine takes over from the session it runs: the session's state
+/// and steer queue, and the number it runs them as.
+pub(in crate::session_pool) struct SessionSeed {
+    pub(in crate::session_pool) state: Arc<base::context::SessionState>,
+    pub(in crate::session_pool) steer: runtime::steering::SteerHandle,
+    pub(in crate::session_pool) generation: Generation,
+}
+
+/// What the engine starts from besides its settings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::session_pool) enum Restore {
+    /// A session with no history yet.
+    New,
+    /// The session's log: its transcript, and the state it recorded, into a
+    /// state no engine has run on.
+    FromLog,
+    /// The transcript from the log; the state is the one the engine before
+    /// this one ran on.
+    Kept,
+}
+
 /// One session's engine to build, with what the facade gathered for it from
 /// the other collaborators.
 pub(in crate::session_pool) struct BuildRequest<'a> {
     pub(in crate::session_pool) session_id: &'a str,
+    pub(in crate::session_pool) seed: SessionSeed,
+    pub(in crate::session_pool) restore: Restore,
     pub(in crate::session_pool) scene: Arc<SceneSpec>,
     pub(in crate::session_pool) binding: &'a ProjectBinding,
     /// `None` for a no-project session.
@@ -57,8 +82,6 @@ pub(in crate::session_pool) struct BuildRequest<'a> {
     /// pool's own directory.
     pub(in crate::session_pool) script_root: &'a Path,
     pub(in crate::session_pool) spec: &'a SessionSpec,
-    /// The session already has a history this build continues.
-    pub(in crate::session_pool) resume: bool,
     pub(in crate::session_pool) scene_registry: Arc<scene::SceneRegistry>,
     pub(in crate::session_pool) cron_store: Arc<tools::cron::CronStore>,
     pub(in crate::session_pool) package_scripts: Vec<crate::plugins::PackageScripts>,
@@ -134,6 +157,8 @@ impl EngineFactory {
             .settings(settings_snapshot.clone())
             .permission(permission)
             .session_id(session_id.to_string())
+            .session_state(req.seed.state, req.seed.generation.get())
+            .steering(req.seed.steer)
             .commands_override(binding.commands.clone())
             .cron_store(req.cron_store)
             .run_slots(self.run_slots.clone())
@@ -184,7 +209,7 @@ impl EngineFactory {
                     session_id,
                     scene: &scene_id,
                     project_root: req.project_root,
-                    resumed: req.resume,
+                    resumed: req.restore != Restore::New,
                 },
             );
         }

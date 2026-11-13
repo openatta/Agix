@@ -79,7 +79,7 @@ async fn audit3_close_during_a_rebuild_is_not_undone_by_the_rebuild() {
     let _ = rebuild.await.unwrap();
     close.await.unwrap().unwrap();
     assert!(
-        !pool.live.lock().await.contains_key(&sid),
+        !pool.live.contains(&sid).await,
         "session.close returned, yet the rebuild in flight put the session back in memory"
     );
 }

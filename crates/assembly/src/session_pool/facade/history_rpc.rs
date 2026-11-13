@@ -41,7 +41,7 @@ impl SessionPool {
             .enumerate()
             .map(|(i, m)| history_item(start + i, m))
             .collect();
-        let active = self.live.lock().await.contains_key(session_id);
+        let active = self.live.contains(session_id).await;
 
         Ok(api::HistoryPage {
             session_id: session_id.to_string(),
@@ -91,21 +91,20 @@ impl SessionPool {
                 if !include.sidechains {
                     lineage.sessions.truncate(1);
                 }
-                let live: HashMap<
-                    String,
-                    (Option<String>, Option<Arc<base::context::SessionState>>),
-                > = {
-                    let sessions = self.live.lock().await;
-                    lineage
-                        .sessions
-                        .iter()
-                        .filter_map(|(sid, _)| {
-                            let sid = sid.to_string();
-                            let live = sessions.get(&sid)?;
-                            Some((sid, (live.turn.current_turn_id(), live.state.clone())))
+                let mut live: HashMap<String, (Option<String>, Arc<base::context::SessionState>)> =
+                    HashMap::new();
+                for (sid, _) in &lineage.sessions {
+                    let sid = sid.to_string();
+                    let found = self
+                        .live
+                        .with_live(&sid, |live| {
+                            (live.turn.current_turn_id(), live.core.state().clone())
                         })
-                        .collect()
-                };
+                        .await;
+                    if let Some(found) = found {
+                        live.insert(sid, found);
+                    }
+                }
                 let recordings = if include.recording {
                     self.measure_recordings(&settings, &request.session_id, &lineage)
                         .await
@@ -138,8 +137,9 @@ impl SessionPool {
             ))
             .await
             .ok();
-            let (current_turn, state) = live.get(&id).cloned().unwrap_or((None, None));
-            let runtime = state.map(|state| {
+            let in_memory = live.get(&id).cloned();
+            let current_turn = in_memory.as_ref().and_then(|(turn, _)| turn.clone());
+            let runtime = in_memory.map(|(_, state)| {
                 serde_json::json!({
                     "durable": false,
                     "permission_mode": state.permission_mode(),

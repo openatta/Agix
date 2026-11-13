@@ -16,15 +16,14 @@ async fn a_session_with_a_turn_in_flight_refuses_rather_than_queues() {
         .expect("a session")
         .session_id;
 
-    {
-        let mut sessions = pool.live.lock().await;
-        sessions
-            .get_mut(&session_id)
-            .expect("the session is live")
-            .turn
-            .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
-            .unwrap();
-    }
+    pool.live
+        .with_live_mut(&session_id, |live| {
+            live.turn
+                .claim(RunningTurn::new("t1".into(), Initiator::Client, None))
+                .unwrap()
+        })
+        .await
+        .expect("the session is live");
 
     match pool
         .set_session_model(&session_id, Some("claude-opus-4-6"), None)

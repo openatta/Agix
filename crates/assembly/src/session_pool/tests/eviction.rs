@@ -1,7 +1,7 @@
 //! `eviction_tests` 原样搬来的用例。
 
 use super::*;
-use crate::session_pool::parts::live::evict_lru;
+use crate::session_pool::parts::live::{evict_lru, idle_session_ids, EngineSlot, Naming};
 use crate::session_pool::parts::phase::Generations;
 use model::adapter::AnthropicModel;
 use runtime::agent::InputSender;
@@ -13,35 +13,35 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
     let (input_tx, _input_rx): (InputSender, _) = tokio::sync::mpsc::unbounded_channel();
     let (_event_tx, event_rx): (_, EventReceiver) = tokio::sync::mpsc::unbounded_channel();
     LiveSession {
-        input_tx,
-        turn: TurnSlot::new(Generations::default().next(), event_rx),
-        cancel: CancellationToken::new(),
-        exited: CancellationToken::new(),
-        context: None,
-        scene: Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
-        project: None,
-        name: None,
-        created_at: last_active,
-        is_first_turn: true,
-        named_by_user: false,
-        namer: SessionNamer::of(
+        core: SessionCore::active_at(
             "dummy",
+            Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
             None,
-            &(Arc::new(AnthropicModel::new(Arc::new(
-                model::mock::MockAnthropicClient::new(),
-            ))) as Arc<dyn base::interface::model::Model>),
-            "claude-sonnet-4-6",
+            Naming::default(),
+            last_active,
         ),
-        binding: crate::session_pool::parts::bindings::BindingStamp {
-            key: (None, String::new()),
-            epoch: 0,
+        engine: EngineSlot {
+            generation: Generations::default().next(),
+            input_tx,
+            cancel: CancellationToken::new(),
+            exited: CancellationToken::new(),
+            namer: SessionNamer::of(
+                "dummy",
+                None,
+                &(Arc::new(AnthropicModel::new(Arc::new(
+                    model::mock::MockAnthropicClient::new(),
+                ))) as Arc<dyn base::interface::model::Model>),
+                "claude-sonnet-4-6",
+            ),
+            binding: crate::session_pool::parts::bindings::BindingStamp {
+                key: (None, String::new()),
+                epoch: 0,
+            },
+            delegator: None,
+            scripts: None,
+            health: Default::default(),
         },
-        state: None,
-        delegator: None,
-        scripts: None,
-        health: Default::default(),
-        hub: Arc::new(SessionHub::active_at(last_active)),
-        process_groups: None,
+        turn: TurnSlot::new(event_rx),
     }
 }
 
@@ -84,13 +84,13 @@ fn inserting_over_an_existing_sid_must_cancel_the_replaced_sessions_token() {
     // `create()`/`SessionPool`, which needs a live client/settings/etc.).
     let mut sessions = HashMap::new();
     let old_session = dummy_live_session(Instant::now());
-    let old_cancel = old_session.cancel.clone();
+    let old_cancel = old_session.engine.cancel.clone();
     sessions.insert("sid".to_string(), old_session);
     assert!(!old_cancel.is_cancelled());
 
     let new_session = dummy_live_session(Instant::now());
     if let Some(old) = sessions.insert("sid".to_string(), new_session) {
-        old.cancel.cancel();
+        old.engine.cancel.cancel();
     }
 
     assert!(
@@ -100,15 +100,13 @@ fn inserting_over_an_existing_sid_must_cancel_the_replaced_sessions_token() {
     assert_eq!(sessions.len(), 1);
 }
 
-fn running_a_task() -> Arc<base::context::SessionState> {
-    let state = Arc::new(base::context::SessionState::for_tests("/tmp".into()));
-    state.register_task(
+fn run_a_task(live: &LiveSession) {
+    live.core.state().register_task(
         "task-1",
         base::context::TaskType::Agent,
         CancellationToken::new(),
         serde_json::json!({}),
     );
-    state
 }
 
 #[test]
@@ -125,8 +123,8 @@ fn eviction_passes_over_a_session_that_is_doing_something() {
     let mut rebuilding = dummy_live_session(long_ago);
     rebuilding.turn.begin_rebuild().unwrap();
     sessions.insert("rebuilding".to_string(), rebuilding);
-    let mut with_a_task = dummy_live_session(long_ago);
-    with_a_task.state = Some(running_a_task());
+    let with_a_task = dummy_live_session(long_ago);
+    run_a_task(&with_a_task);
     sessions.insert("with_a_task".to_string(), with_a_task);
 
     assert!(idle_session_ids(&sessions, now, Duration::from_secs(300)).is_empty());

@@ -156,6 +156,9 @@ pub struct DurableState {
     pub plan: Option<PlanState>,
     #[serde(default)]
     pub todos: Vec<TodoItem>,
+    /// The deferred tools `ToolSearch` loaded, sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activated_tools: Vec<String>,
 }
 
 /// In plan mode, and where `ExitPlanMode` returns to: `None` is `Default`,
@@ -415,78 +418,6 @@ impl SessionState {
             .into_iter()
             .map(|(_, text)| text)
             .collect()
-    }
-
-    /// Take over, onto this freshly built state, what `previous` — the
-    /// session's state before its engine was rebuilt in place — holds that
-    /// outlives a turn. Called once the log has been loaded into this one.
-    ///
-    /// Plan mode stays on, exiting to where it would have, as it does for a
-    /// session brought back from its log; a session not in plan mode runs in
-    /// the mode this state was built with, so a settings change reaches it.
-    pub fn carry_session_state_from(&self, previous: &SessionState) {
-        let SessionState {
-            // The new engine's, attached to this state when it was built.
-            env: _,
-            engine: _,
-            // Bound to the new engine and the pool's forwarders.
-            task_events: _,
-            goal_recording: _,
-            goal_events: _,
-            // Already in the log, which the resume read the goal back from.
-            unrecorded_goal_changes: _,
-            // What the log has, which the resume read back.
-            recorded_durable: _,
-            permission_mode,
-            todos,
-            activated_tools,
-            running_tasks,
-            goal,
-            notices,
-            read_cache,
-            last_read_path,
-            ledger,
-        } = previous;
-
-        let before = lock(permission_mode);
-        if before.current == PermissionMode::Plan {
-            *self.mode_slot() = ModeSlot {
-                current: PermissionMode::Plan,
-                before_plan: before.before_plan,
-            };
-        }
-        drop(before);
-        lock(&self.todos).clone_from(&lock(todos));
-        lock(&self.activated_tools).extend(lock(activated_tools).iter().cloned());
-        let tasks: Vec<(String, std::sync::Arc<RunningTask>)> = lock(running_tasks)
-            .iter()
-            .map(|(id, task)| (id.clone(), task.clone()))
-            .collect();
-        lock(&self.running_tasks).extend(tasks);
-        let arming = lock(goal).clone();
-        lock(&self.goal).carry_arming_from(&arming);
-        let unread = std::mem::take(&mut *lock(notices));
-        {
-            let mut notices = lock(&self.notices);
-            let posted_since = std::mem::replace(&mut *notices, unread);
-            notices.extend(posted_since);
-        }
-        let earlier_reads = lock(read_cache).clone();
-        {
-            let mut cache = lock(&self.read_cache);
-            for (path, entry) in earlier_reads {
-                cache.entry(path).or_insert(entry);
-            }
-        }
-        let last_read = lock(last_read_path).clone();
-        {
-            let mut last = lock(&self.last_read_path);
-            if last.is_none() {
-                *last = last_read;
-            }
-        }
-        let carried = lock(ledger).clone();
-        *lock(&self.ledger) = carried;
     }
 
     pub fn ledger(&self) -> std::sync::MutexGuard<'_, SessionLedger> {
@@ -782,9 +713,12 @@ impl SessionState {
                 exit_to: slot.before_plan,
             })
         };
+        let mut activated_tools: Vec<String> = self.activated_tools().into_iter().collect();
+        activated_tools.sort();
         DurableState {
             plan,
             todos: self.todos(),
+            activated_tools,
         }
     }
 
@@ -810,6 +744,7 @@ impl SessionState {
             };
         }
         lock(&self.todos).clone_from(&state.todos);
+        self.activate_tools(state.activated_tools.iter().cloned());
         *lock(&self.recorded_durable) = state;
     }
 
@@ -1177,46 +1112,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rebuilt_state_keeps_what_outlives_a_turn() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("read.txt");
-        std::fs::write(&file, "x").unwrap();
-        let before = SessionState::for_tests(dir.path().into())
-            .with_permission_mode(PermissionMode::AcceptEdits);
-        before.enter_plan_mode();
-        before.set_todos(vec![todo("step one")]);
-        before.activate_tools(["TodoWrite".to_string()]);
-        before.record_read(&file);
-        before.post_notice(None, "unread");
-
-        let after = SessionState::for_tests(dir.path().into())
-            .with_permission_mode(PermissionMode::Default);
-        after.carry_session_state_from(&before);
-
-        assert_eq!(after.permission_mode(), PermissionMode::Plan);
-        assert_eq!(
-            after.exit_plan_mode(),
-            PermissionMode::AcceptEdits,
-            "leaving plan mode goes back to the mode the session entered it from"
-        );
-        assert_eq!(after.todos(), vec![todo("step one")]);
-        assert!(after.activated_tools().contains("TodoWrite"));
-        assert_eq!(after.check_read_staleness(&file), None);
-        assert!(after.is_consecutive_read(&file));
-        assert_eq!(after.take_notices(), vec!["unread".to_string()]);
-    }
-
-    #[test]
-    fn a_rebuilt_state_out_of_plan_mode_takes_the_mode_it_was_built_with() {
-        let before = SessionState::for_tests("/tmp".into())
-            .with_permission_mode(PermissionMode::BypassPermissions);
-        let after =
-            SessionState::for_tests("/tmp".into()).with_permission_mode(PermissionMode::Default);
-        after.carry_session_state_from(&before);
-        assert_eq!(after.permission_mode(), PermissionMode::Default);
-    }
-
-    #[test]
     fn plan_mode_and_todos_come_back_from_what_the_log_recorded() {
         let before = SessionState::for_tests("/tmp".into())
             .with_permission_mode(PermissionMode::AcceptEdits);
@@ -1242,6 +1137,23 @@ mod tests {
         assert_eq!(after.unrecorded_durable_state(), None);
         assert_eq!(after.exit_plan_mode(), PermissionMode::AcceptEdits);
         assert!(after.unrecorded_durable_state().is_some());
+    }
+
+    #[test]
+    fn the_tools_tool_search_loaded_come_back_from_the_log() {
+        let before = SessionState::for_tests("/tmp".into());
+        before.activate_tools(["WebFetch".to_string(), "NotebookEdit".to_string()]);
+        let logged =
+            serde_json::to_value(before.unrecorded_durable_state().expect("a change")).unwrap();
+        assert_eq!(
+            logged["activated_tools"],
+            serde_json::json!(["NotebookEdit", "WebFetch"])
+        );
+
+        let after = SessionState::for_tests("/tmp".into());
+        after.restore_durable_state(serde_json::from_value(logged).unwrap());
+        assert!(after.activated_tools().contains("WebFetch"));
+        assert_eq!(after.unrecorded_durable_state(), None);
     }
 
     #[test]

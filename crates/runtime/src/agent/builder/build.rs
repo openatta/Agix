@@ -252,11 +252,10 @@ impl Builder {
         prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
         prepare_working_dir(&settings.paths);
         let session_env = session_env(&settings, &config, &scene);
-        let injected_state = self.session_state.is_some();
-        let session_state = self
-            .session_state
-            .clone()
-            .unwrap_or_else(|| Arc::new(base::context::SessionState::new()));
+        let (session_state, generation, injected_state) = match self.session_state.clone() {
+            Some((state, generation)) => (state, generation, true),
+            None => (Arc::new(base::context::SessionState::new()), 0, false),
+        };
         // One set for the session: its tool calls run on it, and a permission
         // judging them reads it back from the session state.
         let exec = match (&self.exec, &self.process_groups) {
@@ -635,7 +634,7 @@ impl Builder {
             }
         }
         let attachment =
-            base::context::EngineAttachment::new(session_env, exec.clone(), next_generation())
+            base::context::EngineAttachment::new(session_env, exec.clone(), generation)
                 .with_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>));
         if !injected_state {
             session_state.attach(attachment.clone());
@@ -908,13 +907,6 @@ fn session_env(
         base_mode: config.permission_mode,
         cwd,
     }
-}
-
-/// Unique in the process, so an engine detaching from a session's state takes
-/// off only itself.
-fn next_generation() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A session without a project works in a directory of its own, which has to

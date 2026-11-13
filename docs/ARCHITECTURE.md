@@ -424,7 +424,11 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 ### 3.2.4 会话池里一个会话的回合槽
 
-池里每个会话条目有一个 `TurnSlot`,回合状态不再由几个互相对得上的字段隐式表示:
+池里每个会话条目是 `LiveSession { core, engine, turn }`:`SessionCore` 是会话本身(`SessionState`、
+事件出口 `SessionHub`、steer 队列、进程组账本、名字、上下文用量),建会话或从日志冷恢复时建,
+关闭、驱逐、整池关闭时丢,重建不换;`EngineSlot` 是当前这一代引擎(输入通道、取消与退出令牌、
+命名器、绑定是否过期、委派器、脚本记录、健康检查);`TurnSlot` 是回合状态,不再由几个互相对得上的
+字段隐式表示:
 
 - **阶段** `SessionPhase`:`Idle`、`Running`(带回合 id、发起方、发起的订阅者)、`Rebuilding`。
   所有转换在池的 `sessions` 锁里同步完成;`is_busy`、`interrupt`、`setModel` / `setPrompt` 的预检查、
@@ -432,12 +436,17 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 - **占槽与命名是一次转换。** `run_turn` 在一次锁里判定目标轮、占槽,`Idle` 直接进 `Running`,
   回合从占住那一刻起就有名字:这时到达的 `session.interrupt` 发的是 `CancelTurn { turn_id }`,
   引擎在消息到达时记得它已被取消,这一轮以 `cancelled` 结束。
-- **重建是 `Idle → Rebuilding`。** 失败回到 `Idle`,成功时新条目整个替换旧条目。重建期间
+- **重建是 `Idle → Rebuilding`。** 先按同一个 `SessionCore` 造好下一代引擎(状态经
+  `Builder::session_state` 注入,还没挂上),造不出来就回到 `Idle`、旧引擎照跑;造好了才停旧引擎,
+  旧引擎停下之后新引擎 `attach_session`,只读回 transcript,不再从日志恢复状态,最后在同一个
+  `LiveSession` 里换掉 `EngineSlot`、回到 `Idle`。同一时刻最多一个引擎挂在一份状态上。任务与目标
+  的转发器每个会话只起一次,跟着 `SessionCore` 走;重建期间
   上下文请求与不换厂商的 `setModel` 报 `SESSION_BUSY`,`on_busy: "steer"` 的 `run_turn` 等重建结束,
   不往正在停止的旧引擎里塞。
-- **代际号** `Generation`:`LiveSessions` 上的计数器,每次 `create` 取一个。"这还是不是同一个引擎"比较的是它,
-  不比较指针。旧回合在 `session.close` 之后用同一个 id 恢复的新条目上写回(`TurnComplete`
-  写 context、首轮命名、自动命名)时先核对代际号,不符就什么都不写。
+- **代际号** `Generation`:`LiveSessions` 上的计数器,每造一个引擎取一个,也是这个引擎挂到会话状态上
+  用的号(`detach` 只摘自己那一代)。回合票据 `TurnTicket` 带着 `Arc<SessionCore>` 和代际号:
+  `TurnComplete` 的 context、首轮命名写的是票据上的 core,`session.close` 之后同一个 id 恢复出来的是
+  另一个 core,旧回合碰不到它;代际号只用来判断还回回合槽时是不是同一代引擎。
 - **事件出口** `SessionHub` 每个会话一个(叶子锁:订阅者、待答提问、最近活动时间),事件当场同步交给
   每个 `SessionWatcher::deliver`,不去锁池。池不拼 JSON 帧也不认识 `rpc::Client`:会话事件是领域类型
   `SessionFrame`,线上的 §7 帧由 `rpc/events.rs` 的 `SessionEventPayload::project` 投影,
@@ -458,7 +467,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 | 协作者 | 持有 | 锁 |
 |---|---|---|
-| `LiveSessions`(`parts/live.rs`) | 在内存的会话表(每个 `LiveSession` 带 `TurnSlot`、`SessionHub`)、每会话的磁盘临界区锁、容量与空闲超时、还在停的旧引擎、关闭状态、代际号 | `session_locks[sid]`、`sessions`(tokio);`stopping`(std,叶子) |
+| `LiveSessions`(`parts/live.rs`) | 在内存的会话表(每个 `LiveSession` 带 `SessionCore`、`EngineSlot`、`TurnSlot`)、每会话的磁盘临界区锁、容量与空闲超时、还在停的旧引擎、关闭状态、代际号;门面经 `with_live` / `with_live_mut` / `core_of` / `insert_evicting` / `remove_if` 等窄方法读写,拿不到表本身 | `session_locks[sid]`、`sessions`(tokio);`stopping`(std,叶子) |
 | `SpecStore`(`parts/specs.rs`) | 每个会话的规格(§3.2.2),和出了内存仍要留着的那些 | `specs`、`kept`(std,叶子,互不嵌套) |
 | `BindingCache`(`parts/bindings/`) | 自家那一对热替换的设置、托管层、每对的 `ProjectBinding`、`last_good_routers`、`WatchHub` | `bindings` → `last_good_routers`(tokio);`settings`(tokio `RwLock`,取值即放) |
 | `SceneCatalog`(`parts/scenes.rs`) | 默认场景、激活的场景、场景注册表、宿主登记与 `scene.register` 的场景 | std `RwLock`,叶子 |
@@ -476,14 +485,16 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 场景表、定时任务表、MCP 模块、进程组账本都由门面先取好放进请求。
 
 **全局锁序:** `session_locks[sid]` → `sessions` → `TurnSlot.rx` → { `SessionHub.inner` |
-D3 之后的 `SessionCore.*` / `SessionState.*` }(叶子之间互不嵌套);`bindings` →
+`SessionCore.*` | `SessionState.*` }(叶子之间互不嵌套);`bindings` →
 `last_good_routers`。其余 std 锁都是叶子,持锁时不 `.await`。
 
-**一次 `create` 的编排:** 拒绝关闭中的池、等同 id 的旧引擎停下(`LiveSessions`)→ 认领日志 →
-取规格(`SpecStore`)→ 备部件(场景表、定时任务表、MCP 模块、进程组账本、插件脚本)→
-`EngineFactory::build` → 写 `Meta`、恢复 transcript → 起运行体 → 在 `sessions` 锁里腾位置、
-插表,被挤出的会话由门面发 `session_evicted`。转发器只持有会话的 `SessionHub` 和 `TurnSlot`,
-不需要池;池由 `Arc::new_cyclic` 建成,构造好就转发轮间事件。
+**冷建的编排**(`create`):拒绝关闭中的池、等同 id 的旧引擎停下(`LiveSessions`)→ 认领日志 →
+取规格(`SpecStore`)→ 建 `SessionCore` → 备部件(场景表、定时任务表、MCP 模块、进程组账本、
+插件脚本)→ `EngineFactory::build`(带 `SessionSeed` 与 `Restore::{New, FromLog}`)→ 写 `Meta`
+→ `attach_session` → 读 transcript、从日志恢复状态 → 起运行体 → 在 `sessions` 锁里腾位置、插表,
+被挤出的会话由门面发 `session_evicted` → 起这个会话的任务与目标转发器。**重建的编排**
+(`rebuild_engine`)见 §3.2.4:`Restore::Kept`,先造后停再挂,换的只是 `EngineSlot`。转发器只持有
+会话的 `SessionHub`、状态和 `TurnSlot`,不需要池;池由 `Arc::new_cyclic` 建成,构造好就转发轮间事件。
 
 ### 3.3 Sidechain 会话
 

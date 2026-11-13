@@ -70,10 +70,9 @@ impl SessionPool {
         sid: &str,
     ) -> Option<Arc<base::context::SessionState>> {
         self.live
-            .lock()
+            .core_of(sid)
             .await
-            .get(sid)
-            .and_then(|live| live.state.clone())
+            .map(|core| core.state().clone())
     }
 
     /// Write the goal changes `sid`'s log does not have yet.
@@ -195,10 +194,8 @@ impl SessionPool {
 
         let running = self
             .live
-            .lock()
-            .await
-            .get(sid)
-            .map(|live| live.turn.running().map(|turn| turn.initiator));
+            .with_live(sid, |live| live.turn.running().map(|turn| turn.initiator))
+            .await;
         match running {
             Some(Some(Initiator::Goal)) if pausing => {
                 self.interrupt_turn(sid).await?;
@@ -209,15 +206,12 @@ impl SessionPool {
         Ok(state.goal_view())
     }
 
-    /// Push `session_id`'s goal changes to whoever watches the session.
-    pub(in crate::session_pool) fn forward_goal_events(
-        session_id: &str,
-        hub: &Arc<SessionHub>,
-        state: &Arc<base::context::SessionState>,
-    ) {
-        let mut events = state.subscribe_goal();
-        let hub = Arc::downgrade(hub);
-        let session_id = session_id.to_string();
+    /// Push the goal changes of `core` to whoever watches the session, for
+    /// as long as the session is in memory — across every engine it runs on.
+    pub(in crate::session_pool) fn forward_goal_events(core: &SessionCore) {
+        let mut events = core.state().subscribe_goal();
+        let hub = Arc::downgrade(core.hub());
+        let session_id = core.id().to_string();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {

@@ -1,37 +1,50 @@
 //! 回合执行：`run_turn` 及其回合槽位、自动命名的采纳。
 
+use crate::session_pool::parts::live::SessionCore;
 use crate::session_pool::*;
+
+/// What one attempt at the turn slot came to.
+enum Claim {
+    Taken(TurnTicket, InputSender),
+    Busy(Busy, InputSender),
+    Skipped,
+}
 
 impl SessionPool {
     /// Give the receiver back and mark the session idle again, if the
-    /// ticket's entry is still the session's — a session closed or replaced
-    /// while the turn ran is not this turn's to touch. Done under the
-    /// sessions lock, so nothing sees the slot free while the turn still
-    /// reads as running. Whatever the turn's own engine was asking died with
-    /// the turn; a background task's asks stay. Returns whether the entry was
-    /// still the session's.
+    /// ticket's engine still runs the session — a session closed or rebuilt
+    /// while the turn ran is not this turn's to touch. Whatever the turn's
+    /// own engine was asking died with the turn; a background task's asks
+    /// stay. Returns whether the entry was still the ticket's.
     pub(in crate::session_pool) async fn release_turn_slot(
         &self,
         ticket: &TurnTicket,
         event_rx: EventReceiver,
     ) -> bool {
-        let mut sessions = self.live.lock().await;
         *ticket.rx.lock().await = Some(event_rx);
-        let Some(live) = sessions
-            .get_mut(&ticket.sid)
-            .filter(|live| live.turn.generation == ticket.generation)
-        else {
+        let released = self
+            .live
+            .with_live_mut(ticket.sid(), |live| {
+                if !live.runs(&ticket.core, ticket.generation) {
+                    return None;
+                }
+                let turn = live.turn.release(&ticket.turn_id);
+                live.turn.idle.notify_waiters();
+                Some(turn)
+            })
+            .await
+            .flatten();
+        let Some(turn) = released else {
             return false;
         };
-        if let Some(turn) = live.turn.release(ticket.generation, &ticket.turn_id) {
+        if let Some(turn) = turn {
             self.emit_event(api::DaemonEvent::TurnCompleted {
-                session_id: ticket.sid.to_string(),
+                session_id: ticket.sid().to_string(),
                 turn_id: ticket.turn_id.to_string(),
                 initiator: turn.initiator,
             });
-            live.hub.retain_task_asks();
+            ticket.core.hub().retain_task_asks();
         }
-        live.turn.idle.notify_waiters();
         true
     }
 
@@ -72,12 +85,11 @@ impl SessionPool {
                 // session is served on the old configuration this once and
                 // checked again next time — its stamp stays behind, so
                 // nothing is missed.
-                let stale = {
-                    let sessions = self.live.lock().await;
-                    sessions
-                        .get(sid)
-                        .map(|live| !self.bindings.is_current(&live.binding))
-                };
+                let stale = self
+                    .live
+                    .with_live(sid, |live| live.engine.binding.clone())
+                    .await
+                    .map(|stamp| !self.bindings.is_current(&stamp));
                 let resolved = match stale {
                     None => self.ensure_live(sid, options.as_ref()).await,
                     Some(false) => Ok(sid.clone()),
@@ -101,46 +113,46 @@ impl SessionPool {
                     false,
                 )
                 .await?
+                .id()
+                .to_string()
             }
         };
 
         // 必须**在发消息之前**占住会话：消息一旦 send 进去就归正在跑的那个
         // Agent 消费了，先发后占的话，调用方看到忙，消息却已经被别的 turn 吃掉。
         let mut steer_tried = false;
-        let (input_tx, generation, rx, turn_state, hub) = loop {
-            let idle = {
-                let sessions = self.live.lock().await;
-                let Some(live) = sessions.get(&sid) else {
-                    return Err(PoolError::session_not_found(&sid));
-                };
-                live.turn.idle.clone()
+        let (ticket, input_tx) = loop {
+            let Some(idle) = self
+                .live
+                .with_live(&sid, |live| live.turn.idle.clone())
+                .await
+            else {
+                return Err(PoolError::session_not_found(&sid));
             };
             let became_idle = idle.notified();
             tokio::pin!(became_idle);
             became_idle.as_mut().enable();
-            let (input_tx, busy) = {
-                let mut sessions = self.live.lock().await;
-                let Some(live) = sessions.get_mut(&sid) else {
-                    return Err(PoolError::session_not_found(&sid));
-                };
-                live.hub.touch();
-                // A goal round runs only if it is still the one its goal
-                // handed out: a pause, clear or change since then, or another
-                // turn's round, means nobody wants it any more.
-                if live.turn.is_idle()
-                    && initiator == Initiator::Goal
-                    && !live
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.goal_claim_round(&turn_id))
-                {
-                    return Ok(TurnOutcome::Skipped {
-                        session_id: sid,
-                        turn_id,
-                    });
-                }
-                let running = RunningTurn::new(turn_id.clone(), initiator, initiator_id);
-                if let Ok(generation) = live.turn.claim(running) {
+            let claim = self
+                .live
+                .with_live_mut(&sid, |live| {
+                    live.core.hub().touch();
+                    // A goal round runs only if it is still the one its goal
+                    // handed out: a pause, clear or change since then, or
+                    // another turn's round, means nobody wants it any more.
+                    if live.turn.is_idle()
+                        && initiator == Initiator::Goal
+                        && !live.core.state().goal_claim_round(&turn_id)
+                    {
+                        return Claim::Skipped;
+                    }
+                    let input_tx = live.engine.input_tx.clone();
+                    if let Some(busy) = live.turn.busy(&sid) {
+                        return Claim::Busy(busy, input_tx);
+                    }
+                    let running = RunningTurn::new(turn_id.clone(), initiator, initiator_id);
+                    if live.turn.claim(running).is_err() {
+                        unreachable!("a slot that is not busy is idle");
+                    }
                     self.emit_event(api::DaemonEvent::TurnStarted {
                         session_id: sid.to_string(),
                         turn_id: turn_id.to_string(),
@@ -150,19 +162,28 @@ impl SessionPool {
                     // it lands in the same subscriber set as any tab that
                     // called `session.subscribe`, and leaves the same way.
                     if let Some(watcher) = &watcher {
-                        live.hub.subscribe(watcher.clone());
+                        live.core.hub().subscribe(watcher.clone());
                     }
-                    break (
-                        live.input_tx.clone(),
-                        generation,
-                        live.turn.rx.clone(),
-                        live.state.clone(),
-                        live.hub.clone(),
-                    );
+                    let ticket = TurnTicket {
+                        core: live.core.clone(),
+                        generation: live.engine.generation,
+                        turn_id: turn_id.clone(),
+                        rx: live.turn.rx.clone(),
+                    };
+                    Claim::Taken(ticket, input_tx)
+                })
+                .await
+                .ok_or_else(|| PoolError::session_not_found(&sid))?;
+            let (busy, input_tx) = match claim {
+                Claim::Taken(ticket, input_tx) => break (ticket, input_tx),
+                Claim::Skipped => {
+                    return Ok(TurnOutcome::Skipped {
+                        session_id: sid,
+                        turn_id,
+                    })
                 }
-                (live.input_tx.clone(), live.turn.busy(&sid))
+                Claim::Busy(busy, input_tx) => (busy, input_tx),
             };
-            let Some(busy) = busy else { continue };
             match on_busy {
                 OnBusy::Reject => return Err(PoolError::SessionBusy(busy)),
                 OnBusy::Steer
@@ -200,29 +221,22 @@ impl SessionPool {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         };
-        let ticket = TurnTicket {
-            sid: sid.clone(),
-            generation,
-            turn_id: turn_id.clone(),
-            rx,
-        };
+        let core = ticket.core.clone();
         let taken = ticket.rx.lock().await.take();
         let Some(mut event_rx) = taken else {
-            if let Some(live) = self
-                .live
-                .lock()
-                .await
-                .get_mut(&sid)
-                .filter(|live| live.turn.generation == generation)
-            {
-                live.turn.release(generation, &turn_id);
-            }
+            self.live
+                .with_live_mut(&sid, |live| {
+                    if live.runs(&core, ticket.generation) {
+                        live.turn.release(&turn_id);
+                    }
+                })
+                .await;
             return Err(PoolError::Internal(format!(
                 "session `{sid}` claimed a turn with no event receiver in its slot"
             )));
         };
-        if let (Some(state), Initiator::Goal) = (&turn_state, initiator) {
-            self.record_goal_changes(&sid, state).await;
+        if initiator == Initiator::Goal {
+            self.record_goal_changes(&sid, core.state()).await;
         }
 
         // 发送用户消息
@@ -253,17 +267,10 @@ impl SessionPool {
                     initiator_id,
                 )
                 .await;
-                let dead = {
-                    let mut sessions = self.live.lock().await;
-                    let ours = sessions
-                        .get(&sid)
-                        .is_some_and(|live| live.turn.generation == generation);
-                    if ours {
-                        sessions.remove(&sid)
-                    } else {
-                        None
-                    }
-                };
+                let dead = self
+                    .live
+                    .remove_if(&sid, |live| live.runs(&core, ticket.generation))
+                    .await;
                 if let Some(dead) = dead {
                     self.evict(&sid, &dead);
                     dead.turn.idle.notify_waiters();
@@ -285,16 +292,8 @@ impl SessionPool {
                 } => {
                     api_calls = ac;
                     ended_with = stop_reason.clone();
-                    if context.is_some() {
-                        if let Some(live) = self
-                            .live
-                            .lock()
-                            .await
-                            .get_mut(&sid)
-                            .filter(|live| live.turn.generation == generation)
-                        {
-                            live.context = context;
-                        }
+                    if let Some(context) = context {
+                        core.set_context(context);
                     }
                     let last = frame_of(SessionEvent::Agent(event));
                     if !self.publish_terminal(&ticket, &last, None).await {
@@ -313,7 +312,7 @@ impl SessionPool {
                 }
                 event => {
                     tools_ran |= matches!(event, AgentEvent::ToolUse { .. });
-                    publish_agent_event(&hub, &session_key, Some(&turn_key), event)
+                    publish_agent_event(core.hub(), &session_key, Some(&turn_key), event)
                 }
             }
         }
@@ -324,10 +323,7 @@ impl SessionPool {
         // would cascade into deleting sidechain transcripts another tab is
         // still watching.
 
-        let next_round = match &turn_state {
-            Some(state) => self.goal_round_after(&sid, state, &ended_with).await,
-            None => None,
-        };
+        let next_round = self.goal_round_after(&sid, core.state(), &ended_with).await;
         let ours = self.release_turn_slot(&ticket, event_rx).await;
         if let (true, Some(round)) = (ours, next_round) {
             self.start_goal_round(&sid, round);
@@ -338,42 +334,46 @@ impl SessionPool {
         // code` daemon is still a harnix session, and the two scenes disagree
         // about this exactly as they disagree about the system prompt.
         //
-        // The decision is taken under the lock and the naming call made
-        // outside it — it is a model call, and the sessions map is the
-        // pool's hottest mutex.
-        let mut session_name = None;
+        // The naming call is made with no lock held — it is a model call.
         let naming = {
-            let mut sessions = self.live.lock().await;
-            match sessions
-                .get_mut(&sid)
-                .filter(|live| live.turn.generation == generation)
-            {
-                // A slash command is not what the conversation is about.
-                Some(live) if live.is_first_turn && !message.starts_with('/') => {
-                    live.is_first_turn = false;
-                    (!live.named_by_user)
-                        .then(|| live.scene.session_name_prompt(&message))
-                        .flatten()
-                        .map(|prompt| (prompt, live.namer.clone()))
+            let mut naming = core.naming();
+            // A slash command is not what the conversation is about.
+            if naming.is_first_turn && !message.starts_with('/') {
+                naming.is_first_turn = false;
+                if naming.named_by_user {
+                    Err(None)
+                } else {
+                    Ok(core.scene().session_name_prompt(&message))
                 }
-                Some(live) => {
-                    session_name = live.name.clone();
-                    None
-                }
-                None => None,
+            } else {
+                Err(naming.name.clone())
             }
         };
-        if let Some((prompt, namer)) = naming {
-            match namer.name(&prompt).await {
-                Ok(Some(name)) => {
-                    session_name = self.adopt_generated_name(&sid, generation, name).await;
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    warn!(%sid, error=%e, "session name generation failed");
+        let session_name = match naming {
+            Err(name) => name,
+            Ok(None) => None,
+            Ok(Some(prompt)) => {
+                let namer = self
+                    .live
+                    .with_live(&sid, |live| {
+                        live.runs(&core, ticket.generation)
+                            .then(|| live.engine.namer.clone())
+                    })
+                    .await
+                    .flatten();
+                match namer {
+                    None => None,
+                    Some(namer) => match namer.name(&prompt).await {
+                        Ok(Some(name)) => self.adopt_generated_name(&core, name).await,
+                        Ok(None) => None,
+                        Err(e) => {
+                            warn!(%sid, error=%e, "session name generation failed");
+                            None
+                        }
+                    },
                 }
             }
-        }
+        };
 
         Ok(TurnOutcome::Completed {
             session_id: sid,
@@ -385,24 +385,25 @@ impl SessionPool {
 
     /// A name somebody typed while the naming call was out wins over the
     /// guess; otherwise the guess is stored like any other name, so a resume
-    /// or a daemon restart finds it. A guess made for the entry of
-    /// `generation` is dropped once another entry has the id.
+    /// or a daemon restart finds it. A guess for a session that has left
+    /// memory since is dropped: the session under that id now, if any, is
+    /// another one.
     pub(in crate::session_pool) async fn adopt_generated_name(
         &self,
-        sid: &str,
-        generation: Generation,
+        core: &Arc<SessionCore>,
         name: String,
     ) -> Option<String> {
-        {
-            let mut sessions = self.live.lock().await;
-            let live = sessions
-                .get_mut(sid)
-                .filter(|live| live.turn.generation == generation)?;
-            if live.named_by_user {
-                return live.name.clone();
-            }
-            live.name = Some(name.clone());
+        if !self.live.holds(core).await {
+            return None;
         }
+        {
+            let mut naming = core.naming();
+            if naming.named_by_user {
+                return naming.name.clone();
+            }
+            naming.name = Some(name.clone());
+        }
+        let sid = core.id();
         if let (Some(store), Ok(parsed)) =
             (self.directory.store(), base::session::SessionId::parse(sid))
         {

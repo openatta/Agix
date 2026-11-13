@@ -68,16 +68,13 @@ impl SessionPool {
         });
     }
 
-    /// Push `session_id`'s task events to whoever watches the session, for as
-    /// long as its engine lives. Outside any turn, so `turn_id` is `null`.
-    pub(in crate::session_pool) fn forward_task_events(
-        session_id: &str,
-        hub: &Arc<SessionHub>,
-        state: &Arc<base::context::SessionState>,
-    ) {
-        let mut events = state.subscribe_tasks();
-        let hub = Arc::downgrade(hub);
-        let session_id = session_id.to_string();
+    /// Push the task events of `core` to whoever watches the session, for as
+    /// long as the session is in memory — across every engine it runs on.
+    /// Outside any turn, so `turn_id` is `null`.
+    pub(in crate::session_pool) fn forward_task_events(core: &SessionCore) {
+        let mut events = core.state().subscribe_tasks();
+        let hub = Arc::downgrade(core.hub());
+        let session_id = core.id().to_string();
         tokio::spawn(async move {
             loop {
                 match events.recv().await {
@@ -103,12 +100,7 @@ impl SessionPool {
         if !self.session_exists(session_id).await {
             return Err(PoolError::no_session(session_id));
         }
-        let state = self
-            .live
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|live| live.state.clone());
+        let state = self.live_state(session_id).await;
         let mut tasks = state.as_ref().map(|s| s.task_infos()).unwrap_or_default();
         tasks.extend(
             self.scheduler
@@ -154,13 +146,7 @@ impl SessionPool {
             session_id: session_id.to_string(),
             task_id: task_id.to_string(),
         };
-        let state = self
-            .live
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|live| live.state.clone())
-            .ok_or_else(unknown)?;
+        let state = self.live_state(session_id).await.ok_or_else(unknown)?;
         let task = state.find_running_task(task_id).ok_or_else(unknown)?;
         let (slice, truncated) = match read {
             TaskOutputRead::Tail(tail_bytes) => {
@@ -200,13 +186,9 @@ impl SessionPool {
         if self.scheduler.remove_for(session_id, task_id) {
             return true;
         }
-        let state = self
-            .live
-            .lock()
+        self.live_state(session_id)
             .await
-            .get(session_id)
-            .and_then(|live| live.state.clone());
-        state.is_some_and(|s| s.cancel_running_task(task_id))
+            .is_some_and(|s| s.cancel_running_task(task_id))
     }
 
     /// `session.messageTask`: hand a message to a running background
@@ -218,18 +200,9 @@ impl SessionPool {
         task_id: &str,
         message: String,
     ) -> Result<api::MessageDelivery, PoolError> {
-        let state = self
-            .live
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|live| live.state.clone())
-            .ok_or_else(|| {
-                PoolError::session_gone(
-                    session_id,
-                    format!("session `{session_id}` is not running"),
-                )
-            })?;
+        let state = self.live_state(session_id).await.ok_or_else(|| {
+            PoolError::session_gone(session_id, format!("session `{session_id}` is not running"))
+        })?;
         Ok(
             match tools::task_message::deliver(&state, task_id, message) {
                 Ok(()) => api::MessageDelivery {
@@ -263,12 +236,12 @@ impl SessionPool {
             return Err(not_found());
         }
         self.ensure_live(session_id, None).await?;
-        let delegator = {
-            let sessions = self.live.lock().await;
-            let live = sessions.get(session_id).ok_or_else(not_found)?;
-            live.delegator.clone()
-        };
-        let Some(delegator) = delegator else {
+        let Some(delegator) = self
+            .live
+            .with_live(session_id, |live| live.engine.delegator.clone())
+            .await
+            .flatten()
+        else {
             return Err(not_found());
         };
         match delegator.delegate(request).await {
@@ -348,16 +321,14 @@ impl SessionPool {
             return Err(PoolError::no_session(session_id));
         }
         self.ensure_live(session_id, None).await?;
-        let input_tx = {
-            let sessions = self.live.lock().await;
-            let live = sessions
-                .get(session_id)
-                .ok_or_else(|| PoolError::no_session(session_id))?;
-            if let Some(busy) = live.turn.busy(session_id) {
-                return Err(PoolError::SessionBusy(busy));
-            }
-            live.input_tx.clone()
-        };
+        let input_tx = self
+            .live
+            .with_live(session_id, |live| match live.turn.busy(session_id) {
+                Some(busy) => Err(PoolError::SessionBusy(busy)),
+                None => Ok(live.engine.input_tx.clone()),
+            })
+            .await
+            .ok_or_else(|| PoolError::no_session(session_id))??;
         let (reply, answer) = tokio::sync::oneshot::channel();
         input_tx
             .send(InputMessage::Context {

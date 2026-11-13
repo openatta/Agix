@@ -172,16 +172,19 @@ impl SessionPool {
             None => false,
         };
         let current_turn_id = self.current_turn_of(session_id).await;
-        let (context, health) = {
-            let sessions = self.live.lock().await;
-            let live = sessions.get(session_id);
-            (
-                live.and_then(|live| live.context),
-                live.map(|live| live.health.clone())
-                    .filter(|health| !health.is_empty())
-                    .map(|health| health.report().to_json()),
-            )
-        };
+        let (context, health) = self
+            .live
+            .with_live(session_id, |live| {
+                (live.core.context(), live.engine.health.clone())
+            })
+            .await
+            .map(|(context, health)| {
+                (
+                    context,
+                    (!health.is_empty()).then(|| health.report().to_json()),
+                )
+            })
+            .unwrap_or_default();
         Ok(api::SessionDetail {
             info,
             scene_active,
@@ -215,10 +218,10 @@ impl SessionPool {
         use api::ScriptCallOutcome;
         use base::interface::script::ScriptOutcome;
 
-        let ledger = {
-            let sessions = self.live.lock().await;
-            sessions.get(session_id)?.scripts.clone()?
-        };
+        let ledger = self
+            .live
+            .with_live(session_id, |live| live.engine.scripts.clone())
+            .await??;
         let records = ledger.records();
 
         let (mut applied, mut no_change, mut failed, mut refused) = (0, 0, 0, 0);
@@ -306,10 +309,8 @@ impl SessionPool {
             let Ok(children) = store.child_sessions(parent).await else {
                 return Vec::new();
             };
-            let active_ids: std::collections::HashSet<String> = {
-                let sessions = self.live.lock().await;
-                sessions.keys().cloned().collect()
-            };
+            let active_ids: std::collections::HashSet<String> =
+                self.live.ids().await.into_iter().collect();
             let mut out = Vec::with_capacity(children.len());
             for sid in children {
                 let sid_str = sid.to_string();
@@ -343,20 +344,17 @@ impl SessionPool {
         // reads below (`session_facts_and_resumable` per session, plus
         // `store.find_sessions()`) — holding the session table across that
         // much I/O would block every other pool operation for the duration.
-        let active_snapshot: Vec<(String, Option<String>, Instant, Instant)> = {
-            let sessions = self.live.lock().await;
-            sessions
-                .iter()
-                .map(|(sid, live)| {
-                    (
-                        sid.clone(),
-                        live.name.clone(),
-                        live.created_at,
-                        live.hub.last_active(),
-                    )
-                })
-                .collect()
-        };
+        let active_snapshot: Vec<(String, Option<String>, Instant, Instant)> = self
+            .live
+            .map_all(|live| {
+                (
+                    live.core.id().to_string(),
+                    live.core.naming().name.clone(),
+                    live.core.created_at(),
+                    live.core.hub().last_active(),
+                )
+            })
+            .await;
 
         let mut out: Vec<SessionInfo> = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -474,13 +472,13 @@ impl SessionPool {
 
     /// 获取活跃 session 数量。
     pub async fn active_count(&self) -> usize {
-        self.live.lock().await.len()
+        self.live.len().await
     }
 
     /// Whether `session_id` names a session this pool has — in memory, or a
     /// transcript it can resume.
     pub async fn session_exists(&self, session_id: &str) -> bool {
-        if self.live.lock().await.contains_key(session_id) {
+        if self.live.contains(session_id).await {
             return true;
         }
         self.directory.load_entries(session_id).await.is_ok()

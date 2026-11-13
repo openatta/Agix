@@ -53,8 +53,8 @@ impl SessionPool {
         // Naming something that does not exist would create a sidecar for a
         // session nothing else knows about — a row in every future listing
         // that nobody can open.
-        let live = self.live.lock().await.contains_key(session_id);
-        if !live
+        let live = self.live.core_of(session_id).await;
+        if live.is_none()
             && matches!(
                 store.load(sid).await,
                 Err(history::error::HistoryError::SessionNotFound(_))
@@ -68,12 +68,10 @@ impl SessionPool {
             .await
             .map_err(|e| PoolError::Internal(format!("could not rename: {e}")))?;
 
-        {
-            let mut sessions = self.live.lock().await;
-            if let Some(live) = sessions.get_mut(session_id) {
-                live.name = name.clone();
-                live.named_by_user = name.is_some();
-            }
+        if let Some(core) = self.live.core_of(session_id).await {
+            let mut naming = core.naming();
+            naming.name = name.clone();
+            naming.named_by_user = name.is_some();
         }
 
         Ok(api::Renamed {
@@ -203,21 +201,21 @@ impl SessionPool {
         provider: Option<&str>,
     ) -> Result<api::ModelChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
-        let (input_tx, project, scene) = {
-            let mut sessions = self.live.lock().await;
-            let Some(live) = sessions.get_mut(session_id) else {
-                return Err(PoolError::session_not_found(session_id));
-            };
-            if let Some(busy) = live.turn.busy(session_id) {
-                return Err(PoolError::SessionBusy(busy));
-            }
-            live.hub.touch();
-            (
-                live.input_tx.clone(),
-                live.project.clone(),
-                live.scene.id.clone(),
-            )
-        };
+        let (input_tx, project, scene) = self
+            .live
+            .with_live(session_id, |live| {
+                if let Some(busy) = live.turn.busy(session_id) {
+                    return Err(PoolError::SessionBusy(busy));
+                }
+                live.core.hub().touch();
+                Ok((
+                    live.engine.input_tx.clone(),
+                    live.core.project().map(Path::to_path_buf),
+                    live.core.scene().id.clone(),
+                ))
+            })
+            .await
+            .ok_or_else(|| PoolError::session_not_found(session_id))??;
 
         let current_provider = self.specs.get(session_id).and_then(|spec| spec.provider());
         let binding = self.binding_for(project.as_deref(), &scene).await;
@@ -291,14 +289,13 @@ impl SessionPool {
         change: impl FnOnce(&mut runtime::agent::SessionPrompt),
     ) -> Result<api::PromptChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
+        if let Some(busy) = self
+            .live
+            .with_live(session_id, |l| l.turn.busy(session_id))
+            .await
+            .flatten()
         {
-            let sessions = self.live.lock().await;
-            if let Some(busy) = sessions
-                .get(session_id)
-                .and_then(|l| l.turn.busy(session_id))
-            {
-                return Err(PoolError::SessionBusy(busy));
-            }
+            return Err(PoolError::SessionBusy(busy));
         }
         if !self.session_exists(session_id).await {
             return Err(PoolError::session_not_found(session_id));

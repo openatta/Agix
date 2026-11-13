@@ -23,10 +23,6 @@ struct Inner {
 }
 
 impl SessionHub {
-    pub(in crate::session_pool) fn new() -> Self {
-        Self::active_at(Instant::now())
-    }
-
     pub(in crate::session_pool) fn active_at(at: Instant) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
@@ -132,22 +128,6 @@ impl SessionHub {
     #[cfg(test)]
     pub(in crate::session_pool) fn pending_prompt_ids(&self) -> Vec<String> {
         self.lock().pending.keys().cloned().collect()
-    }
-
-    /// Take over `other`'s watchers and open asks — a session rebuilt under
-    /// a hub of its own while the old one was still in place.
-    pub(in crate::session_pool) fn absorb(&self, other: &SessionHub) {
-        let taken = std::mem::take(&mut *other.lock());
-        let mut inner = self.lock();
-        for watcher in taken.watchers {
-            let id = watcher.id();
-            if !inner.watchers.iter().any(|w| w.id() == id) {
-                inner.watchers.push(watcher);
-            }
-        }
-        for (prompt_id, ask) in taken.pending {
-            inner.pending.entry(prompt_id).or_insert(ask);
-        }
     }
 
     /// Back to watching nothing and asking nothing.

@@ -388,24 +388,6 @@ impl GoalSlot {
             self.pending_round = None;
         }
     }
-
-    /// Take over the arming and the outstanding round of `previous`, the
-    /// same session's slot before its engine was rebuilt, when it still holds
-    /// the very goal this one restored.
-    pub fn carry_arming_from(&mut self, previous: &GoalSlot) {
-        let same_goal = match (&self.goal, &previous.goal) {
-            (Some(now), Some(before)) => now.id == before.id && now.revision == before.revision,
-            _ => false,
-        };
-        if same_goal
-            && previous.armed
-            && self.goal.as_ref().map(|g| g.phase) == Some(GoalPhase::Active)
-        {
-            self.armed = true;
-            self.pending_round = previous.pending_round.clone();
-        }
-        self.next_revision = self.next_revision.max(previous.next_revision);
-    }
 }
 
 fn round_message(goal: &Goal, round: u32) -> String {
@@ -769,24 +751,5 @@ mod tests {
             slot.update(&id, rev, GoalAction::Complete, stale),
             Err(GoalError::NotAllowed(_))
         ));
-    }
-
-    #[test]
-    fn a_rebuilt_slot_keeps_the_arming_of_the_same_goal() {
-        let mut before = active();
-        let round = before.next_round().0.unwrap();
-        let mut after = GoalSlot::restored(before.goal.clone());
-        after.carry_arming_from(&before);
-        assert!(after.armed);
-        assert!(after.claim_round(&round.turn_id));
-
-        let mut paused = active();
-        let (id, rev) = ids(&paused);
-        paused
-            .update(&id, rev, GoalAction::Pause, TurnOrigin::Human)
-            .unwrap();
-        let mut after = GoalSlot::restored(paused.goal.clone());
-        after.carry_arming_from(&paused);
-        assert!(!after.armed);
     }
 }

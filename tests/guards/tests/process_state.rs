@@ -63,7 +63,6 @@ const PROCESS_STATE: &[(&str, &str, Kind, &str)] = &[
     ("crates/assembly/src/telemetry_otel.rs", "TOLD", OnceFlag, "says once that a later OpenTelemetry endpoint is ignored"),
     ("crates/core/src/interface/tool.rs", "NEXT", IdCounter, "registration ids, unique across every registry in the process"),
     ("crates/history/src/path.rs", "NEXT", IdCounter, "temporary sibling names, distinct for every writer in the process"),
-    ("crates/runtime/src/agent/builder/build.rs", "NEXT", IdCounter, "engine generations: an engine detaching from a session state takes off only itself, whichever pool built it"),
     ("crates/platform/src/sandbox.rs", "NEXT_FENCE", IdCounter, "the keys of SERVED's entries"),
     ("crates/plugin/src/state.rs", "SEQ", IdCounter, "temporary file names for saving the enable state"),
     ("crates/core/src/interface/catalog.rs", "POINTS", Constant, "the table of extension points"),
