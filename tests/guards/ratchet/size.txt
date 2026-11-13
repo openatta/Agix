@@ -11,7 +11,7 @@ file  crates/core/src/settings.rs                          -                    
 file  crates/history/src/store.rs                          -                                        1995
 file  crates/mcp/src/connect.rs                            -                                        1328
 file  crates/mcp/src/manager.rs                            -                                        1273
-file  crates/mcp/src/oauth/mod.rs                          -                                        1332
+file  crates/mcp/src/oauth/mod.rs                          -                                        1104
 file  crates/platform/src/sandbox.rs                       -                                        1498
 file  crates/ptc/src/lib.rs                                -                                        973
 file  crates/session/src/session.rs                        -                                        835
@@ -40,8 +40,6 @@ fn    crates/core/src/prompt.rs                            assemble_prompt_with 
 fn    crates/core/src/settings/loaded.rs                   LoadedSettings::load_from                198
 fn    crates/hooks/src/catalog.rs                          HookEvent::spec                          179
 fn    crates/mcp/src/manager.rs                            McpManager::connect_all_within           105
-fn    crates/mcp/src/oauth/mod.rs                          McpAuth::start                           225
-fn    crates/mcp/src/oauth/unattended.rs                   McpAuth::exchange_enterprise_identity    110
 fn    crates/model/src/adapter.rs                          AnthropicModel::stream                   159
 fn    crates/model/src/adapter.rs                          map_stream_event                         173
 fn    crates/permissions/src/invocation.rs                 resolve_command                          117

@@ -8,14 +8,15 @@
 
 use oauth2::{ClientSecret, RefreshToken};
 use rmcp::transport::auth::enterprise::{
-    EmaAuthorizationServer, EmaClientAuthentication, EmaError, EmaExchangeRequest, EmaExchangeStage,
+    EmaAccessToken, EmaAuthorizationServer, EmaClientAuthentication, EmaError, EmaExchangeRequest,
+    EmaExchangeStage,
 };
 use rmcp::transport::auth::{AuthorizationMetadata, ClientCredentialsConfig};
 use rmcp::transport::JwtSigningAlgorithm;
 
 use super::store::now_secs;
 use super::{describe, McpAuth, McpTokens};
-use crate::config::{ClientAuthMethod, McpOAuthConfig, OAuthGrant};
+use crate::config::{ClientAuthMethod, EnterpriseIdp, McpOAuthConfig, OAuthGrant};
 use crate::error::McpError;
 
 /// Fetch again this long before the token expires.
@@ -105,6 +106,38 @@ fn ema_error(e: EmaError) -> Unattended {
             ))
         }
         other => Unattended::Failed(format!("enterprise token exchange failed: {other}")),
+    }
+}
+
+fn idp_client_authentication(idp: &EnterpriseIdp) -> Result<EmaClientAuthentication, Unattended> {
+    let failed = Unattended::Failed;
+    Ok(match idp.auth_method() {
+        ClientAuthMethod::None => EmaClientAuthentication::None,
+        method => {
+            let secret = ClientSecret::new(
+                idp.client_secret()
+                    .map_err(failed)?
+                    .ok_or_else(|| failed("enterprise_idp needs client_secret_env".into()))?,
+            );
+            match method {
+                ClientAuthMethod::ClientSecretPost => {
+                    EmaClientAuthentication::ClientSecretPost(secret)
+                }
+                _ => EmaClientAuthentication::ClientSecretBasic(secret),
+            }
+        }
+    })
+}
+
+fn exchanged_tokens(token: EmaAccessToken, oauth: &McpOAuthConfig) -> McpTokens {
+    let mut scopes: Vec<String> = token.scopes.into_iter().collect();
+    scopes.sort();
+    McpTokens {
+        access_token: token.access_token.secret().to_string(),
+        refresh_token: None,
+        expires_at: token.expires_in.map(|d| now_secs() + d.as_secs()),
+        scopes,
+        client_id: oauth.client_id.clone().unwrap_or_default(),
     }
 }
 
@@ -216,22 +249,7 @@ impl McpAuth {
             .clone()
             .ok_or_else(|| failed("the server's authorization server names no issuer".into()))?;
 
-        let idp_auth = match idp.auth_method() {
-            ClientAuthMethod::None => EmaClientAuthentication::None,
-            method => {
-                let secret = ClientSecret::new(
-                    idp.client_secret()
-                        .map_err(failed)?
-                        .ok_or_else(|| failed("enterprise_idp needs client_secret_env".into()))?,
-                );
-                match method {
-                    ClientAuthMethod::ClientSecretPost => {
-                        EmaClientAuthentication::ClientSecretPost(secret)
-                    }
-                    _ => EmaClientAuthentication::ClientSecretBasic(secret),
-                }
-            }
-        };
+        let idp_auth = idp_client_authentication(&idp)?;
         let server_auth = match self
             .configured_secret(oauth, Some(&issuer))
             .map_err(|e| failed(e.to_string()))?
@@ -279,15 +297,7 @@ impl McpAuth {
             .await
             .map_err(ema_error)?;
 
-        let mut scopes: Vec<String> = token.scopes.into_iter().collect();
-        scopes.sort();
-        let tokens = McpTokens {
-            access_token: token.access_token.secret().to_string(),
-            refresh_token: None,
-            expires_at: token.expires_in.map(|d| now_secs() + d.as_secs()),
-            scopes,
-            client_id: oauth.client_id.clone().unwrap_or_default(),
-        };
+        let tokens = exchanged_tokens(token, oauth);
         let issuer = metadata.issuer.clone();
         let metadata = serde_json::to_value(&metadata).ok();
         self.shared
