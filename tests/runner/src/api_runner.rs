@@ -308,7 +308,7 @@ async fn build_agent(
     // harness would read a `scripts` block and quietly run without it — which
     // is the failure the carrier refuses to make anywhere else, and it would
     // make a case about a script pass by proving nothing.
-    match script_host::bindings::bind_quickjs(&settings.scripts, &tmp.join("workdir")) {
+    match script_host::bindings::bind_quickjs(&settings.values.scripts, &tmp.join("workdir")) {
         Ok(Some(bound)) => {
             builder = builder.plugin(std::sync::Arc::new(script_host::ScriptPlugin::new(bound)))
         }
@@ -323,9 +323,9 @@ async fn build_agent(
     // `SessionPool::connect_mcp_servers_in_background` (main.rs); this harness
     // had no equivalent at all. Synchronous here (not fire-and-forget like
     // daemon) since the test needs the tools registered before the turn starts.
-    if !settings.mcp_servers.is_empty() {
+    if !settings.values.mcp_servers.is_empty() {
         let mut parsed = std::collections::HashMap::new();
-        for (name, v) in &settings.mcp_servers {
+        for (name, v) in &settings.values.mcp_servers {
             match serde_json::from_value::<mcp::config::McpServerConfig>(v.clone()) {
                 Ok(cfg) => {
                     parsed.insert(name.clone(), cfg);

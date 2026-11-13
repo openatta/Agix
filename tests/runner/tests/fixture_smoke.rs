@@ -84,12 +84,13 @@ fn settings_load_resolves_project_root_and_config_from_fixture() {
         "project_root() should resolve to the fixture root"
     );
     let hooks = settings
+        .values
         .hooks_config
         .as_ref()
         .expect("hooks_config should load from fixture's .agix/settings.json");
     assert!(hooks.get("PreToolUse").is_some());
     assert!(
-        !settings.mcp_servers.is_empty(),
+        !settings.values.mcp_servers.is_empty(),
         "mcp_servers should load from fixture's .agix/settings.json"
     );
 

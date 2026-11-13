@@ -377,16 +377,17 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
 
     // The same call the daemon makes. Installing the adapters is `Builder`'s
     // job precisely so a test cannot bind a point a session would not.
-    let ledger = match script_host::bindings::bind_quickjs(&settings.scripts, &session.fixtures)
-        .unwrap_or_else(|e| panic!("a binding in this session is invalid: {e}"))
-    {
-        Some(bound) => {
-            let ledger = bound.ledger.clone();
-            builder = builder.plugin(Arc::new(script_host::ScriptPlugin::new(bound)));
-            ledger
-        }
-        None => Arc::new(ScriptLedger::new()),
-    };
+    let ledger =
+        match script_host::bindings::bind_quickjs(&settings.values.scripts, &session.fixtures)
+            .unwrap_or_else(|e| panic!("a binding in this session is invalid: {e}"))
+        {
+            Some(bound) => {
+                let ledger = bound.ledger.clone();
+                builder = builder.plugin(Arc::new(script_host::ScriptPlugin::new(bound)));
+                ledger
+            }
+            None => Arc::new(ScriptLedger::new()),
+        };
 
     if let Some(f) = rust {
         builder = f(builder);
