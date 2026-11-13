@@ -2,6 +2,7 @@
 # `json!` in session_pool production code, per file. The pool takes and returns typed values;
 # a JSON literal belongs only where settings files are edited.
 # `cfg-mcp`: every `feature = "mcp"` under crates/assembly/src (hard cap 6, G4).
+# `fields`: fields of `SessionPool` (hard cap 12) and of each collaborator (hard cap 11, G3).
 # A ceiling only goes down: AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration layering::
 json!  crates/assembly/src/session_pool/facade/goal.rs             1
 json!  crates/assembly/src/session_pool/facade/history_rpc.rs      1
@@ -10,3 +11,13 @@ json!  crates/assembly/src/session_pool/facade/settings_reload.rs  10
 json!  crates/assembly/src/session_pool/facade/tasks.rs            4
 cfg-mcp  crates/assembly/src/  5
 json!  crates/assembly/src/session_pool/parts/mcp_hub/live.rs  2
+fields  SessionPool       12
+fields  BindingCache      11
+fields  LiveSessions      8
+fields  EngineFactory     6
+fields  SceneCatalog      6
+fields  SpecStore         4
+fields  McpHub            3
+fields  DaemonEvents      2
+fields  SessionDirectory  2
+fields  Scheduler         1

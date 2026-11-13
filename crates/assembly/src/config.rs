@@ -172,7 +172,7 @@ pub struct DaemonConfig {
     pub ws_addr: Option<SocketAddr>,
     pub tcp_token: Option<String>,
     /// Always empty: sessions take their rules from `settings.rules`
-    /// (see `session_pool::resolve_session_permission`), not from here.
+    /// (see `resolve_session_permission` in `session_pool::parts::factory`), not from here.
     pub permission_rules: RuleSet,
     /// Session 空闲超时秒数，超时后自动回收（默认 3600 = 1 小时）。
     pub session_idle_timeout_secs: u64,

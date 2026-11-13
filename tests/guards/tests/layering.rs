@@ -1,4 +1,5 @@
-//! The session pool does not know the wire (D4 G1, G2a), and the `mcp`
+//! The session pool does not know the wire (D4 G1, G2a), it is a facade over
+//! collaborators that each own a slice of its state (G3), and the `mcp`
 //! feature is decided in a handful of places (G4).
 //!
 //! `session_pool` is a domain layer: it takes and returns the types in
@@ -28,6 +29,22 @@ const WIRE_IDENTS: &[&str] = &[
 const DATA: &str = "ratchet/layering.txt";
 const ASSEMBLY_SRC: &str = "crates/assembly/src/";
 const MCP_CFG_MAX: usize = 6;
+const POOL_FIELDS_MAX: usize = 12;
+const COLLABORATOR_FIELDS_MAX: usize = 11;
+/// The structs whose fields are the pool's state: the facade and its
+/// collaborators (`session_pool/parts/`).
+const POOL_STRUCTS: &[&str] = &[
+    "SessionPool",
+    "LiveSessions",
+    "SpecStore",
+    "BindingCache",
+    "SceneCatalog",
+    "McpHub",
+    "SessionDirectory",
+    "EngineFactory",
+    "Scheduler",
+    "DaemonEvents",
+];
 
 fn pool_files() -> impl Iterator<Item = &'static SourceFile> {
     ws().files()
@@ -127,11 +144,62 @@ fn the_mcp_feature_is_decided_in_at_most_six_places() {
     );
 }
 
+/// Fields of the facade and of each collaborator, by struct name. `McpHub`
+/// has a stub; the larger of the two counts.
+fn pool_struct_fields() -> BTreeMap<String, usize> {
+    let mut fields = BTreeMap::new();
+    for (name, n) in par_flat_map(pool_files().filter(|f| !f.test_only), |f| {
+        scan::structs(f, View::Prod)
+            .into_iter()
+            .filter(|st| POOL_STRUCTS.contains(&st.name.as_str()))
+            .map(|st| (st.name, st.fields.len()))
+            .collect()
+    }) {
+        let entry = fields.entry(name).or_insert(0);
+        *entry = (*entry).max(n);
+    }
+    fields
+}
+
+#[test]
+fn the_pool_is_a_facade_over_collaborators_with_few_fields() {
+    let fields = pool_struct_fields();
+    let missing: Vec<_> = POOL_STRUCTS
+        .iter()
+        .filter(|name| !fields.contains_key(**name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "not found under {POOL_DIR}: {missing:?}"
+    );
+    let over: Vec<String> = fields
+        .iter()
+        .filter(|(name, n)| {
+            **n > if *name == "SessionPool" {
+                POOL_FIELDS_MAX
+            } else {
+                COLLABORATOR_FIELDS_MAX
+            }
+        })
+        .map(|(name, n)| format!("  {name}: {n} fields"))
+        .collect();
+    assert!(
+        over.is_empty(),
+        "`SessionPool` may have {POOL_FIELDS_MAX} fields and each collaborator \
+         {COLLABORATOR_FIELDS_MAX}; give the state to the collaborator that owns it, or \
+         split one off:\n{}",
+        over.join("\n")
+    );
+}
+
 #[test]
 fn layering_ceilings_only_go_down() {
     let json = pool_json();
     allow::non_vacuous("layering::pool_json", json.len(), 1);
     let mut measured = json;
     measured.insert(format!("cfg-mcp {ASSEMBLY_SRC}"), mcp_cfg_uses().len());
+    for (name, n) in pool_struct_fields() {
+        measured.insert(format!("fields {name}"), n);
+    }
     ratchet::check(DATA, measured, 0);
 }

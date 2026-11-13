@@ -2,8 +2,6 @@
 # Production functions above FN_MAX lines and files above FILE_MAX lines, at the size
 # they had when the guard was introduced. A ceiling only goes down:
 # AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration size::
-file  crates/assembly/src/session_pool/facade/create.rs           -                                        804
-file  crates/assembly/src/session_pool/mod.rs              -                                        1449
 file  crates/compaction/src/compact.rs                     -                                        1158
 file  crates/core/src/context/session.rs                   -                                        1195
 file  crates/core/src/interface/tool.rs                    -                                        1070
@@ -27,14 +25,14 @@ fn    crates/agents/src/lib.rs                             AgentsModule::on_sess
 fn    crates/assembly/src/assemble.rs                      pool                                     137
 fn    crates/assembly/src/export.rs                        pack                                     211
 fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          270
-fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                      578
+fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                      330
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::export_session              115
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::fork_session                128
 fn    crates/assembly/src/session_pool/facade/listing.rs          SessionPool::list_all                    144
-fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs SessionPool::write_mcp_server            121
-fn    crates/assembly/src/session_pool/facade/resume.rs           SessionPool::resume_unchecked            149
-fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::set_provider                120
-fn    crates/assembly/src/session_pool/facade/turn.rs             SessionPool::run_turn                    352
+fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs SessionPool::write_mcp_server            113
+fn    crates/assembly/src/session_pool/facade/resume.rs           SessionPool::resume_unchecked            147
+fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::set_provider                117
+fn    crates/assembly/src/session_pool/facade/turn.rs             SessionPool::run_turn                    345
 fn    crates/assembly/src/telemetry_otel.rs                start_otel                               104
 fn    crates/compaction/src/compact.rs                     build_post_compact_recovery              128
 fn    crates/core/src/context/goal.rs                      GoalSlot::update                         110

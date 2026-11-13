@@ -36,7 +36,7 @@ use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PRO
 /// `bypassPermissions` runs the rule gate, which in that mode consults no
 /// rule at all — no deny, no protected path, no ask, no tool's own verdict —
 /// but still rejects malformed input and follows a later `EnterPlanMode`.
-/// See `daemon::session_pool::resolve_session_permission` and
+/// See `resolve_session_permission` (`session_pool::parts::factory`) and
 /// `docs/daemon_rpc_protocol.md`'s "权限默认值" section.
 ///
 /// A host that wants its bypass sessions to skip even input validation

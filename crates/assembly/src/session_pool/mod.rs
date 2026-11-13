@@ -1,11 +1,10 @@
 //! SessionPool —— daemon 多 session 实例管理器。
 //!
 //! 每个 session 对应一个独立的 Agent 实例（后台 run loop + 独立 event channel）。
-//! 支持：
-//! - 按 session_id 查找/创建
-//! - 容量上限 + LRU 驱逐
-//! - 空闲超时回收
-//! - session.list 合并活跃 + 历史
+//! 池本身是门面：状态按所有权分给 `parts/` 里的协作者（在内存的会话、规格、
+//! 绑定、场景、MCP、磁盘上的会话、造引擎、定时任务、守护进程事件），`facade/`
+//! 里的方法在锁外编排它们。对外只用 `api/` 的领域类型。组成与锁序见
+//! docs/ARCHITECTURE.md「会话池的组成与锁序」。
 
 use base::event::AgentEvent;
 use base::id::Id;
@@ -164,43 +163,43 @@ impl PromptAnswer {
 }
 
 pub struct SessionPool {
-    /// The sessions in memory, and what brings them up and takes them down.
-    live: LiveSessions,
-    /// The default scene, the scenes served now, and every scene this pool
-    /// can serve.
-    scenes: SceneCatalog,
-    /// The sessions on disk: what their logs record, and the projects this
-    /// pool has served.
-    directory: SessionDirectory,
-    /// MCP: the connections per `(project, scene)`, sign-ins and the policy
-    /// servers are admitted by. A stub in a build without the `mcp` module.
-    mcp: McpHub,
-    /// Every session's scheduled jobs, fired as turns of their sessions
-    /// whether or not the session is in memory.
-    scheduler: Scheduler,
     /// This pool, for the tasks it starts that outlive the call that started
     /// them. Set by `Arc::new_cyclic` in the builder, so always there.
     this: std::sync::Weak<SessionPool>,
-    /// Daemon-level notifications (`daemon.subscribeEvents`) and the
-    /// pool-level telemetry.
-    events: DaemonEvents,
+    /// The sessions in memory, and what brings them up and takes them down.
+    live: LiveSessions,
+    /// Each session's [`SessionSpec`]: what every rebuild of it applies.
+    specs: SpecStore,
+    /// This daemon's own settings, every `(project, scene)` pair's binding,
+    /// and the watch on the files they come from.
+    bindings: BindingCache,
+    /// The default scene, the scenes served now, and every scene this pool
+    /// can serve.
+    scenes: SceneCatalog,
+    /// MCP: the connections per `(project, scene)`, sign-ins and the policy
+    /// servers are admitted by. A stub in a build without the `mcp` module.
+    mcp: McpHub,
     /// The plugin subsystem — see `crate::plugins`. Everything plugins
     /// contribute arrives through it, and in a build without the `plugins`
     /// feature it is a stub that contributes nothing.
     plugins: Arc<crate::plugins::PluginSubsystem>,
-    /// This daemon's own settings, every `(project, scene)` pair's binding,
-    /// and the watch on the files they come from.
-    bindings: BindingCache,
+    /// The sessions on disk: what their logs record, and the projects this
+    /// pool has served.
+    directory: SessionDirectory,
+    /// Builds each session's engine.
+    factory: EngineFactory,
+    /// Every session's scheduled jobs, fired as turns of their sessions
+    /// whether or not the session is in memory.
+    scheduler: Scheduler,
+    /// Daemon-level notifications (`daemon.subscribeEvents`) and the
+    /// pool-level telemetry.
+    events: DaemonEvents,
     /// Process-scope diagnostics, reported by `daemon.doctor` — the plugin
     /// fault records, plus whatever an embedder registered with
     /// [`SessionPool::register_health_check`]. Not the same set as a
     /// session's: a session's checks come and go with the session, and one
     /// shared registry would grow an entry per session forever.
     health: std::sync::RwLock<base::interface::health::HealthChecks>,
-    /// Each session's [`SessionSpec`]: what every rebuild of it applies.
-    specs: SpecStore,
-    /// Builds each session's engine.
-    factory: EngineFactory,
 }
 
 /// Default ceiling on an unanswered `kind:"prompt"` permission ask.

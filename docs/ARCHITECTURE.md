@@ -48,7 +48,10 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 - 级别不对的依赖只能登记在 `NOT_YET` 里,写明什么能去掉它;名单带陈旧检查,边没了条目就得删。
 - 模块依赖契约与内核;模块之间的依赖只经 `Module::requires` 声明的顺序。
 - 只有装配层与外壳知道有哪些模块;模块 feature 的 `#[cfg]` 只出现在
-  `assembly`(模块清单、会话池的 MCP 部分、RPC 服务)与 `daemon` 里。
+  `assembly`(模块清单、会话池选哪份 `mcp_hub`、RPC 服务里个别方法)与 `daemon` 里。
+  MCP 在 `assembly` 里只由两处决定:`modules.rs` 的模块清单,和 `session_pool/mod.rs`
+  在 `parts/mcp_hub/live.rs` 与签名相同的桩 `off.rs` 之间二选一;其余代码(server 的
+  `mcp.*` 在内)只写一份,`feature = "mcp"` 不超过 6 处(`tests/guards/tests/layering.rs`)。
 - `platform` 只依赖契约,契约不依赖它。用它的是真要碰本机的 crate——`tools`、`runtime`、
   `model`、`hooks`、`permissions`、`mcp`、`plugin`、`assembly`、`daemon`,清单与
   各自的理由在 `MAY_USE_PLATFORM`;`scene`、`history`、`session`、`compaction`、
@@ -282,7 +285,7 @@ trait 再逐个转发方法。
   条目的那个场景的设置泄漏给所有场景。
 
 唯一保留的进程级绑定是 `DaemonPaths::config_root()`,启动时按首个场景算定;
-其它场景的目录由 `SessionPool::scene_root` 从 `global_root()/scenes/<id>` 推导。
+其它场景的目录由 `BindingCache::scene_root` 从 `global_root()/scenes/<id>` 推导。
 
 **`SCENE_MISMATCH`** 守的是"这个会话属于哪个场景",不是"这个 daemon 只能跑一个场景"。
 会话的 `Meta.scene` 记录它创建时的场景;操作属于别的场景的会话时拒绝,不跨边界执行。
@@ -330,7 +333,7 @@ serde 的 `Option<Option<T>>` 免费区分前两者,但 `null` 与字符串的�
 > **会话读到的任何按项目索引的东西,都来自它自己的 `project_root`。进程级的只剩
 > 不按项目索引的东西。**
 
-按项目索引、因而按 `(project, scene)` 绑定的(`SessionPool::bindings` 里的
+按项目索引、因而按 `(project, scene)` 绑定的(`BindingCache` 里的
 `ProjectBinding`):合并设置、skills、agent types、commands、provider 路由与主模型、
 MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 
@@ -350,10 +353,10 @@ MCP 连接、脚本绑定的 root、记忆目录、transcript 目录。
 有两张表是有意的例外,同样按 `(project, scene)` 取键,所以不会读到别的项目,只是寿命
 比绑定长、放不进去:
 
-| 池上的表 | 为什么不在绑定里 |
+| 绑定之外的表 | 为什么不在绑定里 |
 |---|---|
-| `mcp_by_project` | 默认项目的连接在启动时就开始,那时还没有任何绑定;`config.reload` 在原处重连、只换掉这一项,不用等绑定重建 |
-| `last_good_routers` | 新的 provider 配置解析不出或建不出 client 时退回它;绑定一失效就跟着没了,就退不回去 |
+| `McpHub` 的连接缓存 | 默认项目的连接在启动时就开始,那时还没有任何绑定;`config.reload` 在原处重连、只换掉这一项,不用等绑定重建 |
+| `BindingCache` 的 `last_good_routers` | 新的 provider 配置解析不出或建不出 client 时退回它;绑定一失效就跟着没了,就退不回去 |
 
 **绑定按层失效。** 每个绑定带一个失效标记,用它建出的会话持有同一个标记。设置文件变化
 只作废从那一层合出来的绑定:项目层作废同一项目根的,scene 层作废那个 scene 的,全局层
@@ -431,7 +434,7 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 - **重建是 `Idle → Rebuilding`。** 失败回到 `Idle`,成功时新条目整个替换旧条目。重建期间
   上下文请求与不换厂商的 `setModel` 报 `SESSION_BUSY`,`on_busy: "steer"` 的 `run_turn` 等重建结束,
   不往正在停止的旧引擎里塞。
-- **代际号** `Generation`:池上的计数器,每次 `create` 取一个。"这还是不是同一个引擎"比较的是它,
+- **代际号** `Generation`:`LiveSessions` 上的计数器,每次 `create` 取一个。"这还是不是同一个引擎"比较的是它,
   不比较指针。旧回合在 `session.close` 之后用同一个 id 恢复的新条目上写回(`TurnComplete`
   写 context、首轮命名、自动命名)时先核对代际号,不符就什么都不写。
 - **事件出口** `SessionHub` 每个会话一个(叶子锁:订阅者、待答提问、最近活动时间),事件当场同步交给
@@ -445,6 +448,41 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 - **`SESSION_BUSY` 带 `reason`**:`turn_running`(必带回合 id)、`rebuilding`、`background_tasks`、
   `previous_engine`(上一个引擎在宽限期内没停下),说的是会话此刻在忙什么,不是哪个方法被拒
   (协议文档 §9.1)。
+
+### 3.2.5 会话池的组成与锁序
+
+`SessionPool` 是门面。状态按所有权分给 `session_pool/parts/` 里的协作者,字段只在各自的
+模块里可见;`session_pool/facade/` 里的 `impl SessionPool` 只做编排。门面 12 个字段,每个
+协作者不超过 11 个(`tests/guards/tests/layering.rs`,字段数另有只降不升的棘轮)。
+
+| 协作者 | 持有 | 锁 |
+|---|---|---|
+| `LiveSessions`(`parts/live.rs`) | 在内存的会话表(每个 `LiveSession` 带 `TurnSlot`、`SessionHub`)、每会话的磁盘临界区锁、容量与空闲超时、还在停的旧引擎、关闭状态、代际号 | `session_locks[sid]`、`sessions`(tokio);`stopping`(std,叶子) |
+| `SpecStore`(`parts/specs.rs`) | 每个会话的规格(§3.2.2),和出了内存仍要留着的那些 | `specs`、`kept`(std,叶子,互不嵌套) |
+| `BindingCache`(`parts/bindings/`) | 自家那一对热替换的设置、托管层、每对的 `ProjectBinding`、`last_good_routers`、`WatchHub` | `bindings` → `last_good_routers`(tokio);`settings`(tokio `RwLock`,取值即放) |
+| `SceneCatalog`(`parts/scenes.rs`) | 默认场景、激活的场景、场景注册表、宿主登记与 `scene.register` 的场景 | std `RwLock`,叶子 |
+| `McpHub`(`parts/mcp_hub/`) | 按 `(project, scene)` 缓存的连接、登录状态、准入策略;没编进 MCP 时是桩 | 缓存的表锁只在找、加、删槽时持有;连接在槽自己的更新锁下 |
+| `SessionDirectory`(`parts/directory.rs`) | 读会话日志里的事实(`Meta`、计数、是否结束)、服务过的项目 | `served`(std,叶子) |
+| `EngineFactory`(`parts/factory/`) | 内置工具、宿主权限、Rust 插件、customizer、权限提示时限;按 `BuildRequest` 建 Agent,不插表 | 无 |
+| `Scheduler`(`parts/scheduler.rs`) | 定时任务表;到期的任务交给门面实现的 `TurnLauncher` | 无 |
+| `DaemonEvents`(`parts/events.rs`) | `daemon.subscribeEvents` 的广播和池级遥测 | 无 |
+
+插件子系统 `PluginSubsystem` 以 `Arc` 共享,`BindingCache` 读它的贡献来建绑定。
+
+**协作者持着自己的锁时不调用别的协作者。** 方法只返回值,协作者之间的配合由门面在锁外编排:
+比如绑定只报告"某层冒出了新文件"(`Cached::Appeared`),自家那一对要不要走带 MCP 对账的完整
+重载由门面决定;插件贡献的场景由门面作参数交给 `SceneCatalog`;`EngineFactory::build` 要的
+场景表、定时任务表、MCP 模块、进程组账本都由门面先取好放进请求。
+
+**全局锁序:** `session_locks[sid]` → `sessions` → `TurnSlot.rx` → { `SessionHub.inner` |
+D3 之后的 `SessionCore.*` / `SessionState.*` }(叶子之间互不嵌套);`bindings` →
+`last_good_routers`。其余 std 锁都是叶子,持锁时不 `.await`。
+
+**一次 `create` 的编排:** 拒绝关闭中的池、等同 id 的旧引擎停下(`LiveSessions`)→ 认领日志 →
+取规格(`SpecStore`)→ 备部件(场景表、定时任务表、MCP 模块、进程组账本、插件脚本)→
+`EngineFactory::build` → 写 `Meta`、恢复 transcript → 起运行体 → 在 `sessions` 锁里腾位置、
+插表,被挤出的会话由门面发 `session_evicted`。转发器只持有会话的 `SessionHub` 和 `TurnSlot`,
+不需要池;池由 `Arc::new_cyclic` 建成,构造好就转发轮间事件。
 
 ### 3.3 Sidechain 会话
 
