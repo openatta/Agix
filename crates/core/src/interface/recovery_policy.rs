@@ -5,7 +5,10 @@
 //! limit is retried on the configured fallback model, once. A transient
 //! failure after the stream had started — a stream that broke off, went
 //! silent, or ended in an overload event — is sent again as it was, twice at
-//! most, after 2s and then 8s. Anything else fails. A response cut off at the
+//! most, after 2s and then 8s, or after the provider's own `retry-after` —
+//! unless it asks for longer than the client's ladder would wait
+//! ([`LadderBackoff::MAX_SERVER_HINT`]), which fails instead. Anything else
+//! fails. A response cut off at the
 //! output limit escalates the limit — to 64K the first time, 8K after that,
 //! three attempts, with a fixed nudge appended. A response the provider paused
 //! is sent back to be continued.
@@ -53,6 +56,7 @@
 //! wants to allow four escalations rather than three needs no state of its
 //! own.
 
+use crate::interface::backoff::LadderBackoff;
 use crate::interface::model::ModelErrorKind;
 use std::time::Duration;
 
@@ -223,8 +227,11 @@ impl RecoveryPolicy for DefaultRecovery {
         }
         if failure.after_first_byte && failure.kind.transient() {
             if let Some(delay) = Self::SAME_RETRY_DELAYS.get(so_far.same_retries as usize) {
-                return Recovery::RetrySame {
-                    after: failure.retry_after.unwrap_or(*delay),
+                return match failure.retry_after {
+                    Some(hint) if hint > LadderBackoff::MAX_SERVER_HINT => Recovery::Fail,
+                    hint => Recovery::RetrySame {
+                        after: hint.unwrap_or(*delay),
+                    },
                 };
             }
         }
@@ -401,6 +408,29 @@ mod tests {
             Recovery::RetrySame {
                 after: Duration::from_secs(5)
             }
+        );
+    }
+
+    #[test]
+    fn a_provider_delay_beyond_the_ladders_cap_is_not_waited_for() {
+        let p = DefaultRecovery::new(None);
+        let asking = |delay| streamed(ModelErrorKind::Overloaded).with_retry_after(Some(delay));
+        assert_eq!(
+            p.on_failure(&asking(LadderBackoff::MAX_SERVER_HINT), &fresh()),
+            Recovery::RetrySame {
+                after: LadderBackoff::MAX_SERVER_HINT
+            }
+        );
+        assert_eq!(
+            p.on_failure(
+                &asking(LadderBackoff::MAX_SERVER_HINT + Duration::from_secs(1)),
+                &fresh()
+            ),
+            Recovery::Fail
+        );
+        assert_eq!(
+            p.on_failure(&asking(Duration::from_secs(u64::MAX)), &fresh()),
+            Recovery::Fail
         );
     }
 

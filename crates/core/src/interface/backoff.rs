@@ -47,9 +47,9 @@ pub struct FailedAttempt {
     /// `0`, which is also the index into a ladder of delays.
     pub index: u32,
     pub failure: RequestFailure,
-    /// What the provider asked for, when it said. Anthropic's `retry-after`
-    /// arrives here; the OpenAI-compatible side sends nothing, and a policy
-    /// that only ever sees `None` still works.
+    /// What the provider asked for, when it said: the `retry-after` both
+    /// clients parse. Many providers never send one, and a policy that only
+    /// ever sees `None` still works.
     pub server_hint: Option<Duration>,
 }
 
