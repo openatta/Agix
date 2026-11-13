@@ -631,7 +631,9 @@ pub struct Delegate<'a> {
     /// policy holds it to its own session's mode in turn.
     pub mode: PermissionMode,
     /// What the delegation itself adds: its `deny` rules refuse the call in
-    /// any mode.
+    /// any mode; its `allow` rules are the delegate's own grants, which answer
+    /// only the question the mode would put — never a deny, an ask rule, or
+    /// a question only a person may answer.
     pub rules: &'a [PermissionRule],
 }
 

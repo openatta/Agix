@@ -15,10 +15,11 @@ use crate::agent_tool::{
     bg_task_id, conclude, task_notification, without_panics, OneShot, Relay, Spec,
 };
 
-/// Where the delegate's questions go, and the deny rules its delegation adds.
+/// Where the delegate's questions go, and the deny rules and grants its
+/// delegation adds.
 pub(super) struct Ask {
     pub(super) asks: AskRoute,
-    pub(super) deny_rules: Vec<base::permission::PermissionRule>,
+    pub(super) rules: Vec<base::permission::PermissionRule>,
 }
 
 /// What a started delegate's task says about it.
@@ -35,7 +36,7 @@ impl Delegator {
         task: Option<Arc<base::context::RunningTask>>,
         ask: &Ask,
     ) -> Relay {
-        self.relay(&spec.session_id, task, ask.asks, ask.deny_rules.clone())
+        self.relay(&spec.session_id, task, ask.asks, ask.rules.clone())
     }
 
     fn lease(

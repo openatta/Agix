@@ -60,8 +60,9 @@ impl Delegator {
     }
 
     /// How the delegate `delegate_id` asks about its calls: of the parent's
-    /// policy, held to `rules` besides; its questions go to the parent's host
-    /// as `task`'s, or are refused when `asks` says nobody can be asked.
+    /// policy, with `rules` — its deny rules and the grants it starts with —
+    /// besides; its questions go to the parent's host as `task`'s, or are
+    /// refused when `asks` says nobody can be asked.
     pub(crate) fn relay(
         &self,
         delegate_id: &str,
@@ -70,6 +71,7 @@ impl Delegator {
         rules: Vec<base::permission::PermissionRule>,
     ) -> Relay {
         let env = &self.env;
+        let turn_grants = Arc::new(TurnGrants::default());
         Relay {
             permission: PermissionSet {
                 policy: Arc::new(DelegateRelay {
@@ -77,8 +79,12 @@ impl Delegator {
                     parent_session: env.parent.state.clone(),
                     asks,
                     rules,
+                    turn_grants: turn_grants.clone(),
                 }),
-                grants: Arc::new(ParentGrants(env.host.permission.grants.clone())),
+                grants: Arc::new(ParentGrants {
+                    parent: env.host.permission.grants.clone(),
+                    turn: turn_grants,
+                }),
             },
             elicitation: Arc::new(ParentElicitation {
                 delegate_id: delegate_id.to_string(),

@@ -355,7 +355,7 @@ impl PermissionPolicy for Policy {
             named: subject::Named::of(&facts.subject, ctx),
             delegated,
         };
-        let verdict = self.judge(&call);
+        let verdict = call.delegated.granting(self.judge(&call), &call);
         self.conclude(verdict, facts, Some(ctx), hook, req.attendance)
     }
 }

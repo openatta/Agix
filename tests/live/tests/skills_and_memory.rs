@@ -166,7 +166,6 @@ async fn a_project_memory_is_indexed_with_the_global_ones() -> anyhow::Result<()
 /// asking, the parent is still asked about that command once the fork is
 /// done, and a managed `ask` is asked about inside the fork all the same.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D2: a forked skill's allowed-tools are dropped instead of granted in the fork (G1, after D1)"]
 async fn a_forked_skills_allowed_tools_are_granted_in_the_fork_only() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let managed = tempfile::tempdir()?;

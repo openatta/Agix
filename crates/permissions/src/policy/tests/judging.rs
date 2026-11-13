@@ -34,6 +34,7 @@ impl CheckWith for Policy {
 use async_trait::async_trait;
 use base::context::SessionState;
 use base::error::ToolError;
+use base::interface::permission::Attendance;
 use base::permission::PermissionMode;
 use base::tool::Tool;
 use serde_json::json;
@@ -776,4 +777,125 @@ async fn default_mode_asks_when_no_rule() {
         .await
         .unwrap();
     assert!(matches!(d, PermissionOutcome::Prompt { .. }));
+}
+
+async fn delegates_call(
+    policy: &Policy,
+    content: &str,
+    mode: PermissionMode,
+    rules: Option<&[PermissionRule]>,
+) -> PermissionOutcome {
+    delegates_call_with(policy, content, mode, rules, Attendance::Attended).await
+}
+
+async fn delegates_call_with(
+    policy: &Policy,
+    content: &str,
+    mode: PermissionMode,
+    rules: Option<&[PermissionRule]>,
+    attendance: Attendance,
+) -> PermissionOutcome {
+    let tool: Arc<dyn Tool> = Arc::new(FakeTool::new("X").matches(content));
+    let ctx = ctx_with_mode(mode);
+    let delegate = Arc::new(SessionState::new(PathBuf::from("/tmp")).with_permission_mode(mode));
+    let input = json!({});
+    let request = PermissionRequest::new(
+        "X",
+        Some(&tool),
+        &input,
+        &ctx.cwd,
+        &ctx.session_id,
+        &ctx.session,
+    )
+    .with_ctx(&ctx)
+    .with_attendance(attendance);
+    match rules {
+        Some(rules) => {
+            let delegated = request.for_delegate(base::interface::permission::Delegate::new(
+                &delegate, mode, rules,
+            ));
+            policy.decide(&delegated).await
+        }
+        None => policy.decide(&request).await,
+    }
+}
+
+/// A delegate's grants answer the question its mode would put, and nothing
+/// else: a deny rule, an ask rule, a managed ask and `dontAsk` all stand, a
+/// call the grant does not name is still asked about, and so is the same
+/// call made by the session that relays it.
+#[tokio::test]
+async fn a_delegates_grants_answer_only_the_modes_question() {
+    let rule = |source, behavior| PermissionRule {
+        source,
+        behavior,
+        tool_name: "X".into(),
+        rule_content: Some("deploy staging".into()),
+    };
+    let grants = [rule(RuleSource::Command, RuleBehavior::Allow)];
+    let staging = "deploy staging";
+    let default = PermissionMode::Default;
+
+    match delegates_call(&Policy::empty(), staging, default, Some(&grants)).await {
+        PermissionOutcome::Permit { basis, .. } => {
+            assert_eq!(basis, Basis::Rule(grants[0].clone()))
+        }
+        other => panic!("the grant did not answer the mode's question: {other:?}"),
+    }
+    assert!(matches!(
+        delegates_call(&Policy::empty(), staging, default, None).await,
+        PermissionOutcome::Prompt { .. }
+    ));
+    let empty = Policy::empty();
+    let unattended =
+        |rules| delegates_call_with(&empty, staging, default, rules, Attendance::Unattended);
+    assert!(matches!(
+        unattended(Some(&grants)).await,
+        PermissionOutcome::Permit { .. }
+    ));
+    assert!(matches!(
+        unattended(None).await,
+        PermissionOutcome::Deny { .. }
+    ));
+    assert!(matches!(
+        delegates_call(&Policy::empty(), "deploy prod", default, Some(&grants)).await,
+        PermissionOutcome::Prompt { .. }
+    ));
+
+    let denying = Policy::new(RuleSet::new(vec![rule(
+        RuleSource::UserSettings,
+        RuleBehavior::Deny,
+    )]));
+    assert!(matches!(
+        delegates_call(&denying, staging, default, Some(&grants)).await,
+        PermissionOutcome::Deny { .. }
+    ));
+    let asking = Policy::new(RuleSet::new(vec![rule(
+        RuleSource::UserSettings,
+        RuleBehavior::Ask,
+    )]));
+    assert!(matches!(
+        delegates_call(&asking, staging, default, Some(&grants)).await,
+        PermissionOutcome::Prompt { .. }
+    ));
+    let managed_ask = rule(RuleSource::PolicySettings, RuleBehavior::Ask);
+    let managed = Policy::new(RuleSet::new(vec![managed_ask.clone()]))
+        .with_managed(ManagedLayer::of_rules(vec![managed_ask]));
+    assert!(matches!(
+        delegates_call(&managed, staging, default, Some(&grants)).await,
+        PermissionOutcome::Prompt {
+            answerable: Answerable::PersonOnly,
+            ..
+        }
+    ));
+    assert!(matches!(
+        delegates_call(
+            &Policy::empty(),
+            staging,
+            PermissionMode::DontAsk,
+            Some(&grants)
+        )
+        .await,
+        PermissionOutcome::Deny { .. }
+    ));
 }

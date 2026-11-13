@@ -25,8 +25,11 @@ pub(crate) struct DelegateRelay {
     /// The session `parent` belongs to.
     pub(crate) parent_session: Arc<base::context::SessionState>,
     pub(crate) asks: AskRoute,
-    /// What the delegation adds on top of the parent's rules.
+    /// What the delegation adds on top of the parent's rules: its deny rules
+    /// and the grants it was started with.
     pub(crate) rules: Vec<base::permission::PermissionRule>,
+    /// What the delegate granted itself since its turn began.
+    pub(crate) turn_grants: Arc<TurnGrants>,
 }
 
 const NO_ONE_TO_ASK: &str = "a sub-agent started from a program cannot ask for the user's \
@@ -36,14 +39,15 @@ const NO_ONE_TO_ASK: &str = "a sub-agent started from a program cannot ask for t
 impl PermissionPolicy for DelegateRelay {
     async fn decide(&self, req: &PermissionRequest<'_>) -> PermissionOutcome {
         let own = req.session.permission_mode();
-        let (session, mode, rules) = match req.delegate {
+        let (session, mode, inner) = match req.delegate {
             Some(delegate) => (
                 delegate.session,
                 own.for_delegate(delegate.mode),
-                [delegate.rules, &self.rules].concat(),
+                delegate.rules,
             ),
-            None => (req.session, own, self.rules.clone()),
+            None => (req.session, own, &[][..]),
         };
+        let rules = [inner, &self.rules, &self.turn_grants.now()].concat();
         let mut relayed = req.for_delegate(Delegate::new(session, mode, &rules));
         relayed.session = &self.parent_session;
         if self.asks == AskRoute::Refuse && relayed.attendance != Some(Attendance::Unattended) {
@@ -152,19 +156,57 @@ impl Drop for OpenQuestion<'_> {
     }
 }
 
-/// A delegate's grants, kept by its parent: an answer the person gave lasts
-/// as long there as it would have here. A turn's grant — a skill's
-/// `allowed-tools` — is not passed up, and a delegate clears nothing of its
-/// parent's.
-pub(crate) struct ParentGrants(pub(crate) Arc<dyn PermissionGrants>);
+/// A delegate's grants. An answer the person gave is kept by the parent,
+/// where it lasts as long as it would have here. A turn's grant — a skill's
+/// `allowed-tools` — stays with the delegate, for its own calls until its turn
+/// ends. A delegate clears nothing of its parent's.
+pub(crate) struct ParentGrants {
+    pub(crate) parent: Arc<dyn PermissionGrants>,
+    pub(crate) turn: Arc<TurnGrants>,
+}
 
 #[async_trait]
 impl PermissionGrants for ParentGrants {
     async fn grant(&self, grant: base::interface::permission::Grant) -> Result<(), GrantError> {
         match grant.scope {
-            GrantScope::Turn => Err(GrantError::NotKept),
-            _ => self.0.grant(grant).await,
+            GrantScope::Turn => {
+                self.turn.add(grant_rule(grant));
+                Ok(())
+            }
+            _ => self.parent.grant(grant).await,
         }
     }
-    fn clear(&self, _: GrantScope) {}
+    fn clear(&self, scope: GrantScope) {
+        if scope == GrantScope::Turn {
+            self.turn.clear();
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct TurnGrants(std::sync::RwLock<Vec<base::permission::PermissionRule>>);
+
+impl TurnGrants {
+    fn now(&self) -> Vec<base::permission::PermissionRule> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    fn add(&self, rule: base::permission::PermissionRule) {
+        self.0.write().unwrap_or_else(|e| e.into_inner()).push(rule);
+    }
+    fn clear(&self) {
+        self.0.write().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
+
+/// A grant as the allow rule it is, matched as a `settings.json` rule's
+/// content is.
+pub(crate) fn grant_rule(
+    grant: base::interface::permission::Grant,
+) -> base::permission::PermissionRule {
+    base::permission::PermissionRule {
+        source: base::permission::RuleSource::Command,
+        behavior: base::permission::RuleBehavior::Allow,
+        tool_name: grant.tool_name,
+        rule_content: grant.content,
+    }
 }

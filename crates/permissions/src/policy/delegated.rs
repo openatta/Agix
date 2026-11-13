@@ -1,31 +1,36 @@
 //! What a delegation adds to the policy's own rules for its delegate's calls
-//! (`PermissionRequest::delegate`): its `deny` rules, which refuse the call in
-//! any mode, `bypassPermissions` included — a delegate can be held to less
-//! than its parent, never let through more.
+//! (`PermissionRequest::delegate`).
+//!
+//! Its `deny` rules refuse the call in any mode, `bypassPermissions`
+//! included. Its `allow` rules are the delegate's own grants — a forked
+//! skill's `allowed-tools`, a skill the delegate ran itself — and answer only
+//! the question the mode would put: a deny, a refusal of the mode, an ask
+//! rule and anything only a person may answer stand. They never reach the
+//! session relaying the call, so its own calls are asked about as before.
 
 use super::judge::Call;
+use super::Verdict;
 use crate::ruleset::{RuleHit, RuleSet};
-use base::interface::permission::{PermissionRequest, Reason, Stage};
+use base::interface::permission::{Answerable, Basis, PermissionRequest, Reason, Stage};
 use base::permission::RuleBehavior;
 
 #[derive(Default)]
 pub(super) struct Delegated {
     denies: RuleSet,
+    grants: RuleSet,
 }
 
 impl Delegated {
     pub(super) fn of(req: &PermissionRequest<'_>) -> Self {
-        let mut denies = RuleSet::empty();
-        if let Some(delegate) = req.delegate {
-            denies.extend(
-                delegate
-                    .rules
-                    .iter()
-                    .filter(|r| r.behavior == RuleBehavior::Deny)
-                    .cloned(),
-            );
+        let mut out = Self::default();
+        for rule in req.delegate.iter().flat_map(|d| d.rules) {
+            match rule.behavior {
+                RuleBehavior::Deny => out.denies.add(rule.clone()),
+                RuleBehavior::Allow => out.grants.add(rule.clone()),
+                RuleBehavior::Ask => {}
+            }
         }
-        Self { denies }
+        out
     }
 
     pub(super) fn denial(&self, call: &Call<'_>) -> Option<Reason> {
@@ -40,6 +45,25 @@ impl Delegated {
             return None;
         }
         denial_of(tool_name, self.denies.evaluate(tool_name, None))
+    }
+
+    /// `verdict`, or a permit where it is the mode's question and a grant
+    /// covers the call.
+    pub(super) fn granting(&self, verdict: Verdict, call: &Call<'_>) -> Verdict {
+        let modes_question = matches!(
+            &verdict,
+            Verdict::Ask {
+                reason,
+                answerable: Answerable::HookOrPerson,
+            } if matches!(reason.stage, Stage::ModeDefault | Stage::Configuration)
+        );
+        if !modes_question || self.grants.is_empty() {
+            return verdict;
+        }
+        match call.named.hit(&self.grants, call.name, call.ctx) {
+            RuleHit::Allow(rule) => Verdict::Permit(Basis::Rule(rule)),
+            _ => verdict,
+        }
     }
 }
 

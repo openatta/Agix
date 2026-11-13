@@ -910,12 +910,10 @@ impl base::tool::Tool for AsksAboutDeploys {
 
 /// "Always allow" answered to a sub-agent's question is kept in the parent
 /// session's rule set: the parent's next call of the same kind runs without
-/// asking, a different one is still asked about. A turn's grant is not.
+/// asking, a different one is still asked about.
 #[tokio::test]
 async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
-    use base::interface::permission::{
-        Grant, GrantError, GrantScope, PermissionOutcome, PermissionRequest,
-    };
+    use base::interface::permission::{Grant, GrantScope, PermissionOutcome, PermissionRequest};
     let rules = Arc::new(permissions::policy::Policy::empty());
     let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
     let agent_tool = TestParent {
@@ -933,12 +931,6 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
         ))
         .await
         .unwrap();
-    assert!(matches!(
-        grants
-            .grant(Grant::new("Deploy", None, GrantScope::Turn))
-            .await,
-        Err(GrantError::NotKept)
-    ));
 
     let deploy: Arc<dyn base::tool::Tool> = Arc::new(AsksAboutDeploys);
     let parent_decides = |input: Value| {
@@ -963,6 +955,82 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
     ));
     assert!(matches!(
         parent_decides(serde_json::json!({"target": "production"})).await,
+        PermissionOutcome::Prompt { .. }
+    ));
+}
+
+/// The grants a delegate is started with, and the ones it gives itself
+/// during its turn, let its own calls through where it would be asked; the
+/// parent is asked about the same call as before, and the delegate's turn
+/// grants end with its turn.
+#[tokio::test]
+async fn a_delegates_grants_are_its_own() {
+    use base::interface::permission::{Grant, GrantScope, PermissionOutcome};
+    use base::permission::{PermissionRule, RuleBehavior, RuleSource};
+    let rules = Arc::new(permissions::policy::Policy::empty());
+    let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::of(rules.clone())),
+        state: parent_session.clone(),
+        ..test_parent()
+    }
+    .agent_tool();
+    let deploy: Arc<dyn base::tool::Tool> = Arc::new(AsksAboutDeploys);
+    let sub_session = Arc::new(base::context::SessionState::new("/tmp".into()));
+    let decides = |permission: PermissionSet, session: Arc<base::context::SessionState>, target| {
+        let deploy = deploy.clone();
+        async move {
+            sub_decides(
+                &permission,
+                Some(&deploy),
+                "Deploy",
+                &serde_json::json!({"target": target}),
+                Path::new("/tmp"),
+                &session,
+            )
+            .await
+        }
+    };
+    let started_with = vec![PermissionRule {
+        source: RuleSource::Command,
+        behavior: RuleBehavior::Allow,
+        tool_name: "Deploy".into(),
+        rule_content: Some("staging".into()),
+    }];
+    let forked = agent_tool
+        .delegator
+        .relay("fork", None, AskRoute::Host, started_with)
+        .permission;
+    assert!(matches!(
+        decides(forked.clone(), sub_session.clone(), "staging").await,
+        PermissionOutcome::Permit { .. }
+    ));
+    assert!(matches!(
+        decides(forked.clone(), sub_session.clone(), "production").await,
+        PermissionOutcome::Prompt { .. }
+    ));
+    let parent = PermissionSet::of(rules.clone());
+    assert!(matches!(
+        decides(parent.clone(), parent_session.clone(), "staging").await,
+        PermissionOutcome::Prompt { .. }
+    ));
+
+    let sub = agent_tool.sub_permission();
+    sub.grants
+        .grant(Grant::new("Deploy", Some("qa".into()), GrantScope::Turn))
+        .await
+        .unwrap();
+    assert!(matches!(
+        decides(sub.clone(), sub_session.clone(), "qa").await,
+        PermissionOutcome::Permit { .. }
+    ));
+    assert!(matches!(
+        decides(parent, parent_session, "qa").await,
+        PermissionOutcome::Prompt { .. }
+    ));
+    sub.grants.clear(GrantScope::Turn);
+    assert!(matches!(
+        decides(sub, sub_session, "qa").await,
         PermissionOutcome::Prompt { .. }
     ));
 }

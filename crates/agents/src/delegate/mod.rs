@@ -83,7 +83,7 @@ impl base::interface::delegate::Delegator for Delegator {
             model,
             tools,
             deny_rules,
-            grants: _,
+            grants,
             output_schema,
             workdir,
             stops_with,
@@ -108,11 +108,12 @@ impl base::interface::delegate::Delegator for Delegator {
             StopsWith::Call(token) => token.child_token(),
             StopsWith::Session => self.env.parent.ended.child_token(),
         };
-        let deny_rules: Vec<_> = deny_rules
+        let rules = deny_rules
             .into_iter()
             .filter(|r| r.behavior == base::permission::RuleBehavior::Deny)
+            .chain(grants.into_iter().map(crate::agent_tool::grant_rule))
             .collect();
-        let ask = run::Ask { asks, deny_rules };
+        let ask = run::Ask { asks, rules };
         match mode {
             DelegateMode::Wait => self.wait(spec, prompt, description, stop, ask).await,
             DelegateMode::Background { notify_parent } => {
