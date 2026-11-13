@@ -341,13 +341,12 @@ impl SessionPool {
             })
             .await
             .ok_or_else(|| PoolError::no_session(session_id))??;
-        let Some(pool) = self.this.upgrade() else {
-            self.end_context_operation(&core, generation).await;
-            return Err(PoolError::Internal("the pool is going away".into()));
-        };
+        let pool = self.this.clone();
         let operation = tokio::spawn(async move {
             let answer = ask_engine(input_tx, request).await;
-            pool.end_context_operation(&core, generation).await;
+            if let Some(pool) = pool.upgrade() {
+                pool.end_context_operation(&core, generation).await;
+            }
             answer
         });
         operation.await.unwrap_or_else(|e| {

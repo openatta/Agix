@@ -14,10 +14,21 @@
 //!
 //! G-D3-4: nothing carries state from one engine's copy to another's — no
 //! `carry_*` function, no hub `absorb` — since there is only one copy.
+//!
+//! G-D3-3: a `ModelErrorKind` is made only where model errors are classified
+//! — the model crate and the constructors beside the type; everything else
+//! reads the kind it was handed.
+//!
+//! G-D3-5: a task the session pool spawns does not take the pool along —
+//! neither an `Arc<SessionPool>` nor the result of an upgrade made before it
+//! started — except as `HOLDS_THE_POOL` says.
 
 use guards::allow::{self, Finding};
 use guards::scan::{self, Callee};
 use guards::{par_flat_map, ws, Hit, SourceFile, View};
+use quote::ToTokens;
+use syn::spanned::Spanned;
+use syn::visit::Visit;
 
 const SESSION_STATE: &str = "crates/core/src/context/session.rs";
 const LIVE: &str = "crates/assembly/src/session_pool/parts/live.rs";
@@ -336,5 +347,407 @@ fn nothing_carries_state_from_one_engine_to_the_next() {
         "a session has one state, kept across its engines: inject it with \
          `Builder::session_state` instead of copying it over; a message for the running \
          turn goes through the session's steer queue, a model choice through its state",
+    );
+}
+
+/// Production code outside the model crate that makes a `ModelErrorKind` or
+/// reads a provider's words for "too long". Comparing against a kind reads
+/// it; anything else makes one.
+const CLASSIFIED_AT: &[(&str, &str)] = &[];
+
+/// Where a model error is classified: the model crate, and the constructors
+/// next to the type.
+fn classifies_model_errors(rel: &str) -> bool {
+    rel.starts_with("crates/model/") || rel == "crates/core/src/interface/model.rs"
+}
+
+struct MadeKinds<'a> {
+    f: &'a SourceFile,
+    found: Vec<Hit>,
+}
+
+fn names_a_kind(path: &syn::Path) -> bool {
+    let segments: Vec<_> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    segments.len() >= 2 && segments[segments.len() - 2] == "ModelErrorKind"
+}
+
+impl<'ast> Visit<'ast> for MadeKinds<'_> {
+    fn visit_expr_binary(&mut self, e: &'ast syn::ExprBinary) {
+        if matches!(e.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+            for side in [&*e.left, &*e.right] {
+                match side {
+                    syn::Expr::Path(p) if names_a_kind(&p.path) => {}
+                    other => self.visit_expr(other),
+                }
+            }
+            return;
+        }
+        syn::visit::visit_expr_binary(self, e);
+    }
+
+    fn visit_expr_path(&mut self, e: &'ast syn::ExprPath) {
+        let last = e.path.segments.last().map(|s| s.ident.to_string());
+        if names_a_kind(&e.path) || last.as_deref() == Some("says_context_too_long") {
+            self.found.push(self.f.hit(e.span()));
+        }
+        syn::visit::visit_expr_path(self, e);
+    }
+
+    fn visit_signature(&mut self, s: &'ast syn::Signature) {
+        if s.ident == "says_context_too_long" {
+            self.found.push(self.f.hit(s.ident.span()));
+        }
+        syn::visit::visit_signature(self, s);
+    }
+}
+
+/// G-D3-3: a model error is classified once, in the model crate; the engine
+/// and the pool read the kind it was given and never make one of their own.
+#[test]
+fn a_model_error_is_classified_in_one_place() {
+    let files: Vec<_> = ws()
+        .production()
+        .filter(|f| !ws().package(&f.package).dir.starts_with("tests/"))
+        .collect();
+    allow::non_vacuous("session_state::CLASSIFIED_AT", files.len(), 200);
+    let made: Vec<(bool, Finding)> = par_flat_map(files, |f| {
+        let mut kinds = MadeKinds {
+            f,
+            found: Vec::new(),
+        };
+        kinds.visit_file(&f.tree(View::Prod));
+        let classifying = classifies_model_errors(&f.rel);
+        kinds
+            .found
+            .into_iter()
+            .map(|hit| {
+                (
+                    classifying,
+                    Finding {
+                        key: f.rel.clone(),
+                        hit,
+                    },
+                )
+            })
+            .collect()
+    });
+    let (classifying, elsewhere): (Vec<_>, Vec<_>) = made.into_iter().partition(|(at, _)| *at);
+    allow::non_vacuous("session_state::CLASSIFIED_AT", classifying.len(), 20);
+    allow::check(
+        "session_state::CLASSIFIED_AT",
+        elsewhere.into_iter().map(|(_, finding)| finding).collect(),
+        CLASSIFIED_AT,
+        "classify the error in the model crate (`model::error`), where the status and the \
+         provider's words are, and read `ModelError::kind` here; compare against a kind \
+         with `==` or `matches!` rather than building one",
+    );
+}
+
+/// Tasks the pool spawns that hold the pool itself. A task holding an
+/// `Arc<SessionPool>` keeps the pool alive for as long as it runs; one that
+/// runs as long as the pool does keeps it alive for ever.
+const HOLDS_THE_POOL: &[(&str, &str)] = &[
+    (
+        "crates/assembly/src/session_pool/facade/background.rs::SessionPool::start_config_watcher",
+        "open: the watcher loops holding the pool, so the pool is not dropped while it runs; \
+         it should hold a `Weak` and upgrade it per change",
+    ),
+    (
+        "crates/assembly/src/session_pool/facade/background.rs::SessionPool::start_janitor",
+        "open: the janitor loops holding the pool, so the pool is not dropped while it runs; \
+         it should hold a `Weak` and upgrade it per sweep",
+    ),
+    (
+        "crates/assembly/src/session_pool/facade/goal.rs::SessionPool::start_goal_round",
+        "a goal round is a `run_turn`, which needs the pool for as long as the \
+         round runs; it ends with the round",
+    ),
+    (
+        "crates/assembly/src/session_pool/parts/scheduler.rs::Scheduler::start",
+        "one minute's due jobs run as turns of the pool; the task ends with them, \
+         and the loop around it holds only a `Weak`",
+    ),
+    (
+        "crates/assembly/src/session_pool/parts/mcp_hub/connect.rs::SessionPool::connect_mcp_servers_in_background",
+        "the default project's first MCP connect, reported as daemon events; \
+         the task ends once every server has connected or failed",
+    ),
+    (
+        "crates/assembly/src/session_pool/parts/mcp_hub/auth.rs::SessionPool::watch_mcp_auth",
+        "taking a server whose tokens stopped working off the pool's connections; \
+         the task ends once it has",
+    ),
+];
+
+/// What a function binds to the pool itself: names whose value is
+/// `self.clone()` on an `Arc<Self>`, an upgraded `Weak`, or made from either.
+fn strong_names(body: &syn::Block) -> std::collections::BTreeSet<String> {
+    let mut strong = std::collections::BTreeSet::new();
+    loop {
+        let mut bindings = Bindings {
+            strong: &strong,
+            found: Vec::new(),
+        };
+        bindings.visit_block(body);
+        let before = strong.len();
+        strong.extend(bindings.found);
+        if strong.len() == before {
+            return strong;
+        }
+    }
+}
+
+struct Bindings<'a> {
+    strong: &'a std::collections::BTreeSet<String>,
+    found: Vec<String>,
+}
+
+impl Bindings<'_> {
+    fn bind(&mut self, pat: &syn::Pat, init: &syn::Expr) {
+        if let (syn::Pat::Tuple(pats), syn::Expr::Tuple(inits)) = (pat, init) {
+            if pats.elems.len() == inits.elems.len() {
+                for (pat, init) in pats.elems.iter().zip(&inits.elems) {
+                    self.bind(pat, init);
+                }
+                return;
+            }
+        }
+        let typed = matches!(pat, syn::Pat::Type(t)
+            if t.ty.to_token_stream().to_string().contains("SessionPool"));
+        if typed || yields_the_pool(init, self.strong) {
+            self.found.extend(names_bound(pat));
+        }
+    }
+}
+
+/// Whether `e`'s value is the pool itself: an upgraded `Weak`, `self.clone()`
+/// on an `Arc<Self>`, or a name already bound to the pool, passed through
+/// `clone`, `as_ref`, `Some`, `?` and the like — not anything merely computed
+/// with its help.
+fn yields_the_pool(e: &syn::Expr, strong: &std::collections::BTreeSet<String>) -> bool {
+    match e {
+        syn::Expr::MethodCall(m) if m.method == "upgrade" => true,
+        syn::Expr::MethodCall(m)
+            if m.method == "clone"
+                && matches!(&*m.receiver, syn::Expr::Path(p) if p.path.is_ident("self")) =>
+        {
+            true
+        }
+        syn::Expr::MethodCall(m)
+            if ["clone", "as_ref", "unwrap", "expect", "cloned"]
+                .iter()
+                .any(|passes| m.method == passes) =>
+        {
+            yields_the_pool(&m.receiver, strong)
+        }
+        syn::Expr::Path(p) => {
+            p.path
+                .get_ident()
+                .is_some_and(|i| strong.contains(&i.to_string()))
+                || p.path.segments.iter().any(|s| s.ident == "SessionPool")
+        }
+        syn::Expr::Call(c) => {
+            let through = matches!(&*c.func, syn::Expr::Path(p)
+                if p.path.segments.last().is_some_and(|s| s.ident == "Some" || s.ident == "clone"));
+            through && c.args.iter().any(|arg| yields_the_pool(arg, strong))
+        }
+        syn::Expr::Reference(r) => yields_the_pool(&r.expr, strong),
+        syn::Expr::Paren(p) => yields_the_pool(&p.expr, strong),
+        syn::Expr::Try(t) => yields_the_pool(&t.expr, strong),
+        syn::Expr::Await(a) => yields_the_pool(&a.base, strong),
+        _ => false,
+    }
+}
+
+impl<'ast> Visit<'ast> for Bindings<'_> {
+    fn visit_local(&mut self, l: &'ast syn::Local) {
+        if let Some(init) = &l.init {
+            self.bind(&l.pat, &init.expr);
+        }
+        syn::visit::visit_local(self, l);
+    }
+
+    fn visit_expr_let(&mut self, l: &'ast syn::ExprLet) {
+        self.bind(&l.pat, &l.expr);
+        syn::visit::visit_expr_let(self, l);
+    }
+}
+
+/// Whether evaluating `e` — not the closures and async blocks in it, which
+/// run later — takes hold of the pool: upgrades a `Weak`, clones `self`.
+fn takes_the_pool_up_front(e: &syn::Expr) -> bool {
+    struct Finds {
+        hit: bool,
+    }
+    impl<'ast> Visit<'ast> for Finds {
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+        fn visit_expr_async(&mut self, _: &'ast syn::ExprAsync) {}
+        fn visit_expr_method_call(&mut self, m: &'ast syn::ExprMethodCall) {
+            let on_self = matches!(&*m.receiver, syn::Expr::Path(p) if p.path.is_ident("self"));
+            if m.method == "upgrade" || (m.method == "clone" && on_self) {
+                self.hit = true;
+            }
+            syn::visit::visit_expr_method_call(self, m);
+        }
+        fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+            if p.path.segments.iter().any(|s| s.ident == "SessionPool") {
+                self.hit = true;
+            }
+        }
+    }
+    let mut finds = Finds { hit: false };
+    finds.visit_expr(e);
+    finds.hit
+}
+
+fn names_bound(pat: &syn::Pat) -> Vec<String> {
+    struct Names(Vec<String>);
+    impl<'ast> Visit<'ast> for Names {
+        fn visit_pat_ident(&mut self, p: &'ast syn::PatIdent) {
+            self.0.push(p.ident.to_string());
+            syn::visit::visit_pat_ident(self, p);
+        }
+    }
+    let mut names = Names(Vec::new());
+    names.visit_pat(pat);
+    names.0
+}
+
+/// The names `e` binds anywhere inside it, and the names it reads — not
+/// counting one only handed to `Arc::downgrade`, which takes a `Weak` along.
+fn bound_and_read(
+    e: &syn::Expr,
+) -> (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+) {
+    #[derive(Default)]
+    struct Names {
+        bound: std::collections::BTreeSet<String>,
+        read: std::collections::BTreeSet<String>,
+    }
+    impl<'ast> Visit<'ast> for Names {
+        fn visit_pat_ident(&mut self, p: &'ast syn::PatIdent) {
+            self.bound.insert(p.ident.to_string());
+            syn::visit::visit_pat_ident(self, p);
+        }
+        fn visit_expr_path(&mut self, p: &'ast syn::ExprPath) {
+            if let Some(name) = p.path.get_ident() {
+                self.read.insert(name.to_string());
+            }
+        }
+        fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
+            let downgrades = matches!(&*c.func, syn::Expr::Path(p)
+                if p.path.segments.last().is_some_and(|s| s.ident == "downgrade"));
+            if !downgrades {
+                syn::visit::visit_expr_call(self, c);
+            }
+        }
+    }
+    let mut names = Names::default();
+    names.visit_expr(e);
+    (names.bound, names.read)
+}
+
+/// The spawns in one function, and which of them hold the pool.
+struct Spawns<'a> {
+    strong: std::collections::BTreeSet<String>,
+    spawned: Vec<Hit>,
+    holding: Vec<Hit>,
+    f: &'a SourceFile,
+}
+
+impl Spawns<'_> {
+    fn spawn(&mut self, args: &syn::punctuated::Punctuated<syn::Expr, syn::Token![,]>) {
+        let Some(first) = args.first() else { return };
+        let hit = self.f.hit(first.span());
+        self.spawned.push(hit.clone());
+        let holds = args.iter().any(|arg| {
+            let (bound, read) = bound_and_read(arg);
+            takes_the_pool_up_front(arg)
+                || read
+                    .iter()
+                    .any(|name| self.strong.contains(name) && !bound.contains(name))
+        });
+        if holds {
+            self.holding.push(hit);
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for Spawns<'_> {
+    fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(p) = &*c.func {
+            if p.path.segments.last().is_some_and(|s| s.ident == "spawn") {
+                self.spawn(&c.args);
+            }
+        }
+        syn::visit::visit_expr_call(self, c);
+    }
+
+    fn visit_expr_method_call(&mut self, m: &'ast syn::ExprMethodCall) {
+        if m.method == "spawn" {
+            self.spawn(&m.args);
+        }
+        syn::visit::visit_expr_method_call(self, m);
+    }
+}
+
+/// Every function body in a file, the file's own `fn`s and its methods.
+fn bodies(file: &syn::File) -> Vec<&syn::Block> {
+    struct Bodies<'ast>(Vec<&'ast syn::Block>);
+    impl<'ast> Visit<'ast> for Bodies<'ast> {
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            self.0.push(&f.block);
+            syn::visit::visit_item_fn(self, f);
+        }
+        fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+            self.0.push(&f.block);
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+    let mut bodies = Bodies(Vec::new());
+    bodies.visit_file(file);
+    bodies.0
+}
+
+/// G-D3-5: a task the pool spawns holds a `Weak` of it and upgrades it when
+/// it needs the pool, rather than taking an `Arc<SessionPool>` along — or the
+/// result of an upgrade made before it started. What a task may hold is the
+/// session's own parts: its `SessionCore`, its `SessionHub`.
+#[test]
+fn a_task_the_pool_spawns_does_not_hold_the_pool() {
+    let files: Vec<_> = ws()
+        .production()
+        .filter(|f| f.rel.starts_with("crates/assembly/src/session_pool/"))
+        .collect();
+    let scanned: Vec<(usize, Vec<Finding>)> = par_flat_map(files, |f| {
+        let tree = f.tree(View::Prod);
+        let mut spawned = 0;
+        let mut found = Vec::new();
+        for body in bodies(&tree) {
+            let mut spawns = Spawns {
+                strong: strong_names(body),
+                spawned: Vec::new(),
+                holding: Vec::new(),
+                f,
+            };
+            spawns.visit_block(body);
+            spawned += spawns.spawned.len();
+            found.extend(spawns.holding.into_iter().map(|hit| Finding {
+                key: place(f, &hit),
+                hit,
+            }));
+        }
+        vec![(spawned, found)]
+    });
+    let spawned: usize = scanned.iter().map(|(n, _)| n).sum();
+    allow::non_vacuous("session_state::HOLDS_THE_POOL", spawned, 5);
+    allow::check(
+        "session_state::HOLDS_THE_POOL",
+        scanned.into_iter().flat_map(|(_, found)| found).collect(),
+        HOLDS_THE_POOL,
+        "take `self.this.clone()` (a `Weak`) into the task and upgrade it there, when the \
+         task needs the pool; or take only the session's `SessionCore` / `SessionHub`",
     );
 }

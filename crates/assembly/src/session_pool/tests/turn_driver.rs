@@ -98,3 +98,24 @@ async fn a_turn_whose_driver_fails_ends_internal_and_takes_its_engine_out() {
         "{next:?}"
     );
 }
+
+/// Nothing a session and its turn leave running holds the pool: once the
+/// turn is over, the caller's `Arc` is the only one.
+#[tokio::test]
+async fn a_session_and_its_finished_turn_leave_the_pool_held_only_by_its_owner() {
+    let (pool, _dir) = test_pool().await;
+    answered_by(&pool, Arc::new(HoldsTheFirstCall::default())).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+    pool.run_turn(turn(&sid, "t1", "first", OnBusy::Reject), None)
+        .await
+        .expect("a turn");
+    pool.inspect_context(&sid)
+        .await
+        .expect("a look at the context");
+
+    assert_eq!(Arc::strong_count(&pool), 1);
+}

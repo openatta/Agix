@@ -26,10 +26,16 @@ pub(in crate::session_pool) struct ClaimedTurn {
 /// round, and a goal round runs `run_turn`, so the `Send` of one cannot be
 /// inferred from the other.
 fn turn_driver(
-    pool: Arc<SessionPool>,
+    pool: std::sync::Weak<SessionPool>,
     turn: ClaimedTurn,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TurnOutcome, PoolError>> + Send>> {
-    Box::pin(async move { pool.drive_turn(turn).await })
+    Box::pin(async move {
+        let Some(pool) = pool.upgrade() else {
+            turn.ticket.settle();
+            return Err(PoolError::Internal("the pool is going away".into()));
+        };
+        pool.drive_turn(turn).await
+    })
 }
 
 impl SessionPool {
@@ -246,16 +252,15 @@ impl SessionPool {
         let weak = self.this.clone();
         let core = ticket.core.clone();
         ticket.on_abandon(move || {
-            let (Some(pool), Ok(runtime)) = (weak.upgrade(), tokio::runtime::Handle::try_current())
-            else {
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
                 return;
             };
-            runtime.spawn(async move { pool.evict_faulted(&core, generation).await });
+            runtime.spawn(async move {
+                if let Some(pool) = weak.upgrade() {
+                    pool.evict_faulted(&core, generation).await;
+                }
+            });
         });
-        let Some(pool) = self.this.upgrade() else {
-            self.release_claimed(&ticket).await;
-            return Err(PoolError::Internal("the pool is going away".into()));
-        };
         let claimed = ClaimedTurn {
             ticket,
             input_tx,
@@ -264,7 +269,7 @@ impl SessionPool {
             initiator,
             initiator_id,
         };
-        match tokio::spawn(turn_driver(pool, claimed)).await {
+        match tokio::spawn(turn_driver(self.this.clone(), claimed)).await {
             Ok(outcome) => outcome,
             Err(e) => {
                 warn!(%sid, error = %e, "the turn's driver failed");
