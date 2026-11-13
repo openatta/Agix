@@ -24,18 +24,6 @@ pub(in crate::session_pool) fn is_busy(live: &LiveSession) -> bool {
         })
 }
 
-/// Run `work` — disk reads and directory scans — on the blocking pool rather
-/// than on a runtime worker.
-pub(in crate::session_pool) async fn off_the_runtime<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> T {
-    match tokio::task::spawn_blocking(work).await {
-        Ok(value) => value,
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-        Err(e) => panic!("blocking work did not finish: {e}"),
-    }
-}
-
 /// The engine's events passed through to a receiver of their own, with a
 /// notice each time one arrives — what lets the forwarder between turns sleep
 /// until there is something to forward.

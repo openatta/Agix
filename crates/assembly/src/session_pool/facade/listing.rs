@@ -138,7 +138,7 @@ impl SessionPool {
             });
         }
 
-        let paths = self.paths.as_ref();
+        let paths = self.bindings.paths().as_ref();
         let path = match tier {
             Tier::Global => Some(paths.global_root().join("settings.json")),
             Tier::Scene => Some(
@@ -529,7 +529,7 @@ impl SessionPool {
     pub(in crate::session_pool) async fn served_projects(&self) -> Vec<Option<PathBuf>> {
         let noted: Vec<Option<PathBuf>> = self.lock_served().clone();
         let mut out = Vec::with_capacity(noted.len() + 1);
-        for project in std::iter::once(Some(self.cwd.clone())).chain(noted) {
+        for project in std::iter::once(Some(self.cwd().to_path_buf())).chain(noted) {
             let project = match project {
                 Some(p) => Some(history::path::canonicalize_cwd(&p).await.unwrap_or(p)),
                 None => None,

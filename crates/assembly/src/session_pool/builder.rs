@@ -174,52 +174,60 @@ impl SessionPoolBuilder {
         let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
         let scheduler = Scheduler::load(settings.paths.user_data_dir.join("scheduled_tasks.json"));
 
-        let paths = self.paths;
-        let plugins = crate::plugins::PluginSubsystem::new(paths.clone(), settings.plugins.clone());
+        let paths = self.paths.clone();
+        let plugins = Arc::new(crate::plugins::PluginSubsystem::new(
+            paths.clone(),
+            settings.plugins.clone(),
+        ));
         let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
         tools::register_builtin_tools(&tools);
 
         let scenes = SceneCatalog::new(self.scene, paths.global_root().join("scenes"));
 
         let events = DaemonEvents::new(&settings);
+        let watch = match crate::watch_hub::WatchHub::new() {
+            Ok(hub) => Some(hub),
+            Err(e) => {
+                warn!(error = %e, "config file watching unavailable; changes need config.reload");
+                None
+            }
+        };
         let specs = SpecStore::new(self.history_store.clone(), self.cap);
+        let bindings = BindingCache::new(
+            settings,
+            ManagedLayer {
+                path: managed_settings_path,
+                settings: managed_settings,
+            },
+            watch,
+            self.credentials,
+            self.client,
+            paths,
+            self.cwd,
+            plugins.clone(),
+        );
 
         Arc::new_cyclic(|this| SessionPool {
             sessions: AsyncMutex::new(HashMap::new()),
             session_locks: AsyncMutex::new(HashMap::new()),
             cap: self.cap,
             idle_timeout: self.idle_timeout,
-            client: self.client,
-            settings: AsyncRwLock::new(settings),
             scenes,
             permission: self.permission,
             tools,
-            cwd: self.cwd,
             history_store: self.history_store,
-            paths,
             #[cfg(feature = "mcp")]
             mcp_by_project: mcp_cache::McpCache::default(),
             #[cfg(feature = "mcp")]
             mcp_auth,
             #[cfg(feature = "mcp")]
             mcp_policy,
-            managed_settings_path,
-            managed_settings,
             scheduler,
             this: this.clone(),
             events,
             health: std::sync::RwLock::new(base::interface::health::HealthChecks::new()),
             plugins,
-            last_good_routers: AsyncMutex::new(HashMap::new()),
-            bindings: AsyncMutex::new(HashMap::new()),
-            watch: match crate::watch_hub::WatchHub::new() {
-                Ok(hub) => Some(hub),
-                Err(e) => {
-                    warn!(error = %e, "config file watching unavailable; changes need config.reload");
-                    None
-                }
-            },
-            pool_watch: std::sync::Mutex::new(Vec::new()),
+            bindings,
             specs,
             stopping: std::sync::Mutex::new(HashMap::new()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
@@ -227,7 +235,6 @@ impl SessionPoolBuilder {
             shut_down: CancellationToken::new(),
             served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: self.permission_prompt_timeout,
-            credentials: self.credentials,
             rust_plugins: self.rust_plugins,
             customize: self.customize,
         })

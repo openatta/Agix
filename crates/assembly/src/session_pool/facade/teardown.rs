@@ -301,7 +301,8 @@ impl SessionPool {
             })
             .await;
         delete_result.map_err(|e| PoolError::Internal(e.to_string()))?;
-        let scratch = base::paths::session_scratch_dir(&self.paths.global_root(), session_id);
+        let scratch =
+            base::paths::session_scratch_dir(&self.bindings.paths().global_root(), session_id);
         let _ = std::fs::remove_dir_all(scratch);
         self.scheduler.remove_session(session_id);
         self.emit_event(api::DaemonEvent::SessionDeleted {

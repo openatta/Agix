@@ -97,7 +97,7 @@ impl SessionPool {
                     sid.clone(),
                     self.scenes.default().clone(),
                     self.default_binding().await,
-                    Some(self.cwd.clone()),
+                    Some(self.cwd().to_path_buf()),
                     options.as_ref(),
                     false,
                 )

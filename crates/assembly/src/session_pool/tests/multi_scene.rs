@@ -70,13 +70,17 @@ async fn the_startup_scene_keeps_its_injected_config_root() {
     let (pool, _dir) = test_pool().await;
 
     assert_eq!(
-        pool.scene_root("code", "code"),
-        pool.paths.config_root(),
+        pool.bindings.scene_root("code", "code"),
+        pool.bindings.paths().config_root(),
         "the startup scene must not be recomputed"
     );
     assert_eq!(
-        pool.scene_root("harnix", "code"),
-        pool.paths.global_root().join("scenes").join("harnix"),
+        pool.bindings.scene_root("harnix", "code"),
+        pool.bindings
+            .paths()
+            .global_root()
+            .join("scenes")
+            .join("harnix"),
         "another scene is derived the way DefaultDaemonPaths derives one"
     );
 }

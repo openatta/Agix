@@ -107,7 +107,7 @@ impl SessionPool {
         let root = base::session::SessionId::parse(&request.session_id).map_err(|e| {
             PoolError::InvalidRequest(format!("invalid session_id `{}`: {e}", request.session_id))
         })?;
-        let settings = self.settings.read().await.clone();
+        let settings = self.bindings.pool_settings().await;
         let roots = history::path::HistoryRoots::under(&settings.paths.global_data_dir);
         crate::export::check_target(&request.path, &[roots.projects, roots.sessions.clone()])?;
 
@@ -355,13 +355,13 @@ impl SessionPool {
         let project_root_for_fork = if source_schema_version >= 2 {
             source_project_root.map(PathBuf::from)
         } else {
-            Some(self.cwd.clone())
+            Some(self.cwd().to_path_buf())
         };
         // A fork inherits the source session's scene, so its settings must be
         // resolved against that scene's tier — not the daemon's startup one.
         let fork_scene = match source_scene.clone() {
             Some(s) => s,
-            None => self.settings.read().await.paths.scope.clone(),
+            None => self.bindings.startup_scene().await,
         };
         let settings = match &project_root_for_fork {
             Some(p) => self.settings_for_project(Some(p), &fork_scene).await,

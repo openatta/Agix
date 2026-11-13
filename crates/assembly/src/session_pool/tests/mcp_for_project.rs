@@ -82,10 +82,9 @@ pub(super) fn test_pool_builder(
 async fn bindings_do_not_multiply_watchers() {
     let (pool, dir) = test_pool().await;
     let watched = |pool: &SessionPool| {
-        pool.watch
-            .as_ref()
-            .expect("a hub in a test process")
+        pool.bindings
             .watched_path_count()
+            .expect("a hub in a test process")
     };
 
     // The tiers of the pool's own project: whatever of them exist on
@@ -254,7 +253,7 @@ async fn a_tier_change_invalidates_only_the_bindings_merged_from_it() {
 
     pool.invalidate_bindings(Some(&Tier::Global)).await;
     assert!(is_stale(&own_coding));
-    assert!(pool.bindings.lock().await.is_empty());
+    assert!(pool.bindings.is_empty().await);
 }
 
 /// A skill file added after a binding was built shows up in the catalog
@@ -278,11 +277,12 @@ async fn a_skill_change_reloads_the_shared_catalog_in_place() {
     .unwrap();
     assert!(binding.modules.skills().get("late").is_none());
 
-    pool.refresh_catalogs(
-        &Tier::Project(pool.cwd().to_path_buf()),
-        WatchTarget::Skills,
-    )
-    .await;
+    pool.bindings
+        .refresh_catalogs(
+            &Tier::Project(pool.cwd().to_path_buf()),
+            WatchTarget::Skills,
+        )
+        .await;
 
     assert!(binding.modules.skills().get("late").is_some());
     assert!(!is_stale(&binding));

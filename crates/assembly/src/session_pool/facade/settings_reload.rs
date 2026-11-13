@@ -19,7 +19,7 @@ impl SessionPool {
         include_secrets: bool,
     ) -> api::ProviderConfigView {
         let settings = self
-            .binding_for(Some(project_root.unwrap_or(self.cwd.as_path())), scene_id)
+            .binding_for(Some(project_root.unwrap_or(self.cwd())), scene_id)
             .await
             .settings
             .clone();
@@ -58,7 +58,7 @@ impl SessionPool {
     /// detection, no LLM turn needed. The manual `/import` path (the bundled
     /// `import` skill) does its own detection with the file tools.
     pub async fn list_import_sources(&self, project_root: Option<&Path>) -> Vec<api::ImportSource> {
-        let project_root = project_root.unwrap_or(self.cwd.as_path());
+        let project_root = project_root.unwrap_or(self.cwd());
         base::frozen::detect_import_sources(project_root)
             .await
             .iter()
@@ -78,7 +78,7 @@ impl SessionPool {
         source: &str,
     ) -> Result<api::ImportRun, PoolError> {
         let invalid = |message: String| PoolError::InvalidRequest(message);
-        let project_root = project_root.unwrap_or(self.cwd.as_path());
+        let project_root = project_root.unwrap_or(self.cwd());
         let kind = base::frozen::ImportSourceKind::try_parse(source).ok_or_else(|| {
             invalid(format!(
                 "unknown source `{source}` — expected claude_code, codex, or cursor"
@@ -104,17 +104,17 @@ impl SessionPool {
 
     /// Read-only config/wiring diagnostics — see `crate::doctor`.
     pub async fn doctor_report(&self) -> crate::doctor::DoctorReport {
-        let settings = self.settings.read().await.clone();
+        let settings = self.bindings.pool_settings().await;
         let mut checks: Vec<Arc<dyn base::interface::health::HealthCheck>> = Vec::new();
         checks.push(Arc::new(crate::doctor::ManagedSettingsCheck::new(
-            self.managed_settings_path.clone(),
+            self.bindings.managed_settings_path().to_path_buf(),
             &settings,
         )));
         #[cfg(feature = "mcp")]
         checks.push(self.mcp_policy.clone());
         checks.push(Arc::new(crate::doctor::ProjectTrustCheck::new(
             serde_json::to_value(project_trust_report(
-                &self.cwd,
+                self.cwd(),
                 &settings,
                 &self.plugins.agent_types(),
             ))
@@ -136,7 +136,7 @@ impl SessionPool {
                 .cloned(),
         );
         crate::doctor::run_doctor(
-            self.paths.as_ref(),
+            self.bindings.paths().as_ref(),
             self.scenes.default_id(),
             settings,
             self.history_store.is_some(),
@@ -167,7 +167,7 @@ impl SessionPool {
 
     /// The currently-active settings snapshot (for config-inspection RPCs).
     pub async fn settings(&self) -> Arc<LoadedSettings> {
-        self.settings.read().await.clone()
+        self.bindings.pool_settings().await
     }
 
     /// Whether a write to `project_root`'s settings lands in a project's own
@@ -182,19 +182,20 @@ impl SessionPool {
         what: &str,
         instead: &str,
     ) -> Result<bool, PoolError> {
-        let startup_scene = self.settings.read().await.paths.scope.clone();
-        let written_to = self.settings_path_of(project_root);
+        let startup_scene = self.bindings.startup_scene().await;
+        let written_to = self.bindings.settings_path_of(project_root);
         if !base::project_trust::is_own_project_dir(
             written_to.parent().unwrap_or(&written_to),
-            &self.paths.global_root(),
-            &self.scene_root(scene_id, &startup_scene),
+            &self.bindings.paths().global_root(),
+            &self.bindings.scene_root(scene_id, &startup_scene),
         ) {
             return Ok(false);
         }
-        let target = project_root.unwrap_or(self.cwd.as_path());
-        let (trust, _) =
-            base::project_trust::ProjectTrustSettings::read_global(&self.paths.global_root())
-                .decide(target);
+        let target = project_root.unwrap_or(self.cwd());
+        let (trust, _) = base::project_trust::ProjectTrustSettings::read_global(
+            &self.bindings.paths().global_root(),
+        )
+        .decide(target);
         if trust.is_untrusted() {
             return Err(PoolError::ProjectUntrusted(format!(
                 "{} is not trusted, so {what}; trust it first (project.trust) or {instead}",
@@ -202,16 +203,6 @@ impl SessionPool {
             )));
         }
         Ok(true)
-    }
-
-    /// The project-tier `settings.json` of `project_root`, or of this
-    /// daemon's own project when none is named.
-    pub(in crate::session_pool) fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {
-        project_root
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.paths.project_root())
-            .join(".agix")
-            .join(base::settings::SETTINGS_FILE)
     }
 
     /// Merge a provider config patch (and/or `default_provider` /
@@ -280,7 +271,7 @@ impl SessionPool {
         )
         .await?;
 
-        let settings_path = self.settings_path_of(project_root);
+        let settings_path = self.bindings.settings_path_of(project_root);
         let local_path = settings_path.with_file_name(SETTINGS_LOCAL_FILE);
         let provider_id = provider_id.to_string();
         let local_changed = edit_settings_dir(&settings_path, move |tier| {
@@ -350,7 +341,7 @@ impl SessionPool {
         Ok(api::ProviderSaved {
             written_to: settings_path.display().to_string(),
             secrets_written_to,
-            reloaded: settings_reloaded(&reloaded, &report),
+            reloaded: settings_reloaded(&reloaded, report),
         })
     }
 
@@ -362,7 +353,7 @@ impl SessionPool {
         project_root: Option<&Path>,
         scene_id: &str,
     ) -> api::ProjectStatus {
-        let root = project_root.unwrap_or(self.cwd.as_path());
+        let root = project_root.unwrap_or(self.cwd());
         let settings = self.settings_for_project(Some(root), scene_id).await;
         project_trust_report(root, &settings, &self.plugins.agent_types())
     }
@@ -386,7 +377,7 @@ impl SessionPool {
     ) -> Result<api::ProjectTrustSet, PoolError> {
         use crate::watch_hub::Tier;
         use base::settings::SETTINGS_LOCAL_FILE;
-        let root = project_root.unwrap_or(self.cwd.as_path()).to_path_buf();
+        let root = project_root.unwrap_or(self.cwd()).to_path_buf();
         if !root.is_absolute() {
             return Err(PoolError::InvalidRequest(format!(
                 "project_root must be an absolute path: {}",
@@ -404,7 +395,11 @@ impl SessionPool {
             }
         };
         let entry = base::project_trust::exact_pattern(&resolved);
-        let path = self.paths.global_root().join(SETTINGS_LOCAL_FILE);
+        let path = self
+            .bindings
+            .paths()
+            .global_root()
+            .join(SETTINGS_LOCAL_FILE);
         edit_settings_dir(&path, move |tier| {
             let mut local = tier.read(SETTINGS_LOCAL_FILE).map_err(|e| e.to_string())?;
             let section = local
@@ -445,12 +440,12 @@ impl SessionPool {
         let tier = Tier::Project(root.clone());
         #[cfg(feature = "mcp")]
         self.forget_mcp_built_from(&tier, None).await;
-        let startup_scene = self.settings.read().await.paths.scope.clone();
-        if root == self.cwd {
+        let startup_scene = self.bindings.startup_scene().await;
+        if root == self.cwd() {
             self.reload_settings_from(None, &startup_scene, Some(&tier))
                 .await;
         }
-        if root != self.cwd || scene_id != startup_scene {
+        if root != self.cwd() || scene_id != startup_scene {
             self.reload_settings_from(Some(&root), scene_id, Some(&tier))
                 .await;
         }
@@ -492,49 +487,39 @@ impl SessionPool {
         let (reloaded, report) = self
             .apply_reloaded_settings(project_root, scene_id, changed)
             .await;
-        settings_reloaded(&reloaded, &report)
+        settings_reloaded(&reloaded, report)
     }
 
     /// Re-read the three-tier merged settings.json from disk, re-resolve
-    /// `providers`/`task_models`, rebuild `self.task_router` from the result,
-    /// swap `self.settings`, and invalidate the bindings built from `changed`
-    /// (every binding when `None`: an explicit reload does not know which tier
-    /// moved) so their running sessions recreate themselves before their next
-    /// turn (see `run_turn`). Shared by `set_provider()` (called after writing a
-    /// patch) and `reload_settings()` (called directly, no patch — just
-    /// "whatever's on disk right now").
+    /// `providers`/`task_models`, rebuild the pair's router from the result,
+    /// swap this daemon's own settings when it is its own pair, and invalidate
+    /// the bindings built from `changed` (every binding when `None`: an
+    /// explicit reload does not know which tier moved) so their running
+    /// sessions recreate themselves before their next turn (see `run_turn`).
+    /// Shared by `set_provider()` (called after writing a patch) and
+    /// `reload_settings()` (called directly, no patch — just "whatever's on
+    /// disk right now").
     ///
     /// Never fails outright — misconfiguration degrades to "keep the
-    /// previous `task_router`, report why in the returned `ReloadReport`";
+    /// previous router, report why in the returned status";
     /// `resolve_task_models` is advisory.
     pub(in crate::session_pool) async fn apply_reloaded_settings(
         &self,
         project_root: Option<&Path>,
         scene_id: &str,
         changed: Option<&crate::watch_hub::Tier>,
-    ) -> (Arc<LoadedSettings>, ReloadReport) {
-        let startup_scene = self.settings.read().await.paths.scope.clone();
-        let project_root = project_root.unwrap_or(self.cwd.as_path());
-        let is_default = project_root == self.cwd.as_path() && scene_id == startup_scene;
-
-        // The daemon's own pair keeps its separate, hot-swappable copy in
-        // `self.settings` — everything with no session to ask about reads it.
-        // Every other pair lives only in its binding, which the invalidation
-        // below rebuilds from disk.
-        if is_default {
-            let default_model = self.settings.read().await.model.model_name.clone();
-            let (global_root, config_root, local_dir, scene) = (
-                self.paths.global_root(),
-                self.paths.config_root(),
-                self.paths.project_root().join(".agix"),
-                self.scenes.default_id().to_string(),
-            );
-            let loaded = off_the_runtime(move || {
-                LoadedSettings::load(global_root, config_root, local_dir, &scene, &default_model)
-            })
-            .await;
-            let reloaded = Arc::new(self.with_managed_layer(loaded));
-            *self.settings.write().await = reloaded;
+    ) -> (Arc<LoadedSettings>, api::RoutingStatus) {
+        let project_root = project_root.unwrap_or(self.cwd());
+        // The daemon's own pair keeps a separate, hot-swappable copy —
+        // everything with no session to ask about reads it. Every other pair
+        // lives only in its binding, which the invalidation below rebuilds
+        // from disk.
+        if self
+            .bindings
+            .is_own_pair(Some(project_root), scene_id)
+            .await
+        {
+            self.bindings.reload_own(self.scenes.default_id()).await;
         }
 
         // The cached bindings hold the settings that were just replaced, and
@@ -543,28 +528,38 @@ impl SessionPool {
         self.invalidate_bindings(changed).await;
 
         let binding = self.binding_for(Some(project_root), scene_id).await;
+        let routing = &binding.routing;
         #[cfg_attr(not(feature = "mcp"), allow(unused_mut))]
-        let mut report = binding.routing.clone();
+        let mut status = api::RoutingStatus {
+            ok: routing.error.is_none(),
+            warnings: routing.warnings.clone(),
+            error: routing.error.clone(),
+            router_rebuilt: routing.router_rebuilt,
+            router_error: routing.router_error.clone(),
+            mcp_connected: Vec::new(),
+            mcp_failed: Vec::new(),
+            mcp_connecting: Vec::new(),
+        };
         #[cfg(feature = "mcp")]
         {
             let (mcp_connected, mcp_failed, mcp_connecting) = self
                 .reconcile_mcp_servers(Some(project_root), scene_id, &binding.settings)
                 .await;
-            report.mcp_connected = mcp_connected;
-            report.mcp_failed = mcp_failed;
-            report.mcp_connecting = mcp_connecting;
+            status.mcp_connected = mcp_connected;
+            status.mcp_failed = mcp_failed;
+            status.mcp_connecting = mcp_connecting;
         }
 
-        (binding.settings.clone(), report)
+        (binding.settings.clone(), status)
     }
 }
 
-fn settings_reloaded(settings: &Settings, report: &ReloadReport) -> api::SettingsReloaded {
+fn settings_reloaded(settings: &Settings, routing: api::RoutingStatus) -> api::SettingsReloaded {
     api::SettingsReloaded {
         providers: settings.providers.keys().cloned().collect(),
         default_provider: settings.default_provider.clone(),
         task_models: settings.task_models.keys().cloned().collect(),
-        routing: report.to_status(),
+        routing,
     }
 }
 

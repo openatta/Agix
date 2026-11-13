@@ -15,7 +15,6 @@ use base::settings::{Divergence, RecorderConfig, RecorderMode};
 use base::settings::{LoadedSettings, Settings};
 #[cfg(feature = "mcp")]
 use mcp::manager::McpManager;
-use model::adapter::AnthropicModel;
 use model::client::AnthropicClient;
 use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage, InputSender};
 use std::collections::HashMap;
@@ -25,12 +24,10 @@ use std::time::{Duration, Instant};
 use telemetry::file_recorder::FileRecorder;
 use telemetry::recorder::RecorderModel;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::sync::RwLock as AsyncRwLock;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 pub mod api;
-mod bindings;
 mod builder;
 mod facade;
 #[cfg(feature = "mcp")]
@@ -53,6 +50,9 @@ use facade::history_rpc::*;
 use facade::settings_reload::*;
 #[cfg(feature = "mcp")]
 use mcp_status::*;
+#[cfg(feature = "mcp")]
+use parts::bindings::{tier_covers, ProjectSceneKey};
+use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding};
 use parts::events::DaemonEvents;
 use parts::hub::SessionHub;
 use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
@@ -86,178 +86,8 @@ enum SceneCheck {
 /// gives "key omitted" vs. "key present" for free; `null` vs. a string
 /// needs an explicit check the wire layer (`server/`) does before this
 /// ever reaches `SessionPool`.
-/// What a per-session settings entry is keyed by: the project it belongs to
-/// (`None` = the global no-project tier) and the scene it runs under.
-///
-/// Both halves matter. The scene contributes a real settings layer
-/// (`~/.agix/scenes/<scene>/settings.json`, plus the skills, agents and
-/// plugins beside it), so one project under two scenes is two different
-/// resolutions, not one.
-type ProjectSceneKey = (Option<PathBuf>, String);
-
-/// Whether what `key` resolves to was merged from `tier`. The global tier is
-/// under every pair; a scene or project tier only under its own.
-fn tier_covers(tier: &crate::watch_hub::Tier, key: &ProjectSceneKey) -> bool {
-    use crate::watch_hub::Tier;
-    match tier {
-        Tier::Global => true,
-        Tier::Scene(scene) => &key.1 == scene,
-        Tier::Project(root) => key.0.as_deref() == Some(root.as_path()),
-    }
-}
-
-/// Everything a session reads that the pair `(project, scene)` decides: the
-/// merged settings, and the skills, agent types and commands that live in the
-/// directories those settings name.
-///
-/// One per pair, shared by every session on it. They are here together
-/// because they are the same fact stated four times: a binding is built from
-/// one `Settings`, and rebuilding it is how any of them changes.
-struct ProjectBinding {
-    settings: Arc<LoadedSettings>,
-    /// The conversation's model for a session on this pair, and the
-    /// per-task-type routing behind it. `providers` and `task_models` are
-    /// settings fields like any other, so they are decided by the pair: a
-    /// project that configures its own provider is served by it.
-    model: Arc<dyn base::interface::model::Model>,
-    task_router: Option<Arc<base::provider::TaskRouter>>,
-    /// What building `task_router` had to say — reported by `config.reload`
-    /// and `config.setProvider` for the pair they targeted.
-    routing: ReloadReport,
-    modules: crate::modules::ProjectModules,
-    commands: Arc<runtime::commands::CommandRegistry>,
-    /// Subscriptions to the settings files this binding was merged from.
-    /// Held, not read: dropping them is how a binding that gets invalidated
-    /// releases its share of the watch (`WatchHub` refcounts, so the tiers
-    /// several projects have in common are watched once).
-    _watch: Vec<crate::watch_hub::WatchToken>,
-    /// The settings files, skill and agent-type directories of this
-    /// binding's tiers that did not exist when it was built, so are not
-    /// watched — see [`ProjectBinding::appeared`].
-    unwatched_settings: Vec<(crate::watch_hub::Tier, PathBuf)>,
-    /// Set once a tier this binding was merged from changed. Every session
-    /// built on it holds the same flag and rebuilds before its next turn.
-    stale: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl ProjectBinding {
-    fn build(
-        settings: Arc<LoadedSettings>,
-        plugins: &crate::plugins::Contributions,
-        watch: Vec<crate::watch_hub::WatchToken>,
-        client: &Arc<dyn AnthropicClient>,
-        last_good_router: Option<Arc<base::provider::TaskRouter>>,
-        credentials: &Arc<dyn base::interface::credentials::CredentialSource>,
-    ) -> Self {
-        let (task_router, routing) = resolve_router(&settings, last_good_router, credentials);
-        // `task_models.main` is what points the conversation itself at a
-        // configured provider; with none configured this is the plain
-        // Anthropic client the daemon was started with.
-        let model: Arc<dyn base::interface::model::Model> = match task_router.as_ref() {
-            Some(router) => router.model_for("main"),
-            None => Arc::new(AnthropicModel::new(client.clone())),
-        };
-        let modules = crate::modules::ProjectModules::build(&settings, plugins);
-        let commands = modules.commands();
-        Self {
-            settings,
-            model,
-            task_router,
-            routing,
-            modules,
-            commands,
-            _watch: watch,
-            unwatched_settings: Vec::new(),
-            stale: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
-
-    fn mark_stale(&self) {
-        self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// The tier of a settings file, skill or agent-type directory that has
-    /// been created since this binding was built. Nothing watched it — a
-    /// missing path is not subscribed, see `SessionPool::watch_tiers_of` — so
-    /// this is the only way its first contents (a rule `permit_always` wrote
-    /// to a new `settings.local.json`, a project's first skill or agent type)
-    /// reach the sessions without a `config.reload`.
-    fn appeared(&self) -> Option<&crate::watch_hub::Tier> {
-        self.unwatched_settings
-            .iter()
-            .find(|(_, path)| path.exists())
-            .map(|(tier, _)| tier)
-    }
-
-    /// The client for provider `id`, when the settings configure one that
-    /// built.
-    fn provider_client(&self, id: &str) -> Option<Arc<dyn base::interface::model::Model>> {
-        self.task_router.as_ref()?.provider(id)
-    }
-
-    /// Whether a session on this pair may talk to `provider` with `model`.
-    ///
-    /// A model is checked against the `models` allow-list of the provider it
-    /// would be sent to — the one named, else the one the conversation is
-    /// routed to. An empty list, or no provider at all, accepts any name: the
-    /// daemon has no catalog to check against.
-    fn check_model_choice(
-        &self,
-        provider: Option<&str>,
-        model: Option<&str>,
-    ) -> Result<(), String> {
-        if let Some(id) = provider {
-            if self.provider_client(id).is_none() {
-                return Err(format!(
-                    "provider `{id}` is not configured for this session's project"
-                ));
-            }
-        }
-        let Some(model) = model else {
-            return Ok(());
-        };
-        let routed = provider
-            .map(str::to_string)
-            .or_else(|| {
-                self.task_router
-                    .as_ref()
-                    .and_then(|r| r.provider_id_for("main").map(str::to_string))
-            })
-            .or_else(|| self.settings.default_provider.clone());
-        let Some(id) = routed else {
-            return Ok(());
-        };
-        match self.settings.providers.get(&id) {
-            Some(config)
-                if !config.models.is_empty() && !config.models.iter().any(|m| m == model) =>
-            {
-                Err(format!(
-                    "model `{model}` is not one of provider `{id}`'s models"
-                ))
-            }
-            _ => Ok(()),
-        }
-    }
-
-    fn reload_skills(&self) {
-        self.modules.reload_skills(&self.settings);
-    }
-
-    /// Re-merge what the plugin set now contributes, in place: every session
-    /// on the pair shares these catalogs, and `commands` is a view onto the
-    /// skill one.
-    fn refresh_plugins(&self, plugins: &crate::plugins::Contributions) {
-        self.modules.refresh_plugins(&self.settings, plugins);
-    }
-
-    fn refresh_agent_types(&self, plugin_agent_types: &[base::agent_type::AgentTypeDefinition]) {
-        self.modules
-            .refresh_agent_types(&self.settings, plugin_agent_types);
-    }
-}
-
 pub enum ProjectSelector {
-    /// `project_root` omitted — this pool's default project (`self.cwd`).
+    /// `project_root` omitted — this pool's default project (`self.cwd()`).
     Default,
     /// `project_root: null` — a genuine no-project session (global tier).
     NoProject,
@@ -523,13 +353,6 @@ pub struct SessionPool {
     session_locks: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     cap: usize,
     idle_timeout: Duration,
-    /// 共享的 LLM client（用于 session 命名等）。
-    client: Arc<dyn AnthropicClient>,
-    /// Hot-swappable so `config.setProvider` can take effect for sessions
-    /// created *after* the call without a daemon restart. Sessions already
-    /// running keep whatever `Arc<LoadedSettings>` snapshot they were built
-    /// with — only new `create()` calls observe the update.
-    settings: AsyncRwLock<Arc<LoadedSettings>>,
     /// The default scene, the scenes served now, and every scene this pool
     /// can serve.
     scenes: SceneCatalog,
@@ -546,9 +369,7 @@ pub struct SessionPool {
     /// `tools::register_builtin_tools`'s doc comment for what's deliberately
     /// excluded.
     tools: Arc<base::tool::InMemoryToolRegistry>,
-    cwd: PathBuf,
     history_store: Option<Arc<dyn history::store::HistoryStore>>,
-    paths: Arc<dyn crate::config::DaemonPaths>,
     /// Centrally-connected MCP servers, partitioned by project — keyed the
     /// same way `settings_for_project`/`ProjectSelector` are (`None` = the
     /// no-project tier, `Some(root)` = that project). The pool's default
@@ -572,10 +393,6 @@ pub struct SessionPool {
     /// `admit_mcp`.
     #[cfg(feature = "mcp")]
     mcp_policy: Arc<mcp::policy::McpPolicyGate>,
-    /// Where this pool looked for the deployment's managed settings, and what
-    /// it found there: applied on top of every settings it loads.
-    managed_settings_path: PathBuf,
-    managed_settings: Option<base::managed_settings::ManagedSettings>,
     /// Every session's scheduled jobs, fired as turns of their sessions
     /// whether or not the session is in memory.
     scheduler: Scheduler,
@@ -588,48 +405,16 @@ pub struct SessionPool {
     /// The plugin subsystem — see `crate::plugins`. Everything plugins
     /// contribute arrives through it, and in a build without the `plugins`
     /// feature it is a stub that contributes nothing.
-    plugins: crate::plugins::PluginSubsystem,
+    plugins: Arc<crate::plugins::PluginSubsystem>,
+    /// This daemon's own settings, every `(project, scene)` pair's binding,
+    /// and the watch on the files they come from.
+    bindings: BindingCache,
     /// Process-scope diagnostics, reported by `daemon.doctor` — the plugin
     /// fault records, plus whatever an embedder registered with
     /// [`SessionPool::register_health_check`]. Not the same set as a
     /// session's: a session's checks come and go with the session, and one
     /// shared registry would grow an entry per session forever.
     health: std::sync::RwLock<base::interface::health::HealthChecks>,
-    /// The last router each `(project, scene)` pair was successfully served
-    /// by, kept across binding invalidation so a provider config that stops
-    /// resolving — or stops producing a buildable client — leaves working
-    /// routing in place instead of tearing it down (see `resolve_router`).
-    last_good_routers: AsyncMutex<HashMap<ProjectSceneKey, Arc<base::provider::TaskRouter>>>,
-    /// One [`ProjectBinding`] per `(project_root, scene)` pair this pool has
-    /// built a session for — the settings, skills, agent types and commands
-    /// that pair resolves to. `project_root` is understood exactly as
-    /// `session.create`'s param is: `None` = the global no-project tier,
-    /// `Some(root)` = that project's `settings.json` over the global/scene
-    /// tiers.
-    ///
-    /// Scene is part of the key because the scene tier is a real layer
-    /// (`~/.agix/scenes/<scene>/settings.json`, and the skills, agents and
-    /// plugins beside it). Keying by project alone meant every session got
-    /// whichever scene happened to be built first, so a `harnix` session on a
-    /// daemon started as `--scene code` silently read code's tier.
-    ///
-    /// Entries are built on demand and dropped wholesale by
-    /// `invalidate_bindings` — a reload, or a plugin set that changed. The
-    /// pool's own pair is in here like any other; `self.settings` remains the
-    /// separate, hot-swappable copy that `config.reload` writes and that
-    /// everything not tied to a session reads.
-    bindings: AsyncMutex<HashMap<ProjectSceneKey, Arc<ProjectBinding>>>,
-    /// One `notify` watcher for every settings file every binding was merged
-    /// from — see [`crate::watch_hub`]. `None` when the watcher could not be
-    /// started (permissions, kernel limits): the documented degrade is that
-    /// configuration changes reach the daemon through an explicit
-    /// `config.reload` and not on their own.
-    watch: Option<crate::watch_hub::WatchHub>,
-    /// The watch on the tiers of this daemon's own pair, held for the pool's
-    /// lifetime. Binding watches come and go with the bindings, and with every
-    /// binding invalidated nothing would be left to notice the next change to
-    /// the global tier or to the settings `self.settings` mirrors.
-    pool_watch: std::sync::Mutex<Vec<crate::watch_hub::WatchToken>>,
     /// Each session's [`SessionSpec`]: what every rebuild of it applies.
     specs: SpecStore,
     /// The engines taken out of `sessions` that may still be stopping, by
@@ -658,8 +443,6 @@ pub struct SessionPool {
     /// `LiveSession.hub` for why this lives here rather than in
     /// the engine.
     permission_prompt_timeout: Duration,
-    /// Where provider keys come from when a binding builds its router.
-    credentials: Arc<dyn base::interface::credentials::CredentialSource>,
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
 }
@@ -706,55 +489,6 @@ pub struct SessionInfo {
 pub enum SessionStatus {
     Active,
     Inactive,
-}
-
-/// Outcome of `SessionPool::apply_reloaded_settings()` — how a
-/// `config.setProvider`/`config.reload` call's routing re-resolution went.
-///
-/// Two genuinely different checks, kept in separate fields on purpose:
-/// `warnings`/`error` are `base::provider::resolve_task_models`'s own
-/// soft-fallback outcome — pure config-shape validation (does every
-/// `task_models` entry resolve to a provider that exists, etc.), unaware of
-/// `api_type` or whether a real client could actually be built. A config can
-/// resolve cleanly (`error: None`) yet still fail to produce a live
-/// `TaskRouter` (`router_rebuilt: false`, `router_error: Some(..)`) — e.g.
-/// `api_type: openai_compatible`, which the schema accepts but has no
-/// runtime implementation. Collapsing these into one `ok` flag would be a
-/// breaking change to what `routing.ok` has always meant to callers (see
-/// `set_provider_writes_project_settings_and_doctor_sees_it`'s test, which
-/// deliberately uses `openai_compatible` and asserts `routing.ok == true`).
-#[derive(Debug, Default, Clone)]
-struct ReloadReport {
-    warnings: Vec<String>,
-    error: Option<String>,
-    router_rebuilt: bool,
-    router_error: Option<String>,
-    /// MCP servers from the freshly-reloaded config that are now actually
-    /// connected — see `SessionPool::reconcile_mcp_servers`.
-    mcp_connected: Vec<String>,
-    /// MCP servers from the freshly-reloaded config that failed to connect
-    /// (or had an invalid config) — specific reasons are in the daemon log
-    /// and the `mcp_connect_failed` async notification, same contract as
-    /// startup connection failures.
-    mcp_failed: Vec<String>,
-    /// MCP servers still connecting when the reload returned; each one's
-    /// outcome follows as a `mcp_connected` / `mcp_connect_failed` event.
-    mcp_connecting: Vec<String>,
-}
-
-impl ReloadReport {
-    fn to_status(&self) -> api::RoutingStatus {
-        api::RoutingStatus {
-            ok: self.error.is_none(),
-            warnings: self.warnings.clone(),
-            error: self.error.clone(),
-            router_rebuilt: self.router_rebuilt,
-            router_error: self.router_error.clone(),
-            mcp_connected: self.mcp_connected.clone(),
-            mcp_failed: self.mcp_failed.clone(),
-            mcp_connecting: self.mcp_connecting.clone(),
-        }
-    }
 }
 
 /// What `SessionPool::admit_mcp_servers` lets through, and what it does not:
@@ -832,77 +566,11 @@ fn mcp_connected_event(status: &mcp::manager::ServerStatus) -> api::DaemonEvent 
     }
 }
 
-/// Build the router a settings tier's `providers`/`task_models` describe.
-///
-/// `last_good` is what this pair was already being served by. A config that
-/// no longer resolves, or that resolves but cannot produce a live client
-/// (`api_type: openai_compatible` is accepted by the schema and has no
-/// runtime implementation), keeps it rather than tearing working routing down
-/// over a bad edit — the failure is reported, not acted on.
-fn resolve_router(
-    settings: &Settings,
-    last_good: Option<Arc<base::provider::TaskRouter>>,
-    credentials: &Arc<dyn base::interface::credentials::CredentialSource>,
-) -> (Option<Arc<base::provider::TaskRouter>>, ReloadReport) {
-    let mut report = ReloadReport::default();
-    if settings.providers.is_empty() {
-        // No providers configured (or the last one was just deleted) —
-        // routing reverts to "no router", same as if multi-provider config
-        // was never touched.
-        return (None, report);
-    }
-    match base::provider::resolve_task_models(
-        &settings.providers,
-        settings.default_provider.as_deref(),
-        &settings.task_models,
-    ) {
-        Ok((resolved, warnings)) => {
-            report.warnings = warnings;
-            // `resolve_task_models` succeeding guarantees `default_provider`
-            // is `Some` and non-empty (one of its own hard-error checks).
-            let default_provider = settings
-                .default_provider
-                .as_deref()
-                .expect("resolve_task_models already validated default_provider is set");
-            match crate::model_router::build_task_router(
-                &settings.providers,
-                default_provider,
-                resolved,
-                credentials,
-            ) {
-                Ok(router) => {
-                    report.router_rebuilt = true;
-                    (Some(Arc::new(router)), report)
-                }
-                Err(e) => {
-                    // Deliberately `router_error`, not `error` —
-                    // `resolve_task_models` itself succeeded (the warnings
-                    // above already reflect that), only the build step
-                    // failed; see `ReloadReport`'s doc comment.
-                    warn!(error = %e, "task router build failed; keeping the previous router");
-                    report.router_error = Some(e);
-                    (last_good, report)
-                }
-            }
-        }
-        Err(e) => {
-            warn!(error = %e, "provider config no longer resolves; keeping the previous router");
-            report.error = Some(e);
-            (last_good, report)
-        }
-    }
-}
-
 impl SessionPool {
     /// This pool's MCP authorization state.
     #[cfg(feature = "mcp")]
     pub fn mcp_auth(&self) -> Arc<mcp::oauth::McpAuth> {
         self.mcp_auth.clone()
-    }
-
-    /// `settings` with this pool's managed layer on top.
-    pub(crate) fn with_managed_layer(&self, settings: LoadedSettings) -> LoadedSettings {
-        settings.with_managed(self.managed_settings.clone())
     }
 
     /// Subscribe to daemon-level async notifications (MCP connect
@@ -926,7 +594,7 @@ impl SessionPool {
 
     /// The project directory this pool's sessions run in.
     pub fn cwd(&self) -> &Path {
-        &self.cwd
+        self.bindings.cwd()
     }
 
     /// Full slash command catalog — built-in locals + skill-derived
@@ -1035,4 +703,14 @@ pub enum GoalChange {
     Pause,
     Resume,
     Clear,
+}
+
+/// Run `work` — disk reads and directory scans — on the blocking pool rather
+/// than on a runtime worker.
+async fn off_the_runtime<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(e) => panic!("blocking work did not finish: {e}"),
+    }
 }

@@ -27,7 +27,7 @@ impl SessionPool {
         // daemon's. The `Default` arm goes through the same call as the others
         // so that a non-startup scene on the default project still picks up
         // its own tier; `settings_for_project` short-circuits to the
-        // hot-swappable `self.settings` for the one pair that is the pool's
+        // hot-swappable own settings for the one pair that is the pool's
         // own.
         // A scene that requires a project is refused here, not later: with no
         // project root there is nothing for its tools to read or write, and
@@ -41,9 +41,8 @@ impl SessionPool {
         let session_scene_id = scene.id.clone();
         let (binding, project_root_for_meta) = match project_root {
             ProjectSelector::Default => (
-                self.binding_for(Some(&self.cwd.clone()), &session_scene_id)
-                    .await,
-                Some(self.cwd.clone()),
+                self.binding_for(Some(self.cwd()), &session_scene_id).await,
+                Some(self.cwd().to_path_buf()),
             ),
             ProjectSelector::NoProject => (self.binding_for(None, &session_scene_id).await, None),
             ProjectSelector::Path(p) => {
@@ -100,8 +99,8 @@ impl SessionPool {
     /// settings for whichever project this session belongs to (see
     /// `settings_for_project`) and the value to stamp on `Meta.project_root`
     /// (`None` = no-project session) — callers that just want "this pool's
-    /// default project" pass `self.settings.read().await.clone()` /
-    /// `Some(self.cwd.clone())`.
+    /// default project" pass `self.bindings.pool_settings().await` /
+    /// `Some(self.cwd().to_path_buf())`.
     pub(in crate::session_pool) async fn create(
         &self,
         session_id: String,
@@ -259,7 +258,7 @@ impl SessionPool {
         // would have been judged to come from outside it.
         let script_root = project_root_for_meta
             .clone()
-            .unwrap_or_else(|| self.cwd.clone());
+            .unwrap_or_else(|| self.cwd().to_path_buf());
         let package_scripts = self.plugins.script_bindings();
         #[cfg(feature = "scripts")]
         let script_ledger = {

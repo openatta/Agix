@@ -44,7 +44,7 @@ impl SessionPool {
             .mcp_server_dirs()
             .remove(name)
             .or_else(|| settings.mcp_server_dirs.get(name).cloned())
-            .unwrap_or_else(|| self.paths.global_root());
+            .unwrap_or_else(|| self.bindings.paths().global_root());
         cfg.run_in(&home)
     }
 
@@ -112,13 +112,13 @@ impl SessionPool {
     /// rather than paying for a connect attempt on a status query.
     #[cfg(feature = "mcp")]
     pub async fn mcp_status(&self) -> Vec<api::McpServerStatus> {
-        let startup_scene = self.settings.read().await.paths.scope.clone();
+        let startup_scene = self.bindings.startup_scene().await;
         let manager = self
             .mcp_by_project
-            .current(&(Some(self.cwd.clone()), startup_scene))
+            .current(&(Some(self.cwd().to_path_buf()), startup_scene))
             .unwrap_or_else(|| Arc::new(McpManager::empty()));
         let mut entries = mcp_status_entries(&manager);
-        entries.extend(untrusted_mcp_entries(&*self.settings.read().await));
+        entries.extend(untrusted_mcp_entries(&*self.bindings.pool_settings().await));
         entries
     }
 
@@ -134,11 +134,11 @@ impl SessionPool {
         self.watch_mcp_auth();
         let pool = self.clone();
         tokio::spawn(async move {
-            let settings = pool.settings.read().await.clone();
+            let settings = pool.bindings.pool_settings().await;
             if pool.configured_mcp_servers(&settings).is_empty() {
                 return;
             }
-            let key = (Some(pool.cwd.clone()), settings.paths.scope.clone());
+            let key = (Some(pool.cwd().to_path_buf()), settings.paths.scope.clone());
             let manager = pool.first_mcp_connect(key, &settings).await;
             for status in manager.server_statuses() {
                 pool.emit_event(mcp_connected_event(&status));
@@ -253,7 +253,7 @@ impl SessionPool {
     /// every other pair's cached connections are left untouched.
     ///
     /// Returns `(connected, failed, connecting)` server names for
-    /// `ReloadReport`.
+    /// the reload's `RoutingStatus`.
     #[cfg(feature = "mcp")]
     pub(super) async fn reconcile_mcp_servers(
         &self,
@@ -394,7 +394,7 @@ impl SessionPool {
         must_exist: bool,
     ) -> Result<api::McpServerWritten, String> {
         use base::settings::{SETTINGS_FILE, SETTINGS_LOCAL_FILE};
-        let settings_path = self.settings_path_of(project_root);
+        let settings_path = self.bindings.settings_path_of(project_root);
         let local_path = settings_path.with_file_name(SETTINGS_LOCAL_FILE);
         let shown = settings_path.display().to_string();
         let server = name.to_string();
@@ -441,7 +441,7 @@ impl SessionPool {
         // The written file and the cache entry are the same pair: a server
         // added to one project's settings connects for that project.
         let target = (
-            Some(project_root.unwrap_or(self.cwd.as_path()).to_path_buf()),
+            Some(project_root.unwrap_or(self.cwd()).to_path_buf()),
             scene_id.to_string(),
         );
         let target_settings = self
@@ -450,7 +450,7 @@ impl SessionPool {
         let env = target_settings.sandbox.subprocess_env.clone();
         let cfg = &cfg
             .clone()
-            .run_in(target.0.as_deref().unwrap_or(self.cwd.as_path()));
+            .run_in(target.0.as_deref().unwrap_or(self.cwd()));
         let slot = self.mcp_by_project.slot(&target);
         let (statuses, entries, failure) = {
             let update = slot.update().await;
@@ -695,7 +695,7 @@ impl SessionPool {
         scene_id: &str,
         name: &str,
     ) -> Result<mcp::config::McpServerConfig, PoolError> {
-        let root = project_root.unwrap_or(self.cwd.as_path());
+        let root = project_root.unwrap_or(self.cwd());
         let manager = self.mcp_for_project(Some(root), scene_id).await;
         if let Some(cfg) = manager.config_of(name) {
             return Ok(cfg.clone());

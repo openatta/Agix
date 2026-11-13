@@ -2,6 +2,7 @@
 //! （`parts/`），协作者之间的配合都在这里发生。
 
 mod background;
+mod bindings;
 mod create;
 mod goal;
 pub(super) mod helpers;

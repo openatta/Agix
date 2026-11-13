@@ -107,22 +107,14 @@ async fn bind(
     model: Arc<dyn Model>,
     task_router: Option<TaskRouter>,
 ) {
-    let mut settings = (**pool.settings.read().await).clone();
+    let mut settings = (*pool.bindings.pool_settings().await).clone();
     settings.values.memory_enabled = false;
-    let mut binding = ProjectBinding::build(
-        Arc::new(settings),
-        &Default::default(),
-        vec![],
-        &pool.client,
-        None,
-        &pool.credentials,
-    );
+    let mut binding = pool.bindings.binding_from(settings);
     binding.model = model;
     binding.task_router = task_router.map(Arc::new);
-    pool.bindings.lock().await.insert(
-        (Some(project.to_path_buf()), scene.to_string()),
-        Arc::new(binding),
-    );
+    pool.bindings
+        .insert((Some(project.to_path_buf()), scene.to_string()), binding)
+        .await;
 }
 
 fn recorder(mode: &str, root: &Path) -> Option<crate::session_pool::api::RecorderOptions> {

@@ -1,6 +1,7 @@
 //! `eviction_tests` 原样搬来的用例。
 
 use super::*;
+use model::adapter::AnthropicModel;
 
 /// A `LiveSession` with no real agent behind it — only `last_active`
 /// (and `cancel`, so eviction's `.cancel()` call doesn't panic) matter

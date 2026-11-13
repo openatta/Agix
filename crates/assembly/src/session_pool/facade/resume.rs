@@ -123,7 +123,7 @@ impl SessionPool {
         options: Option<&SessionOptions>,
     ) -> Result<api::ResumeReport, PoolError> {
         let resume_start = Instant::now();
-        let settings = self.settings.read().await.clone();
+        let settings = self.bindings.pool_settings().await;
         let mode = effective_permission_mode(&settings, options);
 
         // Already live: report state, touch nothing. The lock is released
@@ -348,7 +348,7 @@ impl SessionPool {
             }
             None => (
                 base::project_trust::ProjectTrust::NoProject,
-                self.settings.read().await.clone(),
+                self.bindings.pool_settings().await,
             ),
         };
         let prompts_enabled = mode != base::settings::PermissionMode::BypassPermissions
@@ -416,7 +416,7 @@ impl SessionPool {
         // `session.create {project_root: X}` would silently come back with
         // project Y's settings the moment it needed reattaching (idle
         // eviction, daemon restart, explicit `session.resume`).
-        let startup_scene = self.settings.read().await.paths.scope.clone();
+        let startup_scene = self.bindings.startup_scene().await;
         let (binding, project_root_for_meta, scene_id) = match self.recorded_project(&sid).await {
             Some((schema_version, project_root, scene)) if schema_version >= 2 => {
                 let scene = scene.unwrap_or_else(|| startup_scene.clone());
@@ -434,7 +434,7 @@ impl SessionPool {
             }
             _ => (
                 self.default_binding().await,
-                Some(self.cwd.clone()),
+                Some(self.cwd().to_path_buf()),
                 startup_scene.clone(),
             ),
         };

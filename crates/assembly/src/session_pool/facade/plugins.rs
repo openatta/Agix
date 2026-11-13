@@ -150,9 +150,6 @@ impl SessionPool {
     /// skills come or go.
     pub(in crate::session_pool) async fn refresh_after_plugin_change(&self) {
         self.adopt_plugin_scenes().await;
-        let contributions = self.plugins.contributions();
-        for binding in self.bindings.lock().await.values() {
-            binding.refresh_plugins(&contributions);
-        }
+        self.bindings.refresh_plugins().await;
     }
 }

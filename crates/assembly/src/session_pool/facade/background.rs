@@ -9,7 +9,7 @@ impl SessionPool {
     pub(in crate::session_pool) async fn reload_after_lost_changes(&self) {
         #[cfg(feature = "mcp")]
         {
-            let own = (Some(self.cwd.clone()), self.scene_id().to_string());
+            let own = (Some(self.cwd().to_path_buf()), self.scene_id().to_string());
             self.forget_mcp_built_from(&crate::watch_hub::Tier::Global, Some(&own))
                 .await;
         }
@@ -29,21 +29,12 @@ impl SessionPool {
     /// The pool's own tiers are watched for as long as the pool lives, not
     /// only while some binding on them happens to exist.
     pub fn start_config_watcher(self: &Arc<Self>) {
-        let Some(mut changes) = self.watch.as_ref().map(|hub| hub.changes()) else {
-            return;
-        };
         let pool = self.clone();
         tokio::spawn(async move {
             use crate::watch_hub::{Tier, WatchTarget};
-            {
-                let settings = pool.settings.read().await.clone();
-                let own = (Some(pool.cwd.clone()), settings.paths.scope.clone());
-                let (tokens, _) = pool.watch_tiers_of(&settings, &own);
-                *pool
-                    .pool_watch
-                    .lock()
-                    .expect("pool_watch is never held across a panic") = tokens;
-            }
+            let Some(mut changes) = pool.bindings.watch_own_tiers().await else {
+                return;
+            };
             loop {
                 let key = match changes.recv().await {
                     Ok(key) => key,
@@ -59,7 +50,7 @@ impl SessionPool {
                     WatchTarget::Settings => {}
                     WatchTarget::Skills | WatchTarget::Agents => {
                         info!(tier = ?key.tier, target = ?key.target, "a catalog changed on disk");
-                        pool.refresh_catalogs(&key.tier, key.target).await;
+                        pool.bindings.refresh_catalogs(&key.tier, key.target).await;
                         continue;
                     }
                     // Plugins are a global/scene concern with a refresh of
@@ -67,7 +58,7 @@ impl SessionPool {
                     _ => continue,
                 }
                 let ours = match &key.tier {
-                    Tier::Project(root) => root == &pool.cwd,
+                    Tier::Project(root) => root == pool.cwd(),
                     Tier::Global | Tier::Scene(_) => true,
                 };
                 if ours {
@@ -77,7 +68,7 @@ impl SessionPool {
                         _ => pool.scene_id().to_string(),
                     };
                     #[cfg(feature = "mcp")]
-                    let reconciled = (Some(pool.cwd.clone()), scene.clone());
+                    let reconciled = (Some(pool.cwd().to_path_buf()), scene.clone());
                     #[cfg(feature = "mcp")]
                     pool.forget_mcp_built_from(&key.tier, Some(&reconciled))
                         .await;
