@@ -2,14 +2,16 @@
 
 use super::*;
 
-pub(super) fn test_agent_tool() -> AgentTool {
+/// A parent on `DummyModel` with `Read` and `Bash`.
+pub(super) fn test_parent() -> TestParent {
     let tools = InMemoryToolRegistry::new();
     tools.register(Arc::new(NamedTool("Read")));
     tools.register(Arc::new(NamedTool("Bash")));
-    let tools = Arc::new(tools);
-    let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let config = Arc::new(EngineConfig::defaults_for("test-model"));
-    AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
+    TestParent::on(Arc::new(DummyModel), Arc::new(tools))
+}
+
+pub(super) fn test_agent_tool() -> AgentTool {
+    test_parent().agent_tool()
 }
 
 fn names_of(registry: &InMemoryToolRegistry) -> Vec<String> {
@@ -31,14 +33,13 @@ fn agent_tool_over_a_built_session() -> AgentTool {
     for name in ["Read", "Bash", "Skill", "TaskStop", AGENT_TOOL_NAME] {
         session.register(Arc::new(NamedTool(name)));
     }
-    AgentTool::with_parent_tools(
-        Arc::new(DummyModel),
-        Arc::new(EngineConfig::defaults_for("test-model")),
-        Arc::new(session),
-        Arc::new(template),
-        &[],
-        &[],
-    )
+    TestParent {
+        config: Arc::new(EngineConfig::defaults_for("test-model")),
+        tools: Arc::new(session),
+        template: Arc::new(template),
+        ..TestParent::new(Arc::new(DummyModel))
+    }
+    .agent_tool()
 }
 
 #[test]
@@ -62,7 +63,7 @@ fn a_callers_lists_narrow_the_agent_types_tools() {
 fn model_for_subagent_uses_parent_model_when_no_router_configured() {
     let agent_tool = test_agent_tool();
     let picked = agent_tool.inner.model_for_subagent();
-    assert!(Arc::ptr_eq(&picked, &agent_tool.inner.model));
+    assert!(Arc::ptr_eq(&picked, &agent_tool.inner.env.model));
 }
 
 #[test]
@@ -85,13 +86,17 @@ fn model_for_subagent_routes_through_task_router_when_configured() {
         default_model,
     ));
 
-    let agent_tool = test_agent_tool().with_host(runtime::agent::HostContracts {
-        task_router: Some(router),
-        ..host_contracts()
-    });
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            task_router: Some(router),
+            ..host_contracts()
+        }),
+        ..test_parent()
+    }
+    .agent_tool();
     let picked = agent_tool.inner.model_for_subagent();
     assert!(Arc::ptr_eq(&picked, &routed_model));
-    assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.model));
+    assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.env.model));
 }
 
 #[test]
@@ -106,13 +111,17 @@ fn model_for_subagent_falls_back_to_default_when_no_subagent_override() {
         router_default.clone(),
     ));
 
-    let agent_tool = test_agent_tool().with_host(runtime::agent::HostContracts {
-        task_router: Some(router),
-        ..host_contracts()
-    });
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            task_router: Some(router),
+            ..host_contracts()
+        }),
+        ..test_parent()
+    }
+    .agent_tool();
     let picked = agent_tool.inner.model_for_subagent();
     assert!(Arc::ptr_eq(&picked, &router_default));
-    assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.model));
+    assert!(!Arc::ptr_eq(&picked, &agent_tool.inner.env.model));
 }
 
 #[test]
@@ -120,14 +129,15 @@ fn delegate_tools_full_access_excludes_agent_itself() {
     let agent_tool = test_agent_tool();
     // Register "Agent" into the same registry the tool was built with,
     // simulating `Builder::build()`'s self-registration.
-    let self_arc = Arc::new(AgentTool::with_parent_tools(
-        agent_tool.inner.model.clone(),
-        agent_tool.inner.config.clone(),
-        agent_tool.inner.parent_tools.clone(),
-        agent_tool.inner.fallback_tools.clone(),
-        &[],
-        &[],
-    ));
+    let self_arc = Arc::new(
+        TestParent {
+            config: agent_tool.inner.env.config.clone(),
+            tools: agent_tool.inner.parent_tools.clone(),
+            template: agent_tool.inner.fallback_tools.clone(),
+            ..TestParent::new(agent_tool.inner.env.model.clone())
+        }
+        .agent_tool(),
+    );
     agent_tool.inner.parent_tools.register(self_arc);
 
     // "general-purpose" is a full-access type (empty allowed_tools).
@@ -219,20 +229,17 @@ impl base::interface::mcp_servers::McpServers for RecordingServers {
 fn agent_tool_with_servers(types: &str) -> (AgentTool, GrantsAsked, tempfile::TempDir) {
     let tmp = agent_type_dir();
     write_agent_md(tmp.path(), "github-agent.md", types);
-    let tools = Arc::new(InMemoryToolRegistry::new());
-    let agent_tool = AgentTool::with_parent_tools(
-        Arc::new(DummyModel),
-        Arc::new(EngineConfig::defaults_for("parent-default-model")),
-        tools.clone(),
-        tools,
-        &[(tmp.path().to_path_buf(), AgentTypeSource::User)],
-        &[],
-    );
     let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
-    agent_tool.set_mcp_servers(Arc::new(RecordingServers {
-        tools: vec!["mcp__github__list_prs", "mcp__gitlab__list_mrs"],
-        asked: asked.clone(),
-    }));
+    let agent_tool = TestParent {
+        config: Arc::new(EngineConfig::defaults_for("parent-default-model")),
+        agent_dirs: vec![(tmp.path().to_path_buf(), AgentTypeSource::User)],
+        mcp: Some(Arc::new(RecordingServers {
+            tools: vec!["mcp__github__list_prs", "mcp__gitlab__list_mrs"],
+            asked: asked.clone(),
+        })),
+        ..TestParent::new(Arc::new(DummyModel))
+    }
+    .agent_tool();
     (agent_tool, asked, tmp)
 }
 
@@ -301,14 +308,14 @@ fn delegate_tools_disallowed_tools_removes_from_full_access_pool() {
     let tools = Arc::new(tools);
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-    let agent_tool = AgentTool::with_parent_tools(
-        model,
-        config,
-        tools.clone(),
-        tools,
-        &[(dir.to_path_buf(), AgentTypeSource::User)],
-        &[],
-    );
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools,
+        agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
+        ..TestParent::new(model)
+    }
+    .agent_tool();
 
     let resolved = agent_tool.delegate_tools(Some("no-writes"), &[], &[]);
     let names: Vec<String> = resolved
@@ -341,14 +348,14 @@ fn delegate_tools_disallowed_tools_applied_before_allowed_tools() {
     let tools = Arc::new(tools);
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-    let agent_tool = AgentTool::with_parent_tools(
-        model,
-        config,
-        tools.clone(),
-        tools,
-        &[(dir.to_path_buf(), AgentTypeSource::User)],
-        &[],
-    );
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools,
+        agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
+        ..TestParent::new(model)
+    }
+    .agent_tool();
 
     let resolved = agent_tool.delegate_tools(Some("conflicting"), &[], &[]);
     let names: Vec<String> = resolved
@@ -372,14 +379,14 @@ fn custom_agent_type_model_override_is_applied_to_sub_settings() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-    let agent_tool = AgentTool::with_parent_tools(
-        model,
-        config,
-        tools.clone(),
-        tools,
-        &[(dir.to_path_buf(), AgentTypeSource::User)],
-        &[],
-    );
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools,
+        agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
+        ..TestParent::new(model)
+    }
+    .agent_tool();
 
     // Same lookup `run_sub`/`run_sub_inner` perform: resolve the type's
     // `model` override, then thread it into `sub_settings()`.
@@ -389,15 +396,12 @@ fn custom_agent_type_model_override_is_applied_to_sub_settings() {
         .and_then(|d| d.model);
     assert_eq!(model_override.as_deref(), Some("claude-opus-4-8"));
 
-    let settings = agent_tool.sub_settings(
-        model_override.as_deref(),
-        std::path::PathBuf::from("/tmp/cwd"),
-    );
+    let settings = agent_tool.sub_settings(model_override.as_deref());
     assert_eq!(settings.model.model_name, "claude-opus-4-8");
 
     // A call with no override (or an unknown type) still falls back to
     // the parent's configured model — this must not regress.
-    let settings_default = agent_tool.sub_settings(None, std::path::PathBuf::from("/tmp/cwd"));
+    let settings_default = agent_tool.sub_settings(None);
     assert_eq!(settings_default.model.model_name, "parent-default-model");
 }
 
@@ -582,17 +586,17 @@ fn run_sub_applies_permission_mode_and_max_turns_override_end_to_end() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-    let agent_tool = AgentTool::with_parent_tools(
-        model,
-        config,
-        tools.clone(),
-        tools,
-        &[(dir.to_path_buf(), AgentTypeSource::User)],
-        &[],
-    );
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools,
+        agent_dirs: vec![(dir.to_path_buf(), AgentTypeSource::User)],
+        ..TestParent::new(model)
+    }
+    .agent_tool();
 
     let def = agent_tool.inner.agent_type_def("cautious").unwrap();
-    let mut settings = agent_tool.sub_settings(None, std::path::PathBuf::from("/tmp/cwd"));
+    let mut settings = agent_tool.sub_settings(None);
     apply_agent_type_overrides(&mut settings.values, &def);
     assert_eq!(
         settings.permission_mode,

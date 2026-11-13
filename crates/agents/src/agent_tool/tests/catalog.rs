@@ -178,17 +178,6 @@ fn preload_skills_text_is_empty_when_nothing_resolves() {
 }
 
 #[test]
-fn set_skill_catalog_makes_it_available_via_inner() {
-    let tools = Arc::new(InMemoryToolRegistry::new());
-    let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let config = Arc::new(EngineConfig::defaults_for("test-model"));
-    let agent_tool = AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[]);
-    assert!(agent_tool.inner.skill_manager().is_none());
-    agent_tool.set_skill_catalog(Arc::new(skills::manager::SkillManager::new()));
-    assert!(agent_tool.inner.skill_manager().is_some());
-}
-
-#[test]
 fn tool_name_matches_exact_and_mcp_server_pattern() {
     assert!(AgentTool::tool_name_matches("Read", "Read"));
     assert!(!AgentTool::tool_name_matches("Read", "Write"));
@@ -402,11 +391,11 @@ fn describe_agent_types_lists_every_type_sorted_by_name() {
 #[tokio::test]
 async fn the_real_agent_tools_guide_is_reachable() {
     use base::tool::Tool;
-    let agent_tool = AgentTool::new(
-        Arc::new(DummyModel),
-        Arc::new(base::context::EngineConfig::defaults_for("test")),
-        Arc::new(InMemoryToolRegistry::new()),
-    );
+    let agent_tool = TestParent {
+        config: Arc::new(base::context::EngineConfig::defaults_for("test")),
+        ..TestParent::on(Arc::new(DummyModel), Arc::new(InMemoryToolRegistry::new()))
+    }
+    .agent_tool();
     let guide = agent_tool
         .guide(&base::tool::PromptContext::default())
         .await
@@ -532,18 +521,19 @@ fn a_session_plugins_agent_types_sit_between_the_shared_catalog_and_the_disk() {
     .map(|d| (d.name.clone(), d))
     .collect();
     let tools = Arc::new(InMemoryToolRegistry::new());
-    let tool = AgentTool::with_shared_agent_types(
-        Arc::new(DummyModel),
-        Arc::new(EngineConfig::defaults_for("test-model")),
-        tools.clone(),
-        tools,
-        Arc::new(std::sync::RwLock::new(Arc::new(shared))),
-    )
-    .with_session_agent_types(&[
-        def("builtin", AgentTypeSource::Plugin, "plugin"),
-        def("on-disk", AgentTypeSource::Plugin, "plugin"),
-        def("new", AgentTypeSource::Plugin, "plugin"),
-    ]);
+    let tool = TestParent {
+        config: Arc::new(EngineConfig::defaults_for("test-model")),
+        tools: tools.clone(),
+        template: tools,
+        shared_types: Some(Arc::new(std::sync::RwLock::new(Arc::new(shared)))),
+        session_agent_types: vec![
+            def("builtin", AgentTypeSource::Plugin, "plugin"),
+            def("on-disk", AgentTypeSource::Plugin, "plugin"),
+            def("new", AgentTypeSource::Plugin, "plugin"),
+        ],
+        ..TestParent::new(Arc::new(DummyModel))
+    }
+    .agent_tool();
 
     let prompt = |name: &str| tool.inner.agent_type_def(name).map(|d| d.system_prompt);
     assert_eq!(prompt("builtin").as_deref(), Some("plugin"));

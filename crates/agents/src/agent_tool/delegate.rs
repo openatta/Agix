@@ -6,13 +6,13 @@ use super::*;
 impl AgentTool {
     /// The parent session's state, once wired: where a delegate's task is
     /// registered and whose directory it inherits.
-    pub(crate) fn parent_session_state(&self) -> Option<Arc<base::context::SessionState>> {
-        self.inner.parent_permission.get().map(|p| p.session)
+    pub(crate) fn parent_session_state(&self) -> Arc<base::context::SessionState> {
+        self.inner.env.parent.state.clone()
     }
 
     /// Cancelled when the parent session ends.
     pub(crate) fn parent_session_ended(&self) -> tokio_util::sync::CancellationToken {
-        self.inner.session_ended()
+        self.inner.env.parent.ended.clone()
     }
 
     /// The parent's permission, refusing what it would ask about.

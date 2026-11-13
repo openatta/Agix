@@ -10,12 +10,13 @@ pub(super) fn asking_agent_tool() -> (
     std::path::PathBuf,
     tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
 ) {
-    let (agent_tool, _tools, runs, dir) = wired_agent_tool("code");
-    agent_tool.set_scene(Arc::new(scene::code::CodeScene::default()));
-    wire_parent(&agent_tool, Arc::new(PromptsForEverything));
+    let (parent, _tools, runs, dir) = wired_parent("code");
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
-    agent_tool.set_parent_pending_permissions(Arc::default());
+    let agent_tool = TestParent {
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        ..wire_parent(parent, Arc::new(PromptsForEverything))
+    }
+    .agent_tool();
     (Arc::new(agent_tool), runs, dir, rx)
 }
 
@@ -138,11 +139,14 @@ impl Model for SlowTextModel {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_programs_fan_out_past_the_cap_waits_for_a_slot_instead_of_failing() {
     let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let agent_tool = agent_tool_with_model(Arc::new(SlowTextModel {
-        running: Arc::default(),
-        peak: peak.clone(),
-    }))
-    .with_subagent_slots(SubagentSlots::new(2));
+    let agent_tool = TestParent {
+        slots: SubagentSlots::new(2),
+        ..TestParent::new(Arc::new(SlowTextModel {
+            running: Arc::default(),
+            peak: peak.clone(),
+        }))
+    }
+    .agent_tool();
     let call = |id: &str, from_code: bool| {
         base::tool::Tool::call(
             &agent_tool,

@@ -88,14 +88,9 @@ pub(super) fn settings_from_parent(
     settings
 }
 
-/// Fallback used when no parent `Settings` is available (`AgentTool`
-/// constructed without `.with_settings(...)` — tests, or the generic
-/// `AgentSpawner` bridge which doesn't carry one). Scope is a fixed
-/// `"code"` stand-in since there's no real one to thread through.
-///
-/// The user-level roots hang off `local_data_dir`, not `$HOME`: with no
-/// instance configuration in hand, the invoking user's home is the one
-/// directory this has no grounds to assume it owns.
+/// A parent's `Settings` for tests that do not care which: scope `code`, the
+/// user-level roots under `local_data_dir` rather than `$HOME`.
+#[cfg(test)]
 pub(super) fn fallback_settings(
     model_name: String,
     max_tokens: u32,

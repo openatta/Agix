@@ -77,18 +77,18 @@ impl Inner {
             .model
             .clone()
             .or_else(|| def.as_ref().and_then(|d| d.model.clone()));
-        let mut sub_settings = Inner::sub_settings(self, model_override.as_deref(), cwd.clone());
+        let mut sub_settings = self.sub_settings(model_override.as_deref());
         if let Some(d) = &def {
             apply_agent_type_overrides(&mut sub_settings.values, d);
         }
         if let Some(mode) = run.permission_mode {
             sub_settings.values.permission_mode = mode.min_permissive(sub_settings.permission_mode);
         }
-        let scene = self.scene_for_subagent(def.as_ref(), &sub_settings);
+        let scene = self.scene_for_subagent(def.as_ref());
         let scene_id = scene.id().to_string();
         let permission = match grant {
             Grant::Given(perm) => run.permission(perm),
-            Grant::TeamMember => self.team_member_permission(),
+            Grant::TeamMember => self.permission_handler(),
         };
         let settings = Arc::new(sub_settings);
 
@@ -99,17 +99,15 @@ impl Inner {
         // Resolved once and shared by the sub-agent's own lineage and its `Meta`
         // line — two answers to "who spawned this" that must not be able to
         // disagree.
-        let parent_session_id = parent
-            .map(|(sid, _, _)| sid.to_string())
-            .or_else(|| self.parent_session_id());
+        let parent_session_id = Some(
+            parent
+                .map(|(sid, _, _)| sid.to_string())
+                .unwrap_or_else(|| self.env.parent.id.clone()),
+        );
         // First, so that what the delegate decides for itself below — its
         // permission, narrowed from the parent's — replaces what it inherits.
-        let builder = Builder::new();
-        let builder = match &self.host {
-            Some(host) => builder.inherit(host.clone()),
-            None => builder,
-        };
-        let mut builder = match self.hooks() {
+        let builder = Builder::new().inherit(self.env.host.clone());
+        let mut builder = match self.env.hooks() {
             Some(runner) => builder.hooks(runner),
             None => builder,
         }
@@ -132,7 +130,7 @@ impl Inner {
         if let Some(servers) = self.mcp_granted_to(def.as_ref(), run) {
             builder = builder.mcp_servers(servers);
         }
-        let history_store = self.history_store();
+        let history_store = self.env.host.history_store.clone();
         let (agent, event_rx, input_tx) = builder
             .build()
             .map_err(|e| base::error::ToolError::Execution(anyhow!("build: {e}")))?;
@@ -202,14 +200,14 @@ impl Inner {
         };
         let sid = payload.session_id.clone();
 
-        let prompt = match (&def, self.skill_manager()) {
-            (Some(d), Some(mgr)) if !d.skills.is_empty() => {
-                format!("{}{prompt}", preload_skills_text(mgr.as_ref(), &d.skills))
+        let prompt = match &def {
+            Some(d) if !d.skills.is_empty() => {
+                preload_skills_text(self.env.skills.as_ref(), &d.skills) + &prompt
             }
             _ => prompt,
         };
-        let tag = SubagentTag::new(self, &sid, subagent_type, parent)
-            .map(|tag| tag.for_task(run.task.as_ref()));
+        let tag =
+            Some(SubagentTag::new(self, &sid, subagent_type, parent).for_task(run.task.as_ref()));
 
         // `Stop` fires on both success and failure — a hook that cleans up
         // after a sub-agent must not be skipped just because it errored.
@@ -218,18 +216,16 @@ impl Inner {
         if runs_on == RunsOn::Background {
             open_inbox(run.task.as_deref(), &agent);
         }
-        let spawned = (!run.team_member)
-            .then(|| {
-                SpawnTelemetry::start(
-                    self,
-                    parent,
-                    &sid,
-                    subagent_type,
-                    &settings.model.model_name,
-                    runs_on == RunsOn::Background,
-                )
-            })
-            .flatten();
+        let spawned = (!run.team_member).then(|| {
+            SpawnTelemetry::start(
+                self,
+                parent,
+                &sid,
+                subagent_type,
+                &settings.model.model_name,
+                runs_on == RunsOn::Background,
+            )
+        });
         let (result, cancelled) = match runs_on {
             RunsOn::Foreground => {
                 run_one_turn_detached(

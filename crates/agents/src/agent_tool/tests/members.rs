@@ -7,17 +7,18 @@ pub(super) fn team_key(team: &str, member: &str) -> (String, String) {
 }
 
 pub(super) fn team_enabled_agent_tool() -> AgentTool {
-    let agent_tool = test_agent_tool();
-    agent_tool.set_team_registry(Arc::new(team::registry::TeamRegistry::new()));
-    agent_tool
+    test_parent().with_team().agent_tool()
 }
 
 /// Called directly (not through `spawn_or_message_team_member`, which only
 /// returns a task id) so the built `Agent`'s own scene is inspectable.
 #[tokio::test]
 async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
-    let agent_tool = team_enabled_agent_tool();
-    agent_tool.set_scene(Arc::new(scene::harnix::HarnixScene));
+    let agent_tool = TestParent {
+        scene: Arc::new(scene::harnix::HarnixScene),
+        ..test_parent().with_team()
+    }
+    .agent_tool();
 
     let (agent, _event_rx, _input_tx, _) = agent_tool
         .build_team_member_agent(
@@ -37,9 +38,12 @@ async fn team_member_inherits_the_parents_scene_instead_of_always_coding() {
 /// parent's file watcher is the only one.
 #[tokio::test]
 async fn a_delegate_runs_its_hooks_on_the_parents_runner() {
-    let agent_tool = team_enabled_agent_tool();
     let runner = Arc::new(hooks::HookRunner::empty());
-    agent_tool.set_hooks(runner.clone());
+    let agent_tool = TestParent {
+        hooks: Arc::downgrade(&runner),
+        ..test_parent().with_team()
+    }
+    .agent_tool();
 
     let (agent, _event_rx, _input_tx, _) = agent_tool
         .build_team_member_agent(
@@ -55,12 +59,12 @@ async fn a_delegate_runs_its_hooks_on_the_parents_runner() {
 }
 
 pub(super) fn agent_tool_with_config(config: EngineConfig) -> AgentTool {
-    let tools = Arc::new(InMemoryToolRegistry::new());
-    let model: Arc<dyn Model> = Arc::new(DummyModel);
-    let agent_tool =
-        AgentTool::with_parent_tools(model, Arc::new(config), tools.clone(), tools, &[], &[]);
-    agent_tool.set_team_registry(Arc::new(team::registry::TeamRegistry::new()));
-    agent_tool
+    TestParent {
+        config: Arc::new(config),
+        ..TestParent::new(Arc::new(DummyModel))
+    }
+    .with_team()
+    .agent_tool()
 }
 
 /// Poll until the given key's member has gone idle (finished its most
@@ -509,7 +513,7 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
     let registry = agent_tool
         .inner
         .team_registry
-        .get()
+        .clone()
         .expect("team_enabled_agent_tool sets a registry");
     let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
         Arc::new(crate::spawner::RuntimeAgentSpawner::new(agent_tool.clone()));
@@ -546,7 +550,7 @@ async fn auto_for_a_persistent_member_is_bypass() {
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t-auto", "worker")).await;
 
-    let registry = agent_tool.inner.team_registry.get().unwrap();
+    let registry = agent_tool.inner.team_registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t-auto"),
         Some(base::settings::PermissionMode::BypassPermissions)
@@ -607,7 +611,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t4", "b")).await;
 
-    let registry = agent_tool.inner.team_registry.get().unwrap();
+    let registry = agent_tool.inner.team_registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t4"),
         Some(base::settings::PermissionMode::BypassPermissions),
@@ -641,7 +645,7 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t5", "a")).await;
 
-    let registry = agent_tool.inner.team_registry.get().unwrap();
+    let registry = agent_tool.inner.team_registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t5"),
         Some(base::settings::PermissionMode::Plan),
@@ -812,12 +816,15 @@ impl Model for HoldsUntilCancelled {
 #[ignore = "D2: a stopped member drops its queued messages with their tasks still running (A3)"]
 async fn stopping_a_member_ends_the_tasks_of_its_queued_messages() {
     let held = Arc::new(tokio::sync::Notify::new());
-    let agent_tool = agent_tool_with_model(Arc::new(HoldsUntilCancelled {
-        mark: "FIRST-MESSAGE-MARK",
-        held: held.clone(),
-    }));
     let registry = Arc::new(team::registry::TeamRegistry::new());
-    agent_tool.set_team_registry(registry.clone());
+    let agent_tool = TestParent {
+        team_registry: Some(registry.clone()),
+        ..TestParent::new(Arc::new(HoldsUntilCancelled {
+            mark: "FIRST-MESSAGE-MARK",
+            held: held.clone(),
+        }))
+    }
+    .agent_tool();
     let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
     let send = |prompt: &str| {
         agent_tool.spawn_or_message_team_member(

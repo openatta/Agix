@@ -6,6 +6,11 @@
 //! cannot go unclassified and quietly stop at the first delegation. The
 //! inherited list is `HostContracts` field for field, and `Builder::inherit`
 //! sets every builder field on it.
+//!
+//! DLG-4: what a delegate is built from is captured once, when its parent
+//! session is assembled. Nothing in `agents` or `team` is a slot filled in
+//! after construction: no `SetLater`, no `RwLock<Option<…>>` field, no
+//! `set_*` on `AgentTool` or `Delegator`.
 
 use std::collections::BTreeSet;
 
@@ -242,4 +247,80 @@ fn inherit_sets_every_inherited_builder_field() {
         assigned, wanted,
         "`Builder::inherit` must set exactly the INHERITED builder fields"
     );
+}
+
+const LATE_BINDING_CRATES: &[&str] = &["agents", "team"];
+
+/// Late-bound fields still waiting to go, as `(file, struct.field, why)`.
+/// Only shrinks.
+const LATE_BOUND_RATCHET: &[(&str, &str, &str)] = &[
+    (
+        "crates/team/src/coordinator.rs",
+        "DefaultCoordinator.events",
+        "`Coordinator::set_event_sender`; the team side of D2 (C1) captures it at construction",
+    ),
+    (
+        "crates/team/src/coordinator.rs",
+        "DefaultCoordinator.telemetry",
+        "`Coordinator::set_telemetry_handle`; the team side of D2 (C1) captures it at construction",
+    ),
+];
+
+const NO_SETTERS_ON: &[&str] = &["AgentTool", "Delegator"];
+
+#[test]
+fn delegation_binds_nothing_late() {
+    let mut problems = Vec::new();
+    let mut ratcheted = BTreeSet::new();
+    let mut scanned = 0;
+    for f in ws()
+        .production()
+        .filter(|f| LATE_BINDING_CRATES.contains(&f.package.as_str()))
+    {
+        scanned += 1;
+        for st in scan::structs(f, View::Prod) {
+            if st.name == "SetLater" {
+                problems.push(format!("{}: `SetLater` is back", st.hit));
+            }
+            for field in &st.fields {
+                let ty: String = field.ty.chars().filter(|c| !c.is_whitespace()).collect();
+                if !ty.contains("RwLock<Option<") {
+                    continue;
+                }
+                let key = format!("{}.{}", st.name, field.name.as_deref().unwrap_or("?"));
+                if LATE_BOUND_RATCHET
+                    .iter()
+                    .any(|(file, entry, _)| *file == f.rel && *entry == key)
+                {
+                    ratcheted.insert(key);
+                } else {
+                    problems.push(format!(
+                        "{}: `{key}` is a `RwLock<Option<…>>` filled in after construction; \
+                         take the value when the struct is built",
+                        st.hit
+                    ));
+                }
+            }
+        }
+        for imp in scan::impls(f, View::Prod) {
+            if imp.trait_path.is_some() || !NO_SETTERS_ON.contains(&imp.self_ty.as_str()) {
+                continue;
+            }
+            for item in imp.items.iter().filter(|i| i.starts_with("set_")) {
+                problems.push(format!(
+                    "{}: `{}::{item}` sets what the delegator captured at construction",
+                    imp.hit, imp.self_ty
+                ));
+            }
+        }
+    }
+    guards::allow::non_vacuous("delegation::late_binding_files", scanned, 10);
+    for (_, entry, _) in LATE_BOUND_RATCHET {
+        if !ratcheted.contains(*entry) {
+            problems.push(format!(
+                "`{entry}` is no longer late-bound: take it off LATE_BOUND_RATCHET"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
 }

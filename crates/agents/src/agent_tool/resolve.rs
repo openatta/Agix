@@ -72,23 +72,12 @@ impl AgentTool {
     }
 
     #[cfg(test)]
-    pub(super) fn sub_settings(
-        &self,
-        model_name: Option<&str>,
-        cwd: std::path::PathBuf,
-    ) -> LoadedSettings {
-        Inner::sub_settings(&self.inner, model_name, cwd)
+    pub(super) fn sub_settings(&self, model_name: Option<&str>) -> LoadedSettings {
+        self.inner.sub_settings(model_name)
     }
 
-    /// Create a permission handler appropriate for this sub-agent's context.
-    ///
-    /// Resolution order:
-    /// 1. the parent session's own policy, when wired via
-    ///    [`AgentTool::set_parent_permission`] — so a session using
-    ///    `RuleSetPermission` (or any other real policy) can't have its rules
-    ///    bypassed by spawning a sub-agent;
-    /// 2. [`AlwaysPermit`], for `AgentTool`s built
-    ///    without any wiring (tests, embedders).
+    /// The parent session's own policy, so a session's rules cannot be
+    /// bypassed by spawning a sub-agent.
     pub(crate) fn permission_handler(&self) -> PermissionSet {
         self.inner.permission_handler()
     }

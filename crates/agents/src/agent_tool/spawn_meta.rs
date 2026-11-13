@@ -23,11 +23,11 @@ impl SpawnTelemetry {
         agent_type: Option<&str>,
         model: &str,
         background: bool,
-    ) -> Option<Self> {
-        let handle = inner.telemetry_handle()?;
+    ) -> Self {
+        let handle = inner.env.host.telemetry.clone();
         let (parent_session_id, parent_turn) = match parent {
             Some((sid, turn, _)) => (sid.to_string(), turn),
-            None => (inner.parent_session_id().unwrap_or_default(), 0),
+            None => (inner.env.parent.id.clone(), 0),
         };
         let role = agent_type.unwrap_or("default").to_string();
         let _ = handle.record(telemetry::TelemetryEvent::agent_spawned(
@@ -42,14 +42,14 @@ impl SpawnTelemetry {
                 background,
             },
         ));
-        Some(Self {
+        Self {
             handle,
             parent_session_id,
             parent_turn,
             agent_id: agent_session_id.to_string(),
             role,
             started: std::time::Instant::now(),
-        })
+        }
     }
 
     pub(super) fn finish(self, had_error: bool) {
@@ -151,18 +151,15 @@ pub(super) struct SubagentTag {
 }
 
 impl SubagentTag {
-    /// Build a tag, or `None` when there's no parent channel to forward to
-    /// (in which case the collector degrades to pure text accumulation).
     pub(super) fn new(
         inner: &Inner,
         agent_session_id: &str,
         agent_type: Option<&str>,
         parent: Option<(&str, u32, &str)>,
-    ) -> Option<Self> {
-        let parent_tx = inner.event_tx()?;
+    ) -> Self {
         let (parent_session_id, parent_turn, parent_tool_use_id) = parent.unwrap_or(("", 0, ""));
-        Some(Self {
-            parent_tx,
+        Self {
+            parent_tx: inner.env.parent.events.clone(),
             agent_label: subagent_label(agent_type, agent_session_id),
             agent_session_id: agent_session_id.to_string(),
             agent_type: agent_type.map(str::to_string),
@@ -171,7 +168,7 @@ impl SubagentTag {
             parent_tool_use_id: (!parent_tool_use_id.is_empty())
                 .then(|| parent_tool_use_id.to_string()),
             task_id: None,
-        })
+        }
     }
 
     pub(super) fn for_task(mut self, task: Option<&Arc<base::context::RunningTask>>) -> Self {

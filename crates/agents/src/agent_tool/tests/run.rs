@@ -19,8 +19,13 @@ async fn spawn_background_returns_immediately_with_a_registered_task() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-    let agent_tool =
-        AgentTool::with_parent_tools(model, config, tools.clone(), tools.clone(), &[], &[]);
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools.clone(),
+        ..TestParent::new(model)
+    }
+    .agent_tool();
     use base::interface::agent_spawner::AgentSpawner as _;
     let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
     let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
@@ -80,14 +85,14 @@ fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
     let tools = Arc::new(InMemoryToolRegistry::new());
     let model: Arc<dyn Model> = Arc::new(DummyModel);
     let config = Arc::new(EngineConfig::defaults_for("parent-default-model"));
-    let agent_tool = AgentTool::with_parent_tools(
-        model,
-        config,
-        tools.clone(),
-        tools,
-        &[(dir.clone(), AgentTypeSource::User)],
-        &[],
-    );
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools,
+        agent_dirs: vec![(dir.clone(), AgentTypeSource::User)],
+        ..TestParent::new(model)
+    }
+    .agent_tool();
 
     assert_eq!(
         agent_tool
@@ -129,22 +134,6 @@ fn editing_an_agent_type_file_is_picked_up_without_rebuilding_agent_tool() {
     );
 }
 
-#[test]
-fn sub_settings_without_parent_settings_uses_the_passed_cwd() {
-    // `test_agent_tool()` never calls `.with_settings(...)`, so this
-    // exercises the `fallback_settings()` branch — `local_data_dir` must
-    // reflect the `cwd` argument, not a hardcoded `"."`.
-    let agent_tool = test_agent_tool();
-    let cwd = std::path::PathBuf::from("/tmp/some-real-project");
-    let settings = agent_tool.sub_settings(None, cwd.clone());
-    assert_eq!(settings.paths.local_data_dir, cwd);
-    // And the user-level roots stay inside it: with no parent settings
-    // there is no instance root to inherit, and the invoking user's home
-    // is not a substitute for one.
-    assert!(settings.paths.global_data_dir.starts_with(&cwd));
-    assert!(settings.paths.user_data_dir.starts_with(&cwd));
-}
-
 /// `run_sub` must return when the sub-agent's model call errors —
 /// `DummyModel` always errors. Wrapped in a bounded timeout so a hang
 /// fails this test in 10s instead of hanging the whole test binary.
@@ -179,9 +168,7 @@ async fn run_sub_returns_promptly_on_a_plain_model_error_instead_of_hanging() {
 }
 
 pub(super) fn agent_tool_with_model(model: Arc<dyn Model>) -> AgentTool {
-    let tools = Arc::new(InMemoryToolRegistry::new());
-    let config = Arc::new(EngineConfig::defaults_for("test-model"));
-    AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
+    TestParent::new(model).agent_tool()
 }
 
 pub(super) async fn run_sub_with(agent_tool: &AgentTool) -> Result<String, base::error::ToolError> {

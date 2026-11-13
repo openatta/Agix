@@ -15,7 +15,7 @@ impl AgentTool {
     /// under for its entire lifetime (resolution — explicit override vs.
     /// the team's established grant vs. the safe default — happens in
     /// `spawn_or_message_team_member`, once, not here), held to the parent's
-    /// mode; see `Inner::team_member_permission` for its rules.
+    /// mode.
     pub(super) async fn build_team_member_agent(
         &self,
         tools: Arc<InMemoryToolRegistry>,
@@ -135,7 +135,7 @@ impl AgentTool {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&key);
         }
-        let max_total = self.inner.config.team_max_persistent_members.max(1);
+        let max_total = self.inner.env.config.team_max_persistent_members.max(1);
         let alive = self
             .inner
             .team_members
@@ -156,7 +156,7 @@ impl AgentTool {
         // via `set_team_permission_mode_if_absent` so later spawns under
         // the same `team_name` (even without repeating `permission_mode`)
         // inherit whatever was decided here — "one team, one authorization".
-        let registry = self.inner.team_registry.get();
+        let registry = self.inner.team_registry.clone();
         let resolved_permission_mode = permission_mode
             .or_else(|| {
                 registry
@@ -184,14 +184,14 @@ impl AgentTool {
         self.inner
             .fire_subagent_hook(hooks::HookEvent::SubagentStart, &payload)
             .await;
-        let spawned = SpawnTelemetry::start(
+        let spawned = Some(SpawnTelemetry::start(
             &self.inner,
             None,
             &payload.session_id,
             subagent_type.as_deref(),
             &agent.settings().model.model_name,
             true,
-        );
+        ));
 
         let member_id = format!("member-{}", bg_task_id());
         tracing::debug!(
@@ -201,7 +201,7 @@ impl AgentTool {
             "spawning new persistent team member"
         );
         let (message_tx, message_rx) = tokio::sync::mpsc::unbounded_channel::<PersistentMessage>();
-        let member_cancel = self.inner.session_ended().child_token();
+        let member_cancel = self.inner.env.parent.ended.child_token();
         let task = register(&member_cancel);
         let idle_since = Arc::new(std::sync::atomic::AtomicI64::new(i64::MAX));
         let idle_seq = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
@@ -236,9 +236,7 @@ impl AgentTool {
             idle_seq,
             self.inner.idle_seq_counter.clone(),
             session,
-            self.inner
-                .hooks()
-                .map(|runner| (Arc::downgrade(&runner), payload)),
+            Some((self.inner.env.hooks.clone(), payload)),
             spawned,
         ));
 
@@ -290,8 +288,8 @@ impl AgentTool {
     /// about to message (it still counts toward the total for rule (a),
     /// it's just never itself a victim).
     pub(super) async fn reclaim_idle_team_members(&self, protect: Option<&(String, String)>) {
-        let max_total = self.inner.config.team_max_persistent_members.max(1);
-        let idle_timeout = self.inner.config.team_member_idle_timeout_secs;
+        let max_total = self.inner.env.config.team_max_persistent_members.max(1);
+        let idle_timeout = self.inner.env.config.team_member_idle_timeout_secs;
         let now = now_secs();
 
         let victims: Vec<(String, String)> = {

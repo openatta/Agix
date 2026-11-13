@@ -8,6 +8,7 @@
 //! assembled with the same modules as its parent.
 
 pub mod agent_tool;
+mod delegate;
 pub mod spawner;
 mod type_watcher;
 
@@ -16,7 +17,8 @@ use std::sync::Arc;
 use base::context::EngineConfig;
 use runtime::module::{Module, ModuleError, SessionContext};
 
-use crate::agent_tool::{AgentTool, SharedAgentTypeMap, SubagentSlots};
+use crate::agent_tool::{AgentTool, Parts, SharedAgentTypeMap, SubagentSlots, TypeCatalog};
+use crate::delegate::DelegateEnv;
 use crate::spawner::RuntimeAgentSpawner;
 
 pub const MODULE_ID: &str = "agents";
@@ -72,9 +74,6 @@ impl Module for AgentsModule {
 
     fn on_session(&self, cx: &mut SessionContext<'_>) -> Result<(), ModuleError> {
         let settings = cx.settings;
-        let engine_config = Arc::new(EngineConfig::from_loaded(settings));
-        let max_depth = engine_config.max_agent_depth;
-
         let template = Arc::new(base::tool::InMemoryToolRegistry::new());
         for t in cx.template_tools.list() {
             template.register(t);
@@ -83,47 +82,36 @@ impl Module for AgentsModule {
             .slots
             .clone()
             .unwrap_or_else(|| SubagentSlots::new(settings.execution.max_concurrent_subagents));
-        let tool = match &self.shared_types {
-            Some(shared) => AgentTool::with_shared_agent_types(
-                cx.model.clone(),
-                engine_config,
-                cx.tools.clone(),
-                template,
-                shared.clone(),
-            )
-            .with_session_agent_types(cx.plugin_agent_types),
-            None => AgentTool::with_parent_tools(
-                cx.model.clone(),
-                engine_config,
-                cx.tools.clone(),
-                template,
-                &agent_tool::agent_type_dirs(settings),
-                cx.plugin_agent_types,
-            ),
-        }
-        .with_settings(settings.clone())
-        .with_depth(cx.depth)
-        .with_subagent_slots(slots.clone())
-        .with_host(runtime::agent::HostContracts {
-            modules: self.for_delegates(&cx.host.modules, &slots),
-            ..cx.host.clone()
-        })
-        .with_plugin_tools(cx.plugin_tools);
-        let tool = Arc::new(tool);
+        // The setting is the operator's switch; the scene's capability is what
+        // the scene is for. A scene that does no teamwork never shows the
+        // model these tools, rather than showing and refusing them.
+        let team_registry = (settings.execution.team_enabled && cx.scene.supports_team())
+            .then(|| Arc::new(team::registry::TeamRegistry::new()));
 
-        // For `AgentTypeDefinition.mcp_servers` and `.skills`: a delegate is
-        // granted a subset of what its parent already has connected/loaded.
-        if let Some(servers) = cx.mcp_for_delegates() {
-            tool.set_mcp_servers(servers);
-        }
-        tool.set_skill_catalog(cx.skill_catalog());
-        tool.set_event_sender(cx.events.clone());
-        tool.set_hooks(cx.hooks.clone());
-        tool.set_session_ended(cx.session_ended());
-        tool.set_parent_permission(cx.host.permission.clone(), cx.session_state.clone());
-        tool.set_parent_pending_permissions(cx.pending_permissions.clone());
-        tool.set_scene(cx.scene.clone());
-        tool.set_parent_session_id(cx.session_id.to_string());
+        let mut env = DelegateEnv::capture(cx);
+        env.host.modules = self.for_delegates(&cx.host.modules, &slots);
+        let agent_dirs = agent_tool::agent_type_dirs(settings);
+        let types = match &self.shared_types {
+            Some(shared) => TypeCatalog::Shared {
+                map: shared.clone(),
+                session_types: cx.plugin_agent_types,
+            },
+            None => TypeCatalog::Watched {
+                dirs: &agent_dirs,
+                plugin_types: cx.plugin_agent_types,
+            },
+        };
+        let tool = Arc::new(AgentTool::new(
+            env,
+            Parts {
+                types,
+                template,
+                parent_tools: cx.tools.clone(),
+                plugin_tools: cx.plugin_tools,
+                slots,
+                team_registry: team_registry.clone(),
+            },
+        ));
 
         let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
             Arc::new(RuntimeAgentSpawner::new(tool.clone()));
@@ -131,18 +119,11 @@ impl Module for AgentsModule {
 
         // Withheld at the depth limit, so the deepest agents are never even
         // offered it.
-        if cx.depth < max_depth {
+        if cx.depth < EngineConfig::from_loaded(settings).max_agent_depth {
             cx.tools.register(tool.clone());
         }
 
-        // The setting is the operator's switch; the scene's capability is what
-        // the scene is for. A scene that does no teamwork never shows the
-        // model these tools, rather than showing and refusing them.
-        if settings.execution.team_enabled && cx.scene.supports_team() {
-            // Shared by all three tools and by the `Agent` tool itself, which
-            // spawns persistent members too (`team_name` + `name`).
-            let registry = Arc::new(team::registry::TeamRegistry::new());
-            tool.set_team_registry(registry.clone());
+        if let Some(registry) = team_registry {
             let create = Arc::new(team::tool::TeamCreateTool::with_spawner(
                 cx.model.clone(),
                 cx.config.clone(),

@@ -78,9 +78,13 @@ async fn start_in_background(agent_tool: &AgentTool, ctx: ToolContext) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_background_sub_agent_and_a_team_member_record_who_spawned_them_and_as_what() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let agent_tool = agent_tool_with_model(Arc::new(LineageModel { seen: seen.clone() }));
-    agent_tool.set_parent_session_id("parent-session-1".into());
-    agent_tool.set_team_registry(Arc::new(team::registry::TeamRegistry::new()));
+    let parent = TestParent::new(Arc::new(LineageModel { seen: seen.clone() }));
+    let agent_tool = TestParent {
+        id: "parent-session-1".into(),
+        team_registry: Some(Arc::new(team::registry::TeamRegistry::new())),
+        ..parent
+    }
+    .agent_tool();
     let expected = (
         Some("parent-session-1".to_string()),
         Some("explore".to_string()),
@@ -112,11 +116,15 @@ async fn a_background_sub_agent_and_a_team_member_record_who_spawned_them_and_as
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_background_sub_agents_progress_names_the_call_that_started_it() {
-    let agent_tool = agent_tool_with_model(Arc::new(LineageModel {
+    let parent = TestParent::new(Arc::new(LineageModel {
         seen: Default::default(),
     }));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
+    let agent_tool = TestParent {
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        ..parent
+    }
+    .agent_tool();
 
     start_in_background(&agent_tool, parent_ctx()).await;
 
@@ -198,19 +206,23 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
         let tools = Arc::new(InMemoryToolRegistry::new());
         let (mut settings, dir) = parent_settings_for_test("code");
         settings.values.permission_mode = parent_mode;
-        let agent_tool = AgentTool::with_parent_tools(
-            Arc::new(ProbeThenTextModel {
+        let agent_tool = TestParent {
+            config: Arc::new(EngineConfig::defaults_for("test-model")),
+            tools: tools.clone(),
+            template: tools,
+            settings: Some(settings),
+            // Not interactive: what would be asked is refused instead.
+            scene: Arc::new(super::lifecycle::SceneWithProbe),
+            permission: Some(PermissionSet::of(Arc::new(
+                permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
+                    permissions::gate::PermissionGate::empty(),
+                )),
+            ))),
+            ..TestParent::new(Arc::new(ProbeThenTextModel {
                 calls: Default::default(),
-            }),
-            Arc::new(EngineConfig::defaults_for("test-model")),
-            tools.clone(),
-            tools,
-            &[],
-            &[],
-        )
-        .with_settings(Arc::new(settings));
-        // Not interactive: what would be asked is refused instead.
-        agent_tool.set_scene(Arc::new(super::lifecycle::SceneWithProbe));
+            }))
+        }
+        .agent_tool();
 
         crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool))
             .spawn(
@@ -293,12 +305,15 @@ async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_
     let spawner_cell = Arc::new(std::sync::OnceLock::new());
     let nested = Arc::new(std::sync::Mutex::new(None));
     let slots = SubagentSlots::new(1);
-    let agent_tool = agent_tool_with_model(Arc::new(GuardThatAsksForAGuard {
-        spawner: spawner_cell.clone(),
-        asked: Arc::default(),
-        nested: nested.clone(),
-    }))
-    .with_subagent_slots(slots.clone());
+    let agent_tool = TestParent {
+        slots: slots.clone(),
+        ..TestParent::new(Arc::new(GuardThatAsksForAGuard {
+            spawner: spawner_cell.clone(),
+            asked: Arc::default(),
+            nested: nested.clone(),
+        }))
+    }
+    .agent_tool();
     let spawner: Arc<dyn AgentSpawner> = Arc::new(crate::spawner::RuntimeAgentSpawner::new(
         Arc::new(agent_tool),
     ));
@@ -375,16 +390,19 @@ async fn a_delegate_runs_on_its_parents_host_contracts() {
     let counter = Arc::new(CountingCounter::default());
     let rules = Arc::new(CountingRules::default());
     let (settings, dir) = parent_settings_for_test("code");
-    let agent_tool = agent_tool_with_model(Arc::new(LineageModel {
-        seen: Default::default(),
-    }))
-    .with_settings(Arc::new(settings))
-    .with_host(runtime::agent::HostContracts {
-        exec: providers,
-        token_counter: counter.clone(),
-        rules: rules.clone(),
-        ..host_contracts()
-    });
+    let agent_tool = TestParent {
+        settings: Some(settings),
+        host: Some(runtime::agent::HostContracts {
+            exec: providers,
+            token_counter: counter.clone(),
+            rules: rules.clone(),
+            ..host_contracts()
+        }),
+        ..TestParent::new(Arc::new(LineageModel {
+            seen: Default::default(),
+        }))
+    }
+    .agent_tool();
 
     let ran = agent_tool
         .run_sub(
@@ -447,16 +465,7 @@ async fn the_delegator_maps_each_mode_onto_the_existing_runs() {
             call(),
         )
     };
-    assert!(matches!(
-        delegator.delegate(background()).await,
-        Err(DelegateError::Unsupported(_))
-    ));
-
-    let session = Arc::new(base::context::SessionState::new(std::env::temp_dir()));
-    agent_tool.set_parent_permission(
-        PermissionSet::without_grants(Arc::new(AlwaysPermit)),
-        session.clone(),
-    );
+    let session = agent_tool.parent_session_state();
     let Ok(Delegated::Started(started)) = delegator.delegate(background()).await else {
         panic!("the background delegate was not started");
     };
@@ -497,7 +506,11 @@ async fn a_delegate_is_assembled_on_its_parents_host_contracts() {
         modules: vec![probe.clone()],
         ..host_contracts()
     };
-    let agent_tool = test_agent_tool().with_host(parent.clone());
+    let agent_tool = TestParent {
+        host: Some(parent.clone()),
+        ..test_parent()
+    }
+    .agent_tool();
     let _delegate = agent_tool
         .build_team_member_agent(
             Arc::new(InMemoryToolRegistry::new()),

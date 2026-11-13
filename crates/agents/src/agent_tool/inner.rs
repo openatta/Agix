@@ -122,197 +122,44 @@ pub(super) struct Admission {
     pub(super) _slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
-/// Parent-session state wired after the `AgentTool` is built; every clone of
-/// `Inner` sees the same value.
-pub(super) struct SetLater<T>(Arc<std::sync::RwLock<T>>);
-
-impl<T: Clone> SetLater<T> {
-    pub(super) fn get(&self) -> T {
-        self.0
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    pub(super) fn set(&self, value: T) {
-        *self
-            .0
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
-    }
-}
-
-impl<T: Default> Default for SetLater<T> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
-
-impl<T> Clone for SetLater<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-#[derive(Clone)]
 pub(super) struct Inner {
-    pub(super) model: Arc<dyn Model>,
-    pub(super) config: Arc<EngineConfig>,
+    pub(super) env: crate::delegate::DelegateEnv,
     /// What the parent session was built from.
     pub(super) fallback_tools: Arc<InMemoryToolRegistry>,
     /// The parent session's own registry, as it stands when a delegate spawns.
     pub(super) parent_tools: Arc<InMemoryToolRegistry>,
-    /// Delegation depth of the agent that *owns* this tool, not of the
-    /// children it spawns — those get `depth + 1` (see `spawn_guard`).
-    pub(super) depth: u32,
     /// Sub-agents running anywhere under the root session; shared by every
     /// delegate's `AgentTool` (see `AgentsModule::for_delegates`).
     pub(super) subagent_slots: SubagentSlots,
     pub(super) hook_agents: HookAgents,
-    /// Built-in types merged with any disk-loaded custom types (see
-    /// `merge_agent_types`). Keyed by `subagent_type` name. `RwLock<Arc<..>>`
-    /// (not a plain `Arc<..>`) so `agent_type_watcher::AgentTypeWatcher` can
-    /// swap the whole map in place when a `.agix/agents/*.md` file changes —
-    /// readers clone the inner `Arc` out under a brief read lock (see
-    /// `Inner::agent_type_def`) rather than holding the guard, so a lookup
-    /// never blocks a concurrent reload or vice versa.
+    /// Swapped in place by the watcher; readers clone the inner `Arc` out
+    /// rather than hold the guard (see `Inner::agent_type_def`).
     pub(super) agent_types: SharedAgentTypeMap,
-    /// Kept alive only so the watcher's background thread keeps running —
-    /// dropped (and thus stopped) only once every clone of this `Inner` is
-    /// gone. `None` when watching wasn't set up (no watched dirs existed, or
-    /// `notify` setup failed) — degrades to the pre-watcher behavior of a
-    /// build-time-only catalog, same as `SkillManager::enable_watching`'s
-    /// failure mode.
+    /// Kept alive only so the watcher's thread keeps running.
     pub(super) _agent_type_watcher: Option<Arc<crate::type_watcher::AgentTypeWatcher>>,
-    /// Precomputed from the catalog at construction time — see
-    /// `describe_agent_types`. Deliberately **not** kept live-reloaded like
-    /// `agent_types` itself: `Tool::description(&self) -> &str` returns a
-    /// borrowed `&str`, which can't be produced from data read out from
-    /// behind a lock inside the function body (nothing to borrow it from).
-    /// Net effect: a subagent_type added on disk after this `AgentTool` was
-    /// built becomes *usable* immediately (via `agent_type_def`), but won't
-    /// appear in the model-facing catalog text (`description()`) until the
-    /// next full rebuild.
+    /// Computed once: `Tool::description` hands out a borrowed `&str`, which
+    /// cannot come from behind the catalog's lock. A type added on disk later
+    /// is usable at once but not listed until the next rebuild.
     pub(super) description: Arc<str>,
-    /// The parent `Agent`'s own settings, when known (set via
-    /// `.with_settings(...)`) — `sub_settings()`/`run_sub_inner()` clone this
-    /// (overriding only the model fields) instead of a hardcoded
-    /// `scope: "code"` stand-in, so a sub-agent's skills/hooks/agents
-    /// lookups resolve against the parent's *real* scope, not a guess.
-    /// `None` when unset (e.g. in tests, or the generic `AgentSpawner`
-    /// bridge) falls back to a hardcoded `"code"` scope.
-    pub(super) parent_settings: Option<Arc<LoadedSettings>>,
-    /// What the parent session was built on, which every delegate is built
-    /// on too; its modules are the ones a delegate is assembled with. `None`
-    /// for an `AgentTool` built on its own.
-    pub(super) host: Option<runtime::agent::HostContracts>,
-    /// The tools those plugins registered in this session. A delegate is not
+    /// The tools the parent's plugins registered in it. A delegate is not
     /// handed these copies: its own plugins register its own.
     pub(super) plugin_tools: Arc<std::collections::HashSet<String>>,
     /// Agent types this session's plugins declare, over the shared catalog:
     /// above built-in and package types, below the ones on disk.
     pub(super) session_agent_types: Arc<std::collections::HashMap<String, AgentTypeDefinition>>,
-    /// The parent session's `SkillManager`, when known — used to resolve
-    /// the `skills:` preload field on `AgentTypeDefinition`. Set via
-    /// `AgentTool::set_skill_catalog` *after* construction (interior
-    /// mutability, `RwLock` not a plain field) because the catalog is set
-    /// later in the same assembly (`AgentsModule::on_session` in
-    /// `agents/src/lib.rs`). `None` (tests,
-    /// the generic `AgentSpawner` bridge) means `skills:` preload is
-    /// silently skipped, matching how `parent_settings`/`task_router`
-    /// absence degrades elsewhere in this struct.
-    pub(super) skill_manager:
-        SetLater<Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>>>,
-    /// The parent session's MCP servers, as a delegate's grant is narrowed
-    /// from: a share of its connections taken when the session was built.
-    /// Servers that finish connecting later are not in it.
-    pub(super) delegate_mcp: SetLater<Option<Arc<dyn base::interface::mcp_servers::McpServers>>>,
-    /// The shared `TeamRegistry` `AgentsModule::on_session` also hands to
-    /// `TeamCreate`/`TeamList`/`TeamDelete` — so persistent team members
-    /// (spawned here, not through those tools) update the same state
-    /// `TeamList` reads. Same interior-mutability / set-after-construction
-    /// pattern as `skill_manager`/`delegate_mcp`: `None` when team
-    /// coordination isn't enabled for this session (`settings.execution.
-    /// team_enabled == false`) or in tests that don't wire it — persistent
-    /// team members just don't update `TeamList`'s view in that case (they
-    /// still work; `TeamList` isn't reachable either when team_enabled is
-    /// off, since it isn't registered).
-    pub(super) team_registry: SetLater<Option<Arc<team::registry::TeamRegistry>>>,
+    /// Shared with `TeamCreate`/`TeamList`/`TeamDelete`; `None` when team
+    /// coordination is off for this session.
+    pub(super) team_registry: Option<Arc<team::registry::TeamRegistry>>,
     /// Live persistent team members, keyed by `(team_name, member_name)`.
-    /// See `AgentTool::spawn_or_message_team_member`'s doc comment for the
-    /// full mechanism. Scoped to this `AgentTool` (i.e. this session) —
-    /// members don't survive a daemon restart or migrate across sessions.
     pub(super) team_members:
         Arc<std::sync::RwLock<std::collections::HashMap<(String, String), PersistentMember>>>,
-    /// Source of `PersistentMember::idle_seq` values — one counter shared
-    /// by every member in this session, so "oldest idle" has a single,
-    /// unambiguous, collision-free ordering across all of them.
+    /// Source of `PersistentMember::idle_seq`: one counter for every member
+    /// of the session, so "oldest idle" has a single ordering.
     pub(super) idle_seq_counter: Arc<std::sync::atomic::AtomicU64>,
-    /// Serializes `spawn_or_message_team_member`'s whole find-or-create
-    /// decision. Without this, two concurrent calls for the same
-    /// `(team_name, member_name)` key (the `Agent` tool is
-    /// `concurrency_safe`, so this is reachable — e.g. the model issuing
-    /// two parallel tool calls that both target the same not-yet-existing
-    /// member) can both read "doesn't exist yet" before either has
-    /// inserted, and both spawn — the second insert silently overwrites the
-    /// first's map entry while its loop keeps running orphaned, unreachable
-    /// and never reclaimed. One session-wide lock (not per-key) is enough:
-    /// the section it guards is cheap (map lookup/insert, sync `Agent`
-    /// construction, no real I/O), so serializing it isn't a meaningful
-    /// bottleneck for something that isn't a hot path to begin with.
+    /// Serializes `spawn_or_message_team_member`'s find-or-create: two
+    /// concurrent calls for one new key would otherwise both spawn, and the
+    /// second insert would orphan the first member's loop.
     pub(super) team_spawn_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The **parent session's** event channel. Every event a sub-agent emits
-    /// is re-emitted here wrapped in `AgentEvent::SubagentProgress`, so the
-    /// host can render sub-agent activity live instead of seeing a long
-    /// pause followed by a wall of text. `None` (tests, embedders that
-    /// never call `set_event_sender`): events are still collected internally
-    /// into the returned text, they just aren't mirrored anywhere.
-    ///
-    /// Same interior-mutability, set-after-construction pattern as
-    /// `skill_manager` — `Builder::build()` creates the `AgentTool` before it
-    /// creates the session's event channel.
-    pub(super) event_tx: SetLater<Option<runtime::agent::EventSender>>,
-    /// The parent session's hook runner, so sub-agent spawns can fire
-    /// `SubagentStart`/`SubagentStop`. Same set-after-construction pattern as
-    /// `event_tx` — `Builder::build()` constructs the `AgentTool` before the
-    /// `HookRunner` exists. `None` (tests, embedders that never wire it)
-    /// fires nothing. Weak: the runner's `"agent"` hooks spawn through this
-    /// tool, and a strong edge back would keep both alive past the session.
-    pub(super) hooks: SetLater<Option<std::sync::Weak<hooks::HookRunner>>>,
-    /// Cancelled when the parent session ends; every persistent team
-    /// member's token is a child of it.
-    pub(super) session_ended: SetLater<tokio_util::sync::CancellationToken>,
-    /// The **parent session's** permission and state. Sub-agent permission
-    /// checks are routed here instead of being hard-permitted, so a session
-    /// that opts into a real permission can't be bypassed just by spawning a
-    /// sub-agent. `None` means `AlwaysPermit`, for `AgentTool`s built without
-    /// wiring (tests).
-    pub(super) parent_permission: SetLater<Option<ParentSide>>,
-    /// The **parent agent's** pending-permission registry, so a sub-agent's
-    /// `Prompt` outcome can be turned into a real, answerable question
-    /// instead of an automatic refusal.
-    ///
-    /// A sub-agent has no channel of its own to a human; the parent does.
-    /// Registering the prompt here and emitting it on `event_tx` puts it in
-    /// front of the same host that answers the parent's own prompts, via the
-    /// same `session.respondToPrompt` RPC. `None` (unwired embedders) refuses
-    /// with an explanation.
-    pub(super) parent_pending_permissions: SetLater<Option<runtime::agent::PendingPermissions>>,
-    /// The parent agent's scene. Sub-agents inherit it rather than
-    /// always being built as `CodeScene`. `None` falls
-    /// back to resolving `Settings.paths.scope` via `resolve_scene_id`, then to
-    /// `CodeScene`.
-    pub(super) parent_scene: SetLater<Option<Arc<dyn Scene>>>,
-    /// The parent `Agent`'s own session id, so a freshly spawned sub-agent's
-    /// first `Meta` line can record `parent_session_id` and thereby become
-    /// discoverable via `HistoryStore::child_sessions`. Same set-after-
-    /// construction pattern as `event_tx`/`hooks`/`history_store` —
-    /// `Builder::build()` creates the `AgentTool` before its own session id
-    /// is finalized. `None` (tests, embedders that never call
-    /// `set_parent_session_id`) means spawned sub-agents' `Meta` lines are
-    /// written with `parent_session_id: None` — they still persist, they're
-    /// just not linkable back to a parent.
-    pub(super) parent_session_id: SetLater<Option<String>>,
 }
 
 impl Inner {
@@ -386,28 +233,20 @@ impl Inner {
     }
 
     pub(super) fn spawn_guard(&self) -> Result<u32, String> {
-        let max = self.config.max_agent_depth;
-        if self.depth >= max {
+        let max = self.env.config.max_agent_depth;
+        if self.env.depth >= max {
             return Err(format!(
                 "Delegation depth limit reached ({max}). This agent is already {} \
                  level(s) deep and cannot spawn another sub-agent. Complete the \
                  task directly instead of delegating it.",
-                self.depth
+                self.env.depth
             ));
         }
-        Ok(self.depth + 1)
-    }
-
-    pub(super) fn hooks(&self) -> Option<Arc<hooks::HookRunner>> {
-        self.hooks.get().and_then(|runner| runner.upgrade())
-    }
-
-    pub(super) fn session_ended(&self) -> tokio_util::sync::CancellationToken {
-        self.session_ended.get()
+        Ok(self.env.depth + 1)
     }
 
     pub(super) async fn fire_subagent_hook(&self, event: hooks::HookEvent, sub: &SubagentPayload) {
-        if let Some(runner) = self.hooks() {
+        if let Some(runner) = self.env.hooks() {
             sub.fire(&runner, event).await;
         }
     }
@@ -420,9 +259,9 @@ impl Inner {
     /// key here is always the literal `"subagent"` task type regardless of
     /// which `subagent_type` was requested.
     pub(super) fn model_for_subagent(&self) -> Arc<dyn Model> {
-        match self.host.as_ref().and_then(|h| h.task_router.as_ref()) {
+        match &self.env.host.task_router {
             Some(router) => router.model_for("subagent"),
-            None => self.model.clone(),
+            None => self.env.model.clone(),
         }
     }
 
@@ -447,12 +286,6 @@ impl Inner {
         }
     }
 
-    pub(super) fn skill_manager(
-        &self,
-    ) -> Option<Arc<dyn base::interface::skill_catalog::SkillCatalog>> {
-        self.skill_manager.get()
-    }
-
     /// The MCP servers a delegate of type `def` is granted: the parent's named
     /// in the type's `mcp_servers`, narrowed further by the run's tool lists.
     pub(super) fn mcp_granted_to(
@@ -461,7 +294,7 @@ impl Inner {
         run: &SubRun,
     ) -> Option<Box<dyn base::interface::mcp_servers::McpServers>> {
         let def = def.filter(|d| !d.mcp_servers.is_empty())?;
-        let Some(parent) = self.delegate_mcp.get() else {
+        let Some(parent) = &self.env.mcp else {
             tracing::warn!(
                 agent_type = %def.name,
                 "agent type names mcp_servers, but this session has no MCP servers to grant"
@@ -477,22 +310,6 @@ impl Inner {
             allowed: run.allowed_tools.clone(),
             disallowed: run.disallowed_tools.clone(),
         }))
-    }
-
-    pub(super) fn event_tx(&self) -> Option<runtime::agent::EventSender> {
-        self.event_tx.get()
-    }
-
-    pub(super) fn history_store(&self) -> Option<Arc<dyn HistoryStore>> {
-        self.host.as_ref().and_then(|h| h.history_store.clone())
-    }
-
-    pub(super) fn parent_session_id(&self) -> Option<String> {
-        self.parent_session_id.get()
-    }
-
-    pub(super) fn telemetry_handle(&self) -> Option<TelemetryHandle> {
-        self.host.as_ref().map(|h| h.telemetry.clone())
     }
 
     /// See `AgentTool::permission_handler` — same resolution, reachable from
@@ -512,15 +329,14 @@ impl Inner {
 
     /// `permission_handler_for`, where `can_ask: false` refuses what the
     /// parent's rules leave to a question instead of taking it to the host.
+    /// A team member's is this one too, judged in the member's own mode.
     pub(super) fn permission_handler_asking(
         &self,
         task: Option<Arc<base::context::RunningTask>>,
         can_ask: bool,
     ) -> PermissionSet {
-        let Some(parent) = self.parent_permission.get() else {
-            return PermissionSet::without_grants(Arc::new(AlwaysPermit));
-        };
-        let policy = parent.permission.policy.clone();
+        let env = &self.env;
+        let policy = env.host.permission.policy.clone();
         PermissionSet {
             policy: Arc::new(ParentPermission {
                 parent: if can_ask {
@@ -528,49 +344,28 @@ impl Inner {
                 } else {
                     Arc::new(NoPrompt(policy))
                 },
-                parent_grants: parent.permission.grants.clone(),
-                parent_session: parent.session,
-                event_tx: self.event_tx(),
-                pending: self.parent_pending_permissions.get(),
-                timeout_secs: self.config.permission_prompt_timeout_secs,
+                parent_grants: env.host.permission.grants.clone(),
+                parent_session: env.parent.state.clone(),
+                event_tx: env.parent.events.clone(),
+                pending: env.parent.pending_permissions.clone(),
+                timeout_secs: env.config.permission_prompt_timeout_secs,
                 task,
-                parent_exec: self.host.as_ref().map(|h| h.exec.clone()),
+                parent_exec: env.host.exec.clone(),
             }),
-            grants: Arc::new(ParentGrants(parent.permission.grants)),
+            grants: Arc::new(ParentGrants(env.host.permission.grants.clone())),
         }
     }
 
-    /// A team member's permission: the parent's, judged in the member's own
-    /// mode, as any sub-agent's is — the parent's deny rules and its host's
-    /// answers reach the member. With no parent wired (an `AgentTool` built
-    /// on its own) there are no rules to inherit, and the member is judged by
-    /// its mode alone.
-    pub(super) fn team_member_permission(&self) -> PermissionSet {
-        let wired = self.parent_permission.get().is_some();
-        if wired {
-            return self.permission_handler();
-        }
-        PermissionSet::of(Arc::new(
-            permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-                permissions::gate::PermissionGate::empty(),
-            )),
-        ))
-    }
-
-    /// Build a sub-agent's `Settings`, inheriting the parent's when known.
-    pub(super) fn sub_settings(
-        inner: &Inner,
-        model_name: Option<&str>,
-        cwd: std::path::PathBuf,
-    ) -> LoadedSettings {
-        let c = &inner.config;
+    /// A sub-agent's `Settings`: the parent's, with its own model.
+    pub(super) fn sub_settings(&self, model_name: Option<&str>) -> LoadedSettings {
+        let c = &self.env.config;
         let model_name = model_name.unwrap_or(&c.model).to_string();
-        match &inner.parent_settings {
-            Some(parent) => {
-                settings_from_parent(parent, model_name, c.max_tokens, c.fallback_model.clone())
-            }
-            None => fallback_settings(model_name, c.max_tokens, c.fallback_model.clone(), cwd),
-        }
+        settings_from_parent(
+            &self.env.settings,
+            model_name,
+            c.max_tokens,
+            c.fallback_model.clone(),
+        )
     }
 
     /// The tools a delegate starts from: the ones its parent was built from
@@ -594,17 +389,10 @@ impl Inner {
 
     /// The scene a sub-agent should run in.
     ///
-    /// Precedence: the agent type's own `scene:` override > the parent's
-    /// scene (wired via `AgentTool::set_scene`) > the scene named by
-    /// `Settings.paths.scope` > `CodeScene`. The last two steps mean a
-    /// daemon session inherits correctly even without explicit wiring: the
-    /// daemon sets `scope` to `scene.id()`.
-    pub(super) fn scene_for_subagent(
-        &self,
-        def: Option<&AgentTypeDefinition>,
-        settings: &LoadedSettings,
-    ) -> Arc<dyn Scene> {
-        let parent = self.parent_scene.get();
+    /// The agent type's own `scene:` when it is no wider than the parent's,
+    /// otherwise the parent's.
+    pub(super) fn scene_for_subagent(&self, def: Option<&AgentTypeDefinition>) -> Arc<dyn Scene> {
+        let parent = &self.env.scene;
         if let Some(name) = def.and_then(|d| d.scene.as_deref()) {
             match self.resolve_scene_id(name) {
                 Some(requested) => {
@@ -624,8 +412,8 @@ impl Inner {
                     // "Narrower" is judged by tool surface: the requested
                     // scene is accepted only when everything it exposes is
                     // also exposed by the parent.
-                    match parent.as_ref() {
-                        Some(p) if !scene_is_narrower_or_equal(requested.as_ref(), p.as_ref()) => {
+                    match parent {
+                        p if !scene_is_narrower_or_equal(requested.as_ref(), p.as_ref()) => {
                             tracing::warn!(
                                 scene = %name,
                                 parent_scene = %p.name(),
@@ -646,11 +434,7 @@ impl Inner {
                 }
             }
         }
-        if let Some(parent) = parent {
-            return parent;
-        }
-        self.resolve_scene_id(&settings.paths.scope)
-            .unwrap_or_else(|| Arc::new(scene::code::CodeScene::default()))
+        parent.clone()
     }
 
     /// A scene id resolved against the host's registry when one was wired,
@@ -659,7 +443,7 @@ impl Inner {
     /// would silently fall through to "unrecognized scene" and inherit the
     /// parent's instead.
     pub(super) fn resolve_scene_id(&self, id: &str) -> Option<Arc<dyn Scene>> {
-        if let Some(registry) = self.host.as_ref().and_then(|h| h.scene_registry.as_ref()) {
+        if let Some(registry) = &self.env.host.scene_registry {
             return registry.resolve(id);
         }
         builtin_scene_by_id(id)

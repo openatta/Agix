@@ -185,12 +185,12 @@ impl PermissionPolicy for RecordingPermission {
     }
 }
 
-/// Build an `AgentTool` wired the way `Builder::build()` wires it, with a
-/// scripted model and a `Probe` tool the sub-agent can call.
-pub(super) fn wired_agent_tool(
+/// A parent wired the way `Builder::build()` wires it, with a scripted model
+/// and a `Probe` tool the sub-agent can call.
+pub(super) fn wired_parent(
     scope: &str,
 ) -> (
-    AgentTool,
+    TestParent,
     Arc<InMemoryToolRegistry>,
     Arc<std::sync::atomic::AtomicUsize>,
     std::path::PathBuf,
@@ -199,15 +199,29 @@ pub(super) fn wired_agent_tool(
     let tools = InMemoryToolRegistry::new();
     tools.register(Arc::new(CountingProbeTool { runs: runs.clone() }));
     let tools = Arc::new(tools);
-    let model: Arc<dyn Model> = Arc::new(ProbeThenTextModel {
-        calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-    });
-    let config = Arc::new(EngineConfig::defaults_for("test-model"));
     let (settings, dir) = parent_settings_for_test(scope);
-    let agent_tool =
-        AgentTool::with_parent_tools(model, config, tools.clone(), tools.clone(), &[], &[])
-            .with_settings(Arc::new(settings));
-    (agent_tool, tools, runs, dir)
+    let parent = TestParent {
+        settings: Some(settings),
+        ..TestParent::on(
+            Arc::new(ProbeThenTextModel {
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }),
+            tools.clone(),
+        )
+    };
+    (parent, tools, runs, dir)
+}
+
+pub(super) fn wired_agent_tool(
+    scope: &str,
+) -> (
+    AgentTool,
+    Arc<InMemoryToolRegistry>,
+    Arc<std::sync::atomic::AtomicUsize>,
+    std::path::PathBuf,
+) {
+    let (parent, tools, runs, dir) = wired_parent(scope);
+    (parent.agent_tool(), tools, runs, dir)
 }
 
 /// A sub-agent spawned with a history store and a parent session id
@@ -216,7 +230,7 @@ pub(super) fn wired_agent_tool(
 /// `session.list {parent_session_id}`) find it.
 #[tokio::test]
 async fn subagent_transcript_is_written_as_a_linked_sidechain() {
-    let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
+    let (parent, tools, _runs, dir) = wired_parent("code");
     let history_dir = std::env::temp_dir().join(format!(
         "agix-subagent-history-test-{}-{}",
         std::process::id(),
@@ -233,11 +247,15 @@ async fn subagent_transcript_is_written_as_a_linked_sidechain() {
         .await
         .unwrap(),
     );
-    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
-        history_store: Some(store.clone()),
-        ..host_contracts()
-    });
-    agent_tool.set_parent_session_id("parent-session-1".to_string());
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            history_store: Some(store.clone()),
+            ..host_contracts()
+        }),
+        id: "parent-session-1".to_string(),
+        ..parent
+    }
+    .agent_tool();
 
     let _text = agent_tool
         .run_sub_tagged(
@@ -285,7 +303,7 @@ async fn subagent_transcript_is_written_as_a_linked_sidechain() {
 /// than being rejected as `SIDECHAIN_TERMINAL`.
 #[tokio::test]
 async fn cancelled_subagent_run_writes_no_terminal_marker() {
-    let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
+    let (parent, tools, _runs, dir) = wired_parent("code");
     let history_dir = std::env::temp_dir().join(format!(
         "agix-subagent-cancelled-test-{}-{}",
         std::process::id(),
@@ -302,11 +320,15 @@ async fn cancelled_subagent_run_writes_no_terminal_marker() {
         .await
         .unwrap(),
     );
-    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
-        history_store: Some(store.clone()),
-        ..host_contracts()
-    });
-    agent_tool.set_parent_session_id("parent-session-1".to_string());
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            history_store: Some(store.clone()),
+            ..host_contracts()
+        }),
+        id: "parent-session-1".to_string(),
+        ..parent
+    }
+    .agent_tool();
 
     let cancel = tokio_util::sync::CancellationToken::new();
     cancel.cancel();
@@ -344,7 +366,7 @@ async fn cancelled_subagent_run_writes_no_terminal_marker() {
 /// reattaching to it.
 #[tokio::test]
 async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
-    let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
+    let (parent, tools, _runs, dir) = wired_parent("code");
     let history_dir = std::env::temp_dir().join(format!(
         "agix-subagent-terminal-test-{}-{}",
         std::process::id(),
@@ -361,11 +383,15 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
         .await
         .unwrap(),
     );
-    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
-        history_store: Some(store.clone()),
-        ..host_contracts()
-    });
-    agent_tool.set_parent_session_id("parent-session-1".to_string());
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            history_store: Some(store.clone()),
+            ..host_contracts()
+        }),
+        id: "parent-session-1".to_string(),
+        ..parent
+    }
+    .agent_tool();
 
     let _text = agent_tool
         .run_sub_tagged(
@@ -406,12 +432,16 @@ async fn subagent_run_writes_a_terminal_marker_when_its_task_concludes() {
 /// ever recorded" from the outside.
 #[tokio::test]
 async fn subagent_telemetry_events_reach_the_parents_sink() {
-    let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
+    let (parent, tools, _runs, dir) = wired_parent("code");
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
-        telemetry: telemetry::TelemetryHandle::new(tx),
-        ..host_contracts()
-    });
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            telemetry: telemetry::TelemetryHandle::new(tx),
+            ..host_contracts()
+        }),
+        ..parent
+    }
+    .agent_tool();
 
     let _text = agent_tool
         .run_sub_tagged(
@@ -440,9 +470,13 @@ async fn subagent_telemetry_events_reach_the_parents_sink() {
 /// unchanged by that forwarding.
 #[tokio::test]
 async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_text_result() {
-    let (agent_tool, tools, _runs, dir) = wired_agent_tool("code");
+    let (parent, tools, _runs, dir) = wired_parent("code");
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
+    let agent_tool = TestParent {
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        ..parent
+    }
+    .agent_tool();
 
     let text = agent_tool
         .run_sub_tagged(
@@ -560,13 +594,14 @@ async fn subagent_events_reach_the_parent_channel_tagged_without_changing_the_te
     );
 }
 
-/// Wires `policy` as the parent's, keeping no grants, for a parent session
-/// in `/tmp`.
-pub(super) fn wire_parent(agent_tool: &AgentTool, policy: Arc<dyn PermissionPolicy>) {
-    agent_tool.set_parent_permission(
-        PermissionSet::without_grants(policy),
-        Arc::new(base::context::SessionState::new("/tmp".into())),
-    );
+/// `parent` with `policy` as its permission, keeping no grants, for a
+/// parent session in `/tmp`.
+pub(super) fn wire_parent(parent: TestParent, policy: Arc<dyn PermissionPolicy>) -> TestParent {
+    TestParent {
+        permission: Some(PermissionSet::without_grants(policy)),
+        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        ..parent
+    }
 }
 
 /// `name` with `input`, as the sub-agent's engine puts it to `permission`:
@@ -591,15 +626,19 @@ pub(super) async fn sub_decides(
 /// policy, and a `Deny` there must actually stop the tool.
 #[tokio::test]
 async fn subagent_permission_check_routes_to_parent_and_deny_blocks_the_tool() {
-    let (agent_tool, tools, runs, dir) = wired_agent_tool("code");
+    let (parent, tools, runs, dir) = wired_parent("code");
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    wire_parent(
-        &agent_tool,
-        Arc::new(RecordingPermission {
-            seen: seen.clone(),
-            deny: true,
-        }),
-    );
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::without_grants(Arc::new(
+            RecordingPermission {
+                seen: seen.clone(),
+                deny: true,
+            },
+        ))),
+        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        ..parent
+    }
+    .agent_tool();
 
     // This is the handler the `Agent` tool itself uses for a spawn.
     let perm = agent_tool.sub_permission();
@@ -649,8 +688,13 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
         }
     }
 
-    let agent_tool = test_agent_tool();
-    wire_parent(&agent_tool, Arc::new(AlwaysPrompts));
+    let parent = test_parent();
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::without_grants(Arc::new(AlwaysPrompts))),
+        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        ..parent
+    }
+    .agent_tool();
     let outcome = sub_decides(
         &agent_tool.sub_permission(),
         None,
@@ -673,15 +717,19 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
 /// the `Prompt` case.
 #[tokio::test]
 async fn parent_permit_passes_through_unchanged() {
-    let agent_tool = test_agent_tool();
+    let parent = test_parent();
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-    wire_parent(
-        &agent_tool,
-        Arc::new(RecordingPermission {
-            seen: seen.clone(),
-            deny: false,
-        }),
-    );
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::without_grants(Arc::new(
+            RecordingPermission {
+                seen: seen.clone(),
+                deny: false,
+            },
+        ))),
+        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        ..parent
+    }
+    .agent_tool();
     let outcome = sub_decides(
         &agent_tool.sub_permission(),
         None,
@@ -717,8 +765,12 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
         base::context::SessionState::new(project.path().to_path_buf())
             .with_permission_mode(PermissionMode::AcceptEdits),
     );
-    let agent_tool = test_agent_tool();
-    agent_tool.set_parent_permission(parent, parent_session.clone());
+    let agent_tool = TestParent {
+        permission: Some(parent),
+        state: parent_session.clone(),
+        ..test_parent()
+    }
+    .agent_tool();
     let sub = agent_tool.sub_permission();
     let sub_session = Arc::new(base::context::SessionState::new(
         project.path().to_path_buf(),
@@ -799,15 +851,16 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
             ])),
         )),
     ));
-    let agent_tool = test_agent_tool();
-    agent_tool.set_parent_permission(
-        parent,
-        Arc::new(
+    let agent_tool = TestParent {
+        permission: Some(parent),
+        state: Arc::new(
             base::context::SessionState::new(project.path().to_path_buf())
                 .with_permission_mode(PermissionMode::AcceptEdits),
         ),
-    );
-    let member = agent_tool.inner.team_member_permission();
+        ..test_parent()
+    }
+    .agent_tool();
+    let member = agent_tool.inner.permission_handler();
     let write = registry.get("Write");
     let outcome = sub_decides(
         &member,
@@ -873,12 +926,17 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
         Arc::new(permissions::gate::PermissionGate::empty()),
     ));
     let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
-    let agent_tool = test_agent_tool();
-    agent_tool.set_parent_permission(PermissionSet::of(rules.clone()), parent_session.clone());
+    let parent = test_parent();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
     let pending: runtime::agent::PendingPermissions = Arc::default();
-    agent_tool.set_parent_pending_permissions(pending.clone());
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::of(rules.clone())),
+        state: parent_session.clone(),
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        pending: pending.clone(),
+        ..parent
+    }
+    .agent_tool();
 
     let deploy: Arc<dyn base::tool::Tool> = Arc::new(AsksAboutDeploys);
     let staging = serde_json::json!({"target": "staging"});
@@ -955,12 +1013,19 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
 #[tokio::test]
 async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
     use base::interface::permission::PermissionOutcome;
-    let agent_tool = test_agent_tool();
-    wire_parent(&agent_tool, Arc::new(PromptsForEverything));
+    let parent = test_parent();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
     let pending: runtime::agent::PendingPermissions = Arc::default();
-    agent_tool.set_parent_pending_permissions(pending.clone());
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::without_grants(Arc::new(
+            PromptsForEverything,
+        ))),
+        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        pending: pending.clone(),
+        ..parent
+    }
+    .agent_tool();
     let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
     let task = parent_session.register_task(
         "task-1",
@@ -1008,11 +1073,18 @@ async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
 /// own session to refuse; nothing is put to the parent's host.
 #[tokio::test]
 async fn an_unattended_sub_agent_is_handed_the_parents_question_unasked() {
-    let agent_tool = test_agent_tool();
-    wire_parent(&agent_tool, Arc::new(PromptsForEverything));
+    let parent = test_parent();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    agent_tool.set_event_sender(runtime::event_bus::EventBus::new(tx));
-    agent_tool.set_parent_pending_permissions(Arc::default());
+    let agent_tool = TestParent {
+        permission: Some(PermissionSet::without_grants(Arc::new(
+            PromptsForEverything,
+        ))),
+        state: Arc::new(base::context::SessionState::new("/tmp".into())),
+        events: Some(runtime::event_bus::EventBus::new(tx)),
+        pending: Arc::default(),
+        ..parent
+    }
+    .agent_tool();
     let mut sub_session = base::context::SessionState::new("/tmp".into());
     sub_session.unattended = true;
     let outcome = sub_decides(

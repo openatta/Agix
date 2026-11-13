@@ -8,6 +8,7 @@ use std::io::Write;
 mod catalog;
 mod lifecycle;
 mod members;
+mod parent;
 mod permission_facts;
 mod programs;
 mod resolve;
@@ -19,6 +20,7 @@ mod wiring;
 
 use catalog::*;
 use members::*;
+use parent::*;
 use resolve::*;
 use run::*;
 use wiring::*;

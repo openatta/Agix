@@ -14,15 +14,17 @@
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+#[cfg(test)]
 use base::context::EngineConfig;
 use base::event::AgentEvent;
 use base::interface::model::Model;
 use base::interface::permission::{PermissionFacts, PermissionSet, Reach, Subject};
 use base::interface::scene::Scene;
 use base::paths::PromptFiles;
+use base::settings::{Effort, LoadedSettings, Settings};
+#[cfg(test)]
 use base::settings::{
-    Effort, ExecutionSettings, LoadedSettings, ModelSettings, PathSettings, PermissionMode,
-    SandboxConfig, Settings, ThinkingMode,
+    ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig, ThinkingMode,
 };
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
@@ -108,313 +110,104 @@ pub struct AgentTool {
     inner: Arc<Inner>,
 }
 
+/// Where a session's agent types come from.
+pub(crate) enum TypeCatalog<'a> {
+    /// Scanned from `dirs` (low → high priority) over the built-in types and
+    /// `plugin_types`, and watched for changes.
+    Watched {
+        dirs: &'a [(std::path::PathBuf, AgentTypeSource)],
+        plugin_types: &'a [AgentTypeDefinition],
+    },
+    /// A catalog the host keeps and watches for all its sessions, with this
+    /// session's plugins' types over it.
+    Shared {
+        map: SharedAgentTypeMap,
+        session_types: &'a [AgentTypeDefinition],
+    },
+}
+
+/// What an `AgentTool` is built from besides its parent session.
+pub(crate) struct Parts<'a> {
+    pub(crate) types: TypeCatalog<'a>,
+    /// What the parent session was built from.
+    pub(crate) template: Arc<InMemoryToolRegistry>,
+    /// The parent session's own registry.
+    pub(crate) parent_tools: Arc<InMemoryToolRegistry>,
+    /// The tools the parent's plugins registered in it.
+    pub(crate) plugin_tools: &'a [String],
+    pub(crate) slots: SubagentSlots,
+    pub(crate) team_registry: Option<Arc<team::registry::TeamRegistry>>,
+}
+
 impl AgentTool {
-    /// Construct with only the built-in agent types (no `.agix/agents/`
-    /// scan) — convenience for callers that don't need custom types (e.g.
-    /// tests, or embedders that manage their own catalog).
-    pub fn new(
-        model: Arc<dyn Model>,
-        config: Arc<EngineConfig>,
-        fallback_tools: Arc<InMemoryToolRegistry>,
-    ) -> Self {
-        Self::with_parent_tools(
-            model,
-            config,
-            fallback_tools.clone(),
-            fallback_tools,
-            &[],
-            &[],
-        )
-    }
-
-    /// `agent_dirs` are scanned low → high priority (see `merge_agent_types`)
-    /// for `.agix/agents/*.md` custom type definitions, on top of the 6
-    /// built-in types and any `plugin_agent_types`. Pass `&[]` for either to
-    /// skip that tier.
-    pub fn with_parent_tools(
-        model: Arc<dyn Model>,
-        config: Arc<EngineConfig>,
-        parent_tools: Arc<InMemoryToolRegistry>,
-        fallback_tools: Arc<InMemoryToolRegistry>,
-        agent_dirs: &[(std::path::PathBuf, AgentTypeSource)],
-        plugin_agent_types: &[AgentTypeDefinition],
-    ) -> Self {
-        let agent_types = merge_agent_types(agent_dirs, plugin_agent_types, &config.prompt_files);
-        let description: Arc<str> = describe_agent_types(&agent_types).into();
-        let agent_types = Arc::new(std::sync::RwLock::new(Arc::new(agent_types)));
-
-        // Live reload: watch the same directories for `.md` changes and keep
-        // `agent_types` current without a session rebuild — see
-        // `agent_type_watcher`'s module doc for why a full re-merge (not a
-        // per-file patch) is the correct reload strategy here. `notify`
-        // setup failing (permissions, inotify/kqueue limits) degrades to the
-        // pre-watcher, build-time-only catalog rather than failing
-        // construction — same non-fatal handling as
-        // `SkillManager::enable_watching`.
-        let _agent_type_watcher = crate::type_watcher::AgentTypeWatcher::watch(
-            agent_dirs.to_vec(),
-            plugin_agent_types.to_vec(),
-            config.prompt_files.clone(),
-            agent_types.clone(),
-        )
-        .map(Arc::new)
-        .map_err(|e| {
-            tracing::warn!(error = %e, "failed to enable agent-type file watching; live reload disabled for this session");
-        })
-        .ok();
-
+    pub(crate) fn new(env: crate::delegate::DelegateEnv, parts: Parts<'_>) -> Self {
+        let Parts {
+            types,
+            template,
+            parent_tools,
+            plugin_tools,
+            slots,
+            team_registry,
+        } = parts;
+        let (agent_types, _agent_type_watcher, session_agent_types) = match types {
+            TypeCatalog::Watched { dirs, plugin_types } => {
+                let merged = merge_agent_types(dirs, plugin_types, &env.config.prompt_files);
+                let map: SharedAgentTypeMap = Arc::new(std::sync::RwLock::new(Arc::new(merged)));
+                // A watcher that cannot start leaves the catalog as it was
+                // built, as `SkillManager::enable_watching` does.
+                let watcher = crate::type_watcher::AgentTypeWatcher::watch(
+                    dirs.to_vec(),
+                    plugin_types.to_vec(),
+                    env.config.prompt_files.clone(),
+                    map.clone(),
+                )
+                .map(Arc::new)
+                .map_err(|e| {
+                    tracing::warn!(error = %e, "failed to enable agent-type file watching; live reload disabled for this session");
+                })
+                .ok();
+                (map, watcher, std::collections::HashMap::new())
+            }
+            TypeCatalog::Shared { map, session_types } => (
+                map,
+                None,
+                session_types
+                    .iter()
+                    .map(|d| (d.name.clone(), d.clone()))
+                    .collect(),
+            ),
+        };
+        let description: Arc<str> = {
+            let mut visible = agent_types
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .clone();
+            for (name, definition) in &session_agent_types {
+                if visible.get(name).is_none_or(|d| !d.source.may_shadow()) {
+                    visible.insert(name.clone(), definition.clone());
+                }
+            }
+            describe_agent_types(&visible).into()
+        };
         Self {
             inner: Arc::new(Inner {
-                model,
-                config,
-                fallback_tools,
+                env,
+                fallback_tools: template,
                 parent_tools,
-                depth: 0,
-                subagent_slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
+                subagent_slots: slots,
                 hook_agents: Default::default(),
                 agent_types,
                 _agent_type_watcher,
                 description,
-                parent_settings: None,
-                host: None,
-                plugin_tools: Default::default(),
-                session_agent_types: Default::default(),
-                skill_manager: Default::default(),
-                delegate_mcp: Default::default(),
-                team_registry: Default::default(),
-                team_members: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-                idle_seq_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                team_spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
-                event_tx: Default::default(),
-                hooks: Default::default(),
-                session_ended: Default::default(),
-                parent_permission: Default::default(),
-                parent_pending_permissions: Default::default(),
-                parent_scene: Default::default(),
-                parent_session_id: Default::default(),
+                plugin_tools: Arc::new(plugin_tools.iter().cloned().collect()),
+                session_agent_types: Arc::new(session_agent_types),
+                team_registry,
+                team_members: Default::default(),
+                idle_seq_counter: Default::default(),
+                team_spawn_lock: Default::default(),
             }),
         }
-    }
-
-    /// Like [`with_parent_tools`](Self::with_parent_tools), but for a daemon
-    /// session that shares one `SessionPool`-level agent-type catalog +
-    /// watcher instead of building (and watching) its own.
-    ///
-    /// `with_parent_tools` spawns a dedicated `AgentTypeWatcher` — its own
-    /// `notify` background thread — per call, i.e. per session. In a daemon
-    /// with many concurrent sessions all watching the exact same three
-    /// `agents/` directories, that's N redundant threads for one set of
-    /// directories. Here, `shared_agent_types` is expected to already be
-    /// live-reloaded by a watcher the caller owns (see
-    /// `SessionPool::agent_types` / `SessionPool::_agent_type_watcher`) — no
-    /// watcher is started by this constructor, and `Inner::_agent_type_watcher`
-    /// is `None`. `description` is computed from a one-time read of
-    /// `shared_agent_types`'s *current* contents at construction time — same
-    /// documented "functional reload without cosmetic reload" boundary as
-    /// `with_parent_tools` has, but shared across sessions rather than reset
-    /// per session.
-    pub fn with_shared_agent_types(
-        model: Arc<dyn Model>,
-        config: Arc<EngineConfig>,
-        parent_tools: Arc<InMemoryToolRegistry>,
-        fallback_tools: Arc<InMemoryToolRegistry>,
-        shared_agent_types: SharedAgentTypeMap,
-    ) -> Self {
-        let description: Arc<str> = {
-            let snapshot = shared_agent_types
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            describe_agent_types(&snapshot).into()
-        };
-        Self {
-            inner: Arc::new(Inner {
-                model,
-                config,
-                fallback_tools,
-                parent_tools,
-                depth: 0,
-                subagent_slots: SubagentSlots::new(DEFAULT_MAX_CONCURRENT_SUBAGENTS),
-                hook_agents: Default::default(),
-                agent_types: shared_agent_types,
-                _agent_type_watcher: None,
-                description,
-                parent_settings: None,
-                host: None,
-                plugin_tools: Default::default(),
-                session_agent_types: Default::default(),
-                skill_manager: Default::default(),
-                delegate_mcp: Default::default(),
-                team_registry: Default::default(),
-                team_members: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-                idle_seq_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                team_spawn_lock: Arc::new(tokio::sync::Mutex::new(())),
-                event_tx: Default::default(),
-                hooks: Default::default(),
-                session_ended: Default::default(),
-                parent_permission: Default::default(),
-                parent_pending_permissions: Default::default(),
-                parent_scene: Default::default(),
-                parent_session_id: Default::default(),
-            }),
-        }
-    }
-
-    /// Attach the parent `Agent`'s own settings so sub-agents inherit its
-    /// real scope/paths. See the
-    /// `Inner::parent_settings` doc comment.
-    pub fn with_settings(mut self, settings: Arc<LoadedSettings>) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.parent_settings = Some(settings);
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    pub fn with_subagent_slots(mut self, slots: SubagentSlots) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.subagent_slots = slots;
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    pub fn with_depth(mut self, depth: u32) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.depth = depth;
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Build every delegate on `host`, as the parent session was.
-    pub fn with_host(mut self, host: runtime::agent::HostContracts) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.host = Some(host);
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// The tools the parent's plugins registered in it, which a delegate's
-    /// own plugins register again rather than inherit.
-    pub fn with_plugin_tools(mut self, their_tools: &[String]) -> Self {
-        let mut inner = (*self.inner).clone();
-        inner.plugin_tools = Arc::new(their_tools.iter().cloned().collect());
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Agent types this session's plugins declare, on top of the catalog this
-    /// tool was built with. Only those whose source may shadow
-    /// ([`AgentTypeSource::may_shadow`]) outrank them.
-    pub fn with_session_agent_types(mut self, types: &[AgentTypeDefinition]) -> Self {
-        if types.is_empty() {
-            return self;
-        }
-        let mut inner = (*self.inner).clone();
-        inner.session_agent_types =
-            Arc::new(types.iter().map(|d| (d.name.clone(), d.clone())).collect());
-        let mut visible = inner
-            .agent_types
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .clone();
-        for (name, definition) in inner.session_agent_types.iter() {
-            if visible.get(name).is_none_or(|d| !d.source.may_shadow()) {
-                visible.insert(name.clone(), definition.clone());
-            }
-        }
-        inner.description = describe_agent_types(&visible).into();
-        self.inner = Arc::new(inner);
-        self
-    }
-
-    /// Attach the session's skill catalog so `AgentTypeDefinition.skills`
-    /// (preload) can resolve.
-    pub fn set_skill_catalog(&self, mgr: Arc<dyn base::interface::skill_catalog::SkillCatalog>) {
-        self.inner.skill_manager.set(Some(mgr));
-    }
-
-    /// The parent session's MCP servers, which an agent type's `mcp_servers`
-    /// grants a delegate a share of (`McpServers::granted`).
-    pub fn set_mcp_servers(&self, servers: Arc<dyn base::interface::mcp_servers::McpServers>) {
-        self.inner.delegate_mcp.set(Some(servers));
-    }
-
-    /// Attach the same shared `TeamRegistry` `AgentsModule::on_session` hands
-    /// to `TeamCreate`/`TeamList`/`TeamDelete`, so persistent team members
-    /// spawned through this `AgentTool` (see `spawn_or_message_team_member`)
-    /// update state those tools can see. Same interior-mutability,
-    /// set-after-construction pattern as `set_skill_catalog`/
-    /// `set_mcp_servers` — only called when `settings.execution.
-    /// team_enabled` is true and the scene supports teams (see
-    /// `AgentsModule::on_session` in `agents/src/lib.rs`).
-    pub fn set_team_registry(&self, registry: Arc<team::registry::TeamRegistry>) {
-        self.inner.team_registry.set(Some(registry));
-    }
-
-    /// Attach the parent session's event channel so sub-agent activity is
-    /// mirrored onto it — see `Inner::event_tx`. Set-after-construction
-    /// (`&self`, not the `with_X(self) -> Self` builder form) because
-    /// `Builder::build()` creates this `AgentTool` before it creates the
-    /// session's event channel.
-    pub fn set_event_sender(&self, tx: runtime::agent::EventSender) {
-        self.inner.event_tx.set(Some(tx));
-    }
-
-    /// Attach the parent session's hook runner: every delegate runs its hooks
-    /// on it, and sub-agent spawns fire `SubagentStart`/`SubagentStop` there
-    /// — see `Inner::hooks`.
-    pub fn set_hooks(&self, runner: Arc<hooks::HookRunner>) {
-        self.inner.hooks.set(Some(Arc::downgrade(&runner)));
-    }
-
-    /// The token the parent session cancels when it ends: persistent team
-    /// members stop on it, mid-turn or idle.
-    pub fn set_session_ended(&self, ended: tokio_util::sync::CancellationToken) {
-        self.inner.session_ended.set(ended);
-    }
-
-    /// Record the parent `Agent`'s own session id, so sub-agents spawned
-    /// from here can stamp `parent_session_id` on their own `Meta` line —
-    /// see `Inner::parent_session_id`.
-    pub fn set_parent_session_id(&self, id: String) {
-        self.inner.parent_session_id.set(Some(id));
-    }
-
-    /// Route sub-agent permission checks to the parent session's
-    /// permission, judged as delegates of `session` — see
-    /// `Inner::parent_permission`.
-    pub fn set_parent_permission(
-        &self,
-        permission: PermissionSet,
-        session: Arc<base::context::SessionState>,
-    ) {
-        self.inner.parent_permission.set(Some(ParentSide {
-            permission,
-            session,
-        }));
-    }
-
-    /// Route sub-agent permission *prompts* to the parent session's host
-    /// — see `Inner::parent_pending_permissions`. Without this a
-    /// sub-agent still inherits the parent's rules, but anything those rules
-    /// leave undecided is refused rather than asked about.
-    pub fn set_parent_pending_permissions(
-        &self,
-        pending: Arc<
-            std::sync::Mutex<
-                std::collections::HashMap<
-                    String,
-                    tokio::sync::oneshot::Sender<runtime::agent::PermissionDecision>,
-                >,
-            >,
-        >,
-    ) {
-        self.inner.parent_pending_permissions.set(Some(pending));
-    }
-
-    /// Let sub-agents inherit the parent's scene — see
-    /// `Inner::parent_scene`.
-    pub fn set_scene(&self, scene: Arc<dyn Scene>) {
-        self.inner.parent_scene.set(Some(scene));
     }
 }
 
@@ -469,24 +262,12 @@ impl base::tool::Tool for AgentTool {
             }
         }
 
-        // Persistent team member — must give both team_name and name, or
-        // neither; one without the other is almost certainly a mistake
-        // (e.g. the model meant to join a team but dropped a field), not a
-        // meaningful partial state to silently fall through on. Gated on
-        // `team_registry` being set (`set_team_registry`, only called when
-        // `settings.execution.team_enabled` is true — see
-        // `AgentsModule::on_session` in `agents/src/lib.rs`):
-        // `AgentInput`'s schema is generated once, unconditionally, so the
-        // model can technically *set* `team_name`/`name` even when team
-        // coordination is off for this session; without this check it would
-        // silently spawn a persistent member nobody gated in via settings,
-        // exactly the exposure `team_enabled` exists to prevent for
-        // `TeamCreate`/`TeamList`/`TeamDelete` (see `ExecutionSettings::
-        // team_enabled`'s doc comment) — this closes the same gap for the
-        // `Agent` tool's own team-joining fields.
+        // The schema offers `team_name`/`name` whether or not this session
+        // has team coordination on; with it off they are refused here, as
+        // `TeamCreate` is by not being registered.
         match (&inp.team_name, &inp.name) {
             (Some(team_name), Some(name)) => {
-                if self.inner.team_registry.get().is_none() {
+                if self.inner.team_registry.is_none() {
                     return Err(base::error::ToolError::Validation(
                         "team_name/name require team coordination to be enabled for this \
                          session (settings.execution.team_enabled)"

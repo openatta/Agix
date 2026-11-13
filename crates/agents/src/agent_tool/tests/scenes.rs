@@ -2,38 +2,18 @@
 
 use super::*;
 
-/// Without wiring, a sub-agent's permission is allow-all.
-#[test]
-fn permission_handler_falls_back_to_always_permit_when_no_parent_is_wired() {
-    let agent_tool = test_agent_tool();
-    let outcome = futures::executor::block_on(sub_decides(
-        &agent_tool.sub_permission(),
-        None,
-        "Bash",
-        &serde_json::json!({}),
-        Path::new("/tmp"),
-        &Arc::new(base::context::SessionState::new("/tmp".into())),
-    ));
-    assert!(matches!(
-        outcome,
-        base::interface::permission::PermissionOutcome::Permit
-    ));
-}
-
 /// The sub-agent inherits the parent's scene rather than always
 /// being handed `CodeScene`, and an agent type's own `scene:` wins.
 #[test]
 fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
-    let agent_tool = test_agent_tool();
-    let harnix: Arc<dyn Scene> = Arc::new(scene::harnix::HarnixScene);
-    agent_tool.set_scene(harnix);
-    let settings = base::settings::LoadedSettings::new(
-        Settings::defaults_for("test-model"),
-        base::settings::PathSettings::default(),
-    );
+    let agent_tool = TestParent {
+        scene: Arc::new(scene::harnix::HarnixScene),
+        ..test_parent()
+    }
+    .agent_tool();
 
     assert_eq!(
-        agent_tool.inner.scene_for_subagent(None, &settings).id(),
+        agent_tool.inner.scene_for_subagent(None).id(),
         "harnix",
         "a harnix-scene parent must not hand its sub-agent the code scene"
     );
@@ -50,10 +30,7 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool
-            .inner
-            .scene_for_subagent(Some(&widening), &settings)
-            .id(),
+        agent_tool.inner.scene_for_subagent(Some(&widening)).id(),
         "harnix",
         "an agent type must not be able to widen the parent scene's tool surface"
     );
@@ -66,10 +43,7 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool
-            .inner
-            .scene_for_subagent(Some(&narrowing), &settings)
-            .id(),
+        agent_tool.inner.scene_for_subagent(Some(&narrowing)).id(),
         "mini",
         "an agent type narrowing the parent scene must still be honored"
     );
@@ -81,10 +55,7 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
         ..Default::default()
     };
     assert_eq!(
-        agent_tool
-            .inner
-            .scene_for_subagent(Some(&bogus), &settings)
-            .id(),
+        agent_tool.inner.scene_for_subagent(Some(&bogus)).id(),
         "harnix",
         "an unknown scene id is ignored, not fatal — inherited scene is kept"
     );
@@ -97,11 +68,6 @@ fn subagent_scene_inherits_parent_and_agent_type_override_wins() {
 /// the sub-agent silently inherited its parent's scene instead.
 #[test]
 fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
-    let agent_tool = test_agent_tool();
-    let settings = base::settings::LoadedSettings::new(
-        Settings::defaults_for("test-model"),
-        base::settings::PathSettings::default(),
-    );
     let named = AgentTypeDefinition {
         name: "specialist".into(),
         description: "d".into(),
@@ -111,14 +77,14 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
 
     // Reusing the parent's scene under a plugin-style id keeps this test
     // about *resolution*, not about the narrowing rule above.
-    let mini: Arc<dyn Scene> = Arc::new(scene::mini::MiniScene);
-    agent_tool.set_scene(mini);
+    let agent_tool = TestParent {
+        scene: Arc::new(scene::mini::MiniScene),
+        ..test_parent()
+    }
+    .agent_tool();
 
     assert_eq!(
-        agent_tool
-            .inner
-            .scene_for_subagent(Some(&named), &settings)
-            .id(),
+        agent_tool.inner.scene_for_subagent(Some(&named)).id(),
         "mini",
         "without a registry, a non-builtin id is unresolvable and the parent scene is kept"
     );
@@ -129,16 +95,18 @@ fn agent_type_can_name_a_scene_that_only_the_registry_knows() {
         id: "plugin:demo",
         inner: Arc::new(scene::mini::MiniScene),
     }));
-    let agent_tool = agent_tool.with_host(runtime::agent::HostContracts {
-        scene_registry: Some(Arc::new(registry)),
-        ..host_contracts()
-    });
+    let agent_tool = TestParent {
+        scene: Arc::new(scene::mini::MiniScene),
+        host: Some(runtime::agent::HostContracts {
+            scene_registry: Some(Arc::new(registry)),
+            ..host_contracts()
+        }),
+        ..test_parent()
+    }
+    .agent_tool();
 
     assert_eq!(
-        agent_tool
-            .inner
-            .scene_for_subagent(Some(&named), &settings)
-            .id(),
+        agent_tool.inner.scene_for_subagent(Some(&named)).id(),
         "plugin:demo",
         "a registry-only scene id must resolve once the registry is wired in"
     );
@@ -178,30 +146,6 @@ impl Scene for AliasScene {
     }
 }
 
-/// With no explicit scene wired in, `Settings.paths.scope` (which the
-/// daemon sets to `scene.id()`) is the fallback, and an unknown scope
-/// degrades to `CodeScene`.
-#[test]
-fn subagent_scene_falls_back_to_settings_scope_then_code() {
-    let agent_tool = test_agent_tool();
-    let mut settings = base::settings::LoadedSettings::new(
-        Settings::defaults_for("test-model"),
-        base::settings::PathSettings::default(),
-    );
-
-    settings.paths.scope = "mini".into();
-    assert_eq!(
-        agent_tool.inner.scene_for_subagent(None, &settings).id(),
-        "mini"
-    );
-
-    settings.paths.scope = "nonexistent".into();
-    assert_eq!(
-        agent_tool.inner.scene_for_subagent(None, &settings).id(),
-        "code"
-    );
-}
-
 /// A sub-agent's settings carry the instruction file the parent's settings
 /// name; one the parent got from `Builder::instruction` reaches it through
 /// the inherited instruction provider instead.
@@ -216,12 +160,16 @@ fn subagent_inherits_the_parent_instruction_file() {
         base::settings::PathSettings::default(),
     );
     parent.values.instruction_file = Some(std::path::PathBuf::from("/proj/AGENTS.md"));
-    let agent_tool = AgentTool::with_parent_tools(model, config, tools.clone(), tools, &[], &[])
-        .with_settings(Arc::new(parent));
+    let agent_tool = TestParent {
+        config: config,
+        tools: tools.clone(),
+        template: tools,
+        settings: Some(parent),
+        ..TestParent::new(model)
+    }
+    .agent_tool();
     assert_eq!(
-        agent_tool
-            .sub_settings(None, std::path::PathBuf::from("/tmp"))
-            .instruction_file,
+        agent_tool.sub_settings(None).instruction_file,
         Some(std::path::PathBuf::from("/proj/AGENTS.md")),
         "sub-agents must inherit the project's instruction file from settings"
     );

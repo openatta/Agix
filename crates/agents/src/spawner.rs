@@ -178,14 +178,12 @@ struct Run {
     cwd: std::path::PathBuf,
     cancel: CancellationToken,
     tools: Arc<base::tool::InMemoryToolRegistry>,
-    parent: Option<Arc<base::context::SessionState>>,
+    parent: Arc<base::context::SessionState>,
 }
 
 impl Run {
     fn parent(&self) -> Result<Arc<base::context::SessionState>, DelegateError> {
-        self.parent.clone().ok_or_else(|| {
-            DelegateError::Unsupported("this session has no parent session wired".into())
-        })
+        Ok(self.parent.clone())
     }
 }
 
@@ -201,14 +199,7 @@ impl RuntimeAgentSpawner {
         let parent = self.agent_tool.parent_session_state();
         let cwd = match workdir {
             Workdir::At(dir) => dir,
-            Workdir::Inherit => match &parent {
-                Some(session) => session.cwd.clone(),
-                None => {
-                    return Err(DelegateError::Unsupported(
-                        "this session has no parent session wired".into(),
-                    ))
-                }
-            },
+            Workdir::Inherit => parent.cwd.clone(),
             Workdir::Worktree(_) => {
                 return Err(DelegateError::Unsupported(
                     "a delegate in a worktree of its own is not available yet".into(),

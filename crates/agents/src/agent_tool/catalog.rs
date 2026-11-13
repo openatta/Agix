@@ -236,10 +236,8 @@ pub fn project_agent_types_requiring_trust(
 
 /// A live-reloaded agent-type catalog meant to be built **once** and shared
 /// by every session a multi-session caller (a daemon's `SessionPool`) hands
-/// out — see `AgentTool::with_shared_agent_types`'s doc comment for why:
-/// `AgentTool::with_parent_tools` starts its own dedicated file-watcher
-/// thread per call, which is N redundant threads (watching the exact same
-/// directories) for N concurrent sessions in a daemon.
+/// out: a session that scans the directories itself starts a file-watcher
+/// thread of its own, N redundant threads for N sessions.
 /// Shared, live-reloaded agent-type map: `subagent_type name -> AgentTypeDefinition`.
 /// The inner `Arc<HashMap>` is swapped wholesale on reload (never mutated in
 /// place), so a reader that clones it out under a brief read lock never sees
@@ -256,8 +254,8 @@ pub struct SharedAgentTypeCatalog {
 impl SharedAgentTypeCatalog {
     /// Merge `dirs`/`plugin_types` into the initial catalog and start
     /// watching `dirs` for `.md` changes. `notify` setup failing degrades to
-    /// a build-time-only catalog (logged, non-fatal) — same handling as
-    /// `AgentTool::with_parent_tools`.
+    /// a build-time-only catalog (logged, non-fatal), as a session's own
+    /// catalog does.
     ///
     /// Caveat: the watcher's own file-triggered reloads always re-merge
     /// using the `plugin_types` snapshot given *here*, not whatever was last
@@ -336,7 +334,7 @@ impl SharedAgentTypeCatalog {
             Arc::new(merge_agent_types(dirs, plugin_types, files));
     }
 
-    /// Handle to pass to `AgentTool::with_shared_agent_types` for each session.
+    /// Handle to pass to `AgentsModule::shared_agent_types` for each session.
     pub fn handle(&self) -> SharedAgentTypeMap {
         self.agent_types.clone()
     }

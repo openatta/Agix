@@ -2,6 +2,28 @@
 
 use super::*;
 
+pub(super) fn hanging_team_parent(
+    cap: usize,
+) -> (
+    TestParent,
+    Arc<tokio::sync::Notify>,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut config = EngineConfig::defaults_for("test-model");
+    config.team_max_persistent_members = cap;
+    let parent = TestParent {
+        config: Arc::new(config),
+        ..TestParent::new(Arc::new(AnswersOnlyCancellation {
+            started: started.clone(),
+            dropped: dropped.clone(),
+        }))
+    }
+    .with_team();
+    (parent, started, dropped)
+}
+
 pub(super) fn hanging_team_tool(
     cap: usize,
 ) -> (
@@ -9,24 +31,8 @@ pub(super) fn hanging_team_tool(
     Arc<tokio::sync::Notify>,
     Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let tools = Arc::new(InMemoryToolRegistry::new());
-    let mut config = EngineConfig::defaults_for("test-model");
-    config.team_max_persistent_members = cap;
-    let agent_tool = AgentTool::with_parent_tools(
-        Arc::new(AnswersOnlyCancellation {
-            started: started.clone(),
-            dropped: dropped.clone(),
-        }),
-        Arc::new(config),
-        tools.clone(),
-        tools,
-        &[],
-        &[],
-    );
-    agent_tool.set_team_registry(Arc::new(team::registry::TeamRegistry::new()));
-    (agent_tool, started, dropped)
+    let (parent, started, dropped) = hanging_team_parent(cap);
+    (parent.agent_tool(), started, dropped)
 }
 
 pub(super) async fn message_member(
@@ -80,10 +86,14 @@ async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
 #[tokio::test]
 async fn a_persistent_member_is_in_its_sessions_telemetry_from_start_to_stop() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    let agent_tool = team_enabled_agent_tool().with_host(runtime::agent::HostContracts {
-        telemetry: TelemetryHandle::new(tx),
-        ..host_contracts()
-    });
+    let agent_tool = TestParent {
+        host: Some(runtime::agent::HostContracts {
+            telemetry: TelemetryHandle::new(tx),
+            ..host_contracts()
+        }),
+        ..test_parent().with_team()
+    }
+    .agent_tool();
     let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
         "/tmp",
     )));
@@ -106,9 +116,13 @@ async fn a_persistent_member_is_in_its_sessions_telemetry_from_start_to_stop() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_end_of_the_parent_session_stops_a_member_mid_turn() {
-    let (agent_tool, started, dropped) = hanging_team_tool(4);
+    let (parent, started, dropped) = hanging_team_parent(4);
     let ended = tokio_util::sync::CancellationToken::new();
-    agent_tool.set_session_ended(ended.clone());
+    let agent_tool = TestParent {
+        ended: ended.clone(),
+        ..parent
+    }
+    .agent_tool();
     let session = Arc::new(base::context::SessionState::new(std::path::PathBuf::from(
         "/tmp",
     )));
@@ -398,16 +412,15 @@ async fn a_spawn_on_a_model_asks_for_that_model() {
     use base::interface::agent_spawner::AgentSpawner;
     let asked_for = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tools = Arc::new(InMemoryToolRegistry::new());
-    let agent_tool = AgentTool::with_parent_tools(
-        Arc::new(ModelNameModel {
+    let agent_tool = TestParent {
+        config: Arc::new(EngineConfig::defaults_for("test-model")),
+        tools: tools.clone(),
+        template: tools,
+        ..TestParent::new(Arc::new(ModelNameModel {
             asked_for: asked_for.clone(),
-        }),
-        Arc::new(EngineConfig::defaults_for("test-model")),
-        tools.clone(),
-        tools,
-        &[],
-        &[],
-    );
+        }))
+    }
+    .agent_tool();
     let spawner = crate::spawner::RuntimeAgentSpawner::new(Arc::new(agent_tool));
 
     let answer = spawner
@@ -442,17 +455,17 @@ pub(super) fn agent_tool_on_a_scene_with_a_tool(
     let tools = Arc::new(InMemoryToolRegistry::new());
     tools.register(Arc::new(NamedTool("Read")));
     tools.register(Arc::new(NamedTool("scene_probe")));
-    let agent_tool = AgentTool::with_parent_tools(
-        Arc::new(ToolCensusModel {
+    let agent_tool = TestParent {
+        config: Arc::new(EngineConfig::defaults_for("test-model")),
+        tools: tools,
+        template: template,
+        plugin_agent_types: (types).to_vec(),
+        scene: Arc::new(SceneWithProbe),
+        ..TestParent::new(Arc::new(ToolCensusModel {
             offered: offered.clone(),
-        }),
-        Arc::new(EngineConfig::defaults_for("test-model")),
-        tools,
-        template,
-        &[],
-        types,
-    );
-    agent_tool.set_scene(Arc::new(SceneWithProbe));
+        }))
+    }
+    .agent_tool();
     (agent_tool, offered)
 }
 
@@ -562,11 +575,14 @@ async fn the_session_cap_refuses_one_sub_agent_too_many_but_not_a_team_member() 
     let started = Arc::new(tokio::sync::Notify::new());
     let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let slots = SubagentSlots::new(1);
-    let agent_tool = agent_tool_with_model(Arc::new(HangingModel {
-        started: started.clone(),
-        dropped: dropped.clone(),
-    }))
-    .with_subagent_slots(slots.clone());
+    let agent_tool = TestParent {
+        slots: slots.clone(),
+        ..TestParent::new(Arc::new(HangingModel {
+            started: started.clone(),
+            dropped: dropped.clone(),
+        }))
+    }
+    .agent_tool();
 
     let mut first = Box::pin(run_sub_with(&agent_tool));
     tokio::select! {

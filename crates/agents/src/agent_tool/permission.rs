@@ -28,13 +28,6 @@ impl PermissionPolicy for DenyRulesFirst {
     }
 }
 
-/// The parent session the delegates of an `AgentTool` are judged for.
-#[derive(Clone)]
-pub(super) struct ParentSide {
-    pub(super) permission: PermissionSet,
-    pub(super) session: Arc<base::context::SessionState>,
-}
-
 /// A sub-agent's policy: the parent's rules, plus the parent's channel to a
 /// human.
 ///
@@ -51,10 +44,6 @@ pub(super) struct ParentSide {
 /// demultiplexer intercepts `PermissionResponse` ahead of turn dispatch, so
 /// this resolves even though the parent turn is blocked inside the `Agent`
 /// tool call that spawned us.
-///
-/// With no channel wired (`event_tx`/`pending` are `None` — tests, embedders
-/// that never call the setters), it refuses with an explanation rather than
-/// blocking forever.
 pub(super) struct ParentPermission {
     pub(super) parent: Arc<dyn PermissionPolicy>,
     /// Where an "always allow" the parent's host gives a sub-agent's question
@@ -63,14 +52,14 @@ pub(super) struct ParentPermission {
     /// The session `parent` belongs to; a sub-agent's call reaches it as a
     /// delegate's.
     pub(super) parent_session: Arc<base::context::SessionState>,
-    pub(super) event_tx: Option<runtime::agent::EventSender>,
-    pub(super) pending: Option<runtime::agent::PendingPermissions>,
+    pub(super) event_tx: runtime::agent::EventSender,
+    pub(super) pending: runtime::agent::PendingPermissions,
     /// How long a question waits for its answer; `0` waits indefinitely.
     pub(super) timeout_secs: u64,
     pub(super) task: Option<Arc<base::context::RunningTask>>,
     /// The parent session's providers, for a check made before the
     /// sub-agent's own are bound.
-    pub(super) parent_exec: Option<base::interface::exec::ExecProviders>,
+    pub(super) parent_exec: base::interface::exec::ExecProviders,
 }
 
 /// A delegate's grants, kept by its parent: an answer the person gave lasts
@@ -182,10 +171,7 @@ impl PermissionPolicy for ParentPermission {
         let tool_name = req.tool_name;
         let judged = req.judged();
         if let (Some(tool), None) = (req.tool, req.delegate) {
-            let exec = judged
-                .exec()
-                .or_else(|| self.parent_exec.clone())
-                .unwrap_or_else(base::interface::exec::ExecProviders::in_process);
+            let exec = judged.exec().unwrap_or_else(|| self.parent_exec.clone());
             let mut ctx = ToolContext::from_engine_ctx_with(
                 req.cwd.to_path_buf(),
                 tokio_util::sync::CancellationToken::new(),
@@ -223,17 +209,7 @@ impl PermissionPolicy for ParentPermission {
             return outcome;
         };
 
-        let (Some(event_tx), Some(pending)) = (self.event_tx.as_ref(), self.pending.as_ref())
-        else {
-            return PermissionOutcome::Deny {
-                reason: format!(
-                    "`{tool_name}` needs interactive approval, and this sub-agent has no channel \
-                     to ask on. Approve it in the parent session (or run this step there) and \
-                     retry. Original prompt: {message}"
-                ),
-            };
-        };
-
+        let (event_tx, pending) = (&self.event_tx, &self.pending);
         let (tx, rx) = tokio::sync::oneshot::channel();
         pending
             .lock()
@@ -261,7 +237,10 @@ impl PermissionPolicy for ParentPermission {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&prompt_id);
             return PermissionOutcome::Deny {
-                reason: format!("`{tool_name}`: the parent session closed before it could answer"),
+                reason: format!(
+                    "`{tool_name}`: the parent session closed before it could answer. Original \
+                     prompt: {message}"
+                ),
             };
         }
 
@@ -314,7 +293,9 @@ impl PermissionPolicy for ParentPermission {
     }
 }
 
+#[cfg(test)]
 pub(super) struct AlwaysPermit;
+#[cfg(test)]
 #[async_trait]
 impl PermissionPolicy for AlwaysPermit {
     async fn decide(&self, _: &PermissionRequest<'_>) -> PermissionOutcome {
