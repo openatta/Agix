@@ -1893,12 +1893,8 @@ async fn documented_accept_edits_asks_about_reads_outside_the_project_and_a_nest
         |settings| settings.permission_mode = base::settings::PermissionMode::AcceptEdits,
     )
     .await;
-    std::fs::create_dir_all(h.dir.path().join("nested/.git")).unwrap();
-    std::fs::write(
-        h.dir.path().join("nested/.git/HEAD"),
-        "ref: refs/heads/main\n",
-    )
-    .unwrap();
+    std::fs::create_dir_all(h.project.join("nested/.git")).unwrap();
+    std::fs::write(h.project.join("nested/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
 
     let session = ok(
         &h.sock,

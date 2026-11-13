@@ -140,12 +140,11 @@ impl Daemon {
         Self { sock, dir }
     }
 
-    /// The project root the daemon is configured with, where its commands
-    /// run. Their sandbox shows it on every platform; a temporary directory
-    /// of the test's own is hidden on Linux behind the command's private
-    /// `/tmp`.
-    fn project(&self) -> &std::path::Path {
-        self.dir.path()
+    /// The project the daemon is assembled on, where its commands run.
+    /// Their sandbox shows it on every platform; a temporary directory of the
+    /// test's own is hidden on Linux behind the command's private `/tmp`.
+    fn project(&self) -> std::path::PathBuf {
+        self.dir.path().join("work")
     }
 
     async fn call(&self, method: &str, params: serde_json::Value) -> serde_json::Value {

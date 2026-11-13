@@ -138,6 +138,19 @@ impl BindingCache {
         self.settings.read().await.clone()
     }
 
+    /// This daemon's own settings as its own pair's sessions run on them: in
+    /// `cwd`, which the host may name apart from the project those settings
+    /// were read for (`Assembly::cwd` against `DaemonPaths::project_root`).
+    async fn own_pair_settings(&self) -> Arc<LoadedSettings> {
+        let settings = self.pool_settings().await;
+        if settings.paths.workspace.project_root() == Some(self.cwd.as_path()) {
+            return settings;
+        }
+        let mut in_cwd = (*settings).clone();
+        in_cwd.paths.workspace = base::settings::Workspace::Project(self.cwd.clone());
+        Arc::new(in_cwd)
+    }
+
     /// The scene this daemon was started with, as its own settings know it.
     pub(in crate::session_pool) async fn startup_scene(&self) -> String {
         self.settings.read().await.paths.scope.clone()
@@ -210,7 +223,7 @@ impl BindingCache {
         let stamp = self.begin_build(&key);
         let startup_scene = self.startup_scene().await;
         let settings = if self.is_own_pair(project_root, scene_id).await {
-            self.pool_settings().await
+            self.own_pair_settings().await
         } else {
             let default_model = self.settings.read().await.values.model.model_name.clone();
             let (global_root, scene_root, scene_id, project) = (

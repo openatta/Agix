@@ -492,13 +492,7 @@ async fn a_session_rebuilt_twice_hands_on_each_task_frame_once() {
 async fn every_engine_a_session_runs_on_works_in_the_sessions_directory() {
     let (pool, _dir, _store) = pool_with_history().await;
     let sid = new_session(&pool).await;
-    let project = pool
-        .bindings
-        .pool_settings()
-        .await
-        .paths
-        .working_dir()
-        .to_path_buf();
+    let project = pool.cwd().to_path_buf();
 
     let (_, state) = slot_and_state(&pool, &sid).await;
     assert_eq!(state.env().cwd, project);

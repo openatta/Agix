@@ -3099,6 +3099,55 @@ async fn a_no_project_session_works_in_its_own_scratch_directory() {
     srv.stop().await;
 }
 
+/// A session created without `project_root` belongs to the project the
+/// daemon was assembled on, and works there: a relative path is read from
+/// that directory, not from the daemon's state root.
+#[tokio::test]
+async fn a_default_project_session_works_in_the_assembled_directory() {
+    let rounds = vec![
+        tool_round("Read", "r1", serde_json::json!({"file_path": "probe.txt"})),
+        text_round("done"),
+    ];
+    let (srv, _seen) = start_scripted_server(rounds, ask_settings(), Duration::ZERO).await;
+    let state_root = srv._dir.path().to_path_buf();
+    let work = state_root.join("work");
+    std::fs::write(work.join("probe.txt"), "IN-THE-PROJECT\n").unwrap();
+    std::fs::write(state_root.join("probe.txt"), "IN-THE-STATE-ROOT\n").unwrap();
+
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","params":{},"id":1}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    assert_eq!(
+        created["result"]["project_root"],
+        work.display().to_string(),
+        "{created}"
+    );
+    let (frames, response) = rpc_streaming(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"go"}},"id":2}}"#
+        ),
+    )
+    .await;
+    assert!(response["result"].is_object(), "turn failed: {response}");
+    let results = events_of_kind(&frames, "tool_result");
+    let read = results
+        .iter()
+        .find(|r| r["id"] == "r1")
+        .unwrap_or_else(|| panic!("no tool_result for r1: {frames:?}"));
+    assert_eq!(read["is_error"], false, "{read}");
+    let content = read["content"].to_string();
+    assert!(content.contains("IN-THE-PROJECT"), "{content}");
+
+    srv.stop().await;
+}
+
 /// "Always allow, this project" has no project to mean without one: the
 /// answer holds for the rest of the session and is written nowhere — not
 /// into the state root's `settings.local.json`, which is the global tier.
@@ -3873,8 +3922,8 @@ async fn a_read_that_climbs_out_through_a_symlink_asks_first() {
         Duration::from_secs(30),
     )
     .await;
-    // The session runs in the server's own directory, not in `work/`.
-    let project = srv._dir.path();
+    let project = srv._dir.path().join("work");
+    let project = project.as_path();
     let elsewhere = tempfile::tempdir().unwrap();
     let outside = elsewhere.path();
     std::fs::create_dir_all(outside.join("sub")).unwrap();
