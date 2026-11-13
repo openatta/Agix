@@ -221,7 +221,7 @@ pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
         skills_text,
         mcp_instructions,
     } = *request;
-    use crate::interface::prompt_registry::{orders, PromptContent, RegisteredBlock};
+    use crate::interface::prompt_registry::orders;
 
     // If override is set, return it as the sole system block.
     if let Some(ref ov) = settings.prompt_override {
@@ -232,35 +232,7 @@ pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
 
     let mut kernel: Vec<(i32, PromptBlock)> = Vec::new();
 
-    // 1. Scene skeleton — a scene names its own sections; only fill in for one
-    // that doesn't, so a scene's own labels are never overwritten here.
-    // Sections a scene did not name are numbered after the first: a name is
-    // how everything downstream addresses a block, so identical names would
-    // send an edit or a removal aimed at one of them to whichever came first.
-    let mut unnamed = 0usize;
-    kernel.extend(
-        scene
-            .system_prompt(ctx)
-            .into_iter()
-            .map(|b| match &b.name {
-                // A scene that labels its own sections keeps those labels,
-                // under the `scene.` prefix so a name can never collide with a
-                // kernel block's.
-                Some(section) if !section.starts_with(names::SCENE_PREFIX) => {
-                    let prefixed = format!("{}{section}", names::SCENE_PREFIX);
-                    b.named(prefixed)
-                }
-                Some(_) => b,
-                None => {
-                    unnamed += 1;
-                    match unnamed {
-                        1 => b.named(names::SCENE_SKELETON),
-                        n => b.named(format!("{}.{n}", names::SCENE_SKELETON)),
-                    }
-                }
-            })
-            .map(|b| (orders::SCENE, b)),
-    );
+    kernel.extend(scene_blocks(scene, ctx));
 
     // 2. Skills
     if let Some(text) = skills_text {
@@ -312,35 +284,7 @@ pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
     // sorts together. Stable, so blocks sharing an order keep the sequence
     // they arrived in — which is what preserves a scene's own section order.
     let mut merged: Vec<(i32, PromptBlock)> = kernel;
-    for block in registry.blocks() {
-        let RegisteredBlock {
-            name,
-            role,
-            order,
-            content,
-            cache_strategy,
-            origin,
-        } = block;
-        let text = match content {
-            PromptContent::Static(s) => Some(s),
-            PromptContent::Provider(p) => p(ctx),
-        };
-        // A provider with nothing to say contributes nothing, rather than an
-        // empty block that costs a separator and a cache boundary.
-        let Some(text) = text.filter(|t| !t.is_empty()) else {
-            continue;
-        };
-        merged.push((
-            order,
-            PromptBlock {
-                role,
-                content: text,
-                cache_strategy,
-                name: Some(name),
-                origin,
-            },
-        ));
-    }
+    merged.extend(registered_blocks(registry, ctx));
     merged.sort_by_key(|(order, _)| *order);
 
     let variables = registry.variables();
@@ -359,6 +303,74 @@ pub fn assemble_prompt_with(request: &AssemblyRequest<'_>) -> Vec<PromptBlock> {
         &registry.assembly_hooks(),
         ctx,
     )
+}
+
+/// A scene names its own sections; only fill in for one that doesn't, so a
+/// scene's own labels are never overwritten here. Sections a scene did not
+/// name are numbered after the first: a name is how everything downstream
+/// addresses a block, so identical names would send an edit or a removal aimed
+/// at one of them to whichever came first.
+fn scene_blocks(scene: &SceneSpec, ctx: &ScenePromptContext<'_>) -> Vec<(i32, PromptBlock)> {
+    use crate::interface::prompt_registry::orders;
+    let mut unnamed = 0usize;
+    scene
+        .system_prompt(ctx)
+        .into_iter()
+        .map(|b| match &b.name {
+            // Prefixed so a scene's label can never collide with a kernel block's.
+            Some(section) if !section.starts_with(names::SCENE_PREFIX) => {
+                let prefixed = format!("{}{section}", names::SCENE_PREFIX);
+                b.named(prefixed)
+            }
+            Some(_) => b,
+            None => {
+                unnamed += 1;
+                match unnamed {
+                    1 => b.named(names::SCENE_SKELETON),
+                    n => b.named(format!("{}.{n}", names::SCENE_SKELETON)),
+                }
+            }
+        })
+        .map(|b| (orders::SCENE, b))
+        .collect()
+}
+
+fn registered_blocks(
+    registry: &dyn crate::interface::prompt_registry::PromptRegistry,
+    ctx: &ScenePromptContext<'_>,
+) -> Vec<(i32, PromptBlock)> {
+    use crate::interface::prompt_registry::{PromptContent, RegisteredBlock};
+    let mut out = Vec::new();
+    for block in registry.blocks() {
+        let RegisteredBlock {
+            name,
+            role,
+            order,
+            content,
+            cache_strategy,
+            origin,
+        } = block;
+        let text = match content {
+            PromptContent::Static(s) => Some(s),
+            PromptContent::Provider(p) => p(ctx),
+        };
+        // A provider with nothing to say contributes nothing, rather than an
+        // empty block that costs a separator and a cache boundary.
+        let Some(text) = text.filter(|t| !t.is_empty()) else {
+            continue;
+        };
+        out.push((
+            order,
+            PromptBlock {
+                role,
+                content: text,
+                cache_strategy,
+                name: Some(name),
+                origin,
+            },
+        ));
+    }
+    out
 }
 
 #[cfg(test)]

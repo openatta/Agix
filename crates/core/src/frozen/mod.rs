@@ -395,14 +395,6 @@ impl FrozenContext {
             None
         };
 
-        let (git_branch, git_main_branch, git_user_name, git_status, git_log) = (
-            git.git_branch,
-            git.git_main_branch,
-            git.git_user_name,
-            git.git_status,
-            git.git_log,
-        );
-
         let prompt_files = crate::paths::PromptFiles::for_project(paths);
         let memory_blocks = match project {
             Some(project) => {
@@ -417,16 +409,7 @@ impl FrozenContext {
         let skills = load_session_skills(project, paths).await;
 
         let memory_dir = paths.global_memory_dir();
-        let memory_index = {
-            let paths = paths.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::memory::MemoryStore::for_paths(&paths).load_index()
-            })
-            .await
-            .ok()
-            .filter(|index| !index.trim().is_empty())
-            .map(|index| utils::truncate_memory_entrypoint(&index))
-        };
+        let memory_index = load_memory_index(paths).await;
 
         // Output style -- load by name from project then user dir.
         let output_style = match opts.output_style.as_deref() {
@@ -440,11 +423,11 @@ impl FrozenContext {
             cwd,
             is_git,
             is_worktree,
-            git_branch,
-            git_main_branch,
-            git_user_name,
-            git_status,
-            git_log,
+            git_branch: git.git_branch,
+            git_main_branch: git.git_main_branch,
+            git_user_name: git.git_user_name,
+            git_status: git.git_status,
+            git_log: git.git_log,
             platform,
             shell,
             home_dir,
@@ -458,6 +441,15 @@ impl FrozenContext {
             output_style,
         }
     }
+}
+
+async fn load_memory_index(paths: &ConfigPaths) -> Option<String> {
+    let paths = paths.clone();
+    tokio::task::spawn_blocking(move || crate::memory::MemoryStore::for_paths(&paths).load_index())
+        .await
+        .ok()
+        .filter(|index| !index.trim().is_empty())
+        .map(|index| utils::truncate_memory_entrypoint(&index))
 }
 
 impl FrozenContext {

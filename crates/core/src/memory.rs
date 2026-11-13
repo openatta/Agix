@@ -910,47 +910,115 @@ pub async fn select_memories_from(
     model_name: &str,
     session_id: Option<&str>,
 ) -> Vec<String> {
-    let _start = std::time::Instant::now();
-    let mut headers = memories.to_vec();
-    let num_available = headers.len();
-
-    if headers.is_empty() {
+    let start = std::time::Instant::now();
+    let num_available = memories.len();
+    if memories.is_empty() {
         return Vec::new();
     }
+    let log = |selected: usize, note: &str| {
+        tracing::info!(
+            target: "memory_recall_shape",
+            num_memories_selected = selected,
+            num_memories_available = num_available,
+            model_used = model_name,
+            latency_ms = start.elapsed().as_millis() as u64,
+            "{note}",
+        );
+    };
 
-    // 1. Exclude memories already surfaced in prior turns.
+    let mut headers = memories.to_vec();
     headers.retain(|h| !already_surfaced.contains(&h.name));
-    // 2. Exclude memories whose name matches a recently-used tool (ambiguity guard).
+    // A memory named like a recently used tool is ambiguous with it.
     headers.retain(|h| !recent_tools.iter().any(|t| h.name.eq_ignore_ascii_case(t)));
 
     if headers.is_empty() {
-        let latency_ms = _start.elapsed().as_millis() as u64;
-        tracing::info!(
-            target: "memory_recall_shape",
-            num_memories_selected = 0u32,
-            num_memories_available = num_available,
-            model_used = model_name,
-            latency_ms = latency_ms,
-            "memory recall — no memories after dedup",
-        );
+        log(0, "memory recall — no memories after dedup");
         return Vec::new();
     }
-
     if headers.len() <= max_results {
         let names: Vec<String> = headers.into_iter().map(|h| h.name).collect();
-        let latency_ms = _start.elapsed().as_millis() as u64;
-        tracing::info!(
-            target: "memory_recall_shape",
-            num_memories_selected = names.len(),
-            num_memories_available = num_available,
-            model_used = model_name,
-            latency_ms = latency_ms,
-            "memory recall completed",
-        );
+        log(names.len(), "memory recall completed");
         return names;
     }
 
-    // Build a manifest listing all memory names and descriptions (header-only)
+    let (request_messages, params) =
+        selection_request(query, &headers, max_results, model_name, session_id);
+    let stream_result = model
+        .stream(
+            vec![],
+            vec![],
+            request_messages,
+            params,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+
+    let Ok(mut stream) = stream_result else {
+        let names = substring_fallback(memories, &headers, query, max_results);
+        log(names.len(), "memory recall — fallback to substring search");
+        return names;
+    };
+
+    use futures::StreamExt;
+    let mut full_text = String::new();
+    while let Some(Ok(event)) = stream.next().await {
+        if let crate::interface::model::ModelEvent::TextDelta { text } = event {
+            full_text.push_str(&text);
+        }
+    }
+
+    if let Some(names) = parse_selection(&full_text, max_results) {
+        log(names.len(), "memory recall completed");
+        return names;
+    }
+    let names = substring_fallback(memories, &headers, query, max_results);
+    log(
+        names.len(),
+        "memory recall — final fallback to substring search",
+    );
+    names
+}
+
+fn substring_fallback(
+    memories: &[DurableMemory],
+    headers: &[DurableMemory],
+    query: &str,
+    max_results: usize,
+) -> Vec<String> {
+    let allowed: std::collections::HashSet<&str> =
+        headers.iter().map(|h| h.name.as_str()).collect();
+    substring_matches(memories, query)
+        .into_iter()
+        .filter(|m| allowed.contains(m.name.as_str()))
+        .map(|m| m.name)
+        .take(max_results)
+        .collect()
+}
+
+fn parse_selection(text: &str, max_results: usize) -> Option<Vec<String>> {
+    let parsed = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let arr = parsed["selected_memories"].as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .take(max_results)
+            .collect(),
+    )
+}
+
+fn selection_request(
+    query: &str,
+    headers: &[DurableMemory],
+    max_results: usize,
+    model_name: &str,
+    session_id: Option<&str>,
+) -> (
+    Vec<crate::interface::model::ModelMessage>,
+    crate::interface::model::StreamParams,
+) {
+    use crate::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
+    use crate::settings::ThinkingMode;
+
     let manifest: String = headers
         .iter()
         .map(|h| format!("- **{}**: {}", h.name, h.description))
@@ -976,9 +1044,6 @@ Respond with ONLY valid JSON matching this schema (no markdown, no extra text, n
         "User query: {query}\n\nAvailable memories:\n{manifest}\n\n\
          Select up to {max_results} most relevant memory names.",
     );
-
-    use crate::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
-    use crate::settings::ThinkingMode;
 
     let request_messages = vec![
         ModelMessage {
@@ -1009,89 +1074,7 @@ Respond with ONLY valid JSON matching this schema (no markdown, no extra text, n
         input_map: None,
         provider_search: None,
     };
-
-    let stream_result = model
-        .stream(
-            vec![],
-            vec![],
-            request_messages,
-            params,
-            tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
-
-    let Ok(mut stream) = stream_result else {
-        // Fallback: substring search (with dedup)
-        let searched = substring_matches(memories, query);
-        let allowed: std::collections::HashSet<&str> =
-            headers.iter().map(|h| h.name.as_str()).collect();
-        let names: Vec<String> = searched
-            .into_iter()
-            .filter(|m| allowed.contains(m.name.as_str()))
-            .map(|m| m.name)
-            .take(max_results)
-            .collect();
-        let latency_ms = _start.elapsed().as_millis() as u64;
-        tracing::info!(
-            target: "memory_recall_shape",
-            num_memories_selected = names.len(),
-            num_memories_available = num_available,
-            model_used = model_name,
-            latency_ms = latency_ms,
-            "memory recall — fallback to substring search",
-        );
-        return names;
-    };
-
-    use futures::StreamExt;
-    let mut full_text = String::new();
-    while let Some(Ok(event)) = stream.next().await {
-        if let crate::interface::model::ModelEvent::TextDelta { text } = event {
-            full_text.push_str(&text);
-        }
-    }
-
-    // Try to parse JSON from response
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&full_text) {
-        if let Some(arr) = parsed["selected_memories"].as_array() {
-            let names: Vec<String> = arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .take(max_results)
-                .collect();
-            let latency_ms = _start.elapsed().as_millis() as u64;
-            tracing::info!(
-                target: "memory_recall_shape",
-                num_memories_selected = names.len(),
-                num_memories_available = num_available,
-                model_used = model_name,
-                latency_ms = latency_ms,
-                "memory recall completed",
-            );
-            return names;
-        }
-    }
-
-    // Final fallback: substring search (with dedup)
-    let searched = substring_matches(memories, query);
-    let allowed: std::collections::HashSet<&str> =
-        headers.iter().map(|h| h.name.as_str()).collect();
-    let names: Vec<String> = searched
-        .into_iter()
-        .filter(|m| allowed.contains(m.name.as_str()))
-        .map(|m| m.name)
-        .take(max_results)
-        .collect();
-    let latency_ms = _start.elapsed().as_millis() as u64;
-    tracing::info!(
-        target: "memory_recall_shape",
-        num_memories_selected = names.len(),
-        num_memories_available = num_available,
-        model_used = model_name,
-        latency_ms = latency_ms,
-        "memory recall — final fallback to substring search",
-    );
-    names
+    (request_messages, params)
 }
 
 #[derive(Debug, thiserror::Error)]
