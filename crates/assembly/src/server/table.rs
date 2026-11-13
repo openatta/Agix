@@ -65,12 +65,6 @@ pub(super) struct Call {
     pub method: &'static str,
 }
 
-impl Call {
-    pub fn id(&self) -> Value {
-        self.id.clone()
-    }
-}
-
 /// What a handler returns, as the result its table entry declares.
 pub(super) trait Reply<R> {
     fn into_reply(self) -> Result<R, RpcError>;

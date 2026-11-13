@@ -207,6 +207,50 @@ async fn the_next_call_can_be_seen_without_being_made() {
     assert!(context["total_tokens"].as_u64().unwrap() > 0);
 }
 
+/// A position that is not a number is refused, not skipped: dropping
+/// "some of" what the caller named is a change it did not ask for. An
+/// attachment that does not read is dropped and the turn still runs.
+#[tokio::test]
+async fn a_position_of_the_wrong_type_is_refused_and_a_bad_attachment_is_dropped() {
+    let model = Arc::new(MockAnthropicClient::new());
+    let daemon = Daemon::start(model.clone()).await;
+    let session = a_session_that_saw_a_secret(&model, &daemon).await;
+
+    let refused = daemon
+        .call(
+            "session.dropMessages",
+            serde_json::json!({"session_id": session, "at": [3, "1"]}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("invalid params for session.dropMessages: "),
+        "{refused}"
+    );
+    model.push_turn(text_round("still here"));
+    daemon.turn(&session, "next").await;
+    assert!(
+        daemon.last_request().contains("the-secret-value"),
+        "nothing was dropped"
+    );
+
+    model.push_turn(text_round("ran"));
+    let ran = daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({
+                "session_id": session,
+                "message": "with a broken attachment",
+                "attachments": [{"kind": "nonsense"}],
+            }),
+        )
+        .await;
+    assert_eq!(ran["delivery"], "turn", "{ran}");
+}
+
 #[tokio::test]
 async fn a_dropped_tool_result_is_gone_from_every_call_after_including_after_a_resume() {
     let model = Arc::new(MockAnthropicClient::new());

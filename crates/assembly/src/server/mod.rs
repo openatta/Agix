@@ -66,18 +66,13 @@ mod errors;
 mod listen;
 mod methods;
 mod methods_config;
-mod methods_session;
-mod methods_turn;
-mod params;
 pub mod schema;
 mod transport;
 mod watch;
 
 #[cfg(feature = "ws")]
 pub(crate) use connection::refusal_frame;
-use errors::{failure, respond};
 pub use listen::UnixBinding;
-use params::{parse_param, read_options, reporting_ignored};
 pub use table::methods;
 #[cfg(feature = "ws")]
 pub(crate) use transport::MAX_FRAME_BYTES;

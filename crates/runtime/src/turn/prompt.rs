@@ -542,8 +542,8 @@ impl Agent {
     pub(super) async fn handle_context(
         &mut self,
         request: crate::agent::ContextRequest,
-    ) -> Result<serde_json::Value, String> {
-        use crate::agent::ContextRequest;
+    ) -> Result<crate::agent::ContextAnswer, String> {
+        use crate::agent::{ContextAnswer, ContextRequest};
         let count = self.session.messages().len();
         let unchanged = |total: Option<usize>| match total {
             Some(total) if total != count => Err(format!(
@@ -552,7 +552,7 @@ impl Agent {
             _ => Ok(()),
         };
         match request {
-            ContextRequest::Inspect => Ok(self.inspect_context().await),
+            ContextRequest::Inspect => Ok(ContextAnswer::Inspected(self.inspect_context().await)),
             ContextRequest::Drop { at, total } => {
                 unchanged(total)?;
                 for &i in &at {
@@ -569,12 +569,12 @@ impl Agent {
                 for &i in &at {
                     self.session.drop_message(i)?;
                 }
-                Ok(serde_json::json!({"dropped": at}))
+                Ok(ContextAnswer::Dropped(at))
             }
             ContextRequest::Edit { at, text, total } => {
                 unchanged(total)?;
                 self.session.edit_message(at, text)?;
-                Ok(serde_json::json!({"edited": at}))
+                Ok(ContextAnswer::Edited(at))
             }
         }
     }
@@ -587,7 +587,8 @@ impl Agent {
     ///
     /// A real next turn differs by what it adds: the user's message, any
     /// memories recalled for it, anything a hook injects on submit.
-    pub(super) async fn inspect_context(&mut self) -> serde_json::Value {
+    pub(super) async fn inspect_context(&mut self) -> crate::agent::ContextReport {
+        use crate::agent::{ContextReport, MessagesReport, SystemBlockReport, ToolReport};
         let counter = self.session.token_counter().clone();
         let tokens_of = |text: &str| {
             counter.count_messages(&[ModelMessage {
@@ -602,49 +603,46 @@ impl Agent {
         let tools = self.build_tool_defs().await;
         let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
 
-        let system: Vec<serde_json::Value> = blocks
+        let system: Vec<SystemBlockReport> = blocks
             .iter()
-            .map(|b| {
-                serde_json::json!({
-                    "name": b.name,
-                    "role": b.role,
-                    "origin": b.origin,
-                    "tokens": tokens_of(&b.content),
-                    "text": b.content,
-                })
+            .map(|b| SystemBlockReport {
+                name: b.name.clone(),
+                role: b.role,
+                origin: b.origin.clone(),
+                tokens: tokens_of(&b.content),
+                text: b.content.clone(),
             })
             .collect();
-        let tools: Vec<serde_json::Value> = tools
+        let tools: Vec<ToolReport> = tools
             .iter()
             .map(|t| {
                 let schema = t.input_schema.to_string();
-                serde_json::json!({
-                    "name": t.name,
-                    "source": t.source,
-                    "schema_bytes": schema.len(),
-                    "tokens": tokens_of(&t.description) + tokens_of(&schema),
-                })
+                ToolReport {
+                    name: t.name.clone(),
+                    source: t.source.clone(),
+                    schema_bytes: schema.len(),
+                    tokens: tokens_of(&t.description) + tokens_of(&schema),
+                }
             })
             .collect();
         let message_tokens = counter.count_messages(&messages);
-        let sum = |items: &[serde_json::Value]| {
-            items
-                .iter()
-                .filter_map(|i| i["tokens"].as_u64())
-                .sum::<u64>() as usize
-        };
-        let total = sum(&system) + sum(&tools) + message_tokens;
+        let total = system.iter().map(|b| b.tokens).sum::<usize>()
+            + tools.iter().map(|t| t.tokens).sum::<usize>()
+            + message_tokens;
         let budget = self.context_budget();
-        serde_json::json!({
-            "basis": "next_step_without_new_input",
-            "model": model,
-            "max_tokens": self.settings.model.max_tokens,
-            "system": system,
-            "tools": tools,
-            "messages": {"count": messages.len(), "tokens": message_tokens},
-            "total_tokens": total,
-            "compact_threshold": budget.compact_threshold,
-            "hard_cap": budget.hard_cap,
-        })
+        ContextReport {
+            basis: "next_step_without_new_input".to_string(),
+            model,
+            max_tokens: self.settings.model.max_tokens,
+            system,
+            tools,
+            messages: MessagesReport {
+                count: messages.len(),
+                tokens: message_tokens,
+            },
+            total_tokens: total,
+            compact_threshold: budget.compact_threshold,
+            hard_cap: budget.hard_cap,
+        }
     }
 }

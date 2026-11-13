@@ -74,7 +74,7 @@ pub mod names {
 }
 
 /// Where a prompt block came from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockOrigin {
     /// The engine itself.
@@ -108,7 +108,7 @@ impl BlockOrigin {
 /// tools, messages (DeepSeek) would otherwise re-read the whole tool table
 /// whenever such a block differs, as the skills inventory does between
 /// projects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockRole {
     System,

@@ -43,7 +43,7 @@ pub enum InputMessage {
     /// turns. The answer — or why not — goes back on `reply`.
     Context {
         request: ContextRequest,
-        reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+        reply: tokio::sync::oneshot::Sender<Result<ContextAnswer, String>>,
     },
 }
 
@@ -70,13 +70,69 @@ pub enum ContextRequest {
     },
 }
 
+/// The engine's answer to a [`ContextRequest`], variant for variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextAnswer {
+    Inspected(ContextReport),
+    Dropped(Vec<usize>),
+    Edited(usize),
+}
+
+/// What the next model call would carry if a step started now with no new
+/// input, and roughly what each part costs.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct ContextReport {
+    /// Always `next_step_without_new_input`.
+    pub basis: String,
+    pub model: String,
+    pub max_tokens: u32,
+    pub system: Vec<SystemBlockReport>,
+    pub tools: Vec<ToolReport>,
+    pub messages: MessagesReport,
+    /// A local estimate.
+    pub total_tokens: usize,
+    pub compact_threshold: usize,
+    pub hard_cap: Option<usize>,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct SystemBlockReport {
+    pub name: Option<String>,
+    pub role: base::prompt::BlockRole,
+    pub origin: base::prompt::BlockOrigin,
+    pub tokens: usize,
+    pub text: String,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct ToolReport {
+    pub name: String,
+    pub source: Option<String>,
+    pub schema_bytes: usize,
+    pub tokens: usize,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct MessagesReport {
+    pub count: usize,
+    pub tokens: usize,
+}
+
 /// Something the user attached to their message — a pasted screenshot, a
 /// dragged-in file, an editor selection.
 ///
 /// The variants below are the three shapes hosts actually have, so that a host
 /// can hand over whichever it already holds instead of being forced to pre-read
 /// (or pre-decode) on the runtime's behalf.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Attachment {
     /// A path the runtime should read. Images (by extension) become
@@ -94,7 +150,7 @@ pub enum Attachment {
 }
 
 /// Where a `PermitAlways` decision's effect should be retained.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistScope {
     /// In-memory only, this session.
@@ -109,7 +165,7 @@ pub enum PersistScope {
 /// `{"type":"permit_always","scope":"local"}` — what
 /// `session.respondToPrompt` (daemon RPC) parses out of its `decision`
 /// param and what `InputMessage::PermissionResponse` carries.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PermissionDecision {
     Permit,
@@ -130,7 +186,9 @@ pub enum PermissionDecision {
 /// — what `session.respondToPrompt` parses out of its `answer` param for a
 /// question and what `InputMessage::QuestionResponse` carries. `text` is one
 /// of the question's option keys or free text.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum QuestionAnswer {
     Answer { text: String },

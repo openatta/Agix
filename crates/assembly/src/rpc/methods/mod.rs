@@ -13,6 +13,8 @@ pub mod project;
 pub mod scene;
 pub mod schedule;
 pub mod session;
+pub mod tasks;
+pub mod turn;
 
 pub use config::ConfigTarget;
 
@@ -62,4 +64,27 @@ impl<T> Patch<T> {
             Some(value) => Self::Set(value),
         })
     }
+}
+
+/// Entries of a list that read, the rest dropped with a warning — for a
+/// field where one bad entry must not fail the call. Anything but a list
+/// reads as empty.
+pub fn lenient_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let serde_json::Value::Array(entries) = serde_json::Value::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| match serde_json::from_value(entry) {
+            Ok(entry) => Some(entry),
+            Err(e) => {
+                tracing::warn!(error = %e, "dropping a malformed list entry");
+                None
+            }
+        })
+        .collect())
 }

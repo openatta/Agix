@@ -1,5 +1,21 @@
 {
   "$defs": {
+    "AgentStarted": {
+      "properties": {
+        "agent_session_id": {
+          "description": "The sidechain session the agent runs in.",
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "agent_session_id"
+      ],
+      "type": "object"
+    },
     "AppendEntryParams": {
       "properties": {
         "event": {
@@ -33,6 +49,127 @@
       "enum": [
         "zip",
         "dir"
+      ],
+      "type": "string"
+    },
+    "AskKind": {
+      "enum": [
+        "permission",
+        "question"
+      ],
+      "type": "string"
+    },
+    "Attachment": {
+      "description": "Something the user attached to their message — a pasted screenshot, a\ndragged-in file, an editor selection.\n\nThe variants below are the three shapes hosts actually have, so that a host\ncan hand over whichever it already holds instead of being forced to pre-read\n(or pre-decode) on the runtime's behalf.",
+      "oneOf": [
+        {
+          "description": "A path the runtime should read. Images (by extension) become\n[`ModelContentBlock::Image`]; anything else is inlined as text.\nUse this when the host only has a path — e.g. a drag-and-drop.",
+          "properties": {
+            "kind": {
+              "const": "file",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Text the host has already read. `path` is kept for the label shown to\nthe model, and may be a synthetic name for non-file text such as an\neditor selection.",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "text",
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An image the host already decoded — the clipboard-paste case, where\nthere is no file on disk at all. `data` is base64 without a data-URI\nprefix.",
+          "properties": {
+            "data": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "image",
+              "type": "string"
+            },
+            "media_type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "media_type",
+            "data"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BlockOrigin": {
+      "description": "Where a prompt block came from.",
+      "oneOf": [
+        {
+          "const": "kernel",
+          "description": "The engine itself.",
+          "type": "string"
+        },
+        {
+          "const": "config",
+          "description": "Written by whoever configured this deployment.",
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Contributed by an installed plugin, named by its plugin id.",
+          "properties": {
+            "plugin": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Contributed by a script in this project, named by its path.",
+          "properties": {
+            "script": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "script"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BlockRole": {
+      "description": "Where a block is delivered. `User` blocks open the conversation, as one\n`<system-reminder>` message ahead of everything else, instead of joining\nthe system prompt: endpoints that cache the prefix in the order system,\ntools, messages (DeepSeek) would otherwise re-read the whole tool table\nwhenever such a block differs, as the skills inventory does between\nprojects.",
+      "enum": [
+        "system",
+        "user",
+        "assistant"
       ],
       "type": "string"
     },
@@ -469,6 +606,68 @@
           "type": "object"
         }
       ]
+    },
+    "ContextReport": {
+      "description": "What the next model call would carry if a step started now with no new\ninput, and roughly what each part costs.",
+      "properties": {
+        "basis": {
+          "description": "Always `next_step_without_new_input`.",
+          "type": "string"
+        },
+        "compact_threshold": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hard_cap": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages": {
+          "$ref": "#/$defs/MessagesReport"
+        },
+        "model": {
+          "type": "string"
+        },
+        "system": {
+          "items": {
+            "$ref": "#/$defs/SystemBlockReport"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolReport"
+          },
+          "type": "array"
+        },
+        "total_tokens": {
+          "description": "A local estimate.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "basis",
+        "model",
+        "max_tokens",
+        "system",
+        "tools",
+        "messages",
+        "total_tokens",
+        "compact_threshold"
+      ],
+      "type": "object"
     },
     "ContextUsage": {
       "description": "How much of the context window a session is using, after a turn.",
@@ -994,6 +1193,20 @@
       ],
       "type": "object"
     },
+    "Delivery": {
+      "oneOf": [
+        {
+          "const": "turn",
+          "description": "The message ran a turn of its own.",
+          "type": "string"
+        },
+        {
+          "const": "steer",
+          "description": "The message went to the turn already running.",
+          "type": "string"
+        }
+      ]
+    },
     "DoctorReport": {
       "description": "What `daemon.doctor` answers. `settings_tiers`, `providers`, `hooks` and\n`health` are the checks' own `details`, whose shape each check decides.",
       "properties": {
@@ -1029,6 +1242,96 @@
         "plugins",
         "permission_rules_count",
         "model"
+      ],
+      "type": "object"
+    },
+    "DropMessagesParams": {
+      "properties": {
+        "at": {
+          "description": "Positions, in `session.history`'s coordinates.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "total": {
+          "default": null,
+          "description": "How many messages the caller saw; refused when the context has since\nchanged.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "at"
+      ],
+      "type": "object"
+    },
+    "Dropped": {
+      "properties": {
+        "dropped": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "dropped"
+      ],
+      "type": "object"
+    },
+    "EditMessageParams": {
+      "properties": {
+        "at": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "total": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "at",
+        "text"
+      ],
+      "type": "object"
+    },
+    "Edited": {
+      "properties": {
+        "edited": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "edited"
       ],
       "type": "object"
     },
@@ -2242,6 +2545,62 @@
       ],
       "type": "object"
     },
+    "MessageDelivery": {
+      "properties": {
+        "delivered": {
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Why not, when not delivered.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "delivered"
+      ],
+      "type": "object"
+    },
+    "MessageTaskParams": {
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id",
+        "message"
+      ],
+      "type": "object"
+    },
+    "MessagesReport": {
+      "properties": {
+        "count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "tokens"
+      ],
+      "type": "object"
+    },
     "ModelChoice": {
       "properties": {
         "applies": {
@@ -2283,6 +2642,76 @@
         "api_type"
       ],
       "type": "object"
+    },
+    "OnBusy": {
+      "description": "What `session.run_turn` does when the session is already running a turn.",
+      "oneOf": [
+        {
+          "const": "reject",
+          "description": "Refuse with `SESSION_BUSY`; the message is not delivered.",
+          "type": "string"
+        },
+        {
+          "const": "queue",
+          "description": "Wait for the running turn to end, then run this one.",
+          "type": "string"
+        },
+        {
+          "const": "steer",
+          "description": "Hand the message to the running turn, which adds it at its next step\nboundary. Falls back to `Queue` when the turn is already past its\nlast step, or when the message has attachments.",
+          "type": "string"
+        }
+      ]
+    },
+    "PermissionDecision": {
+      "description": "Wire shape: `{\"type\":\"permit\"}` / `{\"type\":\"deny\",\"reason\":\"...\"}` /\n`{\"type\":\"permit_always\",\"scope\":\"session\"}` /\n`{\"type\":\"permit_always\",\"scope\":\"local\"}` — what\n`session.respondToPrompt` (daemon RPC) parses out of its `decision`\nparam and what `InputMessage::PermissionResponse` carries.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "permit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "const": "deny",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Like `Permit`, but also persists an Allow rule beyond this single\ntool call — see `base::interface::permission::PermissionGrants`.\n`scope: Session` keeps it in-memory only (rest of this session);\n`scope: Local` additionally writes it to `.agix/settings.local.json`\nso future sessions in this project inherit it too.",
+          "properties": {
+            "scope": {
+              "$ref": "#/$defs/PersistScope"
+            },
+            "type": {
+              "const": "permit_always",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "scope"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "PermissionMode": {
       "description": "Permission mode for tool execution.",
@@ -2361,6 +2790,21 @@
         "tool_name"
       ],
       "type": "object"
+    },
+    "PersistScope": {
+      "description": "Where a `PermitAlways` decision's effect should be retained.",
+      "oneOf": [
+        {
+          "const": "session",
+          "description": "In-memory only, this session.",
+          "type": "string"
+        },
+        {
+          "const": "local",
+          "description": "In-memory for this session AND written to `.agix/settings.local.json`\nso future sessions in this project also allow it.",
+          "type": "string"
+        }
+      ]
     },
     "PluginDisclosure": {
       "description": "What a plugin will put into the model's context and start, shown before\nanyone depends on it.",
@@ -2768,6 +3212,17 @@
       ],
       "type": "object"
     },
+    "PromptAnswered": {
+      "properties": {
+        "prompt_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt_id"
+      ],
+      "type": "object"
+    },
     "PromptChoice": {
       "properties": {
         "append": {
@@ -2903,6 +3358,43 @@
       ],
       "type": "object"
     },
+    "QuestionAnswer": {
+      "description": "Wire shape: `{\"type\":\"answer\",\"text\":\"...\"}` / `{\"type\":\"decline\",\"reason\":\"...\"}`\n— what `session.respondToPrompt` parses out of its `answer` param for a\nquestion and what `InputMessage::QuestionResponse` carries. `text` is one\nof the question's option keys or free text.",
+      "oneOf": [
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "answer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "type": {
+              "const": "decline",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "RecorderOptions": {
       "description": "Record or replay this session's LLM calls.",
       "properties": {
@@ -2969,6 +3461,57 @@
       },
       "required": [
         "session_id"
+      ],
+      "type": "object"
+    },
+    "RespondToPromptParams": {
+      "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionAnswer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The answer to a `question`."
+        },
+        "decision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The answer to a `permission` prompt."
+        },
+        "prompt_id": {
+          "type": "string"
+        },
+        "prompt_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AskKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The `prompt_type` of the frame answered; omitted: `permission`."
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "prompt_id"
       ],
       "type": "object"
     },
@@ -3249,6 +3792,61 @@
           "type": "string"
         }
       ]
+    },
+    "RunTurnParams": {
+      "properties": {
+        "attachments": {
+          "default": [],
+          "description": "An entry that does not read is dropped, not the turn.",
+          "items": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "type": "array"
+        },
+        "message": {
+          "type": "string"
+        },
+        "on_busy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnBusy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "default": null,
+          "description": "Omitted: a new session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_id": {
+          "default": null,
+          "description": "Omitted: the daemon makes one up.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
     },
     "SceneActivated": {
       "properties": {
@@ -4133,6 +4731,25 @@
       ],
       "type": "string"
     },
+    "SessionTasks": {
+      "properties": {
+        "active": {
+          "description": "Whether the engine is in memory; when it is not, only scheduled jobs\nare listed.",
+          "type": "boolean"
+        },
+        "tasks": {
+          "items": {
+            "$ref": "#/$defs/TaskInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "active",
+        "tasks"
+      ],
+      "type": "object"
+    },
     "SetGoalParams": {
       "description": "Params that name one session and nothing else.",
       "properties": {
@@ -4391,6 +5008,18 @@
         }
       ]
     },
+    "Stopped": {
+      "properties": {
+        "stopped": {
+          "description": "`false`: no such task, or it had already ended.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stopped"
+      ],
+      "type": "object"
+    },
     "SubscribeParams": {
       "properties": {
         "resume": {
@@ -4441,6 +5070,37 @@
       ],
       "type": "object"
     },
+    "SystemBlockReport": {
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "$ref": "#/$defs/BlockOrigin"
+        },
+        "role": {
+          "$ref": "#/$defs/BlockRole"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tokens": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "role",
+        "origin",
+        "tokens",
+        "text"
+      ],
+      "type": "object"
+    },
     "SystemKind": {
       "enum": [
         "local_command",
@@ -4448,6 +5108,68 @@
         "notice"
       ],
       "type": "string"
+    },
+    "TaskInfo": {
+      "description": "A task as `session.tasks` lists it and the `task_*` events carry it.",
+      "properties": {
+        "detail": true,
+        "ended_ms": {
+          "description": "Unix millis; `null` while it runs.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`agent`, `teammate`, `shell`, `monitor`, `cron` or `code`.",
+          "type": "string"
+        },
+        "started_ms": {
+          "description": "Unix millis.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "structured_output": true,
+        "task_id": {
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "waiting_for": {
+          "description": "The prompt ids the work waits on; empty unless `status` is `waiting`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "task_id",
+        "kind",
+        "status",
+        "started_ms",
+        "detail",
+        "waiting_for"
+      ],
+      "type": "object"
     },
     "TaskModelOverride": {
       "anyOf": [
@@ -4475,6 +5197,117 @@
       ],
       "description": "A `task_models.<task>` entry. Accepts either the shorthand `\"provider_id\"`\nstring form or the detailed `{ \"provider\": ..., \"model\": ... }` object form."
     },
+    "TaskOutput": {
+      "description": "Part of what one task has produced. Offsets count every byte the work\never printed.",
+      "properties": {
+        "dropped": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "final": {
+          "description": "The output has ended; `next_byte` will not grow.",
+          "type": "boolean"
+        },
+        "from_byte": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "next_byte": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "output",
+        "truncated",
+        "status",
+        "from_byte",
+        "next_byte",
+        "dropped",
+        "final"
+      ],
+      "type": "object"
+    },
+    "TaskOutputParams": {
+      "description": "One of `tail_bytes` and `from_byte`; neither: the last 8 KiB.",
+      "properties": {
+        "from_byte": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "tail_bytes": {
+          "default": null,
+          "description": "At most 256 KiB.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id"
+      ],
+      "type": "object"
+    },
+    "TaskRef": {
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "task_id"
+      ],
+      "type": "object"
+    },
+    "TaskStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "running",
+            "done",
+            "stopped",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "Running, and waiting on the host to answer a question.",
+          "type": "string"
+        }
+      ]
+    },
     "TelemetryOptions": {
       "properties": {
         "output": {
@@ -4483,6 +5316,35 @@
       },
       "required": [
         "output"
+      ],
+      "type": "object"
+    },
+    "ToolReport": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "schema_bytes": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tokens": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "schema_bytes",
+        "tokens"
       ],
       "type": "object"
     },
@@ -4523,6 +5385,180 @@
           "type": "string"
         }
       ]
+    },
+    "TurnReply": {
+      "anyOf": [
+        {
+          "properties": {
+            "api_calls": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "name": {
+              "description": "The session's name after the turn.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "turn_id",
+            "delivery",
+            "api_calls"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "delivery": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "into_turn_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "turn_id",
+            "delivery"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "skipped": {
+              "type": "boolean"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "turn_id",
+            "skipped"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "How a turn went, as `session.run_turn`, `session.compact` and\n`session.clear` answer it."
+    },
+    "TurnReplyWithIgnored": {
+      "anyOf": [
+        {
+          "properties": {
+            "api_calls": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "delivery": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "name": {
+              "description": "The session's name after the turn.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "turn_id",
+            "delivery",
+            "api_calls"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "delivery": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "into_turn_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "turn_id",
+            "delivery"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "session_id": {
+              "type": "string"
+            },
+            "skipped": {
+              "type": "boolean"
+            },
+            "turn_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id",
+            "turn_id",
+            "skipped"
+          ],
+          "type": "object"
+        }
+      ],
+      "description": "`result` with what the call's `options` left out, as `ignored_options`;\nabsent when nothing was.",
+      "properties": {
+        "ignored_options": {
+          "items": {
+            "$ref": "#/$defs/IgnoredOption"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ignored_options"
+      ],
+      "type": "object"
     },
     "TurnState": {
       "enum": [
@@ -4578,6 +5614,38 @@
       "required": [
         "session_id",
         "action"
+      ],
+      "type": "object"
+    },
+    "Usage": {
+      "properties": {
+        "cache_creation_input_tokens": {
+          "default": 0,
+          "description": "Tokens written into the prompt cache by this call, and tokens read\nback from it. Both are priced differently from ordinary input — a\ncache read costs a fraction of one — so a report that folded them\ninto `input_tokens` would overcharge and one that dropped them\nundercharges by whatever the cache covered.\n\n`#[serde(default)]` because recordings written before these existed\nmust still read back.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cache_read_input_tokens": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
       ],
       "type": "object"
     },
@@ -5068,10 +6136,10 @@
     },
     "session.clear": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/TurnReply"
       }
     },
     "session.close": {
@@ -5084,10 +6152,10 @@
     },
     "session.compact": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/TurnReply"
       }
     },
     "session.create": {
@@ -5108,18 +6176,18 @@
     },
     "session.dropMessages": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/DropMessagesParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Dropped"
       }
     },
     "session.editMessage": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/EditMessageParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Edited"
       }
     },
     "session.entries": {
@@ -5172,10 +6240,10 @@
     },
     "session.inspectContext": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ContextReport"
       }
     },
     "session.interrupt": {
@@ -5196,10 +6264,10 @@
     },
     "session.messageTask": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/MessageTaskParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/MessageDelivery"
       }
     },
     "session.rename": {
@@ -5212,10 +6280,10 @@
     },
     "session.respondToPrompt": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/RespondToPromptParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/PromptAnswered"
       }
     },
     "session.resume": {
@@ -5228,10 +6296,10 @@
     },
     "session.run_turn": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/RunTurnParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/TurnReplyWithIgnored"
       }
     },
     "session.setGoal": {
@@ -5264,15 +6332,15 @@
         "$ref": "#/$defs/StartAgentParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/AgentStarted"
       }
     },
     "session.stopTask": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/TaskRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/Stopped"
       }
     },
     "session.subscribe": {
@@ -5285,18 +6353,18 @@
     },
     "session.taskOutput": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/TaskOutputParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/TaskOutput"
       }
     },
     "session.tasks": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionTasks"
       }
     },
     "session.unsubscribe": {

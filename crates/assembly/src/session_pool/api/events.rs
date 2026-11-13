@@ -63,7 +63,10 @@ pub fn emitted_outside_turns(event: &AgentEvent) -> bool {
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AskKind {
     Permission,

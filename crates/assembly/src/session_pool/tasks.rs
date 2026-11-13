@@ -89,7 +89,10 @@ impl SessionPool {
     /// members, shell commands, monitors, and the jobs scheduled for it.
     /// `active` is whether its engine is in memory; a session that is not has
     /// only its scheduled jobs.
-    pub async fn session_tasks(&self, session_id: &str) -> serde_json::Value {
+    pub async fn session_tasks(&self, session_id: &str) -> Result<api::SessionTasks, PoolError> {
+        if !self.session_exists(session_id).await {
+            return Err(PoolError::no_session(session_id));
+        }
         let state = self
             .sessions
             .lock()
@@ -117,7 +120,10 @@ impl SessionPool {
                 structured_output: None,
             }
         }));
-        serde_json::json!({"active": state.is_some(), "tasks": tasks})
+        Ok(api::SessionTasks {
+            active: state.is_some(),
+            tasks,
+        })
     }
 
     /// `session.taskOutput`: part of what one of `session.tasks`' entries has
@@ -127,7 +133,7 @@ impl SessionPool {
         session_id: &str,
         task_id: &str,
         read: TaskOutputRead,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::TaskOutput, PoolError> {
         if !self.session_exists(session_id).await {
             return Err(PoolError::no_session(session_id));
         }
@@ -162,15 +168,15 @@ impl SessionPool {
                 }
             },
         };
-        Ok(serde_json::json!({
-            "output": slice.text,
-            "truncated": truncated,
-            "status": task.info().status,
-            "from_byte": slice.from_byte,
-            "next_byte": slice.next_byte,
-            "dropped": slice.dropped,
-            "final": slice.closed,
-        }))
+        Ok(api::TaskOutput {
+            output: slice.text,
+            truncated,
+            status: task.info().status,
+            from_byte: slice.from_byte,
+            next_byte: slice.next_byte,
+            dropped: slice.dropped,
+            closed: slice.closed,
+        })
     }
 
     /// `session.stopTask`: stop one of `session.tasks`' entries. A scheduled
@@ -191,21 +197,38 @@ impl SessionPool {
     }
 
     /// `session.messageTask`: hand a message to a running background
-    /// sub-agent, the way the model's `TaskMessage` does. `None` when the
-    /// session is not in memory; otherwise why the task did not take it.
+    /// sub-agent, the way the model's `TaskMessage` does. A task that does not
+    /// take it is an answer, not an error; a session not in memory is.
     pub async fn message_task(
         &self,
         session_id: &str,
         task_id: &str,
         message: String,
-    ) -> Option<Result<(), String>> {
+    ) -> Result<api::MessageDelivery, PoolError> {
         let state = self
             .sessions
             .lock()
             .await
             .get(session_id)
-            .and_then(|live| live.state.clone())?;
-        Some(tools::task_message::deliver(&state, task_id, message))
+            .and_then(|live| live.state.clone())
+            .ok_or_else(|| {
+                PoolError::session_gone(
+                    session_id,
+                    format!("session `{session_id}` is not running"),
+                )
+            })?;
+        Ok(
+            match tools::task_message::deliver(&state, task_id, message) {
+                Ok(()) => api::MessageDelivery {
+                    delivered: true,
+                    reason: None,
+                },
+                Err(reason) => api::MessageDelivery {
+                    delivered: false,
+                    reason: Some(reason),
+                },
+            },
+        )
     }
 
     /// `session.startAgent`: a sub-agent the host starts under `session_id`,
@@ -215,7 +238,7 @@ impl SessionPool {
         &self,
         session_id: &str,
         request: base::interface::agent_spawner::AgentRequest,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::AgentStarted, PoolError> {
         use base::interface::agent_spawner::StartAgentError;
         let not_found = || PoolError::no_session(session_id);
         if !self.session_exists(session_id).await {
@@ -241,10 +264,60 @@ impl SessionPool {
                 StartAgentError::Limit(m) => PoolError::TaskLimit(m),
                 StartAgentError::Unsupported(m) => PoolError::SpawnUnsupported(m),
             })?;
-        Ok(serde_json::json!({
-            "task_id": started.task_id,
-            "agent_session_id": started.agent_session_id,
-        }))
+        Ok(api::AgentStarted {
+            task_id: started.task_id,
+            agent_session_id: started.agent_session_id,
+        })
+    }
+
+    /// `session.inspectContext`: what the next model call would carry.
+    pub async fn inspect_context(&self, session_id: &str) -> Result<api::ContextReport, PoolError> {
+        match self
+            .context_request(session_id, runtime::agent::ContextRequest::Inspect)
+            .await?
+        {
+            runtime::agent::ContextAnswer::Inspected(report) => Ok(report),
+            other => Err(unexpected_answer(other)),
+        }
+    }
+
+    /// `session.dropMessages`: the positions dropped.
+    pub async fn drop_messages(
+        &self,
+        session_id: &str,
+        at: Vec<usize>,
+        total: Option<usize>,
+    ) -> Result<Vec<usize>, PoolError> {
+        match self
+            .context_request(
+                session_id,
+                runtime::agent::ContextRequest::Drop { at, total },
+            )
+            .await?
+        {
+            runtime::agent::ContextAnswer::Dropped(at) => Ok(at),
+            other => Err(unexpected_answer(other)),
+        }
+    }
+
+    /// `session.editMessage`: the position edited.
+    pub async fn edit_message(
+        &self,
+        session_id: &str,
+        at: usize,
+        text: String,
+        total: Option<usize>,
+    ) -> Result<usize, PoolError> {
+        match self
+            .context_request(
+                session_id,
+                runtime::agent::ContextRequest::Edit { at, text, total },
+            )
+            .await?
+        {
+            runtime::agent::ContextAnswer::Edited(at) => Ok(at),
+            other => Err(unexpected_answer(other)),
+        }
     }
 
     /// Ask a session's engine about, or change, its context
@@ -253,11 +326,11 @@ impl SessionPool {
     /// running a turn answers `SESSION_BUSY` — its context is moving under
     /// the question. A change is applied to the engine first and then written
     /// to the log as an `agix.context` entry, so a resume reproduces it.
-    pub async fn context_request(
+    async fn context_request(
         &self,
         session_id: &str,
         request: runtime::agent::ContextRequest,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<runtime::agent::ContextAnswer, PoolError> {
         if !self.session_exists(session_id).await {
             return Err(PoolError::no_session(session_id));
         }
@@ -317,4 +390,10 @@ impl SessionPool {
         }
         Ok(result)
     }
+}
+
+fn unexpected_answer(answer: runtime::agent::ContextAnswer) -> PoolError {
+    PoolError::Internal(format!(
+        "the engine answered a different context request: {answer:?}"
+    ))
 }

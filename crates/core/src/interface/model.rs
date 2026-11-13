@@ -413,7 +413,9 @@ pub enum ModelEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,

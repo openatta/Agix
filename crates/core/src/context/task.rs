@@ -377,10 +377,12 @@ impl RunningTask {
 }
 
 /// A task as `session.tasks` lists it and the `task_*` events carry it.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
 pub struct TaskInfo {
     pub task_id: String,
+    /// `agent`, `teammate`, `shell`, `monitor`, `cron` or `code`.
     #[serde(serialize_with = "wire_kind")]
+    #[schemars(with = "String")]
     pub kind: TaskType,
     pub status: TaskStatus,
     /// Unix millis.
@@ -405,7 +407,7 @@ fn wire_kind<S: serde::Serializer>(kind: &TaskType, s: S) -> Result<S::Ok, S::Er
     s.serialize_str(kind.as_str())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Running,

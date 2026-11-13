@@ -11,6 +11,7 @@ mod plugin;
 mod scene;
 mod session;
 mod settings;
+mod tasks;
 mod turn;
 
 pub use commands::{CommandInfo, CommandKind, CommandSource, NewSchedule};
@@ -42,4 +43,5 @@ pub use settings::{
     ConfigTier, ConfigTierName, ImportRun, ProjectStatus, ProjectTrustSet, ProviderConfigView,
     ProviderPatch, ProviderSaved, ProviderView, RoutingStatus, SettingsReloaded, TrustState,
 };
+pub use tasks::{AgentStarted, ContextReport, MessageDelivery, SessionTasks, TaskOutput};
 pub use turn::{Initiator, TurnOutcome, TurnRequest};

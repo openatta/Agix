@@ -88,11 +88,3 @@ pub(crate) fn failure(id: Value, e: PoolError) -> RpcResponse {
         error: Some(e.into()),
     }
 }
-
-/// `result` as the response to `id`, or its failure.
-pub(crate) fn respond(id: Value, result: Result<Value, PoolError>) -> RpcResponse {
-    match result {
-        Ok(result) => RpcResponse::ok(id, result),
-        Err(e) => failure(id, e),
-    }
-}

@@ -328,7 +328,7 @@ const AGENT_EXIT_GRACE: Duration = Duration::from_secs(5);
 const PROCESS_GROUP_GRACE: Duration = Duration::from_millis(500);
 
 /// What `session.run_turn` does when the session is already running a turn.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OnBusy {
     /// Refuse with `SESSION_BUSY`; the message is not delivered.
