@@ -15,6 +15,7 @@ pub(crate) struct SessionPoolBuilder {
     paths: Arc<dyn crate::config::DaemonPaths>,
     credentials: Arc<dyn base::interface::credentials::CredentialSource>,
     managed: Option<(PathBuf, Option<base::managed_settings::ManagedSettings>)>,
+    host_overrides: HostOverrides,
     permission_prompt_timeout: Duration,
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
@@ -46,6 +47,7 @@ impl SessionPool {
             paths,
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
             managed: None,
+            host_overrides: HostOverrides::default(),
             permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
             rust_plugins: Vec::new(),
             customize: None,
@@ -73,6 +75,15 @@ impl SessionPoolBuilder {
         managed: Option<base::managed_settings::ManagedSettings>,
     ) -> Self {
         self.managed = Some((path, managed));
+        self
+    }
+
+    /// What `host` — the settings the host handed over, before the managed
+    /// layer — sets differently from `on_disk`, the same pair read from disk:
+    /// laid over every settings this pool loads from disk, so a value the
+    /// host set in memory reaches every project and survives a reload.
+    pub(crate) fn host_changes(mut self, on_disk: &Settings, host: &Settings) -> Self {
+        self.host_overrides = HostOverrides::between(on_disk, host);
         self
     }
 
@@ -148,6 +159,7 @@ impl SessionPoolBuilder {
         );
         let bindings = BindingCache::new(
             settings,
+            self.host_overrides,
             ManagedLayer {
                 path: managed_settings_path,
                 settings: managed_settings,

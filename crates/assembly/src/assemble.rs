@@ -187,6 +187,7 @@ pub async fn pool(
     .permission_prompt_timeout(assembly.permission_prompt_timeout)
     .credentials(credentials)
     .managed_settings(managed_path, managed)
+    .host_changes(&own_settings_on_disk(config), &config.settings)
     .plugins(assembly.plugins);
     if let Some(customize) = assembly.customize_session {
         pool = pool.session_customizer(customize);
@@ -220,6 +221,24 @@ pub async fn pool(
     pool.start_scheduler();
 
     Ok(pool)
+}
+
+/// The daemon's own pair's settings as they are on disk, read the way
+/// `load_daemon_config` read them — `--max-tokens` fallback included — so
+/// what differs from `config.settings` is what the host changed afterwards.
+fn own_settings_on_disk(config: &DaemonConfig) -> base::settings::Settings {
+    let paths = &config.paths;
+    let mut on_disk = base::settings::LoadedSettings::load(
+        paths.global_root(),
+        paths.config_root(),
+        paths.project_root().join(".agix"),
+        &config.settings.paths.scope,
+        &config.settings.model.model_name,
+    );
+    if on_disk.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
+        on_disk.values.model.max_tokens = config.settings.model.max_tokens;
+    }
+    on_disk.values
 }
 
 /// The managed settings file this pool reads — the one the config names,

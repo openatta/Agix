@@ -366,3 +366,39 @@ async fn a_session_mid_turn_is_too_busy_to_change() {
         .await;
     let _ = tokio::time::timeout(Duration::from_secs(10), turn).await;
 }
+
+/// What the host set on the settings it assembled the daemon with reaches a
+/// session in another project too, not only the daemon's own: with
+/// `memory_enabled` off, that session's prompt has no memory section and its
+/// turn is followed by no extraction call.
+#[tokio::test]
+async fn a_host_setting_reaches_a_session_in_another_project() {
+    let model = Arc::new(MockAnthropicClient::new());
+    let daemon = Daemon::start(model.clone()).await;
+    let other = tempfile::tempdir().unwrap();
+    model.push_turn(text_round("hi"));
+    let session = daemon
+        .ok(
+            "session.create",
+            serde_json::json!({"project_root": other.path()}),
+        )
+        .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    daemon.turn(&session, "hello").await;
+    daemon
+        .ok("session.close", serde_json::json!({"session_id": session}))
+        .await;
+
+    let first = serde_json::to_string(&model.nth_request(0).expect("a call was made")).unwrap();
+    assert!(
+        !first.contains("persistent file-based memory"),
+        "the memory section is in the prompt"
+    );
+    assert_eq!(
+        model.calls(),
+        1,
+        "a memory extraction call followed the turn"
+    );
+}

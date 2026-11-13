@@ -43,7 +43,9 @@ use facade::settings_reload::*;
 use mcp_hub::McpHub;
 pub(crate) use mcp_hub::McpSetup;
 pub use mcp_hub::{McpOptions, COMPILED as MCP_COMPILED};
-use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding, ProjectSceneKey};
+use parts::bindings::{
+    BindingCache, Cached, HostOverrides, ManagedLayer, ProjectBinding, ProjectSceneKey,
+};
 use parts::directory::SessionDirectory;
 use parts::events::DaemonEvents;
 use parts::factory::{

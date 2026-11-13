@@ -1,16 +1,18 @@
 //! 设置与绑定 `BindingCache`：守护进程自己那一对的设置（`config.reload` 热替换的那份），
 //! 每个 `(project, scene)` 对的 [`ProjectBinding`]，以及看着它们来源文件的监视。
-//! 托管设置层只在这里叠加。
+//! 宿主覆盖层和托管设置层只在这里叠加。
 //!
 //! 锁序：`bindings` 在前，`last_good_routers` 在后（都是 tokio `Mutex`）；`settings`
 //! 是 tokio `RwLock`，只在取值或替换的那一下持有；`epochs` 和 `pool_watch` 是 std 叶子
 //! 锁。持着 `bindings` 时不读盘，也不调别的协作者。
 
 mod binding;
+mod host_overrides;
 
 pub(in crate::session_pool) use binding::{
     tier_covers, BindingStamp, ProjectBinding, ProjectSceneKey,
 };
+pub(in crate::session_pool) use host_overrides::HostOverrides;
 
 use crate::session_pool::off_the_runtime;
 use crate::watch_hub::{Tier, WatchHub, WatchKey, WatchTarget, WatchToken};
@@ -61,12 +63,21 @@ struct Cache {
     epochs: std::sync::Mutex<HashMap<ProjectSceneKey, u64>>,
 }
 
+/// What is laid over every settings this pool loads from disk, in order.
+struct Layers {
+    /// What the host changed on this daemon's own pair's settings before
+    /// handing them over. Every other pair, and this one reloaded from disk,
+    /// would otherwise lose it.
+    host: HostOverrides,
+    managed: ManagedLayer,
+}
+
 pub(in crate::session_pool) struct BindingCache {
     /// This daemon's own pair's settings, hot-swapped by `config.reload` and
     /// `config.setProvider`. Sessions already running keep the snapshot they
     /// were built with; everything not tied to a session reads this one.
     settings: AsyncRwLock<Arc<LoadedSettings>>,
-    managed: ManagedLayer,
+    layers: Layers,
     cache: Cache,
     /// The last router each pair was successfully served by, kept across
     /// invalidation so a provider config that stops resolving — or stops
@@ -93,6 +104,7 @@ impl BindingCache {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::session_pool) fn new(
         settings: Arc<LoadedSettings>,
+        host_overrides: HostOverrides,
         managed: ManagedLayer,
         watch: Option<WatchHub>,
         credentials: Arc<dyn base::interface::credentials::CredentialSource>,
@@ -103,7 +115,10 @@ impl BindingCache {
     ) -> Self {
         Self {
             settings: AsyncRwLock::new(settings),
-            managed,
+            layers: Layers {
+                host: host_overrides,
+                managed,
+            },
             cache: Cache {
                 bindings: AsyncMutex::new(HashMap::new()),
                 epochs: std::sync::Mutex::new(HashMap::new()),
@@ -137,15 +152,19 @@ impl BindingCache {
     }
 
     pub(in crate::session_pool) fn managed_settings_path(&self) -> &Path {
-        &self.managed.path
+        &self.layers.managed.path
     }
 
-    /// `settings` with this pool's managed layer on top.
-    pub(in crate::session_pool) fn with_managed_layer(
+    /// `settings` read from disk, with what the host changed in memory and
+    /// then this pool's managed layer on top.
+    pub(in crate::session_pool) fn with_host_layers(
         &self,
         settings: LoadedSettings,
     ) -> LoadedSettings {
-        settings.with_managed(self.managed.settings.clone())
+        self.layers
+            .host
+            .apply(settings)
+            .with_managed(self.layers.managed.settings.clone())
     }
 
     /// Whether `(project_root, scene_id)` is this daemon's own pair.
@@ -216,7 +235,7 @@ impl BindingCache {
                 ),
             })
             .await;
-            Arc::new(self.with_managed_layer(loaded))
+            Arc::new(self.with_host_layers(loaded))
         };
 
         let (watch, unwatched_settings) = self.watch_tiers_of(&settings, &key);
@@ -463,7 +482,7 @@ impl BindingCache {
             LoadedSettings::load(global_root, config_root, local_dir, &scene, &default_model)
         })
         .await;
-        let reloaded = Arc::new(self.with_managed_layer(loaded));
+        let reloaded = Arc::new(self.with_host_layers(loaded));
         *self.settings.write().await = reloaded;
     }
 
