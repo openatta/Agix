@@ -42,7 +42,9 @@ repository = "https://github.com/openatta/agix"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "parking_lot", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+# Processes, signals and sockets are each crate's own to ask for, so a crate that
+# leaves them out cannot reach the machine through tokio.
+tokio = { version = "1", features = ["fs", "io-util", "macros", "parking_lot", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec", "io", "rt"] }
 tokio-stream = "0.1"
 futures = "0.3"

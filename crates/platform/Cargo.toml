@@ -10,7 +10,7 @@ autotests    = false
 
 [dependencies]
 base          = { workspace = true }
-tokio         = { workspace = true }
+tokio         = { workspace = true, features = ["process", "net"] }
 tokio-util    = { workspace = true }
 futures       = { workspace = true }
 async-trait   = { workspace = true }

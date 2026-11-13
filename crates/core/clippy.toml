@@ -9,7 +9,9 @@ allow-expect-in-tests = true
 
 disallowed-types = [
   { path = "std::process::Command", reason = "base starts no process: build a ProcessSpec and hand it to &dyn Process" },
-  { path = "tokio::process::Command", reason = "base starts no process: build a ProcessSpec and hand it to &dyn Process" },
+  # base alone builds tokio without `process`, so the path resolves only when
+  # another package in the same build turns the feature on.
+  { path = "tokio::process::Command", reason = "base starts no process: build a ProcessSpec and hand it to &dyn Process", allow-invalid = true },
 ]
 
 disallowed-methods = [

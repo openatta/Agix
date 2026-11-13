@@ -43,6 +43,7 @@ structured-output = ["dep:jsonschema"]
 libc = { workspace = true }
 platform = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
+tokio    = { workspace = true, features = ["net"] }
 
 [lints.clippy]
 unwrap_used = "warn"
