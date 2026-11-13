@@ -1,6 +1,6 @@
 //! `set_model_tests` 原样搬来的用例。
 
-use super::mcp_for_project::test_pool;
+use super::mcp_for_project::{test_pool, test_pool_with_store};
 use super::*;
 
 /// The engine's main loop is inside `process_turn` while a turn runs and
@@ -86,32 +86,13 @@ impl base::interface::model::Model for RecordsTheModel {
     }
 }
 
-/// `setModel` checks the session is idle, then changes the model. A rebuild
-/// that takes the session in between has read the spec already and builds
-/// the next engine on the model before; the choice still reaches that engine.
-#[tokio::test]
-async fn a_model_chosen_while_a_rebuild_is_on_its_way_reaches_the_rebuilt_engine() {
-    let (pool, _dir) = test_pool().await;
-    let model = Arc::new(RecordsTheModel::default());
-    let mut settings = (*pool.bindings.pool_settings().await).clone();
-    settings.values.memory_enabled = false;
-    let mut binding = pool.bindings.binding_from(settings);
-    binding.model = model.clone();
-    pool.bindings
-        .insert(
-            (Some(pool.cwd().to_path_buf()), "code".to_string()),
-            binding,
-        )
-        .await;
-    let sid = pool
-        .create_session(None, ProjectSelector::Default, None)
-        .await
-        .expect("a session")
-        .session_id;
-
+/// Choose a model for `sid` while a `setPrompt` rebuild takes the session:
+/// `setModel` passes its idle check, then waits on the bindings until the
+/// rebuild has read the spec.
+async fn choose_a_model_while_a_rebuild_takes_the_session(pool: &Arc<SessionPool>, sid: &str) {
     let bindings = pool.bindings.hold().await;
     let chosen = {
-        let (pool, sid) = (pool.clone(), sid.clone());
+        let (pool, sid) = (pool.clone(), sid.to_string());
         tokio::spawn(async move {
             pool.set_session_model(&sid, Some("claude-opus-4-6"), None)
                 .await
@@ -122,7 +103,7 @@ async fn a_model_chosen_while_a_rebuild_is_on_its_way_reaches_the_rebuilt_engine
         tokio::task::yield_now().await;
     }
     let rebuilt = {
-        let (pool, sid) = (pool.clone(), sid.clone());
+        let (pool, sid) = (pool.clone(), sid.to_string());
         tokio::spawn(async move {
             pool.set_session_prompt(&sid, |p| p.append = Some("Answer briefly.".into()))
                 .await
@@ -134,7 +115,7 @@ async fn a_model_chosen_while_a_rebuild_is_on_its_way_reaches_the_rebuilt_engine
         tokio::task::yield_now().await;
         rebuilding = pool
             .live
-            .with_live(&sid, |live| !live.turn.is_idle())
+            .with_live(sid, |live| !live.turn.is_idle())
             .await
             .unwrap_or(false);
         if rebuilding {
@@ -148,24 +129,60 @@ async fn a_model_chosen_while_a_rebuild_is_on_its_way_reaches_the_rebuilt_engine
     drop(bindings);
     assert!(chosen.await.unwrap().is_ok(), "the choice was taken");
     assert!(rebuilt.await.unwrap().is_ok(), "the session was rebuilt");
+}
 
-    pool.run_turn(
-        TurnRequest {
-            session_id: Some(sid),
-            message: "hello".into(),
-            attachments: Vec::new(),
-            turn_id: "t1".into(),
-            options: None,
-            on_busy: OnBusy::Reject,
-            initiator: Initiator::Client,
-        },
-        None,
-    )
-    .await
-    .expect("a turn");
+/// `setModel` checks the session is idle, then changes the model. A rebuild
+/// that takes the session in between has read the spec already and builds
+/// the next engine on the model before; the choice still reaches that engine.
+#[tokio::test]
+async fn a_model_chosen_while_a_rebuild_is_on_its_way_reaches_the_rebuilt_engine() {
+    let (pool, _dir) = test_pool().await;
+    let model = Arc::new(RecordsTheModel::default());
+    answered_by(&pool, model.clone()).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+
+    choose_a_model_while_a_rebuild_takes_the_session(&pool, &sid).await;
+
+    pool.run_turn(turn(&sid, "t1", "hello", OnBusy::Reject), None)
+        .await
+        .expect("a turn");
     assert_eq!(
         model.0.lock().unwrap().as_slice(),
         ["claude-opus-4-6"],
         "the next turn asks for the model chosen"
+    );
+}
+
+/// The rebuild records the spec in the log once it has taken it. What it
+/// records is the spec as it stands then — a model chosen while it ran
+/// included — or a session resumed from its log goes back to the model before.
+#[tokio::test]
+async fn a_model_chosen_while_a_rebuild_is_on_its_way_is_the_one_the_log_records() {
+    let store: Arc<dyn history::store::HistoryStore> =
+        Arc::new(history::store::InMemoryHistoryStore::new());
+    let (pool, _dir) = test_pool_with_store(Some(store)).await;
+    answered_by(&pool, Arc::new(RecordsTheModel::default())).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+
+    choose_a_model_while_a_rebuild_takes_the_session(&pool, &sid).await;
+
+    let recorded = pool.specs.recorded(&sid).await;
+    assert_eq!(
+        recorded.model.as_deref(),
+        Some("claude-opus-4-6"),
+        "the log records the model chosen"
+    );
+    assert_eq!(
+        recorded.prompt.and_then(|p| p.append).as_deref(),
+        Some("Answer briefly."),
+        "and the prompt the rebuild was for"
     );
 }
