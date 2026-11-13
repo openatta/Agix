@@ -241,13 +241,13 @@ pub fn project_agent_types_requiring_trust(
 /// Shared, live-reloaded agent-type map: `subagent_type name -> AgentTypeDefinition`.
 /// The inner `Arc<HashMap>` is swapped wholesale on reload (never mutated in
 /// place), so a reader that clones it out under a brief read lock never sees
-/// a half-updated map — see `SharedAgentTypeCatalog`/`Inner::agent_types`.
+/// a half-updated map — see `SharedAgentTypeCatalog`/`AgentCatalog`.
 pub(crate) type SharedAgentTypeMap =
     Arc<std::sync::RwLock<Arc<std::collections::HashMap<String, AgentTypeDefinition>>>>;
 
 pub struct SharedAgentTypeCatalog {
     pub(super) agent_types: SharedAgentTypeMap,
-    // Kept alive only for its background thread; see `Inner::_agent_type_watcher`.
+    // Kept alive only for its background thread.
     pub(super) _watcher: Option<Arc<crate::type_watcher::AgentTypeWatcher>>,
 }
 
@@ -337,6 +337,101 @@ impl SharedAgentTypeCatalog {
     /// Handle to pass to `AgentsModule::shared_agent_types` for each session.
     pub fn handle(&self) -> SharedAgentTypeMap {
         self.agent_types.clone()
+    }
+}
+
+/// A session's agent types: a catalog that may be swapped in place by a
+/// watcher, with this session's plugins' types over it.
+pub(crate) struct AgentCatalog {
+    types: SharedAgentTypeMap,
+    /// Kept alive only so the watcher's thread keeps running.
+    _watcher: Option<Arc<crate::type_watcher::AgentTypeWatcher>>,
+    session_types: std::collections::HashMap<String, AgentTypeDefinition>,
+    /// Computed once: `Tool::description` hands out a borrowed `&str`, which
+    /// cannot come from behind the catalog's lock. A type added on disk later
+    /// is usable at once but not listed until the next rebuild.
+    description: Arc<str>,
+}
+
+impl AgentCatalog {
+    /// Scanned from `dirs` (low → high priority) over the built-in types and
+    /// `plugin_types`, and watched for changes. A watcher that cannot start
+    /// leaves the catalog as it was built, as `SkillManager::enable_watching`
+    /// does.
+    pub(crate) fn watched(
+        dirs: &[(std::path::PathBuf, AgentTypeSource)],
+        plugin_types: &[AgentTypeDefinition],
+        files: &PromptFiles,
+    ) -> Self {
+        let types: SharedAgentTypeMap = Arc::new(std::sync::RwLock::new(Arc::new(
+            merge_agent_types(dirs, plugin_types, files),
+        )));
+        let watcher = crate::type_watcher::AgentTypeWatcher::watch(
+            dirs.to_vec(),
+            plugin_types.to_vec(),
+            files.clone(),
+            types.clone(),
+        )
+        .map(Arc::new)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "failed to enable agent-type file watching; live reload disabled for this session");
+        })
+        .ok();
+        Self::over(types, watcher, &[])
+    }
+
+    /// A catalog the host keeps and watches for all its sessions, with
+    /// `session_types` over it: above built-in and package types, below the
+    /// ones on disk.
+    pub(crate) fn shared(map: SharedAgentTypeMap, session_types: &[AgentTypeDefinition]) -> Self {
+        Self::over(map, None, session_types)
+    }
+
+    fn over(
+        types: SharedAgentTypeMap,
+        _watcher: Option<Arc<crate::type_watcher::AgentTypeWatcher>>,
+        session_types: &[AgentTypeDefinition],
+    ) -> Self {
+        let session_types: std::collections::HashMap<_, _> = session_types
+            .iter()
+            .map(|d| (d.name.clone(), d.clone()))
+            .collect();
+        let mut visible = types
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .clone();
+        for (name, definition) in &session_types {
+            if visible.get(name).is_none_or(|d| !d.source.may_shadow()) {
+                visible.insert(name.clone(), definition.clone());
+            }
+        }
+        Self {
+            types,
+            _watcher,
+            session_types,
+            description: describe_agent_types(&visible).into(),
+        }
+    }
+
+    pub(crate) fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// One type, cloned out from behind the lock: the watcher may swap the
+    /// map at any moment, and a borrow into the old one would dangle.
+    pub(crate) fn get(&self, name: &str) -> Option<AgentTypeDefinition> {
+        let shared = self
+            .types
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .cloned();
+        match (shared, self.session_types.get(name)) {
+            (Some(on_disk), _) if on_disk.source.may_shadow() => Some(on_disk),
+            (_, Some(declared)) => Some(declared.clone()),
+            (shared, None) => shared,
+        }
     }
 }
 

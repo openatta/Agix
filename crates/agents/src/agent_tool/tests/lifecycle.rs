@@ -72,7 +72,8 @@ async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
     assert_eq!(
         agent_tool
             .inner
-            .team_members
+            .members
+            .live
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .len(),

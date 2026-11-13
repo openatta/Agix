@@ -26,6 +26,7 @@ impl AgentTool {
     ) -> Result<(Agent, EventReceiver, InputSender, SubagentPayload), base::error::ToolError> {
         let depth = self
             .inner
+            .limits
             .spawn_guard()
             .map_err(base::error::ToolError::Denied)?;
         let run = SubRun {
@@ -83,7 +84,8 @@ impl AgentTool {
         session: Arc<base::context::SessionState>,
         permission_mode: Option<base::settings::PermissionMode>,
     ) -> Result<String, base::error::ToolError> {
-        let _spawn_guard = self.inner.team_spawn_lock.lock().await;
+        let _spawn_guard = self.inner.members.spawn_lock.lock().await;
+        let live = &self.inner.members.live;
         let key = (team_name.clone(), member_name.clone());
 
         // Never evict the exact member this call is about to look for —
@@ -103,9 +105,7 @@ impl AgentTool {
             )
         };
 
-        let existing = self
-            .inner
-            .team_members
+        let existing = live
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
@@ -129,19 +129,10 @@ impl AgentTool {
             // TeamDelete/reclaim right after the read above) — its map
             // entry is stale. Drop it and fall through to spawn fresh under
             // the same key, rather than surfacing a confusing send failure.
-            self.inner
-                .team_members
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&key);
+            live.write().unwrap_or_else(|e| e.into_inner()).remove(&key);
         }
-        let max_total = self.inner.env.config.team_max_persistent_members.max(1);
-        let alive = self
-            .inner
-            .team_members
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
+        let max_total = self.inner.limits.max_persistent_members;
+        let alive = live.read().unwrap_or_else(|e| e.into_inner()).len();
         if alive >= max_total {
             return Err(base::error::ToolError::Denied(format!(
                 "team member limit reached: {alive} persistent members are busy, the most \
@@ -156,7 +147,7 @@ impl AgentTool {
         // via `set_team_permission_mode_if_absent` so later spawns under
         // the same `team_name` (even without repeating `permission_mode`)
         // inherit whatever was decided here — "one team, one authorization".
-        let registry = self.inner.team_registry.clone();
+        let registry = self.inner.members.registry.clone();
         let resolved_permission_mode = permission_mode
             .or_else(|| {
                 registry
@@ -206,20 +197,16 @@ impl AgentTool {
         let idle_since = Arc::new(std::sync::atomic::AtomicI64::new(i64::MAX));
         let idle_seq = Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
 
-        self.inner
-            .team_members
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                key,
-                PersistentMember {
-                    id: member_id,
-                    message_tx: message_tx.clone(),
-                    cancel: member_cancel.clone(),
-                    idle_since: idle_since.clone(),
-                    idle_seq: idle_seq.clone(),
-                },
-            );
+        live.write().unwrap_or_else(|e| e.into_inner()).insert(
+            key,
+            PersistentMember {
+                id: member_id,
+                message_tx: message_tx.clone(),
+                cancel: member_cancel.clone(),
+                idle_since: idle_since.clone(),
+                idle_seq: idle_seq.clone(),
+            },
+        );
 
         let _ = message_tx.send(PersistentMessage { prompt, task });
 
@@ -234,7 +221,7 @@ impl AgentTool {
             member_name,
             idle_since,
             idle_seq,
-            self.inner.idle_seq_counter.clone(),
+            self.inner.members.idle_seq_counter.clone(),
             session,
             Some((self.inner.env.hooks.clone(), payload)),
             spawned,
@@ -252,7 +239,8 @@ impl AgentTool {
         let key = (team_name.to_string(), member_name.to_string());
         let member = self
             .inner
-            .team_members
+            .members
+            .live
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&key);
@@ -288,14 +276,15 @@ impl AgentTool {
     /// about to message (it still counts toward the total for rule (a),
     /// it's just never itself a victim).
     pub(super) async fn reclaim_idle_team_members(&self, protect: Option<&(String, String)>) {
-        let max_total = self.inner.env.config.team_max_persistent_members.max(1);
-        let idle_timeout = self.inner.env.config.team_member_idle_timeout_secs;
+        let max_total = self.inner.limits.max_persistent_members;
+        let idle_timeout = self.inner.limits.member_idle_timeout_secs;
         let now = now_secs();
 
         let victims: Vec<(String, String)> = {
             let members = self
                 .inner
-                .team_members
+                .members
+                .live
                 .read()
                 .unwrap_or_else(|e| e.into_inner());
             // `since` (wall clock, 1s resolution) drives the timeout rule

@@ -60,7 +60,7 @@ impl AgentTool {
     ) -> Arc<InMemoryToolRegistry> {
         let def = subagent_type.and_then(|name| self.inner.agent_type_def(name));
         let registry = InMemoryToolRegistry::new();
-        for tool in self.inner.inherited_tools() {
+        for tool in self.inner.pool.inherited() {
             if type_admits_tool(def.as_ref(), tool.name())
                 && lists_admit_tool(allowed, disallowed, tool.name())
             {

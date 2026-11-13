@@ -116,26 +116,17 @@ impl TestParent {
             skills: self.skills,
             depth: self.depth,
         };
-        let types = match self.shared_types {
-            Some(map) => TypeCatalog::Shared {
-                map,
-                session_types: &self.session_agent_types,
-            },
-            None => TypeCatalog::Watched {
-                dirs: &self.agent_dirs,
-                plugin_types: &self.plugin_agent_types,
-            },
+        let catalog = match self.shared_types {
+            Some(map) => AgentCatalog::shared(map, &self.session_agent_types),
+            None => AgentCatalog::watched(
+                &self.agent_dirs,
+                &self.plugin_agent_types,
+                &env.config.prompt_files,
+            ),
         };
-        AgentTool::new(
-            env,
-            Parts {
-                types,
-                template: self.template,
-                parent_tools: self.tools,
-                plugin_tools: &self.plugin_tools,
-                slots: self.slots,
-                team_registry: self.team_registry,
-            },
-        )
+        let limits = crate::delegate::Limits::new(&env.config, env.depth, self.slots);
+        let pool = crate::delegate::ToolPool::new(self.template, self.tools, &self.plugin_tools);
+        let members = crate::delegate::PersistentMembers::new(self.team_registry);
+        AgentTool::new(env, catalog, pool, limits, members)
     }
 }

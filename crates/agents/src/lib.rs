@@ -17,8 +17,8 @@ use std::sync::Arc;
 use base::context::EngineConfig;
 use runtime::module::{Module, ModuleError, SessionContext};
 
-use crate::agent_tool::{AgentTool, Parts, SharedAgentTypeMap, SubagentSlots, TypeCatalog};
-use crate::delegate::DelegateEnv;
+use crate::agent_tool::{AgentCatalog, AgentTool, SharedAgentTypeMap};
+use crate::delegate::{DelegateEnv, Limits, PersistentMembers, SubagentSlots, ToolPool};
 use crate::spawner::RuntimeAgentSpawner;
 
 pub const MODULE_ID: &str = "agents";
@@ -90,28 +90,18 @@ impl Module for AgentsModule {
 
         let mut env = DelegateEnv::capture(cx);
         env.host.modules = self.for_delegates(&cx.host.modules, &slots);
-        let agent_dirs = agent_tool::agent_type_dirs(settings);
-        let types = match &self.shared_types {
-            Some(shared) => TypeCatalog::Shared {
-                map: shared.clone(),
-                session_types: cx.plugin_agent_types,
-            },
-            None => TypeCatalog::Watched {
-                dirs: &agent_dirs,
-                plugin_types: cx.plugin_agent_types,
-            },
+        let catalog = match &self.shared_types {
+            Some(shared) => AgentCatalog::shared(shared.clone(), cx.plugin_agent_types),
+            None => AgentCatalog::watched(
+                &agent_tool::agent_type_dirs(settings),
+                cx.plugin_agent_types,
+                &env.config.prompt_files,
+            ),
         };
-        let tool = Arc::new(AgentTool::new(
-            env,
-            Parts {
-                types,
-                template,
-                parent_tools: cx.tools.clone(),
-                plugin_tools: cx.plugin_tools,
-                slots,
-                team_registry: team_registry.clone(),
-            },
-        ));
+        let limits = Limits::new(&env.config, env.depth, slots);
+        let pool = ToolPool::new(template, cx.tools.clone(), cx.plugin_tools);
+        let members = PersistentMembers::new(team_registry.clone());
+        let tool = Arc::new(AgentTool::new(env, catalog, pool, limits, members));
 
         let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
             Arc::new(RuntimeAgentSpawner::new(tool.clone()));

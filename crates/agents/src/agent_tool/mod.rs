@@ -57,9 +57,11 @@ mod task;
 mod tests;
 mod turn;
 
+use crate::delegate::{Admission, PersistentMember, PersistentMessage, AGENT_TOOL_NAME};
+pub use crate::delegate::{SubagentSlots, DEFAULT_MAX_CONCURRENT_SUBAGENTS};
 use build::*;
 pub use catalog::*;
-pub use inner::*;
+use inner::*;
 use mcp_grant::*;
 use permission::*;
 use settings::*;
@@ -110,102 +112,21 @@ pub struct AgentTool {
     inner: Arc<Inner>,
 }
 
-/// Where a session's agent types come from.
-pub(crate) enum TypeCatalog<'a> {
-    /// Scanned from `dirs` (low → high priority) over the built-in types and
-    /// `plugin_types`, and watched for changes.
-    Watched {
-        dirs: &'a [(std::path::PathBuf, AgentTypeSource)],
-        plugin_types: &'a [AgentTypeDefinition],
-    },
-    /// A catalog the host keeps and watches for all its sessions, with this
-    /// session's plugins' types over it.
-    Shared {
-        map: SharedAgentTypeMap,
-        session_types: &'a [AgentTypeDefinition],
-    },
-}
-
-/// What an `AgentTool` is built from besides its parent session.
-pub(crate) struct Parts<'a> {
-    pub(crate) types: TypeCatalog<'a>,
-    /// What the parent session was built from.
-    pub(crate) template: Arc<InMemoryToolRegistry>,
-    /// The parent session's own registry.
-    pub(crate) parent_tools: Arc<InMemoryToolRegistry>,
-    /// The tools the parent's plugins registered in it.
-    pub(crate) plugin_tools: &'a [String],
-    pub(crate) slots: SubagentSlots,
-    pub(crate) team_registry: Option<Arc<team::registry::TeamRegistry>>,
-}
-
 impl AgentTool {
-    pub(crate) fn new(env: crate::delegate::DelegateEnv, parts: Parts<'_>) -> Self {
-        let Parts {
-            types,
-            template,
-            parent_tools,
-            plugin_tools,
-            slots,
-            team_registry,
-        } = parts;
-        let (agent_types, _agent_type_watcher, session_agent_types) = match types {
-            TypeCatalog::Watched { dirs, plugin_types } => {
-                let merged = merge_agent_types(dirs, plugin_types, &env.config.prompt_files);
-                let map: SharedAgentTypeMap = Arc::new(std::sync::RwLock::new(Arc::new(merged)));
-                // A watcher that cannot start leaves the catalog as it was
-                // built, as `SkillManager::enable_watching` does.
-                let watcher = crate::type_watcher::AgentTypeWatcher::watch(
-                    dirs.to_vec(),
-                    plugin_types.to_vec(),
-                    env.config.prompt_files.clone(),
-                    map.clone(),
-                )
-                .map(Arc::new)
-                .map_err(|e| {
-                    tracing::warn!(error = %e, "failed to enable agent-type file watching; live reload disabled for this session");
-                })
-                .ok();
-                (map, watcher, std::collections::HashMap::new())
-            }
-            TypeCatalog::Shared { map, session_types } => (
-                map,
-                None,
-                session_types
-                    .iter()
-                    .map(|d| (d.name.clone(), d.clone()))
-                    .collect(),
-            ),
-        };
-        let description: Arc<str> = {
-            let mut visible = agent_types
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .clone();
-            for (name, definition) in &session_agent_types {
-                if visible.get(name).is_none_or(|d| !d.source.may_shadow()) {
-                    visible.insert(name.clone(), definition.clone());
-                }
-            }
-            describe_agent_types(&visible).into()
-        };
+    pub(crate) fn new(
+        env: crate::delegate::DelegateEnv,
+        catalog: AgentCatalog,
+        pool: crate::delegate::ToolPool,
+        limits: crate::delegate::Limits,
+        members: crate::delegate::PersistentMembers,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 env,
-                fallback_tools: template,
-                parent_tools,
-                subagent_slots: slots,
-                hook_agents: Default::default(),
-                agent_types,
-                _agent_type_watcher,
-                description,
-                plugin_tools: Arc::new(plugin_tools.iter().cloned().collect()),
-                session_agent_types: Arc::new(session_agent_types),
-                team_registry,
-                team_members: Default::default(),
-                idle_seq_counter: Default::default(),
-                team_spawn_lock: Default::default(),
+                catalog,
+                pool,
+                limits,
+                members,
             }),
         }
     }
@@ -226,7 +147,7 @@ impl base::tool::Tool for AgentTool {
         AGENT_TOOL_NAME
     }
     fn description(&self) -> &str {
-        &self.inner.description
+        self.inner.catalog.description()
     }
     fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(AgentInput)).unwrap_or(Value::Null)
@@ -267,7 +188,7 @@ impl base::tool::Tool for AgentTool {
         // `TeamCreate` is by not being registered.
         match (&inp.team_name, &inp.name) {
             (Some(team_name), Some(name)) => {
-                if self.inner.team_registry.is_none() {
+                if self.inner.members.registry.is_none() {
                     return Err(base::error::ToolError::Validation(
                         "team_name/name require team coordination to be enabled for this \
                          session (settings.execution.team_enabled)"
@@ -355,9 +276,9 @@ impl base::tool::Tool for AgentTool {
             .inner
             .permission_handler_asking(Some(task_scope.task().clone()), !ctx.from_code);
         let admission = if ctx.from_code {
-            self.inner.admit_waiting(&run_cancel).await
+            self.inner.limits.admit_waiting(&run_cancel).await
         } else {
-            self.inner.admit()
+            self.inner.limits.admit()
         };
         let result = match admission {
             Ok(admission) => {

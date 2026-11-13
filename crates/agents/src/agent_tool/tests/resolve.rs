@@ -132,13 +132,13 @@ fn delegate_tools_full_access_excludes_agent_itself() {
     let self_arc = Arc::new(
         TestParent {
             config: agent_tool.inner.env.config.clone(),
-            tools: agent_tool.inner.parent_tools.clone(),
-            template: agent_tool.inner.fallback_tools.clone(),
+            tools: agent_tool.inner.pool.parent_tools.clone(),
+            template: agent_tool.inner.pool.template.clone(),
             ..TestParent::new(agent_tool.inner.env.model.clone())
         }
         .agent_tool(),
     );
-    agent_tool.inner.parent_tools.register(self_arc);
+    agent_tool.inner.pool.parent_tools.register(self_arc);
 
     // "general-purpose" is a full-access type (empty allowed_tools).
     let resolved = agent_tool.delegate_tools(Some("general-purpose"), &[], &[]);

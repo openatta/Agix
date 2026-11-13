@@ -76,17 +76,18 @@ impl AgentTool {
         model: Option<String>,
         allowed_tools: Vec<String>,
     ) -> Result<String, base::error::ToolError> {
-        if self.inner.hook_agents.includes(judged_session) {
+        if self.inner.limits.hook_agents.includes(judged_session) {
             return Err(base::error::ToolError::Denied(
                 "an agent hook does not judge the agent running for another agent hook".into(),
             ));
         }
         let admission = self
             .inner
+            .limits
             .admit_unslotted()
             .map_err(base::error::ToolError::Denied)?;
         let sid = base::id::Id::new().to_string();
-        let _running = self.inner.hook_agents.enter(sid.clone());
+        let _running = self.inner.limits.hook_agents.enter(sid.clone());
         let perm = self.sub_permission();
         self.run_sub_admitted(
             admission,
@@ -125,7 +126,11 @@ impl AgentTool {
         parent: Option<(&str, u32, &str)>,
         run: SubRun,
     ) -> Result<String, base::error::ToolError> {
-        let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
+        let admission = self
+            .inner
+            .limits
+            .admit()
+            .map_err(base::error::ToolError::Denied)?;
         self.run_sub_admitted(
             admission,
             prompt,
@@ -156,6 +161,7 @@ impl AgentTool {
     ) -> Result<String, base::error::ToolError> {
         let admission = self
             .inner
+            .limits
             .admit_unslotted()
             .map_err(base::error::ToolError::Denied)?;
         let grant = match permission_mode {
@@ -244,7 +250,11 @@ impl AgentTool {
         allowed_tools: Vec<String>,
         session: Arc<base::context::SessionState>,
     ) -> Result<String, base::error::ToolError> {
-        let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
+        let admission = self
+            .inner
+            .limits
+            .admit()
+            .map_err(base::error::ToolError::Denied)?;
         let cancel = cancel.child_token();
         let tid = bg_task_id();
         let sid = base::id::Id::new().to_string();
@@ -293,7 +303,11 @@ impl AgentTool {
         input: &AgentInput,
         ctx: &ToolContext,
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
-        let admission = self.inner.admit().map_err(base::error::ToolError::Denied)?;
+        let admission = self
+            .inner
+            .limits
+            .admit()
+            .map_err(base::error::ToolError::Denied)?;
         let tid = bg_task_id();
         let sid = base::id::Id::new().to_string();
         let outer_cancel = ctx.cancel.child_token();
@@ -384,7 +398,7 @@ impl AgentTool {
         base::interface::agent_spawner::StartAgentError,
     > {
         use base::interface::agent_spawner::{StartAgentError, StartedAgent};
-        let admission = self.inner.admit().map_err(StartAgentError::Limit)?;
+        let admission = self.inner.limits.admit().map_err(StartAgentError::Limit)?;
         let tid = bg_task_id();
         let sid = base::id::Id::new().to_string();
         let cancel = session_cancel.child_token();

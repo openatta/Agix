@@ -76,7 +76,8 @@ pub(super) async fn wait_until_idle(agent_tool: &AgentTool, key: &(String, Strin
         let idle = {
             let members = agent_tool
                 .inner
-                .team_members
+                .members
+                .live
                 .read()
                 .unwrap_or_else(|e| e.into_inner());
             members
@@ -144,7 +145,8 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
     wait_until_idle(&agent_tool, &key).await;
     let id1 = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
@@ -154,7 +156,8 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
     assert_eq!(
         agent_tool
             .inner
-            .team_members
+            .members
+            .live
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .len(),
@@ -178,7 +181,8 @@ async fn spawn_or_message_team_member_reuses_the_same_member_across_calls() {
 
     let members = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner());
     assert_eq!(members.len(), 1, "still exactly one member under this key");
@@ -212,7 +216,8 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
     wait_until_idle(&agent_tool, &key).await;
     let id1 = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
@@ -223,7 +228,8 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
     agent_tool.stop_team_member("t2", "worker").await;
     assert!(agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
@@ -244,7 +250,8 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
     wait_until_idle(&agent_tool, &key).await;
     let id2 = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key)
@@ -287,7 +294,8 @@ async fn reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap() {
 
     let members = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner());
     assert_eq!(
@@ -353,7 +361,8 @@ async fn reclaim_evicts_a_member_idle_past_the_timeout_regardless_of_total_count
 
     let members = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner());
     assert!(
@@ -392,7 +401,8 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
     wait_until_idle(&agent_tool, &key_a).await;
     let id_a_before = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&key_a)
@@ -416,7 +426,8 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
 
     let members = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner());
     assert_eq!(
@@ -467,7 +478,8 @@ async fn concurrent_first_calls_for_a_new_key_spawn_exactly_one_member() {
     wait_until_idle(&agent_tool, &key).await;
     let members = agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner());
     assert_eq!(
@@ -505,14 +517,16 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
     wait_until_idle(&agent_tool, &key).await;
     assert!(agent_tool
         .inner
-        .team_members
+        .members
+        .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&key));
 
     let registry = agent_tool
         .inner
-        .team_registry
+        .members
+        .registry
         .clone()
         .expect("team_enabled_agent_tool sets a registry");
     let spawner: Arc<dyn base::interface::agent_spawner::AgentSpawner> =
@@ -528,7 +542,8 @@ async fn team_delete_cleanup_stops_a_persistent_member() {
     assert!(
         agent_tool
             .inner
-            .team_members
+            .members
+            .live
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
@@ -550,7 +565,7 @@ async fn auto_for_a_persistent_member_is_bypass() {
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t-auto", "worker")).await;
 
-    let registry = agent_tool.inner.team_registry.clone().unwrap();
+    let registry = agent_tool.inner.members.registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t-auto"),
         Some(base::settings::PermissionMode::BypassPermissions)
@@ -611,7 +626,7 @@ async fn spawn_or_message_team_member_establishes_team_permission_mode_for_later
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t4", "b")).await;
 
-    let registry = agent_tool.inner.team_registry.clone().unwrap();
+    let registry = agent_tool.inner.members.registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t4"),
         Some(base::settings::PermissionMode::BypassPermissions),
@@ -645,7 +660,7 @@ async fn spawn_or_message_team_member_defaults_to_plan_when_nothing_specified() 
         .unwrap();
     wait_until_idle(&agent_tool, &team_key("t5", "a")).await;
 
-    let registry = agent_tool.inner.team_registry.clone().unwrap();
+    let registry = agent_tool.inner.members.registry.clone().unwrap();
     assert_eq!(
         registry.team_permission_mode("t5"),
         Some(base::settings::PermissionMode::Plan),
