@@ -244,7 +244,7 @@ fn a_session_state_is_created_in_one_place() {
         .filter(|f| !ws().package(&f.package).dir.starts_with("tests/"))
         .collect();
     allow::non_vacuous("session_state::CREATED_AT", files.len(), 200);
-    let found: Vec<Finding> = par_flat_map(files.into_iter(), |f| {
+    let found: Vec<Finding> = par_flat_map(files, |f| {
         scan::calls(f, View::Prod)
             .into_iter()
             .filter_map(|c| {
@@ -282,7 +282,7 @@ fn nothing_carries_state_from_one_engine_to_the_next() {
         .filter(|f| !ws().package(&f.package).dir.starts_with("tests/"))
         .collect();
     allow::non_vacuous("session_state::CARRIES", files.len(), 200);
-    let found: Vec<Finding> = par_flat_map(files.into_iter(), |f| {
+    let found: Vec<Finding> = par_flat_map(files, |f| {
         let in_pool =
             f.rel.starts_with("crates/assembly/src/session_pool/") && !f.rel.contains("/mcp_hub/");
         let mut found: Vec<Finding> = scan::fns(f, View::Prod)
