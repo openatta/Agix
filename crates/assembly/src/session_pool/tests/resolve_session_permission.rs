@@ -40,9 +40,9 @@ fn defaults() -> base::settings::LoadedSettings {
 
 fn denying(tool: &str) -> base::settings::LoadedRule {
     base::settings::LoadedRule::new(
-        base::settings::PermissionRule {
+        base::settings::PermissionRuleEntry {
             tool: tool.into(),
-            action: base::settings::PermissionAction::Deny,
+            action: base::permission::RuleBehavior::Deny,
             matching: Default::default(),
         },
         base::interface::config_source::Tier::Project,
@@ -66,13 +66,12 @@ async fn bash_says(
     let bash = tools.get("Bash");
     let cwd = std::env::temp_dir();
     let mode = effective_permission_mode(settings, None);
-    let session = Arc::new(
-        base::context::SessionState::for_tests(cwd.clone()).with_permission_mode(mode.into()),
-    );
+    let session =
+        Arc::new(base::context::SessionState::for_tests(cwd.clone()).with_permission_mode(mode));
     let input = serde_json::json!({ "command": command });
     let mut ctx = platform::tool_context_for_test(cwd.clone());
     ctx.session = session.clone();
-    ctx.permission_mode = mode.into();
+    ctx.permission_mode = mode;
     let facts = match &bash {
         Some(bash) => {
             base::interface::permission::ToolFacts::gather(bash.as_ref(), &input, &ctx).await

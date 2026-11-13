@@ -14,11 +14,12 @@ use std::path::PathBuf;
 
 use crate::interface::config_source::{ConfigSource, FileTiers, Tier};
 use crate::managed_settings::ManagedSettings;
+use crate::permission::RuleBehavior;
 use crate::project_trust::{ProjectLayer, ProjectTrust};
 
 use super::{
     merge_fitting, merge_json_values, read_permission_rules, unknown_settings_keys, IgnoredValue,
-    PathSettings, PermissionAction, PermissionMode, PermissionRule, Settings, Workspace,
+    PathSettings, PermissionMode, PermissionRuleEntry, Settings, Workspace,
 };
 
 /// A permission rule as loaded: the rule, the tier whose file it came from,
@@ -26,13 +27,13 @@ use super::{
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct LoadedRule {
-    pub rule: PermissionRule,
+    pub rule: PermissionRuleEntry,
     pub tier: Tier,
     pub machine_local: bool,
 }
 
 impl LoadedRule {
-    pub fn new(rule: PermissionRule, tier: Tier, machine_local: bool) -> Self {
+    pub fn new(rule: PermissionRuleEntry, tier: Tier, machine_local: bool) -> Self {
         Self {
             rule,
             tier,
@@ -272,7 +273,7 @@ impl LoadedSettings {
                         });
                     }
                     for rule in rules {
-                        if is_own_project(layer.tier) && rule.action == PermissionAction::Allow {
+                        if is_own_project(layer.tier) && rule.action == RuleBehavior::Allow {
                             project_layer
                                 .requires_trust
                                 .push(format!("permission_rules.allow({})", rule.tool));

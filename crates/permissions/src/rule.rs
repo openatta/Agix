@@ -74,10 +74,9 @@ pub fn format_rule_string(r: &PermissionRule) -> String {
 /// 多数调用方要的是 [`rules_from`]——它按来源分别调用本函数，
 /// 直接用本函数意味着调用方自己决定 `source`。
 pub fn rules_from_settings(
-    rules: &[base::settings::PermissionRule],
+    rules: &[base::settings::PermissionRuleEntry],
     source: RuleSource,
 ) -> Vec<PermissionRule> {
-    use base::settings::PermissionAction;
     rules
         .iter()
         .filter(|r| !is_exact_allow(r))
@@ -88,12 +87,7 @@ pub fn rules_from_settings(
                     "`match: exact` is read on allow rules only; this rule is a pattern"
                 );
             }
-            let behavior = match r.action {
-                PermissionAction::Allow => RuleBehavior::Allow,
-                PermissionAction::Deny => RuleBehavior::Deny,
-                PermissionAction::Ask => RuleBehavior::Ask,
-            };
-            match parse_rule_string(&r.tool, source, behavior) {
+            match parse_rule_string(&r.tool, source, r.action) {
                 Ok(rule) => Some(rule),
                 Err(e) => {
                     tracing::warn!(
@@ -153,8 +147,8 @@ pub fn exact_allows_from(loaded: &base::settings::LoadedSettings) -> Vec<Permiss
         .collect()
 }
 
-fn is_exact_allow(rule: &base::settings::PermissionRule) -> bool {
-    rule.action == base::settings::PermissionAction::Allow && !rule.matching.is_pattern()
+fn is_exact_allow(rule: &base::settings::PermissionRuleEntry) -> bool {
+    rule.action == base::permission::RuleBehavior::Allow && !rule.matching.is_pattern()
 }
 
 fn source_of(rule: &base::settings::LoadedRule) -> RuleSource {
@@ -259,9 +253,9 @@ mod tests {
 
     fn settings_rule(
         tool: &str,
-        action: base::settings::PermissionAction,
-    ) -> base::settings::PermissionRule {
-        base::settings::PermissionRule {
+        action: base::permission::RuleBehavior,
+    ) -> base::settings::PermissionRuleEntry {
+        base::settings::PermissionRuleEntry {
             tool: tool.to_string(),
             action,
             matching: Default::default(),
@@ -270,12 +264,11 @@ mod tests {
 
     #[test]
     fn settings_rules_convert_with_action_mapped_to_behavior() {
-        use base::settings::PermissionAction;
         let converted = rules_from_settings(
             &[
-                settings_rule("Bash(git push:*)", PermissionAction::Deny),
-                settings_rule("Read", PermissionAction::Allow),
-                settings_rule("Write(/etc/**)", PermissionAction::Ask),
+                settings_rule("Bash(git push:*)", RuleBehavior::Deny),
+                settings_rule("Read", RuleBehavior::Allow),
+                settings_rule("Write(/etc/**)", RuleBehavior::Ask),
             ],
             RuleSource::ProjectSettings,
         );
@@ -293,12 +286,11 @@ mod tests {
 
     #[test]
     fn settings_rules_skip_unparsable_entries_instead_of_failing_all() {
-        use base::settings::PermissionAction;
         let converted = rules_from_settings(
             &[
-                settings_rule("Bash(unbalanced", PermissionAction::Deny),
-                settings_rule("   ", PermissionAction::Allow),
-                settings_rule("Read", PermissionAction::Allow),
+                settings_rule("Bash(unbalanced", RuleBehavior::Deny),
+                settings_rule("   ", RuleBehavior::Allow),
+                settings_rule("Read", RuleBehavior::Allow),
             ],
             RuleSource::UserSettings,
         );

@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base::interface::scene::{SceneSpec, ToolSurface};
-use base::settings::{PermissionAction, PermissionRule};
+use base::permission::RuleBehavior;
+use base::settings::PermissionRuleEntry;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
 use model::client::AnthropicClient;
@@ -201,9 +202,9 @@ async fn an_admitted_plugin_tool_passes_the_scene_whitelist_and_the_rest_do_not(
     config.settings.rules = [ADMITTED, NOT_ADMITTED]
         .map(|tool| {
             base::settings::LoadedRule::new(
-                PermissionRule {
+                PermissionRuleEntry {
                     tool: tool.into(),
-                    action: PermissionAction::Allow,
+                    action: RuleBehavior::Allow,
                     matching: Default::default(),
                 },
                 base::interface::config_source::Tier::Project,
@@ -333,9 +334,9 @@ async fn a_tool_works_where_the_session_does_on_every_engine_it_runs_on() {
     );
     config.settings.values.memory_enabled = false;
     config.settings.rules = vec![base::settings::LoadedRule::new(
-        PermissionRule {
+        PermissionRuleEntry {
             tool: PROBE.into(),
-            action: PermissionAction::Allow,
+            action: RuleBehavior::Allow,
             matching: Default::default(),
         },
         base::interface::config_source::Tier::Project,

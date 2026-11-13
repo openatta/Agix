@@ -198,7 +198,7 @@ impl ScriptedServer {
 /// so the permission posture under test is explicit rather than ambient.
 /// What a scripted server starts from: the caller's settings, and the
 /// permission rules a settings file would have added.
-struct Seed(Settings, Vec<base::settings::PermissionRule>);
+struct Seed(Settings, Vec<base::settings::PermissionRuleEntry>);
 
 impl From<Settings> for Seed {
     fn from(settings: Settings) -> Self {
@@ -4468,9 +4468,9 @@ async fn settings_permission_rules_finally_reach_the_daemon() {
     // finally has one: an Allow rule pre-empts the prompt.
     let settings = Seed(
         ask_settings(),
-        vec![base::settings::PermissionRule {
+        vec![base::settings::PermissionRuleEntry {
             tool: "Bash(touch ruled.txt)".into(),
-            action: base::settings::PermissionAction::Allow,
+            action: base::permission::RuleBehavior::Allow,
             matching: Default::default(),
         }],
     );

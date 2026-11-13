@@ -15,7 +15,7 @@
 //! (`permissions::policy::ManagedLayer`); this module only says what the file
 //! holds. Semantics: `docs/ARCHITECTURE.md` §6.1.
 
-use crate::settings::PermissionRule;
+use crate::settings::PermissionRuleEntry;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -53,7 +53,7 @@ pub struct ManagedSettings {
     /// Why the layer cannot be honoured. While set, every tool call is refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    pub permission_rules: Vec<PermissionRule>,
+    pub permission_rules: Vec<PermissionRuleEntry>,
     pub disable_bypass_permissions_mode: bool,
 }
 
@@ -98,7 +98,7 @@ impl ManagedSettings {
         }
         let permission_rules = match fields.remove("permission_rules") {
             None => Vec::new(),
-            Some(rules) => match serde_json::from_value::<Vec<PermissionRule>>(rules) {
+            Some(rules) => match serde_json::from_value::<Vec<PermissionRuleEntry>>(rules) {
                 Ok(rules) => rules,
                 Err(e) => return Self::broken(origin, format!("permission_rules: {e}")),
             },
@@ -151,14 +151,14 @@ impl ManagedSettings {
                 || self
                     .permission_rules
                     .iter()
-                    .any(|r| r.action != crate::settings::PermissionAction::Allow))
+                    .any(|r| r.action != crate::permission::RuleBehavior::Allow))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::PermissionAction;
+    use crate::permission::RuleBehavior;
     use serde_json::json;
 
     #[test]
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(m.error, None);
         assert!(m.disable_bypass_permissions_mode);
         assert_eq!(m.permission_rules.len(), 1);
-        assert_eq!(m.permission_rules[0].action, PermissionAction::Deny);
+        assert_eq!(m.permission_rules[0].action, RuleBehavior::Deny);
     }
 
     #[test]

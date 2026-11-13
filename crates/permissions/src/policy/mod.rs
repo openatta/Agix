@@ -77,12 +77,11 @@ impl From<&Option<base::managed_settings::ManagedSettings>> for ManagedLayer {
         let mut unreadable = managed.error.clone();
         let mut rules = RuleSet::empty();
         for rule in &managed.permission_rules {
-            let behavior = match rule.action {
-                base::settings::PermissionAction::Allow => RuleBehavior::Allow,
-                base::settings::PermissionAction::Deny => RuleBehavior::Deny,
-                base::settings::PermissionAction::Ask => RuleBehavior::Ask,
-            };
-            match crate::rule::parse_rule_string(&rule.tool, RuleSource::PolicySettings, behavior) {
+            match crate::rule::parse_rule_string(
+                &rule.tool,
+                RuleSource::PolicySettings,
+                rule.action,
+            ) {
                 Ok(parsed) => rules.add(parsed),
                 Err(e) => {
                     unreadable.get_or_insert_with(|| {

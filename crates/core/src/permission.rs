@@ -3,51 +3,36 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 权限模式。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Permission mode for tool execution.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum PermissionMode {
+    /// Prompt user for each tool call that isn't explicitly allowed.
     #[default]
     Default,
-    Plan,
+    /// Allow file writes inside the project (the working directory and
+    /// `sandbox.additional_directories`) and read-only calls without asking;
+    /// ask about the rest, as `default` does. Writes into the project's
+    /// `.git`, `.agix`, `.claude` and `.agents/skills` still ask.
     AcceptEdits,
+    /// Ask nothing and skip the rules of the user's tiers. Credentials
+    /// (`.ssh`, `.aws`, `.gnupg`, the state directory's settings and tokens)
+    /// are still refused, the deployment's managed `deny` / `ask` rules still
+    /// apply, input that is not valid is still refused, and `Bash` still runs
+    /// in the OS sandbox. `auto` and `yolo` are accepted as other spellings
+    /// of this mode and read back as `bypassPermissions`.
     #[serde(alias = "auto", alias = "yolo")]
     BypassPermissions,
+    /// Plan mode — only allow read-only tools.
+    Plan,
+    /// Don't ask — deny any tool not explicitly allowed (no prompt).
     DontAsk,
-    /// Bubble permission requests up to parent agent in team/coordinator
-    /// mode. Instead of prompting the user directly, the permission request is
-    /// forwarded to the parent agent for decision.
+    /// Bubble mode — forward permission requests up to a parent agent.
+    /// **Program-only**: set by team/coordinator runtime; cannot be set by user.
+    #[schemars(skip)]
     Bubble,
-}
-
-/// `settings::PermissionMode` (serde/JSON-schema-facing, what
-/// `Settings`/RPC params deserialize into) and this `PermissionMode`
-/// (what `Policy` actually dispatches on) are two distinct types
-/// with identical variant sets.
-impl From<crate::settings::PermissionMode> for PermissionMode {
-    fn from(m: crate::settings::PermissionMode) -> Self {
-        match m {
-            crate::settings::PermissionMode::Default => Self::Default,
-            crate::settings::PermissionMode::AcceptEdits => Self::AcceptEdits,
-            crate::settings::PermissionMode::BypassPermissions => Self::BypassPermissions,
-            crate::settings::PermissionMode::Plan => Self::Plan,
-            crate::settings::PermissionMode::DontAsk => Self::DontAsk,
-            crate::settings::PermissionMode::Bubble => Self::Bubble,
-        }
-    }
-}
-
-impl From<PermissionMode> for crate::settings::PermissionMode {
-    fn from(m: PermissionMode) -> Self {
-        match m {
-            PermissionMode::Default => Self::Default,
-            PermissionMode::AcceptEdits => Self::AcceptEdits,
-            PermissionMode::BypassPermissions => Self::BypassPermissions,
-            PermissionMode::Plan => Self::Plan,
-            PermissionMode::DontAsk => Self::DontAsk,
-            PermissionMode::Bubble => Self::Bubble,
-        }
-    }
 }
 
 impl PermissionMode {
@@ -58,19 +43,56 @@ impl PermissionMode {
         !matches!(self, Self::Bubble)
     }
 
-    /// The stricter of two modes — see
-    /// `settings::PermissionMode::permissiveness` for the order.
-    pub fn min_permissive(self, other: Self) -> Self {
-        crate::settings::PermissionMode::from(self)
-            .min_permissive(other.into())
-            .into()
+    /// How permissive this mode is, on a total order — higher grants more
+    /// without asking.
+    ///
+    /// Exists so a host can *clamp* a mode it did not choose: the daemon's
+    /// `session.create` RPC accepts a caller-supplied `permission_mode`, and
+    /// without an ordering there was no way to express "a client may tighten
+    /// this, but may not loosen it past what `settings.json` configured".
+    /// Anyone who could reach the socket could simply ask for
+    /// `bypassPermissions` and get it, whatever the daemon was configured
+    /// with — see `daemon::session_pool::effective_permission_mode`.
+    ///
+    /// The ranking:
+    /// - `DontAsk` refuses anything not explicitly allowed — nothing is more
+    ///   restrictive.
+    /// - `Plan` refuses every non-read-only tool.
+    /// - `Default` asks about anything not explicitly allowed.
+    /// - `Bubble` is `Default` with the question routed to a parent agent
+    ///   rather than a human; the same set of calls still needs approval.
+    /// - `AcceptEdits` additionally waves through `Write`/`Edit`.
+    /// - `BypassPermissions` asks nothing at all.
+    pub fn permissiveness(self) -> u8 {
+        match self {
+            Self::DontAsk => 0,
+            Self::Plan => 1,
+            Self::Default => 2,
+            Self::Bubble => 3,
+            Self::AcceptEdits => 4,
+            Self::BypassPermissions => 5,
+        }
     }
 
-    /// See `settings::PermissionMode::for_delegate`.
+    /// The stricter (less permissive) of two modes. Ties keep `self`.
+    pub fn min_permissive(self, other: Self) -> Self {
+        if other.permissiveness() < self.permissiveness() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// The mode a delegate (sub-agent, team member) runs in when the session
+    /// that spawned it is in `self`: its own, wider or narrower — except that a
+    /// planning parent holds it to plan, a parent that asks nobody holds it to
+    /// `dontAsk`, and a parent that bypasses takes it along.
     pub fn for_delegate(self, delegate: Self) -> Self {
-        crate::settings::PermissionMode::from(self)
-            .for_delegate(delegate.into())
-            .into()
+        match self {
+            Self::Plan | Self::DontAsk => delegate.min_permissive(self),
+            Self::BypassPermissions => self,
+            _ => delegate,
+        }
     }
 }
 
@@ -132,34 +154,6 @@ pub enum RuleBehavior {
     Allow,
     Deny,
     Ask,
-}
-
-#[derive(Debug, Clone)]
-pub enum ValidationResult {
-    Ok,
-    Err {
-        message: String,
-        /// 给上层决定要不要退出 / 重试用；模型也能从 toolresult 看到
-        error_code: i32,
-    },
-}
-
-impl ValidationResult {
-    /// Validation result: input passes all checks.
-    pub fn ok() -> Self {
-        Self::Ok
-    }
-    /// Validation result: failed with a message and code (non-zero).
-    pub fn err(msg: impl Into<String>, code: i32) -> Self {
-        Self::Err {
-            message: msg.into(),
-            error_code: code,
-        }
-    }
-    /// True if validation passed.
-    pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok)
-    }
 }
 
 #[cfg(test)]

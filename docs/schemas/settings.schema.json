@@ -227,14 +227,6 @@
       ],
       "type": "string"
     },
-    "PermissionAction": {
-      "enum": [
-        "allow",
-        "deny",
-        "ask"
-      ],
-      "type": "string"
-    },
     "PermissionMode": {
       "description": "Permission mode for tool execution.",
       "oneOf": [
@@ -269,11 +261,11 @@
         }
       ]
     },
-    "PermissionRule": {
+    "PermissionRuleEntry": {
       "description": "A single permission rule: allow/deny/ask a tool matching a pattern.",
       "properties": {
         "action": {
-          "$ref": "#/$defs/PermissionAction",
+          "$ref": "#/$defs/RuleBehavior",
           "description": "Action: \"allow\", \"deny\", or \"ask\"."
         },
         "match": {
@@ -446,6 +438,14 @@
           "type": "string"
         }
       ]
+    },
+    "RuleBehavior": {
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ],
+      "type": "string"
     },
     "SandboxConfig": {
       "description": "Sandbox/security configuration.",
@@ -833,7 +833,7 @@
     "permission_rules": {
       "description": "Allow/deny/ask rules for specific tools.\n\nEvery tier's rules apply side by side: a project's rules are added to\nthe global and scene ones, never substituted for them.",
       "items": {
-        "$ref": "#/$defs/PermissionRule"
+        "$ref": "#/$defs/PermissionRuleEntry"
       },
       "type": "array"
     },

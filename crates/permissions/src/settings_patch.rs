@@ -184,8 +184,8 @@ mod tests {
         assert_eq!(
             loaded,
             vec![
-                ("Bash(git status)", base::settings::PermissionAction::Allow),
-                ("Bash(rm -rf:*)", base::settings::PermissionAction::Deny),
+                ("Bash(git status)", base::permission::RuleBehavior::Allow),
+                ("Bash(rm -rf:*)", base::permission::RuleBehavior::Deny),
             ]
         );
     }

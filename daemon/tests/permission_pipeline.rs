@@ -1,5 +1,4 @@
-//! 权限管线里已知还没修的缺陷，各自从宿主这一侧的 socket 或装配入口复现。
-//! 还没修的带 `#[ignore]`，对应的修复落地时去掉；它们同时是那些修复的回归用例。
+//! 权限管线里修过的缺陷，各自从宿主这一侧的 socket 或装配入口复现，作为回归用例。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -620,7 +619,6 @@ async fn an_untrusted_project_cannot_turn_off_reaping_or_telemetry() {
 /// A scheduled prompt that outlives the session is something the person
 /// decides on, so `durable` asks where a session-only one does not.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D1: fix pending"]
 async fn a_durable_cron_job_is_asked_about() {
     let daemon = Daemon::start(Setup::default(), |_, _| {}).await;
     daemon.model.push_turn(tool_round(

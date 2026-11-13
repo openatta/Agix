@@ -345,7 +345,7 @@ impl EngineConfig {
         c.team_member_idle_timeout_secs = settings.execution.team_member_idle_timeout_secs;
         c.max_agent_depth = settings.execution.max_agent_depth;
 
-        c.permission_mode = settings.permission_mode.into();
+        c.permission_mode = settings.permission_mode;
         c.dangerously_disable_sandbox = settings.sandbox.dangerously_disable_sandbox;
         // `Settings.sandbox.deny_read` is a plain `Vec`, empty when the user
         // never configured it — mapping that to `Some(vec![])` would read as

@@ -22,7 +22,7 @@ use base::interface::permission::{
     PermissionRequest, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
-use base::settings::{PermissionAction, Settings};
+use base::settings::Settings;
 use base::tool::{InMemoryToolRegistry, SandboxSettings, Tool, ToolContext};
 use permissions::policy::Policy;
 use serde_json::{json, Value};
@@ -296,9 +296,9 @@ fn permission(tool: &str, case: RuleCase) -> Policy {
             settings.managed = Some(base::managed_settings::ManagedSettings {
                 origin: "matrix".into(),
                 error: None,
-                permission_rules: vec![base::settings::PermissionRule {
+                permission_rules: vec![base::settings::PermissionRuleEntry {
                     tool: tool.into(),
-                    action: PermissionAction::Ask,
+                    action: RuleBehavior::Ask,
                     matching: Default::default(),
                 }],
                 disable_bypass_permissions_mode: false,

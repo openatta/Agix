@@ -262,7 +262,7 @@ impl SessionPool {
     ) -> api::ResumeReport {
         let (mode, project) = match self.live.core_of(session_id).await {
             Some(core) => (
-                core.state().permission_mode().into(),
+                core.state().permission_mode(),
                 Some((
                     core.project().map(Path::to_path_buf),
                     core.scene().id.clone(),

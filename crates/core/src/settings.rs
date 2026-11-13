@@ -35,7 +35,7 @@ pub struct SettingsFile {
     /// Every tier's rules apply side by side: a project's rules are added to
     /// the global and scene ones, never substituted for them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub permission_rules: Vec<PermissionRule>,
+    pub permission_rules: Vec<PermissionRuleEntry>,
 }
 
 /// What the settings tiers say once merged. Every field is one a settings
@@ -199,106 +199,16 @@ pub struct IgnoredValue {
     pub error: String,
 }
 
-/// Permission mode for tool execution.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
-)]
-#[serde(rename_all = "camelCase")]
-pub enum PermissionMode {
-    /// Prompt user for each tool call that isn't explicitly allowed.
-    #[default]
-    Default,
-    /// Allow file writes inside the project (the working directory and
-    /// `sandbox.additional_directories`) and read-only calls without asking;
-    /// ask about the rest, as `default` does. Writes into the project's
-    /// `.git`, `.agix`, `.claude` and `.agents/skills` still ask.
-    AcceptEdits,
-    /// Ask nothing and skip the rules of the user's tiers. Credentials
-    /// (`.ssh`, `.aws`, `.gnupg`, the state directory's settings and tokens)
-    /// are still refused, the deployment's managed `deny` / `ask` rules still
-    /// apply, input that is not valid is still refused, and `Bash` still runs
-    /// in the OS sandbox. `auto` and `yolo` are accepted as other spellings
-    /// of this mode and read back as `bypassPermissions`.
-    #[serde(alias = "auto", alias = "yolo")]
-    BypassPermissions,
-    /// Plan mode — only allow read-only tools.
-    Plan,
-    /// Don't ask — deny any tool not explicitly allowed (no prompt).
-    DontAsk,
-    /// Bubble mode — forward permission requests up to a parent agent.
-    /// **Program-only**: set by team/coordinator runtime; cannot be set by user.
-    #[schemars(skip)]
-    Bubble,
-}
-
-impl PermissionMode {
-    /// Whether the user can set this mode via settings.json / CLI.
-    /// `Bubble` is program-only — set by the team coordinator runtime and
-    /// rejected from user config.
-    pub fn is_user_settable(self) -> bool {
-        !matches!(self, Self::Bubble)
-    }
-
-    /// How permissive this mode is, on a total order — higher grants more
-    /// without asking.
-    ///
-    /// Exists so a host can *clamp* a mode it did not choose: the daemon's
-    /// `session.create` RPC accepts a caller-supplied `permission_mode`, and
-    /// without an ordering there was no way to express "a client may tighten
-    /// this, but may not loosen it past what `settings.json` configured".
-    /// Anyone who could reach the socket could simply ask for
-    /// `bypassPermissions` and get it, whatever the daemon was configured
-    /// with — see `daemon::session_pool::effective_permission_mode`.
-    ///
-    /// The ranking:
-    /// - `DontAsk` refuses anything not explicitly allowed — nothing is more
-    ///   restrictive.
-    /// - `Plan` refuses every non-read-only tool.
-    /// - `Default` asks about anything not explicitly allowed.
-    /// - `Bubble` is `Default` with the question routed to a parent agent
-    ///   rather than a human; the same set of calls still needs approval.
-    /// - `AcceptEdits` additionally waves through `Write`/`Edit`.
-    /// - `BypassPermissions` asks nothing at all.
-    pub fn permissiveness(self) -> u8 {
-        match self {
-            Self::DontAsk => 0,
-            Self::Plan => 1,
-            Self::Default => 2,
-            Self::Bubble => 3,
-            Self::AcceptEdits => 4,
-            Self::BypassPermissions => 5,
-        }
-    }
-
-    /// The stricter (less permissive) of two modes. Ties keep `self`.
-    pub fn min_permissive(self, other: Self) -> Self {
-        if other.permissiveness() < self.permissiveness() {
-            other
-        } else {
-            self
-        }
-    }
-
-    /// The mode a delegate (sub-agent, team member) runs in when the session
-    /// that spawned it is in `self`: its own, wider or narrower — except that a
-    /// planning parent holds it to plan, a parent that asks nobody holds it to
-    /// `dontAsk`, and a parent that bypasses takes it along.
-    pub fn for_delegate(self, delegate: Self) -> Self {
-        match self {
-            Self::Plan | Self::DontAsk => delegate.min_permissive(self),
-            Self::BypassPermissions => self,
-            _ => delegate,
-        }
-    }
-}
+pub use crate::permission::PermissionMode;
+use crate::permission::RuleBehavior;
 
 /// A single permission rule: allow/deny/ask a tool matching a pattern.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct PermissionRule {
+pub struct PermissionRuleEntry {
     /// Tool name pattern (e.g. "Bash", "Bash(git push:*)", "FileWrite").
     pub tool: String,
     /// Action: "allow", "deny", or "ask".
-    pub action: PermissionAction,
+    pub action: RuleBehavior,
     /// `"exact"`: the content in `tool` allows only a call whose content is
     /// that same text, as "allow every time" records it. Read on allow rules
     /// only; a deny or ask is always a pattern.
@@ -308,14 +218,6 @@ pub struct PermissionRule {
         skip_serializing_if = "crate::interface::permission::GrantMatch::is_pattern"
     )]
     pub matching: crate::interface::permission::GrantMatch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum PermissionAction {
-    Allow,
-    Deny,
-    Ask,
 }
 
 /// Output ceiling per model call when nothing configures one. Thinking counts
@@ -1162,9 +1064,11 @@ pub fn unknown_settings_keys(layer: &serde_json::Value) -> Vec<String> {
 /// left out by itself (`permission_rules[i]`, with why), so a mistyped allow
 /// does not take the deny rules beside it along. A value that is not a list
 /// is left out as a whole.
-fn read_permission_rules(rules: serde_json::Value) -> (Vec<PermissionRule>, Vec<(String, String)>) {
+fn read_permission_rules(
+    rules: serde_json::Value,
+) -> (Vec<PermissionRuleEntry>, Vec<(String, String)>) {
     let serde_json::Value::Array(entries) = rules else {
-        let error = serde_json::from_value::<Vec<PermissionRule>>(rules)
+        let error = serde_json::from_value::<Vec<PermissionRuleEntry>>(rules)
             .err()
             .map_or_else(|| "expected a list".to_string(), |e| e.to_string());
         return (Vec::new(), vec![("permission_rules".to_string(), error)]);
@@ -1931,7 +1835,7 @@ mod tests {
             .into_iter()
             .map(|r| (r.rule.tool.as_str(), r.rule.action))
             .collect();
-        assert_eq!(rules, [("Bash", PermissionAction::Deny)]);
+        assert_eq!(rules, [("Bash", RuleBehavior::Deny)]);
         assert_eq!(settings.ignored.len(), 1, "{:?}", settings.ignored);
         assert_eq!(settings.ignored[0].key, "permission_rules[0]");
         assert!(settings.ignored[0].error.contains("allwo"));
@@ -1985,7 +1889,7 @@ mod tests {
             );
         }
         assert_eq!(
-            schema["$defs"]["PermissionRule"]["required"],
+            schema["$defs"]["PermissionRuleEntry"]["required"],
             serde_json::json!(["tool", "action"]),
             "a list entry is not merged with defaults"
         );
@@ -2154,7 +2058,7 @@ mod tests {
             assert_eq!(settings.values.permission_mode, PermissionMode::Default);
             assert!(shared_rules(&settings)
                 .into_iter()
-                .all(|r| r.rule.action == PermissionAction::Deny));
+                .all(|r| r.rule.action == RuleBehavior::Deny));
             assert_eq!(shared_rules(&settings).len(), 1);
             assert!(local_rules(&settings).is_empty());
             assert!(settings.values.hooks_config.is_none());
