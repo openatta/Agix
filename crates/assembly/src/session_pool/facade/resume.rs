@@ -58,7 +58,7 @@ impl SessionPool {
     /// `session_id`.
     ///
     /// Reattaches (loading the transcript back into the engine's context via
-    /// the same `resume_or_create` → `Agent::resume_session` path
+    /// the same `resume_or_create` → `Agent::load_transcript` path
     /// `run_turn` uses) and reports what was reattached to, so a restarted
     /// client can tell "I'm continuing a 40-message conversation" from "this
     /// id was never used".

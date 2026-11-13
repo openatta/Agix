@@ -271,7 +271,7 @@ impl SessionPool {
                 .and_then(|live| live.state.clone());
             self.stop_live_agent(&session_id).await?;
             let resume_start = std::time::Instant::now();
-            let resume_result = agent.resume_session(&session_id).await;
+            let resume_result = agent.load_transcript(&session_id).await;
             let outcome = match &resume_result {
                 Ok(()) => telemetry::ResumeOutcome::Succeeded,
                 Err(_) => telemetry::ResumeOutcome::Failed,
@@ -322,6 +322,7 @@ impl SessionPool {
                 }
                 return Err(format!("its transcript could not be loaded: {e}").into());
             }
+            agent.restore_state_from_log().await;
             if let Some(previous) = &previous_state {
                 state.carry_session_state_from(previous);
             }

@@ -484,13 +484,15 @@ impl Agent {
         // `compaction` crate does not depend on `skills`. A name that no
         // longer resolves still gets a record, so it is mentioned by name.
         let invoked_skills = self
-            .prompt
+            .session_state
+            .ledger()
             .invoked_skills
-            .iter()
+            .clone()
+            .into_iter()
             .map(|name| compaction::compact::InvokedSkillRecord {
-                name: name.clone(),
-                content: self.tooling.skills.body(name),
-                last_seq: self.tooling.skills.last_invoked_seq(name),
+                content: self.tooling.skills.body(&name),
+                last_seq: self.tooling.skills.last_invoked_seq(&name),
+                name,
             })
             .collect();
         let mut activated_tools: Vec<String> =

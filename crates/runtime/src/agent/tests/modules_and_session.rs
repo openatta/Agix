@@ -257,6 +257,54 @@ fn a_kept_module_whose_requirement_the_scene_excludes_is_refused() {
     assert!(result.unwrap_err().contains("requires `a`"));
 }
 
+#[test]
+fn a_session_state_handed_in_is_attached_only_when_the_engine_takes_it_over() {
+    let state = Arc::new(base::context::SessionState::new());
+    let (agent, _rx, _tx) = probe_builder(vec![])
+        .session_state(state.clone())
+        .build()
+        .expect("build should succeed");
+    assert!(Arc::ptr_eq(&agent.session_state(), &state));
+    assert!(state.exec().is_none(), "building leaves the state as it is");
+
+    agent.attach_session();
+    assert!(state.exec().is_some());
+    assert_eq!(state.env().cwd, agent.settings().paths.working_dir());
+
+    drop(agent);
+    assert!(
+        state.exec().is_none(),
+        "an engine takes itself off as it ends"
+    );
+}
+
+#[test]
+fn what_a_session_spent_and_asked_for_outlives_its_engine() {
+    let state = Arc::new(base::context::SessionState::new());
+    let (first, _rx, _tx) = probe_builder(vec![])
+        .session_state(state.clone())
+        .build()
+        .expect("build should succeed");
+    first.attach_session();
+    {
+        let mut ledger = state.ledger();
+        ledger.spent.api_calls = 3;
+        ledger.token_target.target = Some(5_000);
+        ledger.invoked_skills.push("review".into());
+    }
+    drop(first);
+
+    let (second, _rx, _tx) = probe_builder(vec![])
+        .session_state(state.clone())
+        .build()
+        .expect("build should succeed");
+    second.attach_session();
+    assert!(second.handle_cost_command().contains("3 model calls"));
+    let ledger = state.ledger();
+    assert_eq!(ledger.token_target.target, Some(5_000));
+    assert_eq!(ledger.invoked_skills, ["review"]);
+}
+
 #[tokio::test]
 async fn run_emits_session_end_on_exit() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);

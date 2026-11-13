@@ -9,11 +9,13 @@
 
 pub mod config;
 pub mod goal;
+pub mod ledger;
 pub mod prompt;
 pub mod session;
 pub mod task;
 
 pub use self::config::*;
+pub use self::ledger::*;
 pub use self::prompt::*;
 pub use self::session::*;
 pub use self::task::*;

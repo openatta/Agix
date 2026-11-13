@@ -683,7 +683,7 @@ Agent 的上下文,本来就该在一处。
   |---|---|---|---|
   | `agix.session` / `spec` | 会话池,规格变化时 | `{options?, model?, provider?, prompt?}` | 重建、恢复时照它建引擎(§3.2.2) |
   | `agix.goal` / `change` | 引擎与会话池,目标变化时 | `{goal}`,清除后为 `null` | 恢复时取回目标,不武装(§3.4) |
-  | `agix.session_state` / `change` | 引擎,一轮结束和引擎停下时,有变化才写 | `{plan: null \| {exit_to: <模式> \| null}, todos: [{content, status, active_form}]}` | `Agent::resume_session` 放回 `plan` 模式(`exit_to` 为 `null` 即退出到 `default`)和 todo 列表 |
+  | `agix.session_state` / `change` | 引擎,一轮结束和引擎停下时,有变化才写 | `{plan: null \| {exit_to: <模式> \| null}, todos: [{content, status, active_form}]}` | `Agent::restore_state_from_log` 放回 `plan` 模式(`exit_to` 为 `null` 即退出到 `default`)和 todo 列表 |
   | `agix.context` / `drop`、`edit` | 会话池,宿主改上下文时 | `{at, text?, at_ms}` | 投影时套到消息上 |
 
   `agix.session_state` 只记会话自己定下、设置里推不出来的那部分(`base::context::DurableState`)。

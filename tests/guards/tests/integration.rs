@@ -9,6 +9,7 @@ mod deps;
 mod layering;
 mod permissions;
 mod process_state;
+mod session_state;
 mod size;
 mod sources;
 mod support_selftest;

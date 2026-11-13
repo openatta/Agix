@@ -349,7 +349,6 @@ impl TurnScope {
         }
     }
 
-    /// Record what `StructuredOutput` accepted; a later call replaces it.
     pub fn set_structured_output(&self, value: Value) {
         *self
             .structured_output

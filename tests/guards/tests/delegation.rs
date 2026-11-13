@@ -116,6 +116,14 @@ const NOT_FOR_DELEGATES: &[(&str, &str)] = &[
     ),
     ("frozen", "a replay snapshot of the root's first turn"),
     (
+        "session_state",
+        "a host's own session, kept across its engines; a delegate's state is its own",
+    ),
+    (
+        "steering",
+        "a host's own queue, kept across its engines; a delegate takes messages through its own",
+    ),
+    (
         "wake_rx",
         "the tree's wake channel is wired on the root's runner",
     ),

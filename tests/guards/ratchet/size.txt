@@ -3,7 +3,7 @@
 # they had when the guard was introduced. A ceiling only goes down:
 # AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration size::
 file  crates/compaction/src/compact.rs                     -                                        1158
-file  crates/core/src/context/session.rs                   -                                        1195
+file  crates/core/src/context/session.rs                   -                                        1166
 file  crates/core/src/interface/tool.rs                    -                                        1070
 file  crates/core/src/interface/catalog.rs                   -                                        827
 file  crates/core/src/memory.rs                            -                                        1102
@@ -14,8 +14,8 @@ file  crates/mcp/src/manager.rs                            -                    
 file  crates/mcp/src/oauth/mod.rs                          -                                        1332
 file  crates/platform/src/sandbox.rs                       -                                        1498
 file  crates/ptc/src/lib.rs                                -                                        973
-file  crates/runtime/src/agent/builder/build.rs            -                                        928
-file  crates/runtime/src/turn/user_turn.rs                 -                                        1245
+file  crates/runtime/src/agent/builder/build.rs            -                                        945
+file  crates/runtime/src/turn/user_turn.rs                 -                                        1232
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
@@ -24,7 +24,7 @@ fn    crates/agents/src/lib.rs                             AgentsModule::on_sess
 fn    crates/assembly/src/assemble.rs                      pool                                     137
 fn    crates/assembly/src/export.rs                        pack                                     211
 fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          270
-fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                      330
+fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                      331
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::export_session              115
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::fork_session                128
 fn    crates/assembly/src/session_pool/facade/listing.rs          SessionPool::list_all                    144
@@ -53,15 +53,15 @@ fn    crates/platform/src/sandbox.rs                       build_macos_profile  
 fn    crates/platform/src/sandbox.rs                       linux_wrap                               162
 fn    crates/ptc/src/lib.rs                                RunCodeTool::call                        101
 fn    crates/ptc/src/lib.rs                                execute                                  181
-fn    crates/runtime/src/agent/builder/build.rs            Builder::build                           898
-fn    crates/runtime/src/agent/run.rs                      Agent::run                               295
+fn    crates/runtime/src/agent/builder/build.rs            Builder::build                           876
+fn    crates/runtime/src/agent/run.rs                      Agent::run                               285
 fn    crates/runtime/src/streaming.rs                      execute_stream                           330
 fn    crates/runtime/src/turn/compact.rs                   Agent::compact_if_needed                 159
-fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction                    206
+fn    crates/runtime/src/turn/compact.rs                   Agent::run_compaction                    202
 fn    crates/runtime/src/turn/memory_extraction.rs         extract_memories_after_turn              224
-fn    crates/runtime/src/turn/process.rs                   Agent::process_turn                      258
+fn    crates/runtime/src/turn/process.rs                   Agent::process_turn                      253
 fn    crates/runtime/src/turn/tool_exec.rs                 execute_tool_inner                       220
-fn    crates/runtime/src/turn/user_turn.rs                 Agent::run_user_turn_inner               1220
+fn    crates/runtime/src/turn/user_turn.rs                 Agent::run_user_turn_inner               1207
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/skills/src/tool.rs                            SkillTool::call                          155

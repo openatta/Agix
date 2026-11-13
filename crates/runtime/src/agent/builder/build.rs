@@ -254,33 +254,12 @@ impl Builder {
         // from one call to the next.
         prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
         prepare_working_dir(&settings.paths);
-        let session_env = {
-            let cwd = settings.paths.working_dir().to_path_buf();
-            let resolve = |dir: &std::path::PathBuf| cwd.join(dir);
-            base::context::SessionEnv {
-                additional_writable_dirs: settings
-                    .sandbox
-                    .additional_directories
-                    .iter()
-                    .map(resolve)
-                    .chain(config.sandbox_policy.paths.state_working_dirs())
-                    .collect(),
-                read_directories: settings
-                    .sandbox
-                    .read_directories
-                    .iter()
-                    .map(resolve)
-                    .chain(config.sandbox_policy.paths.readable_state_root())
-                    .collect(),
-                read_anywhere: settings.sandbox.read_anywhere,
-                cache_directories: settings.sandbox.cache_directories.paths(&cwd),
-                unattended: !scene.interactive,
-                sandbox_disabled: settings.sandbox.dangerously_disable_sandbox,
-                base_mode: config.permission_mode,
-                cwd,
-            }
-        };
-        let session_state = Arc::new(base::context::SessionState::new());
+        let session_env = session_env(&settings, &config, &scene);
+        let injected_state = self.session_state.is_some();
+        let session_state = self
+            .session_state
+            .clone()
+            .unwrap_or_else(|| Arc::new(base::context::SessionState::new()));
         // One set for the session: its tool calls run on it, and a permission
         // judging them reads it back from the session state.
         let exec = match (&self.exec, &self.process_groups) {
@@ -658,10 +637,12 @@ impl Builder {
                 );
             }
         }
-        session_state.attach(
+        let attachment =
             base::context::EngineAttachment::new(session_env, exec.clone(), next_generation())
-                .with_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>)),
-        );
+                .with_tools(&(tools.clone() as Arc<dyn base::tool::ToolRegistry>));
+        if !injected_state {
+            session_state.attach(attachment.clone());
+        }
 
         // Built before the `Agent` literal takes ownership of `scene` and
         // `settings`. The ceilings are read once per session, which is when
@@ -778,6 +759,8 @@ impl Builder {
         let session_end = SessionEnd {
             ended: session_ended,
             tools: tools.clone(),
+            state: session_state.clone(),
+            attachment,
         };
 
         Ok((
@@ -845,7 +828,6 @@ impl Builder {
                     claude_md_content,
                     rules,
                     session_context_injected: false,
-                    invoked_skills: Vec::new(),
                     announced_skills: None,
                 },
                 policies: Policies {
@@ -878,13 +860,6 @@ impl Builder {
                     request_overhead_tokens: 0,
                     auto_backoff: Default::default(),
                 },
-                token_budget: TokenBudget {
-                    target: None,
-                    unannounced: false,
-                    accumulated: 0,
-                    continuations: 0,
-                    last_delta: 0,
-                },
                 turn: Default::default(),
                 last_had_tool_uses: true,
                 slash_skill_grants: Vec::new(),
@@ -892,18 +867,49 @@ impl Builder {
                 telemetry: Telemetry {
                     telemetry_handle,
                     perf: Arc::new(PerfCollector::new()),
-                    spent: SessionSpend::default(),
                 },
                 channels: Channels {
                     input_rx,
                     event_tx,
                     current_turn_cancel: Default::default(),
-                    steering: Default::default(),
+                    steering: self.steering.map(|s| s.0).unwrap_or_default(),
                 },
             },
             event_rx,
             input_tx,
         ))
+    }
+}
+
+/// What this engine's settings and scene make of the session's env.
+fn session_env(
+    settings: &LoadedSettings,
+    config: &base::context::EngineConfig,
+    scene: &SceneSpec,
+) -> base::context::SessionEnv {
+    let cwd = settings.paths.working_dir().to_path_buf();
+    let resolve = |dir: &std::path::PathBuf| cwd.join(dir);
+    base::context::SessionEnv {
+        additional_writable_dirs: settings
+            .sandbox
+            .additional_directories
+            .iter()
+            .map(resolve)
+            .chain(config.sandbox_policy.paths.state_working_dirs())
+            .collect(),
+        read_directories: settings
+            .sandbox
+            .read_directories
+            .iter()
+            .map(resolve)
+            .chain(config.sandbox_policy.paths.readable_state_root())
+            .collect(),
+        read_anywhere: settings.sandbox.read_anywhere,
+        cache_directories: settings.sandbox.cache_directories.paths(&cwd),
+        unattended: !scene.interactive,
+        sandbox_disabled: settings.sandbox.dangerously_disable_sandbox,
+        base_mode: config.permission_mode,
+        cwd,
     }
 }
 

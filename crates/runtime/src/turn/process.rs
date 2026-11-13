@@ -227,10 +227,7 @@ impl Agent {
                     .then(|| find_token_budget_directive(&content))
                     .flatten();
                 let processed_content = if let Some((target, range)) = directive {
-                    self.token_budget.target = Some(target);
-                    self.token_budget.unannounced = true;
-                    self.token_budget.accumulated = 0;
-                    self.token_budget.continuations = 0;
+                    self.session_state.ledger().token_target.aim(target);
                     tracing::info!(target, "Token budget directive parsed — set output target");
                     strip_token_budget_directive(&content, range)
                 } else {
@@ -630,11 +627,12 @@ impl Agent {
         crate::agent::lock_turn_cancel(&self.channels.current_turn_cancel)
             .ended(&self.current_turn_id);
         if let Ok(o) = &outcome {
-            self.telemetry.spent.usage = self.telemetry.spent.usage.plus(o.total_usage);
-            self.telemetry.spent.api_calls =
-                self.telemetry.spent.api_calls.saturating_add(o.api_calls);
-            self.telemetry.spent.tool_calls =
-                self.telemetry.spent.tool_calls.saturating_add(o.tool_calls);
+            {
+                let spent = &mut self.session_state.ledger().spent;
+                spent.usage = spent.usage.plus(o.total_usage);
+                spent.api_calls = spent.api_calls.saturating_add(o.api_calls);
+                spent.tool_calls = spent.tool_calls.saturating_add(o.tool_calls);
+            }
             let _ = self.channels.event_tx.send(AgentEvent::TurnComplete {
                 stop_reason: o.stop_reason.clone(),
                 api_calls: o.api_calls,

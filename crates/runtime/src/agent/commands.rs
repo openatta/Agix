@@ -37,23 +37,24 @@ impl Agent {
             tracing::warn!(error = %e, "failed to record /clear in the transcript");
         }
         self.prompt.session_context_injected = false;
-        self.prompt.invoked_skills.clear();
         self.prompt.announced_skills = None;
         self.gate
             .permission_denial_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        self.token_budget.target = None;
-        self.token_budget.accumulated = 0;
-        self.token_budget.continuations = 0;
+        let mut ledger = self.session_state.ledger();
+        ledger.invoked_skills.clear();
+        ledger.token_target.target = None;
+        ledger.token_target.accumulated = 0;
+        ledger.token_target.continuations = 0;
     }
 
     /// `/cost` — report the tokens and calls this session has spent.
     pub(crate) fn handle_cost_command(&self) -> String {
-        let SessionSpend {
+        let base::context::SessionSpend {
             usage,
             api_calls,
             tool_calls,
-        } = self.telemetry.spent;
+        } = self.session_state.ledger().spent;
         format!(
             "Since this session was loaded: {api_calls} model calls, {tool_calls} tool calls; \
              {} input tokens, {} output tokens, {} written to and {} read from the prompt \

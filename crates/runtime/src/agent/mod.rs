@@ -40,17 +40,20 @@ const ASK_USER_QUESTION: &str = "AskUserQuestion";
 /// What a session's end sets off. Its tools close over the session — the
 /// `Agent` tool over the registry it sits in, the team tools over the spawner
 /// that reaches it — so the registry is emptied here, or none of it would ever
-/// be freed; and whatever outlives a turn on the session's behalf (team
-/// members) watches `ended`.
+/// be freed; whatever outlives a turn on the session's behalf (team members)
+/// watches `ended`; and the engine takes itself off the session's state.
 struct SessionEnd {
     ended: CancellationToken,
     tools: Arc<InMemoryToolRegistry>,
+    state: Arc<base::context::SessionState>,
+    attachment: base::context::EngineAttachment,
 }
 
 impl Drop for SessionEnd {
     fn drop(&mut self) {
         self.ended.cancel();
         self.tools.clear();
+        self.state.detach(self.attachment.generation());
     }
 }
 
@@ -82,7 +85,6 @@ pub struct Agent {
     pub(crate) policies: Policies,
     pub(crate) memory: Memory,
     pub(crate) compaction: Compaction,
-    pub(crate) token_budget: TokenBudget,
     pub(crate) turn: crate::turn::TurnState,
     /// Read by the *next* turn, to decide whether to rescan for skills; starts
     /// `true` so the first turn scans.
@@ -163,8 +165,6 @@ pub(crate) struct PromptContext {
     pub(crate) rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
     /// Cleared by `/clear` and by compaction.
     pub(crate) session_context_injected: bool,
-    /// Re-injected after compaction.
-    pub(crate) invoked_skills: Vec<String>,
     /// `None` until the first turn, whose prompt lists them all.
     pub(crate) announced_skills: Option<std::collections::HashSet<String>>,
 }
@@ -206,22 +206,10 @@ pub(crate) struct Compaction {
     pub(crate) auto_backoff: crate::turn::AutoCompactBackoff,
 }
 
-/// An output token target, kept until it is met, given up on, or cleared —
-/// a turn that ends otherwise leaves it running into the next.
-pub(crate) struct TokenBudget {
-    pub(crate) target: Option<u64>,
-    /// Set by the message that set the target; the model has not been told yet.
-    pub(crate) unannounced: bool,
-    pub(crate) accumulated: u64,
-    pub(crate) continuations: u32,
-    pub(crate) last_delta: u64,
-}
-
-/// What this session has spent and how long its parts took.
+/// Where this session's telemetry goes and how long its parts took.
 pub(crate) struct Telemetry {
     pub(crate) telemetry_handle: TelemetryHandle,
     pub(crate) perf: Arc<PerfCollector>,
-    pub(crate) spent: SessionSpend,
 }
 
 /// How input reaches this session and events leave it.
@@ -284,14 +272,6 @@ pub(crate) fn lock_turn_cancel(
     cancel
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// A session's model calls and tool calls, summed over its turns.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct SessionSpend {
-    pub usage: base::interface::model::Usage,
-    pub api_calls: u32,
-    pub tool_calls: u32,
 }
 
 #[derive(Debug, thiserror::Error)]

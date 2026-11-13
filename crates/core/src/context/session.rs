@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::goal::{GoalError, GoalView};
+use super::ledger::SessionLedger;
 use super::prompt::{PromptRequest, PromptResponse, SystemMessage};
 use super::task::{
     RunningStatus, RunningTask, TaskEvent, TaskInfo, TaskType, TodoItem, TodoStatus,
@@ -57,6 +58,7 @@ pub struct SessionState {
     read_cache: std::sync::Mutex<HashMap<PathBuf, FileReadEntry>>,
     /// 最近一次读取的文件路径，用于连续重复读取检测。
     last_read_path: std::sync::Mutex<Option<PathBuf>>,
+    ledger: std::sync::Mutex<SessionLedger>,
 }
 
 /// What the engine running a session derives from its settings and scene.
@@ -221,6 +223,7 @@ impl SessionState {
             goal_events: tokio::sync::broadcast::channel(64).0,
             read_cache: std::sync::Mutex::new(HashMap::new()),
             last_read_path: std::sync::Mutex::new(None),
+            ledger: Default::default(),
         }
     }
 
@@ -442,6 +445,7 @@ impl SessionState {
             notices,
             read_cache,
             last_read_path,
+            ledger,
         } = previous;
 
         let before = lock(permission_mode);
@@ -475,9 +479,26 @@ impl SessionState {
             }
         }
         let last_read = lock(last_read_path).clone();
-        let mut last = lock(&self.last_read_path);
-        if last.is_none() {
-            *last = last_read;
+        {
+            let mut last = lock(&self.last_read_path);
+            if last.is_none() {
+                *last = last_read;
+            }
+        }
+        let carried = lock(ledger).clone();
+        *lock(&self.ledger) = carried;
+    }
+
+    pub fn ledger(&self) -> std::sync::MutexGuard<'_, SessionLedger> {
+        lock(&self.ledger)
+    }
+
+    /// Put back what the session log recorded: the goal, disarmed, and the
+    /// durable state. For a state no turn has run on yet.
+    pub fn restore_from_log(&self, goal: Option<super::goal::Goal>, durable: Option<DurableState>) {
+        self.restore_goal(goal);
+        if let Some(durable) = durable {
+            self.restore_durable_state(durable);
         }
     }
 
@@ -598,7 +619,7 @@ impl SessionState {
     }
 
     /// Put back the goal a session log recorded, disarmed.
-    pub fn restore_goal(&self, goal: Option<super::goal::Goal>) {
+    fn restore_goal(&self, goal: Option<super::goal::Goal>) {
         *lock(&self.goal) = super::goal::GoalSlot::restored(goal);
     }
 
@@ -781,7 +802,7 @@ impl SessionState {
 
     /// Put back what the session log recorded. Outside plan mode the session
     /// keeps the mode it was built with.
-    pub fn restore_durable_state(&self, state: DurableState) {
+    fn restore_durable_state(&self, state: DurableState) {
         if let Some(plan) = state.plan {
             *self.mode_slot() = ModeSlot {
                 current: PermissionMode::Plan,

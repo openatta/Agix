@@ -331,7 +331,7 @@ impl Agent {
         > = {
             let skills = self.tooling.skills.clone();
             let local_dir = self.settings.paths.local_data_dir.clone();
-            let invoked_skills: Vec<String> = self.prompt.invoked_skills.clone();
+            let invoked_skills: Vec<String> = self.session_state.ledger().invoked_skills.clone();
             // Only scan when the previous turn produced tool calls that may
             // have written files that could reveal new skills — skip on
             // non-write turns. Runs on the first turn too (`last_had_tool_uses`
@@ -406,20 +406,19 @@ impl Agent {
         self.turn.pending_input = user_text_fingerprint(&message).map(|fp| (fp, spans));
         self.turn.started_at = Some(std::time::Instant::now());
         self.session.push_message_from(message, origin);
-        if std::mem::take(&mut self.token_budget.unannounced) {
-            if let Some(target) = self.token_budget.target {
-                self.session.push_message(ModelMessage {
-                    role: MessageRole::User,
-                    content: vec![ModelContentBlock::Text {
-                        text: format!(
-                            "<system-reminder>\nThe user set an output token target of {target}. \
-                             Your output token count is shown as you go and work continues \
-                             automatically until the target is met. The target is a hard \
-                             ceiling; let its size set how thorough to be.\n</system-reminder>"
-                        ),
-                    }],
-                });
-            }
+        let unannounced = self.session_state.ledger().token_target.take_unannounced();
+        if let Some(target) = unannounced {
+            self.session.push_message(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text {
+                    text: format!(
+                        "<system-reminder>\nThe user set an output token target of {target}. \
+                         Your output token count is shown as you go and work continues \
+                         automatically until the target is met. The target is a hard \
+                         ceiling; let its size set how thorough to be.\n</system-reminder>"
+                    ),
+                }],
+            });
         }
 
         // Collected before the first API call, not after tool execution, so a
@@ -962,11 +961,9 @@ impl Agent {
                                 role: MessageRole::User,
                                 content: vec![ModelContentBlock::Text { text: skills_text }],
                             });
-                            for name in &new_names {
-                                if !self.prompt.invoked_skills.contains(name) {
-                                    self.prompt.invoked_skills.push(name.clone());
-                                }
-                            }
+                            self.session_state
+                                .ledger()
+                                .note_skills(new_names.iter().map(String::as_str));
                         }
                     }
                 }
@@ -990,11 +987,9 @@ impl Agent {
                                 role: MessageRole::User,
                                 content: vec![ModelContentBlock::Text { text: skills_text }],
                             });
-                            for s in &activated {
-                                if !self.prompt.invoked_skills.contains(&s.name) {
-                                    self.prompt.invoked_skills.push(s.name.clone());
-                                }
-                            }
+                            self.session_state
+                                .ledger()
+                                .note_skills(activated.iter().map(|s| s.name.as_str()));
                         }
                     }
                 }
@@ -1082,34 +1077,27 @@ impl Agent {
             // 8. Token budget continuation mode.
             // Continue while accumulated output < 90% of target AND not diminishing
             // (≥3 continuations, both this & previous delta < 500). No hard cap.
-            if let Some(target) = self.token_budget.target {
-                self.token_budget.accumulated = self
-                    .token_budget
-                    .accumulated
-                    .saturating_add(usage.output_tokens as u64);
-
+            let target = self.session_state.ledger().token_target.target;
+            if let Some(target) = target {
                 let this_delta = usage.output_tokens as u64;
-                if let base::interface::budget_policy::OutputTarget::KeepGoing { nudge } = self
-                    .policies
-                    .budget_policy
-                    .on_output_target(&base::interface::budget_policy::OutputProgress {
-                        accumulated: self.token_budget.accumulated,
-                        target,
-                        continuations: self.token_budget.continuations,
-                        this_delta,
-                        last_delta: self.token_budget.last_delta,
-                    })
+                let progress =
+                    (self.session_state.ledger().token_target).add_output(target, this_delta);
+                if let base::interface::budget_policy::OutputTarget::KeepGoing { nudge } =
+                    self.policies.budget_policy.on_output_target(&progress)
                 {
-                    self.token_budget.continuations += 1;
-                    self.token_budget.last_delta = this_delta;
+                    let continuation = self
+                        .session_state
+                        .ledger()
+                        .token_target
+                        .continued(this_delta);
                     self.session.push_message(ModelMessage {
                         role: MessageRole::User,
                         content: vec![ModelContentBlock::Text { text: nudge }],
                     });
                     tracing::info!(
-                        accumulated = self.token_budget.accumulated,
+                        accumulated = progress.accumulated,
                         target,
-                        continuation = self.token_budget.continuations,
+                        continuation,
                         "Token budget continuation — injecting nudge"
                     );
                     continue;
@@ -1117,17 +1105,14 @@ impl Agent {
 
                 // Budget met (≥90%) or diminishing returns — clear budget state.
                 let threshold = (target as f64 * 0.9) as u64;
-                let budget_met = self.token_budget.accumulated >= threshold;
+                let budget_met = progress.accumulated >= threshold;
                 tracing::info!(
-                    accumulated = self.token_budget.accumulated,
+                    accumulated = progress.accumulated,
                     target,
                     budget_met,
                     "Token budget session complete"
                 );
-                self.token_budget.target = None;
-                self.token_budget.accumulated = 0;
-                self.token_budget.continuations = 0;
-                self.token_budget.last_delta = 0;
+                self.session_state.ledger().token_target = Default::default();
             }
 
             // The model has answered; a message the user sent meanwhile is

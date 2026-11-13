@@ -111,6 +111,10 @@ pub struct Builder {
     rule_provider: Option<Arc<dyn base::interface::instruction_provider::RuleProvider>>,
     modules: Vec<Arc<dyn crate::module::Module>>,
     session_prompt: Option<SessionPrompt>,
+    /// See [`Builder::session_state`].
+    session_state: Option<Arc<base::context::SessionState>>,
+    /// See [`Builder::steering`].
+    steering: Option<crate::steering::SteerHandle>,
 }
 
 impl Builder {
@@ -169,7 +173,27 @@ impl Builder {
             rule_provider: None,
             modules: Vec::new(),
             session_prompt: None,
+            session_state: None,
+            steering: None,
         }
+    }
+
+    /// Run the session on `state`, which outlives this engine: a host that
+    /// rebuilds a session's engine hands each one the session's state.
+    /// [`build`](Self::build) leaves it as it is; the engine takes it over
+    /// with [`Agent::attach_session`], once the engine before it has stopped.
+    /// Without this the engine gets a state of its own, attached as it is
+    /// built.
+    pub fn session_state(mut self, state: Arc<base::context::SessionState>) -> Self {
+        self.session_state = Some(state);
+        self
+    }
+
+    /// Take the messages sent while a turn runs from `queue`, which the host
+    /// may keep across engines, instead of a queue of the engine's own.
+    pub fn steering(mut self, queue: crate::steering::SteerHandle) -> Self {
+        self.steering = Some(queue);
+        self
     }
 
     /// A system-prompt append and/or override for this session's own agent,

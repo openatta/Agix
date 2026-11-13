@@ -28,7 +28,7 @@ pub(crate) type SharedSteerQueue = std::sync::Arc<std::sync::Mutex<SteerQueue>>;
 /// Offers messages to the turn its agent is running without going through
 /// the agent's input channel, which only [`crate::agent::Agent::run`] reads.
 /// A sub-agent driven turn by turn takes its inbox this way.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SteerHandle(pub(crate) SharedSteerQueue);
 
 impl SteerHandle {

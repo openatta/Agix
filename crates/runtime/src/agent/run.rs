@@ -35,6 +35,15 @@ impl Agent {
         self.session_state.clone()
     }
 
+    /// Take over the state handed to [`Builder::session_state`]: from here
+    /// on it carries this engine's env, tools and providers. Call it once the
+    /// engine that ran the state before has stopped. An engine that built its
+    /// own state is attached already.
+    pub fn attach_session(&self) {
+        self.session_state
+            .attach(self.session_end.attachment.clone());
+    }
+
     /// Cancelled when the session ends.
     pub(crate) fn session_ended(&self) -> &CancellationToken {
         &self.session_end.ended
@@ -337,6 +346,7 @@ impl Agent {
             .await;
 
         let duration_ms = run_started.elapsed().as_millis() as i64;
+        let spent = self.session_state.ledger().spent;
         let _ = self
             .telemetry
             .telemetry_handle
@@ -347,21 +357,16 @@ impl Agent {
                 telemetry::SessionEndPayload {
                     duration_ms,
                     total_turns: self.session.turn_count,
-                    total_api_calls: self.telemetry.spent.api_calls,
-                    total_tool_calls: self.telemetry.spent.tool_calls,
+                    total_api_calls: spent.api_calls,
+                    total_tool_calls: spent.tool_calls,
                     total_permission_denials: self
                         .gate
                         .permission_denial_count
                         .load(std::sync::atomic::Ordering::Relaxed),
-                    total_input_tokens: self.telemetry.spent.usage.input_tokens.into(),
-                    total_output_tokens: self.telemetry.spent.usage.output_tokens.into(),
-                    total_cache_creation: self
-                        .telemetry
-                        .spent
-                        .usage
-                        .cache_creation_input_tokens
-                        .into(),
-                    total_cache_read: self.telemetry.spent.usage.cache_read_input_tokens.into(),
+                    total_input_tokens: spent.usage.input_tokens.into(),
+                    total_output_tokens: spent.usage.output_tokens.into(),
+                    total_cache_creation: spent.usage.cache_creation_input_tokens.into(),
+                    total_cache_read: spent.usage.cache_read_input_tokens.into(),
                     stop_reason: exit_reason.to_string(),
                 },
             ));
@@ -435,10 +440,21 @@ impl Agent {
     /// this agent's in-memory conversation state. Call before `run()` starts
     /// processing turns — it's a plain field replacement, not safe to race
     /// against an active turn.
-    pub async fn resume_session(&mut self, id: &str) -> Result<(), session::session::SessionError> {
+    pub async fn load_transcript(
+        &mut self,
+        id: &str,
+    ) -> Result<(), session::session::SessionError> {
         self.session.resume(id).await?;
         self.prompt.session_context_injected =
             crate::turn::holds_session_context(&self.session.messages);
+        Ok(())
+    }
+
+    /// Put back into the session's state what the loaded transcript's log
+    /// recorded of it: the goal, and plan mode and todos. Only for a state
+    /// no engine has run the session on since it was created; a state kept
+    /// across engines already holds all of it.
+    pub async fn restore_state_from_log(&self) {
         let goal = self
             .session
             .latest_extension(
@@ -447,19 +463,15 @@ impl Agent {
             )
             .await
             .and_then(|payload| serde_json::from_value(payload["goal"].clone()).ok());
-        self.session_state.restore_goal(goal);
-        if let Some(state) = self
+        let durable = self
             .session
             .latest_extension(
                 base::context::SESSION_STATE_NS,
                 base::context::SESSION_STATE_EVENT,
             )
             .await
-            .and_then(|payload| serde_json::from_value(payload).ok())
-        {
-            self.session_state.restore_durable_state(state);
-        }
-        Ok(())
+            .and_then(|payload| serde_json::from_value(payload).ok());
+        self.session_state.restore_from_log(goal, durable);
     }
 
     /// The goal round to start now that a turn ended with `stop_reason`, if
