@@ -2,7 +2,6 @@
 
 use crate::error::EffectError;
 use crate::permission::PermissionMode;
-use crate::session::SessionId;
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -21,9 +20,7 @@ use tokio::sync::broadcast;
 /// （permission_mode / todos）走 `Mutex` 内部可变性。
 #[derive(Debug)]
 pub struct SessionState {
-    pub session_id: SessionId,
     pub cwd: PathBuf,
-    pub started_at: time::OffsetDateTime,
     /// 用户级附加可写目录（`additional_directories`）—— Tool 在做路径校验时用
     pub additional_writable_dirs: Vec<PathBuf>,
     /// Directories outside the project the file tools may read without
@@ -136,9 +133,7 @@ pub struct FileReadEntry {
 impl SessionState {
     pub fn new(cwd: PathBuf) -> Self {
         Self {
-            session_id: SessionId::new(),
             cwd,
-            started_at: time::OffsetDateTime::now_utc(),
             additional_writable_dirs: Vec::new(),
             read_directories: Vec::new(),
             read_anywhere: false,
@@ -319,9 +314,7 @@ impl SessionState {
     pub fn carry_session_state_from(&self, previous: &SessionState) {
         let SessionState {
             // Built from the session's settings, which a rebuild re-reads.
-            session_id: _,
             cwd: _,
-            started_at: _,
             additional_writable_dirs: _,
             read_directories: _,
             read_anywhere: _,

@@ -114,7 +114,6 @@ impl std::fmt::Debug for ToolCtx {
         f.debug_struct("ToolCtx")
             .field("model", &self.config.model)
             .field("cwd", &self.session.cwd)
-            .field("session_id", &self.session.session_id)
             .field("tool_use_id", &self.tool_use_id)
             .field("crate", &self.agent)
             .finish()
