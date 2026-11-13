@@ -41,4 +41,5 @@ mod session_tasks;
 mod tool_progress;
 mod two_pools_one_process;
 mod wiring_coverage;
+#[cfg(feature = "ws")]
 mod ws_transport;

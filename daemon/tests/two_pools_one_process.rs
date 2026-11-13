@@ -55,6 +55,7 @@ fn one_turn() -> Vec<StreamEvent> {
 
 struct Pool {
     sock: std::path::PathBuf,
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
     pool: Arc<SessionPool>,
     model: Arc<MockAnthropicClient>,
     _dir: tempfile::TempDir,
@@ -188,6 +189,7 @@ async fn two_pools_in_one_process_see_nothing_of_each_other() {
     assert!(!scenes_a.iter().any(|s| s == BETA_ONLY_SCENE));
     assert!(scenes_b.iter().any(|s| s == BETA_ONLY_SCENE));
 
+    #[cfg(feature = "mcp")]
     assert_ne!(
         a.pool.mcp_auth().credential_dir(),
         b.pool.mcp_auth().credential_dir(),
