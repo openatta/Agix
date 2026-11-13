@@ -83,10 +83,9 @@ impl SessionPool {
         state: &base::context::SessionState,
     ) {
         let unrecorded = state.unrecorded_goal_changes().await;
-        let (Some(store), Ok(parsed)) = (
-            self.history_store.as_ref(),
-            base::session::SessionId::parse(sid),
-        ) else {
+        let (Some(store), Ok(parsed)) =
+            (self.directory.store(), base::session::SessionId::parse(sid))
+        else {
             return;
         };
         for goal in &unrecorded.changes {
@@ -110,7 +109,7 @@ impl SessionPool {
         if let Some(state) = self.live_state(sid).await {
             return Ok(state.goal_view());
         }
-        let entries = self.load_entries(sid).await?;
+        let entries = self.directory.load_entries(sid).await?;
         let goal: Option<base::context::goal::Goal> = entries
             .iter()
             .rev()

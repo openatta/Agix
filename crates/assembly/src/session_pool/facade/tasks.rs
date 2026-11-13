@@ -381,7 +381,7 @@ impl SessionPool {
                 vec![("edit", serde_json::json!({"at": at, "text": text}))]
             }
         };
-        if let (false, Some(store)) = (edits.is_empty(), self.history_store.as_ref()) {
+        if let (false, Some(store)) = (edits.is_empty(), self.directory.store()) {
             let sid = base::session::SessionId::parse(session_id)
                 .map_err(|e| PoolError::InvalidRequest(e.to_string()))?;
             for (event, mut payload) in edits {

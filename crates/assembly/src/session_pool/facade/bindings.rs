@@ -73,36 +73,6 @@ impl SessionPool {
         self.binding_for(Some(self.cwd()), &scene).await
     }
 
-    /// A session's own recorded `(schema_version, project_root)`, read off
-    /// its `Meta` line — used by `resume_or_create` so resuming a session
-    /// rebuilds it against *its own* project, not this pool's default one.
-    /// `None` covers both "no `Meta` at all" (a session that predates this
-    /// daemon writing one) and "pre-v2 `Meta`" (no `project_root` field
-    /// existed yet) — both mean "nothing recorded, infer the pool default",
-    /// same spirit as `SceneCheck::Inferred`. Distinguishing those from a
-    /// v2 `Meta` that explicitly recorded `project_root: null` (a genuine
-    /// no-project session) is exactly why this returns the raw
-    /// `schema_version` instead of collapsing straight to `Option<PathBuf>`.
-    /// The recorded `scene` rides along because it comes from the same
-    /// `Meta` and reattaching needs both: a session's settings are resolved
-    /// against its own project *and* its own scene tier.
-    pub(in crate::session_pool) async fn recorded_project(
-        &self,
-        session_id: &str,
-    ) -> Option<(u32, Option<String>, Option<String>)> {
-        let entries = self.load_entries(session_id).await.ok()?;
-        let history::entry::LogEntry::Meta {
-            schema_version,
-            project_root,
-            scene,
-            ..
-        } = find_meta(&entries)?
-        else {
-            return None;
-        };
-        Some((*schema_version, project_root.clone(), scene.clone()))
-    }
-
     /// Drop the cached connections whose `mcp_servers` came from `tier`, so the
     /// next session or rebuild on those keys connects with the changed config
     /// (a new `Authorization`, say) instead of reusing the old connection.

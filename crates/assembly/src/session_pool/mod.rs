@@ -53,6 +53,7 @@ use mcp_status::*;
 #[cfg(feature = "mcp")]
 use parts::bindings::{tier_covers, ProjectSceneKey};
 use parts::bindings::{BindingCache, Cached, ManagedLayer, ProjectBinding};
+use parts::directory::SessionDirectory;
 use parts::events::DaemonEvents;
 use parts::hub::SessionHub;
 use parts::phase::{Generation, Generations, RunningTurn, TurnSlot, TurnTicket};
@@ -95,21 +96,6 @@ pub enum ProjectSelector {
     /// otherwise with `PROJECT_NOT_FOUND` (unlike resume, which tolerates a
     /// moved/missing project — see `settings_for_project`'s doc comment).
     Path(PathBuf),
-}
-
-/// The first `LogEntry::Meta` line in `entries`, if any — every session
-/// history has at most one (see `create()`), always first when present, but
-/// a linear `find_map` rather than `entries.first()` since pre-v2 files can
-/// have none at all. Shared by the handful of pool methods that only need
-/// one or two `Meta` fields (`session_kind_parent_and_resumable`,
-/// `session_kind_and_scene`, `recorded_project`, `check_scene`,
-/// `sidechain_terminal_state`) so they don't each repeat the same scan
-/// shape.
-fn find_meta(entries: &[history::entry::EnvelopedEntry]) -> Option<&history::entry::LogEntry> {
-    entries
-        .iter()
-        .map(|env| &env.entry)
-        .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
 }
 
 /// What a [`SessionCustomizer`] is told about the session being built.
@@ -369,7 +355,9 @@ pub struct SessionPool {
     /// `tools::register_builtin_tools`'s doc comment for what's deliberately
     /// excluded.
     tools: Arc<base::tool::InMemoryToolRegistry>,
-    history_store: Option<Arc<dyn history::store::HistoryStore>>,
+    /// The sessions on disk: what their logs record, and the projects this
+    /// pool has served.
+    directory: SessionDirectory,
     /// Centrally-connected MCP servers, partitioned by project — keyed the
     /// same way `settings_for_project`/`ProjectSelector` are (`None` = the
     /// no-project tier, `Some(root)` = that project). The pool's default
@@ -428,10 +416,6 @@ pub struct SessionPool {
     generations: Generations,
     /// Cancelled when [`Self::shutdown_all`] has finished.
     shut_down: CancellationToken,
-    /// Every project this pool has built a session for, `None` being the
-    /// no-project tier. What `session.list` enumerates cold sessions under —
-    /// kept apart from `bindings`, which a settings change empties.
-    served: std::sync::Mutex<Vec<Option<PathBuf>>>,
     /// How long a `kind:"prompt"` permission ask may sit unanswered before
     /// the daemon answers it with a `Deny` on the client's behalf.
     /// `Duration::ZERO` disables the timer entirely (wait forever — the

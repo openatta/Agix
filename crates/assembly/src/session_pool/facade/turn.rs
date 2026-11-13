@@ -404,10 +404,9 @@ impl SessionPool {
             }
             live.name = Some(name.clone());
         }
-        if let (Some(store), Ok(parsed)) = (
-            self.history_store.as_ref(),
-            base::session::SessionId::parse(sid),
-        ) {
+        if let (Some(store), Ok(parsed)) =
+            (self.directory.store(), base::session::SessionId::parse(sid))
+        {
             if let Err(e) = store.set_session_title(parsed, Some(name.clone())).await {
                 warn!(%sid, error=%e, "could not store the generated session name");
             }

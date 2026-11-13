@@ -47,7 +47,7 @@ impl SessionPool {
             }
         };
 
-        let store = self.require_history_store()?;
+        let store = self.directory.require_store()?;
         let sid = base::session::SessionId::parse(session_id)
             .map_err(|_| PoolError::InvalidRequest(format!("invalid session_id: {session_id}")))?;
         // Naming something that does not exist would create a sidecar for a
@@ -108,11 +108,11 @@ impl SessionPool {
                 "event must be a non-empty name".into(),
             ));
         }
-        let store = self.require_history_store()?;
+        let store = self.directory.require_store()?;
         let sid = base::session::SessionId::parse(session_id)
             .map_err(|_| PoolError::InvalidRequest(format!("invalid session_id: {session_id}")))?;
         // Appending to a session that does not exist would create a log for it.
-        self.load_entries(session_id).await?;
+        self.directory.load_entries(session_id).await?;
         let entry = history::entry::LogEntry::Extension {
             ns: ns.to_string(),
             event: event.to_string(),
@@ -126,7 +126,7 @@ impl SessionPool {
             warn!(%session_id, error = %e, "an appended entry was not synced");
         }
 
-        let entries = self.load_entries(session_id).await?;
+        let entries = self.directory.load_entries(session_id).await?;
         let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
         let written = entries
             .iter()
@@ -158,8 +158,8 @@ impl SessionPool {
         session_id: &str,
         namespaces: Option<&[String]>,
     ) -> Result<api::EntryList, PoolError> {
-        let store = self.require_history_store()?;
-        let entries = self.load_entries(session_id).await?;
+        let store = self.directory.require_store()?;
+        let entries = self.directory.load_entries(session_id).await?;
         let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
         let listed: Vec<api::EntryView> = entries
             .iter()

@@ -18,7 +18,7 @@ impl SessionPool {
     pub async fn list_scenes(&self) -> Vec<api::SceneSummary> {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for sid in self.live_ids().await {
-            if let Some(scene) = self.facts_of(&sid).await.scene {
+            if let Some(scene) = self.directory.facts_of(&sid).await.scene {
                 *counts.entry(scene).or_insert(0) += 1;
             }
         }
@@ -87,7 +87,7 @@ impl SessionPool {
     pub async fn deactivate_scene(&self, scene_id: &str) -> Result<(), PoolError> {
         let mut blocking = Vec::new();
         for sid in self.live_ids().await {
-            if self.facts_of(&sid).await.scene.as_deref() == Some(scene_id) {
+            if self.directory.facts_of(&sid).await.scene.as_deref() == Some(scene_id) {
                 blocking.push(sid);
             }
         }

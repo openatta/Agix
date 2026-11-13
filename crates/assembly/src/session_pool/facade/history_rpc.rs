@@ -3,41 +3,6 @@
 use crate::session_pool::*;
 
 impl SessionPool {
-    /// The `HistoryStore` these three methods read and write, or a ready-made
-    /// RPC error explaining that this daemon has no session persistence at
-    /// all (`JsonlHistoryStore::with_root` failed at startup — see
-    /// `daemon/src/main.rs`; `daemon.doctor`'s
-    /// `session_persistence.history_store_wired` reports the same fact).
-    pub(in crate::session_pool) fn require_history_store(
-        &self,
-    ) -> Result<&Arc<dyn history::store::HistoryStore>, PoolError> {
-        self.history_store.as_ref().ok_or_else(|| {
-            PoolError::Internal(
-                "session history persistence is not enabled on this daemon \
-                 (see daemon.doctor's session_persistence.history_store_wired)"
-                    .to_string(),
-            )
-        })
-    }
-
-    /// Parse + load one session's raw log, mapping both failure kinds onto
-    /// the error codes `docs/daemon_rpc_protocol.md` documents.
-    pub(in crate::session_pool) async fn load_entries(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<history::entry::EnvelopedEntry>, PoolError> {
-        let store = self.require_history_store()?;
-        let sid = base::session::SessionId::parse(session_id).map_err(|e| {
-            PoolError::InvalidRequest(format!("invalid session_id `{session_id}`: {e}"))
-        })?;
-        store.load(sid).await.map_err(|e| match e {
-            history::error::HistoryError::SessionNotFound(_) => {
-                PoolError::session_not_found(session_id)
-            }
-            other => PoolError::Internal(format!("failed to read session history: {other}")),
-        })
-    }
-
     /// `session.history` — a bounded page of a session's projected
     /// transcript.
     ///
@@ -63,10 +28,10 @@ impl SessionPool {
         offset: usize,
         limit: usize,
     ) -> Result<api::HistoryPage, PoolError> {
-        let entries = self.load_entries(session_id).await?;
+        let entries = self.directory.load_entries(session_id).await?;
         let messages = history::transcript::project_messages_sourced(
             &entries,
-            self.require_history_store()?.projection(),
+            self.directory.require_store()?.projection(),
         );
         let total = messages.len();
         let start = offset.min(total);
@@ -103,7 +68,7 @@ impl SessionPool {
         &self,
         request: crate::export::ExportRequest,
     ) -> Result<api::ExportSummary, PoolError> {
-        let store = self.require_history_store()?.clone();
+        let store = self.directory.require_store()?.clone();
         let root = base::session::SessionId::parse(&request.session_id).map_err(|e| {
             PoolError::InvalidRequest(format!("invalid session_id `{}`: {e}", request.session_id))
         })?;
@@ -312,8 +277,8 @@ impl SessionPool {
         at_message: Option<usize>,
     ) -> Result<api::ForkReport, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
-        let entries = self.load_entries(session_id).await?;
-        let store = self.require_history_store()?;
+        let entries = self.directory.load_entries(session_id).await?;
+        let store = self.directory.require_store()?;
 
         let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
         let total_messages = lengths.last().copied().unwrap_or(0);

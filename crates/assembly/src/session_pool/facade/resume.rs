@@ -13,7 +13,7 @@ impl SessionPool {
     /// default scene; only a scene this daemon isn't currently serving at
     /// all counts as a mismatch.
     pub(in crate::session_pool) async fn check_scene(&self, session_id: &str) -> SceneCheck {
-        match self.facts_of(session_id).await.scene {
+        match self.directory.facts_of(session_id).await.scene {
             None => SceneCheck::Inferred,
             Some(s) if self.scenes.is_active(&s) => SceneCheck::Matches,
             Some(s) => SceneCheck::Mismatch(s),
@@ -50,24 +50,7 @@ impl SessionPool {
         &self,
         session_id: &str,
     ) -> Option<(Option<String>, history::entry::SessionEndState)> {
-        let entries = self.load_entries(session_id).await.ok()?;
-        let history::entry::LogEntry::Meta {
-            session_kind,
-            parent_session_id,
-            ..
-        } = find_meta(&entries)?
-        else {
-            return None;
-        };
-        if !matches!(session_kind, history::entry::SessionKind::Sidechain) {
-            return None;
-        }
-        entries.iter().rev().find_map(|env| match &env.entry {
-            history::entry::LogEntry::SessionEnd { state } => {
-                Some((parent_session_id.clone(), *state))
-            }
-            _ => None,
-        })
+        self.directory.sidechain_terminal_state(session_id).await
     }
 
     /// `session.resume` — the explicit, inspectable form of what
@@ -141,7 +124,7 @@ impl SessionPool {
             })
         };
         if let Some((name, created_at, last_active)) = already_active {
-            let (message_count, entry_count) = self.history_counts(session_id).await;
+            let (message_count, entry_count) = self.directory.history_counts(session_id).await;
             self.events.record(telemetry::TelemetryEvent::resume_action(
                 session_id,
                 0,
@@ -191,14 +174,14 @@ impl SessionPool {
                 });
             }
 
-            let has_history = match self.has_history(session_id).await {
+            let has_history = match self.directory.has_history(session_id).await {
                 Ok(has_history) => has_history,
                 Err(e) => {
                     self.record_refused_resume(session_id, "unreadable", resume_start);
                     return Err(PoolError::Internal(e));
                 }
             };
-            let (message_count, entry_count) = self.history_counts(session_id).await;
+            let (message_count, entry_count) = self.directory.history_counts(session_id).await;
             if !has_history && !create_if_missing {
                 self.record_refused_resume(session_id, "not_found", resume_start);
                 return Err(PoolError::session_gone(
@@ -281,43 +264,6 @@ impl SessionPool {
         ));
     }
 
-    /// Whether `sid` has a log with entries in it. A log that is not there is
-    /// none, as is one for an id no store could hold; a log that is there but
-    /// does not load is an error, never a session to start over under the
-    /// same id.
-    pub(in crate::session_pool) async fn has_history(&self, sid: &str) -> Result<bool, String> {
-        let (Some(store), Ok(parsed)) = (
-            self.history_store.as_ref(),
-            base::session::SessionId::parse(sid),
-        ) else {
-            return Ok(false);
-        };
-        match store.load(parsed).await {
-            Ok(entries) => Ok(!entries.is_empty()),
-            Err(history::error::HistoryError::SessionNotFound(_)) => Ok(false),
-            Err(e) => Err(format!(
-                "session `{sid}` could not be brought back: its transcript could not be loaded: {e}"
-            )),
-        }
-    }
-
-    /// Projected message count + raw entry count for a session id, or
-    /// `(0, 0)` when there's no store, the id doesn't parse, or nothing is
-    /// on disk — all three mean the same thing to `session.resume`'s caller
-    /// ("no prior conversation"), so they don't need distinguishing here.
-    pub(in crate::session_pool) async fn history_counts(&self, session_id: &str) -> (usize, usize) {
-        match (
-            self.load_entries(session_id).await,
-            self.history_store.as_ref(),
-        ) {
-            (Ok(entries), Some(store)) => (
-                history::transcript::project_messages_with(&entries, store.projection()).len(),
-                entries.len(),
-            ),
-            _ => (0, 0),
-        }
-    }
-
     /// `mode` is what the session was created under; a live session reports
     /// the mode it is in now, which `EnterPlanMode` / `ExitPlanMode` move.
     #[allow(clippy::too_many_arguments)]
@@ -384,7 +330,7 @@ impl SessionPool {
         session_id: &str,
     ) -> Result<Option<history::store::SessionClaim>, String> {
         let (Some(store), Ok(sid)) = (
-            self.history_store.as_ref(),
+            self.directory.store(),
             base::session::SessionId::parse(session_id),
         ) else {
             return Ok(None);
@@ -409,7 +355,7 @@ impl SessionPool {
         options: Option<&SessionOptions>,
     ) -> Result<String, CreateError> {
         let _claim = self.claim_log(&sid).await?;
-        let has_history = self.has_history(&sid).await?;
+        let has_history = self.directory.has_history(&sid).await?;
 
         // Rebuild against *this session's own* recorded project, not
         // always the pool default — otherwise a session created under
@@ -417,27 +363,28 @@ impl SessionPool {
         // project Y's settings the moment it needed reattaching (idle
         // eviction, daemon restart, explicit `session.resume`).
         let startup_scene = self.bindings.startup_scene().await;
-        let (binding, project_root_for_meta, scene_id) = match self.recorded_project(&sid).await {
-            Some((schema_version, project_root, scene)) if schema_version >= 2 => {
-                let scene = scene.unwrap_or_else(|| startup_scene.clone());
-                match project_root {
-                    Some(p) => {
-                        let path = PathBuf::from(p);
-                        (
-                            self.binding_for(Some(&path), &scene).await,
-                            Some(path),
-                            scene,
-                        )
+        let (binding, project_root_for_meta, scene_id) =
+            match self.directory.recorded_project(&sid).await {
+                Some((schema_version, project_root, scene)) if schema_version >= 2 => {
+                    let scene = scene.unwrap_or_else(|| startup_scene.clone());
+                    match project_root {
+                        Some(p) => {
+                            let path = PathBuf::from(p);
+                            (
+                                self.binding_for(Some(&path), &scene).await,
+                                Some(path),
+                                scene,
+                            )
+                        }
+                        None => (self.binding_for(None, &scene).await, None, scene),
                     }
-                    None => (self.binding_for(None, &scene).await, None, scene),
                 }
-            }
-            _ => (
-                self.default_binding().await,
-                Some(self.cwd().to_path_buf()),
-                startup_scene.clone(),
-            ),
-        };
+                _ => (
+                    self.default_binding().await,
+                    Some(self.cwd().to_path_buf()),
+                    startup_scene.clone(),
+                ),
+            };
 
         // The scene this session recorded, not this pool's default. Settings
         // were already resolved against the recorded scene above; handing the

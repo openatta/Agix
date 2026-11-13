@@ -2,6 +2,7 @@
 //! 门面（`facade/`）经它们的方法编排。
 
 pub(super) mod bindings;
+pub(super) mod directory;
 pub(super) mod events;
 pub(super) mod hub;
 pub(super) mod phase;

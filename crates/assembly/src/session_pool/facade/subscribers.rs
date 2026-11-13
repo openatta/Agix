@@ -102,10 +102,11 @@ impl SessionPool {
     /// the same positions `session.history` pages by and `step_end` /
     /// `turn_complete` report as `seq`.
     pub(in crate::session_pool) async fn transcript_len(&self, session_id: &str) -> usize {
-        let Ok(store) = self.require_history_store() else {
+        let Ok(store) = self.directory.require_store() else {
             return 0;
         };
-        self.load_entries(session_id)
+        self.directory
+            .load_entries(session_id)
             .await
             .map(|entries| {
                 history::transcript::projected_lengths_with(&entries, store.projection())

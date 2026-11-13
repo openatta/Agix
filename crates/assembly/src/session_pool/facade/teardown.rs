@@ -105,7 +105,7 @@ impl SessionPool {
         &self,
         parent_session_id: &str,
     ) -> Vec<base::session::SessionId> {
-        let Some(ref store) = self.history_store else {
+        let Some(store) = self.directory.store() else {
             return Vec::new();
         };
         // `HistoryStore::child_sessions`' default impl is O(n) in the total
@@ -129,7 +129,7 @@ impl SessionPool {
         };
         let mut sidechains = Vec::with_capacity(children.len());
         for child in children {
-            let facts = self.facts_of(&child.to_string()).await;
+            let facts = self.directory.facts_of(&child.to_string()).await;
             if matches!(facts.session_kind, history::entry::SessionKind::Sidechain) {
                 sidechains.push(child);
             }
@@ -145,7 +145,7 @@ impl SessionPool {
         parent_session_id: &str,
         children: Vec<base::session::SessionId>,
     ) -> usize {
-        let Some(ref store) = self.history_store else {
+        let Some(store) = self.directory.store() else {
             return 0;
         };
         let mut deleted = 0;
@@ -268,7 +268,7 @@ impl SessionPool {
         dry_run: bool,
     ) -> Result<api::DeleteReport, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
-        let store = self.require_history_store()?;
+        let store = self.directory.require_store()?;
         let sid = base::session::SessionId::parse(session_id)
             .map_err(|_| PoolError::InvalidRequest(format!("invalid session_id: {session_id}")))?;
 

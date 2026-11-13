@@ -11,52 +11,18 @@ impl SessionPool {
     /// primary sessions and still-running/externally-cut-off sidechains are
     /// always `true`. One `load_entries` scan covers both, since listing
     /// every session would otherwise pay for the same disk read twice.
-    /// What the log says this session is — scene, project, kind, lineage.
-    ///
-    /// The empty set when there is no store, the id does not parse, or the
-    /// log has no `Meta` line: none of those is a reason to fail a listing,
-    /// and "we do not know" is the honest entry for a session that cannot say.
-    pub(in crate::session_pool) async fn facts_of(
-        &self,
-        session_id: &str,
-    ) -> history::store::SessionFacts {
-        let Some(ref store) = self.history_store else {
-            return history::store::SessionFacts::default();
-        };
-        let Ok(sid) = base::session::SessionId::parse(session_id) else {
-            return history::store::SessionFacts::default();
-        };
-        store.session_facts(sid).await.unwrap_or_default()
-    }
-
-    /// What the store has recorded about this session — the name and the
-    /// counters. The empty record when there is no store or the id does not
-    /// parse, for the same reason `facts_of` answers that way: neither is a
-    /// reason to fail a listing.
-    pub(in crate::session_pool) async fn stats_of(
-        &self,
-        session_id: &str,
-    ) -> history::store::SessionStats {
-        let Some(ref store) = self.history_store else {
-            return history::store::SessionStats::default();
-        };
-        let Ok(sid) = base::session::SessionId::parse(session_id) else {
-            return history::store::SessionStats::default();
-        };
-        store.session_stats(sid).await.unwrap_or_default()
-    }
-
     pub(in crate::session_pool) async fn session_facts_and_resumable(
         &self,
         session_id: &str,
     ) -> (history::store::SessionFacts, bool) {
-        let facts = self.facts_of(session_id).await;
+        let facts = self.directory.facts_of(session_id).await;
         // Only a sidechain can be non-resumable, and only the whole log can
         // say whether it ended — so only a sidechain pays for reading it.
         if !matches!(facts.session_kind, history::entry::SessionKind::Sidechain) {
             return (facts, true);
         }
         let ended = self
+            .directory
             .load_entries(session_id)
             .await
             .map(|entries| {
@@ -334,7 +300,7 @@ impl SessionPool {
         parent_session_id: Option<&str>,
     ) -> Vec<SessionInfo> {
         if let Some(parent) = parent_session_id {
-            let Some(ref store) = self.history_store else {
+            let Some(store) = self.directory.store() else {
                 return Vec::new();
             };
             let Ok(children) = store.child_sessions(parent).await else {
@@ -400,7 +366,7 @@ impl SessionPool {
             // From the same place a cold session's do: the store counts as it
             // writes, so a live session and one on disk are answered alike
             // instead of from two accountings that can disagree.
-            let stats = self.stats_of(&sid).await;
+            let stats = self.directory.stats_of(&sid).await;
             seen.insert(sid.clone());
             if !include_children
                 && matches!(facts.session_kind, history::entry::SessionKind::Sidechain)
@@ -425,9 +391,9 @@ impl SessionPool {
         }
 
         // 从 HistoryStore 查历史（inactive sessions）
-        if let Some(ref store) = self.history_store {
+        if let Some(store) = self.directory.store() {
             let mut summaries = Vec::new();
-            for home in self.served_projects().await {
+            for home in self.directory.served_projects(self.cwd()).await {
                 let query = history::query::SessionQuery::recent(usize::MAX)
                     .ids_only()
                     .within(history::query::SessionScope::Project(home));
@@ -481,14 +447,14 @@ impl SessionPool {
         session_id: &str,
     ) -> Result<SessionInfo, PoolError> {
         let not_found = || PoolError::session_not_found(session_id);
-        let store = self.history_store.as_ref().ok_or_else(not_found)?;
+        let store = self.directory.store().ok_or_else(not_found)?;
         let sid = base::session::SessionId::parse(session_id).map_err(|_| not_found())?;
         match store.load(sid).await {
             Ok(entries) if !entries.is_empty() => {}
             _ => return Err(not_found()),
         }
         let (facts, resumable) = self.session_facts_and_resumable(session_id).await;
-        let stats = self.stats_of(session_id).await;
+        let stats = self.directory.stats_of(session_id).await;
         Ok(SessionInfo {
             session_id: session_id.to_string(),
             name: stats.title,
@@ -506,57 +472,6 @@ impl SessionPool {
         })
     }
 
-    /// Every project this daemon has served a session for: its own, plus each
-    /// one a session was created or resumed under in this process. `None` is
-    /// the no-project tier.
-    ///
-    /// This is what `session.list` enumerates cold sessions over. Not every
-    /// project on disk (`SessionScope::AllProjects`), which would report
-    /// sessions belonging to daemons and working directories this one has
-    /// nothing to do with; and not just the default project, which is what it
-    /// listed back when every session's transcript landed there regardless of
-    /// which project the session was actually bound to.
-    ///
-    /// Held apart from the binding cache, which a settings change empties.
-    /// Not persisted: after a restart a project no session has touched since
-    /// is not listed until one does — the alternative is a daemon that
-    /// remembers projects it no longer serves. `session.get` still finds such
-    /// a session by id.
-    ///
-    /// Compared resolved, as the store resolves a project before reading it:
-    /// one folder named two ways (`/var/…` and `/private/var/…` on macOS) is
-    /// one project.
-    pub(in crate::session_pool) async fn served_projects(&self) -> Vec<Option<PathBuf>> {
-        let noted: Vec<Option<PathBuf>> = self.lock_served().clone();
-        let mut out = Vec::with_capacity(noted.len() + 1);
-        for project in std::iter::once(Some(self.cwd().to_path_buf())).chain(noted) {
-            let project = match project {
-                Some(p) => Some(history::path::canonicalize_cwd(&p).await.unwrap_or(p)),
-                None => None,
-            };
-            if !out.contains(&project) {
-                out.push(project);
-            }
-        }
-        out
-    }
-
-    pub(in crate::session_pool) fn lock_served(
-        &self,
-    ) -> std::sync::MutexGuard<'_, Vec<Option<PathBuf>>> {
-        self.served
-            .lock()
-            .expect("served mutex is never held across a panic")
-    }
-
-    pub(in crate::session_pool) fn note_served(&self, project: Option<&Path>) {
-        let project = project.map(Path::to_path_buf);
-        let mut served = self.lock_served();
-        if !served.contains(&project) {
-            served.push(project);
-        }
-    }
-
     /// 获取活跃 session 数量。
     pub async fn active_count(&self) -> usize {
         self.sessions.lock().await.len()
@@ -568,7 +483,7 @@ impl SessionPool {
         if self.sessions.lock().await.contains_key(session_id) {
             return true;
         }
-        self.load_entries(session_id).await.is_ok()
+        self.directory.load_entries(session_id).await.is_ok()
     }
 }
 

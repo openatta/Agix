@@ -115,7 +115,7 @@ impl SessionPool {
         let claim = self.claim_log(&session_id).await?;
         let spec = self.specs.spec_for(&session_id, resume, options).await;
         let options = spec.options.as_ref();
-        self.note_served(project_root_for_meta.as_deref());
+        self.directory.note_served(project_root_for_meta.as_deref());
         let scene_id = scene.id.clone();
         // The `Builder` takes ownership of the scene; the session keeps a
         // handle of its own because `run_turn` has to ask it things.
@@ -238,7 +238,7 @@ impl SessionPool {
             .commands_override(binding.commands.clone())
             .cron_store(self.scheduler.store())
             .question_prompts(options.is_some_and(SessionOptions::answers_questions));
-        if let Some(ref store) = self.history_store {
+        if let Some(store) = self.directory.store() {
             builder = builder.history_store(store.clone());
         }
         if let Some(clock) = clock {
@@ -465,7 +465,7 @@ impl SessionPool {
         // scene/project on a later resume (falls back to inference, same as
         // any other pre-v2 file).
         if !resume {
-            if let Some(ref store) = self.history_store {
+            if let Some(store) = self.directory.store() {
                 if let Ok(sid) = base::session::SessionId::parse(&session_id) {
                     let project_root_str = project_root_for_meta
                         .as_ref()
@@ -521,8 +521,13 @@ impl SessionPool {
                 Ok(()) => telemetry::ResumeOutcome::Succeeded,
                 Err(_) => telemetry::ResumeOutcome::Failed,
             };
-            let (projected_message_count, entry_count) = self.history_counts(&session_id).await;
-            let entries = self.load_entries(&session_id).await.unwrap_or_default();
+            let (projected_message_count, entry_count) =
+                self.directory.history_counts(&session_id).await;
+            let entries = self
+                .directory
+                .load_entries(&session_id)
+                .await
+                .unwrap_or_default();
             let compact_boundary_count = entries
                 .iter()
                 .filter(|e| matches!(e.entry, history::entry::LogEntry::Compact { .. }))
@@ -531,7 +536,7 @@ impl SessionPool {
             has_user_turn = entries.iter().any(|e| {
                 !e.is_sidechain && matches!(e.entry, history::entry::LogEntry::User { .. })
             });
-            stored_name = self.stats_of(&session_id).await.title;
+            stored_name = self.directory.stats_of(&session_id).await.title;
             let _ = agent
                 .telemetry()
                 .record(telemetry::TelemetryEvent::resume_action(

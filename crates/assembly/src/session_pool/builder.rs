@@ -215,7 +215,7 @@ impl SessionPoolBuilder {
             scenes,
             permission: self.permission,
             tools,
-            history_store: self.history_store,
+            directory: SessionDirectory::new(self.history_store),
             #[cfg(feature = "mcp")]
             mcp_by_project: mcp_cache::McpCache::default(),
             #[cfg(feature = "mcp")]
@@ -233,7 +233,6 @@ impl SessionPoolBuilder {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             generations: Generations::default(),
             shut_down: CancellationToken::new(),
-            served: std::sync::Mutex::new(Vec::new()),
             permission_prompt_timeout: self.permission_prompt_timeout,
             rust_plugins: self.rust_plugins,
             customize: self.customize,

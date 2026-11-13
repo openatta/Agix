@@ -155,10 +155,14 @@ async fn served_projects_outlive_a_settings_change() {
     let (pool, dir) = test_pool_with_store(None).await;
     let other = dir.path().join("other");
     std::fs::create_dir_all(&other).unwrap();
-    pool.note_served(Some(&other));
+    pool.directory.note_served(Some(&other));
     pool.invalidate_bindings(None).await;
     let other = std::fs::canonicalize(&other).unwrap();
-    assert!(pool.served_projects().await.contains(&Some(other)));
+    assert!(pool
+        .directory
+        .served_projects(pool.cwd())
+        .await
+        .contains(&Some(other)));
 }
 
 /// A project served under two spellings of its path — a symlink, or
@@ -203,7 +207,7 @@ async fn a_project_served_under_two_spellings_lists_each_session_once() {
         )
         .await
         .unwrap();
-    pool.note_served(Some(&alias));
+    pool.directory.note_served(Some(&alias));
 
     let listed: Vec<String> = pool
         .list_all(false, None)

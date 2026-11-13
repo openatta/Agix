@@ -139,7 +139,7 @@ impl SessionPool {
             self.bindings.paths().as_ref(),
             self.scenes.default_id(),
             settings,
-            self.history_store.is_some(),
+            self.directory.store().is_some(),
             self.plugins.status(),
             &base::interface::health::HealthChecks::from_vec(checks),
         )
