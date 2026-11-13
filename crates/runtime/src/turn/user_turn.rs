@@ -29,6 +29,79 @@ struct PendingRecall {
     started_at: std::time::Instant,
 }
 
+struct TurnLoopState {
+    started: std::time::Instant,
+    model: String,
+    max_tokens: u32,
+    output_limit_escalations: u32,
+    turn_no: u32,
+    api_calls: u32,
+    tool_calls: u32,
+    structured_output_calls: u32,
+    // What the turn has spent, kept once. The budget reads it through
+    // `Spend` and a caller reads it whole; a second accumulator beside it
+    // would let the two disagree about the cache.
+    spent: Usage,
+    last_call: Usage,
+    had_tool_uses: bool,
+    sent_back_by_stop_hook: bool,
+    skill_discovery: Option<SkillDiscovery>,
+}
+
+type SkillDiscovery =
+    tokio_util::task::AbortOnDropHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>;
+
+impl TurnLoopState {
+    fn new(settings: &base::settings::LoadedSettings) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            model: settings.values.model.model_name.clone(),
+            max_tokens: settings.values.model.max_tokens,
+            output_limit_escalations: 0,
+            turn_no: 0,
+            api_calls: 0,
+            tool_calls: 0,
+            structured_output_calls: 0,
+            spent: Usage::default(),
+            last_call: Usage::default(),
+            had_tool_uses: false,
+            sent_back_by_stop_hook: false,
+            skill_discovery: None,
+        }
+    }
+}
+
+enum StopReason {
+    Replied(String),
+    Cancelled,
+    Policy(String),
+    ContextExceeded,
+    BudgetExceeded,
+    ToolHookDiscontinued,
+    StopHookDiscontinued(Option<String>),
+}
+
+impl StopReason {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Replied(reason) | Self::Policy(reason) => reason,
+            Self::Cancelled => "cancelled",
+            Self::ContextExceeded => "context_exceeded",
+            Self::BudgetExceeded => "budget_exceeded",
+            Self::ToolHookDiscontinued | Self::StopHookDiscontinued(_) => "stopped_by_hook",
+        }
+    }
+
+    /// The paths that end on a reply report that call's usage; the others
+    /// report zero even after a call.
+    fn reports_last_call(&self) -> bool {
+        matches!(
+            self,
+            Self::Replied(_) | Self::ToolHookDiscontinued | Self::StopHookDiscontinued(_)
+        )
+    }
+}
+
 impl Agent {
     pub(super) async fn run_user_turn_inner(
         &mut self,
@@ -43,32 +116,18 @@ impl Agent {
         };
 
         let _timer = self.telemetry.perf.start_timer("turn", "total");
-        let mut api_calls: u32 = 0;
-        let mut tool_calls: u32 = 0;
-        let mut structured_output_calls: u32 = 0;
-
-        let mut max_tokens_recovery: u32 = 0;
-        let mut effective_max_tokens = self.settings.values.model.max_tokens;
-        let mut effective_model = self.settings.values.model.model_name.clone();
-        // What the turn has spent, kept once. The budget reads it through
-        // `Spend` and a caller reads it whole; a second accumulator beside it
-        // would let the two disagree about the cache.
-        let mut turn_usage = Usage::default();
-        let start = std::time::Instant::now();
+        let mut state = TurnLoopState::new(&self.settings);
 
         self.prepare_turn().await;
         let recall = self.start_memory_recall(&content);
-        let mut skill_prefetch = self.start_skill_discovery();
+        state.skill_discovery = self.start_skill_discovery();
         self.push_user_message(content, &attachments, origin).await;
         self.announce_output_target();
         if let Some(recall) = recall {
             self.inject_recalled_memories(recall).await;
         }
 
-        let mut had_tool_uses_this_turn = false;
-        let mut sent_back_by_stop_hook = false;
-
-        loop {
+        let stop = loop {
             // Every step starts from a transcript that is on disk, so a
             // process that dies mid-turn loses at most the step in flight.
             // Here every tool_use already has its tool_result next to it.
@@ -77,30 +136,19 @@ impl Agent {
             }
             let _ = self.record_goal_changes().await;
             if cancel.is_cancelled() {
-                self.last_had_tool_uses = had_tool_uses_this_turn;
-                self.record_turn_complete("cancelled", api_calls, tool_calls, start);
-                return Ok(TurnOutcome::ended_before_reply(
-                    "cancelled",
-                    api_calls,
-                    tool_calls,
-                    turn_usage,
-                ));
+                break StopReason::Cancelled;
             }
             if let base::interface::turn_policy::TurnStep::Stop { reason } = self
                 .policies
                 .turn_policy
                 .before_model_call(&base::interface::turn_policy::TurnProgress {
-                    api_calls,
-                    tool_calls,
-                    structured_output_calls,
+                    api_calls: state.api_calls,
+                    tool_calls: state.tool_calls,
+                    structured_output_calls: state.structured_output_calls,
                     stop_reason: "",
                 })
             {
-                self.last_had_tool_uses = had_tool_uses_this_turn;
-                self.record_turn_complete(&reason, api_calls, tool_calls, start);
-                return Ok(TurnOutcome::ended_before_reply(
-                    reason, api_calls, tool_calls, turn_usage,
-                ));
+                break StopReason::Policy(reason);
             }
 
             self.compact_if_needed(&cancel).await;
@@ -115,20 +163,13 @@ impl Agent {
                 let carried = self.context_tokens();
                 if carried > cap {
                     tracing::warn!(carried, cap, "context above the hard cap after compaction");
-                    self.last_had_tool_uses = had_tool_uses_this_turn;
-                    self.record_turn_complete("context_exceeded", api_calls, tool_calls, start);
-                    return Ok(TurnOutcome::ended_before_reply(
-                        "context_exceeded",
-                        api_calls,
-                        tool_calls,
-                        turn_usage,
-                    ));
+                    break StopReason::ContextExceeded;
                 }
             }
 
             // 2. Assemble the request
-            let step = api_calls;
-            api_calls += 1;
+            let step = state.api_calls;
+            state.api_calls += 1;
             let _ = self.channels.event_tx.send(AgentEvent::StepStart {
                 step,
                 turn_id: self.current_turn_id.clone(),
@@ -145,7 +186,7 @@ impl Agent {
                 ),
             );
             let request = self
-                .prepare_request(&effective_model, effective_max_tokens, origin.clone())
+                .prepare_request(&state.model, state.max_tokens, origin.clone())
                 .await;
             // Counted before the request is handed on: the call's own
             // accounting needs the size of what went out.
@@ -163,6 +204,7 @@ impl Agent {
             let cwd = self.settings.paths.working_dir().to_path_buf();
             let session_id = self.session.session_id.clone();
             let turn_no = self.session.turn_count;
+            state.turn_no = turn_no;
             let th = self.telemetry.telemetry_handle.clone();
             let tid = self.current_turn_id.clone();
             let cancel_for_exec = cancel.clone();
@@ -217,7 +259,7 @@ impl Agent {
                     .unwrap_or(false)
             };
             let mut request = request;
-            let mut recovering = super::request::RecoveringCall::after(had_tool_uses_this_turn);
+            let mut recovering = super::request::RecoveringCall::after(state.had_tool_uses);
             let (stream_result, messages_before_step) = loop {
                 let messages_before_step = self.session.messages.len();
                 let sent = request.clone();
@@ -241,7 +283,7 @@ impl Agent {
                     Ok(result) => break (result, messages_before_step),
                     Err(failure) => failure,
                 };
-                self.record_api_error(&effective_model, &failure.error, call_started);
+                self.record_api_error(&state.model, &failure.error, call_started);
                 if cancel.is_cancelled() {
                     break (
                         crate::streaming::StreamResult::cancelled(),
@@ -254,7 +296,7 @@ impl Agent {
                         after_first_byte,
                         sent,
                         &mut recovering,
-                        &mut effective_model,
+                        &mut state.model,
                         step,
                         &cancel,
                     )
@@ -285,10 +327,11 @@ impl Agent {
             }
 
             let has_tool_uses = stream_result.has_tool_uses;
-            had_tool_uses_this_turn = had_tool_uses_this_turn || has_tool_uses;
-            tool_calls += stream_result.tool_calls;
+            state.had_tool_uses = state.had_tool_uses || has_tool_uses;
+            state.tool_calls += stream_result.tool_calls;
             let stop_reason = stream_result.stop_reason;
             let usage = stream_result.usage;
+            state.last_call = usage;
             self.turn.last_call_usage = Some(usage);
             self.turn.truncated |= stream_result.truncated;
             if let Err(e) = self.session.persist().await {
@@ -315,7 +358,7 @@ impl Agent {
                     self.session.turn_count,
                     Some(self.current_turn_id.clone()),
                     telemetry::ApiRequestPayload {
-                        model: effective_model.clone(),
+                        model: state.model.clone(),
                         input_tokens: usage.input_tokens as u64,
                         output_tokens: usage.output_tokens as u64,
                         cache_creation_tokens: usage.cache_creation_input_tokens as u64,
@@ -324,7 +367,7 @@ impl Agent {
                         stop_reason: stop_reason.clone(),
                         input_message_count: sent_message_count,
                         tool_count: sent_tool_count,
-                        default_model: effective_model == self.settings.values.model.model_name,
+                        default_model: state.model == self.settings.values.model.model_name,
                         // A turn's own call. The auxiliary ones are labelled
                         // by `telemetry::model::TelemetryModel`, which is
                         // where they are visible at all.
@@ -336,7 +379,7 @@ impl Agent {
             // down: a turn can end between the two, and a call that happened
             // has to be counted whether or not the turn went on to check a
             // budget.
-            turn_usage = turn_usage.plus(usage);
+            state.spent = state.spent.plus(usage);
             if stream_result.cancelled {
                 continue;
             }
@@ -386,20 +429,11 @@ impl Agent {
             // discontinue path below, just triggered from a different point.
             if discontinued.load(std::sync::atomic::Ordering::Relaxed) {
                 tracing::info!("PostToolUse hook discontinued the turn");
-                self.record_turn_complete("stopped_by_hook", api_calls, tool_calls, start);
-                self.last_had_tool_uses = had_tool_uses_this_turn;
-                return Ok(TurnOutcome::ended(
-                    "stopped_by_hook",
-                    api_calls,
-                    tool_calls,
-                    usage,
-                    turn_usage,
-                    None,
-                ));
+                break StopReason::ToolHookDiscontinued;
             }
 
             // Structured output retry limit.
-            structured_output_calls += self
+            state.structured_output_calls += self
                 .session
                 .messages
                 .get(messages_before_step..)
@@ -408,22 +442,18 @@ impl Agent {
                 .policies
                 .turn_policy
                 .after_model_call(&base::interface::turn_policy::TurnProgress {
-                    api_calls,
-                    tool_calls,
-                    structured_output_calls,
+                    api_calls: state.api_calls,
+                    tool_calls: state.tool_calls,
+                    structured_output_calls: state.structured_output_calls,
                     stop_reason: &stop_reason,
                 })
             {
                 tracing::warn!(
-                    structured_output_calls,
+                    structured_output_calls = state.structured_output_calls,
                     %reason,
                     "turn policy ended the turn"
                 );
-                self.last_had_tool_uses = had_tool_uses_this_turn;
-                self.record_turn_complete(&reason, api_calls, tool_calls, start);
-                return Ok(TurnOutcome::ended_before_reply(
-                    reason, api_calls, tool_calls, turn_usage,
-                ));
+                break StopReason::Policy(reason);
             }
 
             // Cumulative token budget, checked against the real usage the
@@ -434,7 +464,7 @@ impl Agent {
             // of them count as spent; that is the policy's judgement, and the
             // telemetry below records the reading the engine's own policy uses.
             {
-                let spend = base::interface::budget_policy::Spend::from(turn_usage);
+                let spend = base::interface::budget_policy::Spend::from(state.spent);
                 let total_tokens_used = spend.total_tokens();
                 match self.policies.budget_policy.on_usage(&spend) {
                     base::interface::budget_policy::Spending::WithinBudget => {}
@@ -475,14 +505,7 @@ impl Agent {
                                 },
                             ),
                         );
-                        self.last_had_tool_uses = had_tool_uses_this_turn;
-                        self.record_turn_complete("budget_exceeded", api_calls, tool_calls, start);
-                        return Ok(TurnOutcome::ended_before_reply(
-                            "budget_exceeded",
-                            api_calls,
-                            tool_calls,
-                            turn_usage,
-                        ));
+                        break StopReason::BudgetExceeded;
                     }
                 }
             }
@@ -490,7 +513,7 @@ impl Agent {
             // If tools were executed during streaming, continue to next API call.
             if has_tool_uses {
                 // Collect async skill discovery prefetch (fired at turn start).
-                if let Some(handle) = skill_prefetch.take() {
+                if let Some(handle) = state.skill_discovery.take() {
                     // Time-bounded wait: if discovery hasn't completed after
                     // tool execution, skip it this turn (it'll run next turn).
                     if let Ok(Ok((_discovered, new_names))) =
@@ -554,8 +577,8 @@ impl Agent {
             //    send a paused one back to be continued.
             if self.handle_early_stop(
                 &stop_reason,
-                &mut max_tokens_recovery,
-                &mut effective_max_tokens,
+                &mut state.output_limit_escalations,
+                &mut state.max_tokens,
             ) {
                 continue;
             }
@@ -567,7 +590,7 @@ impl Agent {
                     session_id: self.session.session_id.to_string(),
                     cwd: self.settings.paths.working_dir().display().to_string(),
                     permission_mode: hook_permission_mode(self.session_state.permission_mode()),
-                    stop_hook_active: Some(sent_back_by_stop_hook),
+                    stop_hook_active: Some(state.sent_back_by_stop_hook),
                     ..Default::default()
                 };
                 let hook_result = self
@@ -586,16 +609,9 @@ impl Agent {
                         i.with_reason("turn discontinued by a Stop hook")
                     })
                     .await;
-                    self.record_turn_complete("stopped_by_hook", api_calls, tool_calls, start);
-                    self.last_had_tool_uses = had_tool_uses_this_turn;
-                    return Ok(TurnOutcome::ended(
-                        "stopped_by_hook",
-                        api_calls,
-                        tool_calls,
-                        usage,
-                        turn_usage,
+                    break StopReason::StopHookDiscontinued(
                         hook_result.discontinue_message().map(str::to_string),
-                    ));
+                    );
                 }
                 if let Some(blocked) = hook_result.blocked() {
                     let reason = blocked
@@ -613,7 +629,7 @@ impl Agent {
                             ),
                         }],
                     });
-                    sent_back_by_stop_hook = true;
+                    state.sent_back_by_stop_hook = true;
                     continue;
                 }
             }
@@ -666,111 +682,151 @@ impl Agent {
                 continue;
             }
 
-            // No tools → turn complete
-            self.session.increment_turn();
-            self.record_turn_complete_in(turn_no, &stop_reason, api_calls, tool_calls, start);
-            // TurnComplete — the normal end of a turn. Distinct from the
-            // `Stop` hook above, which fires whenever the model stops calling
-            // tools and can *veto* the stop; this one is a notification that
-            // the turn is over, carrying why.
-            self.fire_lifecycle_hook(hooks::HookEvent::TurnComplete, |i| {
-                i.with_turn_id(self.current_turn_id.clone())
-                    .with_stop_reason(stop_reason.clone())
-            })
-            .await;
-            // Auto-extract durable memories after turn completion.
-            // Only extract if the model produced a complete response (not cancelled/max_turns).
-            // Gated on `memory_enabled` — see the prefetch block above for why this matters
-            // (the flag's whole point is opting out of the memory subsystem entirely, not just
-            // the static prompt injection).
-            if self.settings.values.memory_enabled && self.memory.extract_after_turn {
-                let session_messages = self.session.messages().to_vec();
-                let store = self.memory.memory_store.clone();
-                // `task_models.memory` lets an app point this background
-                // extraction call at a different vendor/model than the main
-                // conversation — same TaskRouter mechanism already proven
-                // for the "subagent" task type (see
-                // `agents::delegate::Delegator::model_for_subagent`). No override
-                // configured → falls back to the main model.
-                let (model, model_name) = match &self.llm.task_router {
-                    Some(router) => (
-                        self.accounted(router.model_for("memory")),
-                        router
-                            .model_name_for("memory")
-                            .unwrap_or(&self.settings.values.model.model_name)
-                            .to_string(),
-                    ),
-                    None => (
-                        self.llm.model.clone(),
-                        self.settings.values.model.model_name.clone(),
-                    ),
-                };
-                let prompt_intro = self.scene.memory_extraction_intro.clone();
-                let environment = self.policies.environment.clone();
-                let session_id = self.session.session_id.clone();
-                while self.memory.extractions.try_join_next().is_some() {}
-                self.memory.extractions.spawn(async move {
-                    extract_memories_after_turn(
-                        store,
-                        &session_messages,
-                        model.as_ref(),
-                        &model_name,
-                        prompt_intro.as_deref(),
-                        &*environment,
-                        &session_id,
-                    )
-                    .await;
-                });
-            }
+            break StopReason::Replied(stop_reason);
+        };
 
-            // Remind the model to update its cross-session notes once they
-            // have gone stale.
-            if let Some(ref sm) = self.session.session_memory {
-                let current_turn = self.session.turn_count;
-                // If a Write/Edit this turn targeted the sidecar file itself,
-                // the model just updated its notes — reset staleness instead
-                // of nagging again next turn. Compares against the exact
-                // path we tell the model below, so a literal match is enough
-                // (no canonicalization needed).
-                let updated_this_turn = Self::extract_tool_file_paths(self.messages_this_turn())
-                    .iter()
-                    .any(|p| p == sm.path());
-                if updated_this_turn {
-                    if let Err(e) = sm.mark_extraction_completed(current_turn).await {
-                        tracing::warn!(error = %e, "failed to mark session_memory extraction completed");
-                    }
-                } else if sm.is_stale(current_turn) {
-                    tracing::debug!(
-                        last_update_turn = sm.last_update_turn(),
-                        current_turn,
-                        "session memory is stale; injecting update reminder"
-                    );
-                    self.session.push_message(ModelMessage {
-                        role: MessageRole::User,
-                        content: vec![ModelContentBlock::Text {
-                            text: format!(
-                                "\
+        Ok(self.end_turn(stop, &state).await)
+    }
+
+    async fn end_turn(&mut self, stop: StopReason, state: &TurnLoopState) -> TurnOutcome {
+        match &stop {
+            StopReason::Replied(stop_reason) => {
+                self.complete_replied_turn(stop_reason, state).await;
+            }
+            _ => self.record_turn_complete(
+                stop.as_str(),
+                state.api_calls,
+                state.tool_calls,
+                state.started,
+            ),
+        }
+        self.last_had_tool_uses = state.had_tool_uses;
+        let last_call = if stop.reports_last_call() {
+            state.last_call
+        } else {
+            Usage::default()
+        };
+        let message = match &stop {
+            StopReason::StopHookDiscontinued(message) => message.clone(),
+            _ => None,
+        };
+        TurnOutcome::ended(
+            stop.as_str(),
+            state.api_calls,
+            state.tool_calls,
+            last_call,
+            state.spent,
+            message,
+        )
+    }
+
+    async fn complete_replied_turn(&mut self, stop_reason: &str, state: &TurnLoopState) {
+        self.session.increment_turn();
+        self.record_turn_complete_in(
+            state.turn_no,
+            stop_reason,
+            state.api_calls,
+            state.tool_calls,
+            state.started,
+        );
+        // TurnComplete — the normal end of a turn. Distinct from the
+        // `Stop` hook above, which fires whenever the model stops calling
+        // tools and can *veto* the stop; this one is a notification that
+        // the turn is over, carrying why.
+        self.fire_lifecycle_hook(hooks::HookEvent::TurnComplete, |i| {
+            i.with_turn_id(self.current_turn_id.clone())
+                .with_stop_reason(stop_reason)
+        })
+        .await;
+        self.spawn_memory_extraction();
+        self.remind_stale_session_notes().await;
+    }
+
+    fn spawn_memory_extraction(&mut self) {
+        // Auto-extract durable memories after turn completion.
+        // Only extract if the model produced a complete response (not cancelled/max_turns).
+        // Gated on `memory_enabled` — see the prefetch block above for why this matters
+        // (the flag's whole point is opting out of the memory subsystem entirely, not just
+        // the static prompt injection).
+        if self.settings.values.memory_enabled && self.memory.extract_after_turn {
+            let session_messages = self.session.messages().to_vec();
+            let store = self.memory.memory_store.clone();
+            // `task_models.memory` lets an app point this background
+            // extraction call at a different vendor/model than the main
+            // conversation — same TaskRouter mechanism already proven
+            // for the "subagent" task type (see
+            // `agents::delegate::Delegator::model_for_subagent`). No override
+            // configured → falls back to the main model.
+            let (model, model_name) = match &self.llm.task_router {
+                Some(router) => (
+                    self.accounted(router.model_for("memory")),
+                    router
+                        .model_name_for("memory")
+                        .unwrap_or(&self.settings.values.model.model_name)
+                        .to_string(),
+                ),
+                None => (
+                    self.llm.model.clone(),
+                    self.settings.values.model.model_name.clone(),
+                ),
+            };
+            let prompt_intro = self.scene.memory_extraction_intro.clone();
+            let environment = self.policies.environment.clone();
+            let session_id = self.session.session_id.clone();
+            while self.memory.extractions.try_join_next().is_some() {}
+            self.memory.extractions.spawn(async move {
+                extract_memories_after_turn(
+                    store,
+                    &session_messages,
+                    model.as_ref(),
+                    &model_name,
+                    prompt_intro.as_deref(),
+                    &*environment,
+                    &session_id,
+                )
+                .await;
+            });
+        }
+    }
+
+    async fn remind_stale_session_notes(&mut self) {
+        // Remind the model to update its cross-session notes once they
+        // have gone stale.
+        if let Some(ref sm) = self.session.session_memory {
+            let current_turn = self.session.turn_count;
+            // If a Write/Edit this turn targeted the sidecar file itself,
+            // the model just updated its notes — reset staleness instead
+            // of nagging again next turn. Compares against the exact
+            // path we tell the model below, so a literal match is enough
+            // (no canonicalization needed).
+            let updated_this_turn = Self::extract_tool_file_paths(self.messages_this_turn())
+                .iter()
+                .any(|p| p == sm.path());
+            if updated_this_turn {
+                if let Err(e) = sm.mark_extraction_completed(current_turn).await {
+                    tracing::warn!(error = %e, "failed to mark session_memory extraction completed");
+                }
+            } else if sm.is_stale(current_turn) {
+                tracing::debug!(
+                    last_update_turn = sm.last_update_turn(),
+                    current_turn,
+                    "session memory is stale; injecting update reminder"
+                );
+                self.session.push_message(ModelMessage {
+                    role: MessageRole::User,
+                    content: vec![ModelContentBlock::Text {
+                        text: format!(
+                            "\
 <system-reminder>
 Your session notes ({}) have not been updated in several turns.
 Consider reviewing and updating them with any persistent facts, user preferences,
 or project context that should survive across sessions.
 </system-reminder>",
-                                sm.path().display()
-                            ),
-                        }],
-                    });
-                }
+                            sm.path().display()
+                        ),
+                    }],
+                });
             }
-
-            self.last_had_tool_uses = had_tool_uses_this_turn;
-            return Ok(TurnOutcome::ended(
-                stop_reason,
-                api_calls,
-                tool_calls,
-                usage,
-                turn_usage,
-                None,
-            ));
         }
     }
 
@@ -1075,10 +1131,7 @@ or project context that should survive across sessions.
         handle.map(|handle| PendingRecall { handle, started_at })
     }
 
-    fn start_skill_discovery(
-        &self,
-    ) -> Option<tokio_util::task::AbortOnDropHandle<(Vec<base::frozen::SkillEntry>, Vec<String>)>>
-    {
+    fn start_skill_discovery(&self) -> Option<SkillDiscovery> {
         // Skill discovery prefetch: scan workspace for matching skills as a
         // background task. Discovery runs while the model streams and tools
         // execute; the result is consumed post-tool-execution alongside the

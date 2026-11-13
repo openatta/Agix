@@ -171,22 +171,6 @@ impl TurnOutcome {
         }
     }
 
-    fn ended_before_reply(
-        stop_reason: impl Into<String>,
-        api_calls: u32,
-        tool_calls: u32,
-        total_usage: Usage,
-    ) -> Self {
-        Self::ended(
-            stop_reason,
-            api_calls,
-            tool_calls,
-            Usage::default(),
-            total_usage,
-            None,
-        )
-    }
-
     fn ended(
         stop_reason: impl Into<String>,
         api_calls: u32,
