@@ -1,6 +1,7 @@
 //! What a delegate's session is built from.
 //!
-//! DLG-3: every field of `runtime::agent::Builder` is on exactly one of three
+//! DLG-3: every field of `runtime::agent::Builder` (its host, spec and ext
+//! groups) is on exactly one of three
 //! lists — inherited whole through `HostContracts`, decided by each delegate
 //! for itself, or not for delegates at all — so a field added to `Builder`
 //! cannot go unclassified and quietly stop at the first delegation. The
@@ -36,7 +37,8 @@ use guards::scan;
 use guards::{ws, View};
 use syn::visit::Visit;
 
-const BUILDER: &str = "crates/runtime/src/agent/builder/mod.rs";
+const BUILDER: &str = "crates/runtime/src/agent/builder/fields.rs";
+const BUILDER_GROUPS: &[&str] = &["HostSetup", "SpecSetup", "ExtSetup"];
 const HOST: &str = "crates/runtime/src/agent/builder/host.rs";
 
 /// (builder field, where it comes from in `HostContracts`).
@@ -181,7 +183,7 @@ fn struct_fields(file: &str, name: &str) -> BTreeSet<String> {
     found.fields.into_iter().filter_map(|f| f.name).collect()
 }
 
-/// Fields `inherit` assigns as `self.<field> = …`.
+/// Fields `inherit` assigns as `self.<group>.<field> = …`.
 fn assigned_by_inherit() -> BTreeSet<String> {
     struct Assigns(BTreeSet<String>, bool);
     impl<'ast> Visit<'ast> for Assigns {
@@ -194,10 +196,11 @@ fn assigned_by_inherit() -> BTreeSet<String> {
         fn visit_expr_assign(&mut self, e: &'ast syn::ExprAssign) {
             if self.1 {
                 if let syn::Expr::Field(field) = e.left.as_ref() {
-                    if let (syn::Expr::Path(base), syn::Member::Named(name)) =
+                    if let (syn::Expr::Field(group), syn::Member::Named(name)) =
                         (field.base.as_ref(), &field.member)
                     {
-                        if base.path.is_ident("self") {
+                        if matches!(group.base.as_ref(), syn::Expr::Path(p) if p.path.is_ident("self"))
+                        {
                             self.0.insert(name.to_string());
                         }
                     }
@@ -213,7 +216,10 @@ fn assigned_by_inherit() -> BTreeSet<String> {
 
 #[test]
 fn every_builder_field_is_classified_once() {
-    let fields = struct_fields(BUILDER, "Builder");
+    let fields: BTreeSet<String> = BUILDER_GROUPS
+        .iter()
+        .flat_map(|group| struct_fields(BUILDER, group))
+        .collect();
     guards::allow::non_vacuous("delegation::builder_fields", fields.len(), 40);
     let listed: Vec<&str> = INHERITED
         .iter()

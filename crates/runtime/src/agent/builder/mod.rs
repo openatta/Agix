@@ -1,123 +1,19 @@
-//! `Builder`: the single place a session is assembled from its parts; setters live here, the assembly in `build.rs`.
+//! `Builder`: the single place a session is assembled from its parts; setters live here, the assembly in `build/`.
 
 use super::*;
 
 mod build;
+mod fields;
 mod hook_runner;
 mod host;
+use fields::{ExtSetup, HostSetup, SpecSetup};
 pub(in crate::agent) use hook_runner::{build_hook_runner, hook_ambient};
 pub use host::{HostContracts, HostLayers};
 
 pub struct Builder {
-    scene: Option<Arc<SceneSpec>>,
-    model: Option<Arc<dyn Model>>,
-    tools: Option<Arc<dyn base::tool::ToolRegistry>>,
-    settings: Option<Arc<LoadedSettings>>,
-    permission: Option<PermissionSet>,
-    memory_store: Option<Arc<MemoryStore>>,
-    compactor: Option<Arc<dyn Compactor>>,
-    hooks: Option<Arc<HookRunner>>,
-    /// Backing store for session transcript persistence (JSONL append/resume).
-    /// `None` = in-memory only, matching prior behavior — this is purely
-    /// additive, existing callers that don't set it are unaffected.
-    history_store: Option<Arc<dyn history::store::HistoryStore>>,
-    telemetry_url: Option<String>,
-    telemetry_handle_override: Option<TelemetryHandle>,
-    instruction_file: Option<PathBuf>,
-    session_id: Option<String>,
-    /// The session that spawned this one, and which agent type it runs. Set by
-    /// `AgentTool` at spawn time so the sub-agent knows its own lineage from
-    /// its first call — waiting until something asks would be too late, since a
-    /// recording's header is fixed by that first call.
-    parent_session_id: Option<String>,
-    agent_type: Option<String>,
-    skip_warmup: bool,
-    output_schema: Option<serde_json::Value>,
-    tool_selector: base::interface::tool_selector::ToolSelector,
-    mcp_servers: Option<Box<dyn base::interface::mcp_servers::McpServers>>,
-    /// Pre-built FrozenContext — skips lazy collection on first turn.
-    /// When set, the Agent uses this snapshot instead of calling
-    /// `FrozenContext::collect()`. Essential for deterministic replay.
-    frozen: Option<base::frozen::FrozenContext>,
-    wake_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
-    /// Rust plugins, in the order added — see [`Builder::plugin`].
-    plugins: Vec<Arc<dyn crate::plugin::Plugin>>,
-    /// Pre-built command registry shared across many sessions instead of
-    /// re-scanning skill dirs per session — see `Builder::commands_override`.
-    commands_override: Option<Arc<crate::commands::CommandRegistry>>,
-    /// Multi-provider per-task-type model routing — see `Builder::task_router`.
-    task_router: Option<Arc<base::provider::TaskRouter>>,
-    /// Every scene this host registered, so an agent type's `scene:` id can
-    /// name one beyond the built-in four (plugin scenes, in particular), in
-    /// this session and in every delegate under it.
-    scene_registry: Option<Arc<scene::SceneRegistry>>,
-    /// Where the standing instructions come from — see
-    /// [`Builder::instruction_provider`].
-    instruction_provider:
-        Option<Arc<dyn base::interface::instruction_provider::InstructionProvider>>,
-    /// Replaces the built-in way of asking a person something — see
-    /// [`Builder::elicitation`].
-    elicitation: Option<Arc<dyn base::interface::elicitation::Elicitation>>,
-    /// See [`Builder::question_prompts`].
-    question_prompts: bool,
-    /// Contributions to the system prompt — see [`Builder::prompt_registry`].
-    prompt_registry: Option<Arc<dyn base::interface::prompt_registry::PromptRegistry>>,
-    /// Replaces prompt assembly itself — see [`Builder::prompt_assembler`].
-    prompt_assembler: Option<Arc<dyn base::interface::prompt_assembler::PromptAssembler>>,
-    /// Rings around tool dispatch — see [`Builder::tool_middleware`].
-    tool_middleware: Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>,
-    /// User-message screening — see [`Builder::prompt_middleware`].
-    prompt_middleware: Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>,
-    /// Result policies — see [`Builder::tool_result_transformer`].
-    result_transformers: Vec<Arc<dyn base::interface::tool_result::ToolResultTransformer>>,
-    /// Turn stop conditions — see [`Builder::turn_policy`].
-    turn_policy: Option<Arc<dyn base::interface::turn_policy::TurnPolicy>>,
-    /// Spend and context ceilings — see [`Builder::budget_policy`].
-    budget_policy: Option<Arc<dyn base::interface::budget_policy::BudgetPolicy>>,
-    /// Diagnostics — see [`Builder::health_check`].
-    health_checks: Vec<Arc<dyn base::interface::health::HealthCheck>>,
-    /// Kept time and ids — see [`Builder::environment`].
-    environment: Option<Arc<dyn base::interface::environment::Environment>>,
-    /// Model-failure recovery — see [`Builder::recovery_policy`].
-    recovery_policy: Option<Arc<dyn base::interface::recovery_policy::RecoveryPolicy>>,
-    /// Model request/response interception — see [`Builder::model_interceptor`].
-    model_interceptors: Vec<Arc<dyn base::interface::model_interceptor::ModelInterceptor>>,
-    /// Recall — see [`Builder::memory_retriever`].
-    memory_retriever: Option<Arc<dyn base::interface::memory_contracts::MemoryRetriever>>,
-    retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
-    /// See [`Builder::memory_extraction`].
-    memory_extraction: bool,
-    /// Extra destinations for this session's events, beyond the `event_rx`
-    /// `build()` returns — see [`Builder::event_sink`].
-    event_sinks: Vec<Arc<dyn base::interface::event_sink::EventSink>>,
-    /// How many delegation hops separate this agent from the root session —
-    /// see [`Builder::agent_depth`].
-    agent_depth: u32,
-    /// See [`Builder::team_seat`].
-    team_seat: Option<base::interface::delegate::TeamSeat>,
-    /// Scheduled jobs, kept and fired by whoever owns this store — see
-    /// [`Builder::cron_store`].
-    cron_store: Option<Arc<tools::cron::CronStore>>,
-    /// See [`Builder::goal_rounds_from_owner`].
-    goal_rounds_from_owner: bool,
-    /// Where this session's commands record their process groups — see
-    /// [`Builder::process_groups`].
-    process_groups: Option<Arc<platform::GroupLedger>>,
-    /// Where this session reaches the machine — see [`Builder::exec`].
-    exec: Option<base::interface::exec::ExecProviders>,
-    /// See [`Builder::token_counter`].
-    token_counter: Option<Arc<dyn base::interface::token_counter::TokenCounter>>,
-    /// See [`Builder::rule_provider`].
-    rule_provider: Option<Arc<dyn base::interface::instruction_provider::RuleProvider>>,
-    modules: Vec<Arc<dyn crate::module::Module>>,
-    session_prompt: Option<SessionPrompt>,
-    /// See [`Builder::session_state`].
-    session_state: Option<(Arc<base::context::SessionState>, u64)>,
-    /// See [`Builder::steering`].
-    steering: Option<crate::steering::SteerHandle>,
-    /// See [`Builder::run_slots`].
-    #[cfg_attr(not(feature = "ptc"), allow(dead_code))]
-    run_slots: Option<Arc<tokio::sync::Semaphore>>,
+    host: HostSetup,
+    spec: SpecSetup,
+    ext: ExtSetup,
 }
 
 /// A `RunCode` budget sized for this machine, for a host to share among the
@@ -146,62 +42,9 @@ fn run_code_for(
 impl Builder {
     pub fn new() -> Self {
         Self {
-            scene: None,
-            model: None,
-            tools: None,
-            settings: None,
-            permission: None,
-            memory_store: None,
-            compactor: None,
-            hooks: None,
-            history_store: None,
-            telemetry_url: None,
-            instruction_file: None,
-            session_id: None,
-            parent_session_id: None,
-            agent_type: None,
-            telemetry_handle_override: None,
-            skip_warmup: false,
-            output_schema: None,
-            tool_selector: base::interface::tool_selector::ToolSelector::all(),
-            mcp_servers: None,
-            frozen: None,
-            wake_rx: None,
-            plugins: Vec::new(),
-            commands_override: None,
-            task_router: None,
-            scene_registry: None,
-            instruction_provider: None,
-            elicitation: None,
-            question_prompts: false,
-            prompt_registry: None,
-            prompt_assembler: None,
-            tool_middleware: Vec::new(),
-            prompt_middleware: Vec::new(),
-            result_transformers: Vec::new(),
-            turn_policy: None,
-            budget_policy: None,
-            health_checks: Vec::new(),
-            environment: None,
-            recovery_policy: None,
-            model_interceptors: Vec::new(),
-            memory_retriever: None,
-            retrieval_hooks: Vec::new(),
-            memory_extraction: true,
-            event_sinks: Vec::new(),
-            agent_depth: 0,
-            team_seat: None,
-            cron_store: None,
-            goal_rounds_from_owner: false,
-            process_groups: None,
-            exec: None,
-            token_counter: None,
-            rule_provider: None,
-            modules: Vec::new(),
-            session_prompt: None,
-            session_state: None,
-            steering: None,
-            run_slots: None,
+            host: HostSetup::new(),
+            spec: SpecSetup::new(),
+            ext: ExtSetup::new(),
         }
     }
 
@@ -217,14 +60,14 @@ impl Builder {
         state: Arc<base::context::SessionState>,
         generation: u64,
     ) -> Self {
-        self.session_state = Some((state, generation));
+        self.spec.session_state = Some((state, generation));
         self
     }
 
     /// Take the messages sent while a turn runs from `queue`, which the host
     /// may keep across engines, instead of a queue of the engine's own.
     pub fn steering(mut self, queue: crate::steering::SteerHandle) -> Self {
-        self.steering = Some(queue);
+        self.spec.steering = Some(queue);
         self
     }
 
@@ -232,7 +75,7 @@ impl Builder {
     /// once, counted together with every other engine given the same
     /// `slots`. Without this the session has a budget of its own.
     pub fn run_slots(mut self, slots: Arc<tokio::sync::Semaphore>) -> Self {
-        self.run_slots = Some(slots);
+        self.spec.run_slots = Some(slots);
         self
     }
 
@@ -241,14 +84,14 @@ impl Builder {
     /// modules see the settings without it, so a sub-agent keeps the prompt
     /// its own type and scene give it.
     pub fn session_prompt(mut self, prompt: SessionPrompt) -> Self {
-        self.session_prompt = Some(prompt);
+        self.spec.session_prompt = Some(prompt);
         self
     }
 
     /// Add `module` to this session. Modules run in the order they are added;
     /// see [`crate::module`].
     pub fn module(mut self, module: Arc<dyn crate::module::Module>) -> Self {
-        self.modules.push(module);
+        self.host.modules.push(module);
         self
     }
 
@@ -256,7 +99,7 @@ impl Builder {
         mut self,
         modules: impl IntoIterator<Item = Arc<dyn crate::module::Module>>,
     ) -> Self {
-        self.modules.extend(modules);
+        self.host.modules.extend(modules);
         self
     }
 
@@ -267,7 +110,7 @@ impl Builder {
     ///
     /// [`GroupLedger::reap`]: platform::GroupLedger::reap
     pub fn process_groups(mut self, ledger: Arc<platform::GroupLedger>) -> Self {
-        self.process_groups = Some(ledger);
+        self.spec.process_groups = Some(ledger);
         self
     }
 
@@ -280,7 +123,7 @@ impl Builder {
     /// with [`Builder::process_groups`]: record the groups in the providers
     /// passed here (`platform::local_providers_with_ledger`).
     pub fn exec(mut self, providers: base::interface::exec::ExecProviders) -> Self {
-        self.exec = Some(providers);
+        self.host.exec = Some(providers);
         self
     }
 
@@ -291,7 +134,7 @@ impl Builder {
         mut self,
         counter: Arc<dyn base::interface::token_counter::TokenCounter>,
     ) -> Self {
-        self.token_counter = Some(counter);
+        self.host.token_counter = Some(counter);
         self
     }
 
@@ -302,7 +145,7 @@ impl Builder {
         mut self,
         rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
     ) -> Self {
-        self.rule_provider = Some(rules);
+        self.host.rule_provider = Some(rules);
         self
     }
 
@@ -313,7 +156,7 @@ impl Builder {
     /// Without one, the session keeps its own store and fires due jobs from
     /// its input loop.
     pub fn cron_store(mut self, store: Arc<tools::cron::CronStore>) -> Self {
-        self.cron_store = Some(store);
+        self.spec.cron_store = Some(store);
         self
     }
 
@@ -322,7 +165,7 @@ impl Builder {
     /// pool does, so a round is a turn like any other; without it,
     /// [`Agent::run`] starts them itself.
     pub fn goal_rounds_from_owner(mut self) -> Self {
-        self.goal_rounds_from_owner = true;
+        self.spec.goal_rounds_from_owner = true;
         self
     }
 
@@ -335,7 +178,7 @@ impl Builder {
     /// Sinks can only be attached before `build()`: one joining mid-session
     /// would see a stream that starts in the middle and have no way to tell.
     pub fn event_sink(mut self, sink: Arc<dyn base::interface::event_sink::EventSink>) -> Self {
-        self.event_sinks.push(sink);
+        self.ext.event_sinks.push(sink);
         self
     }
 
@@ -351,7 +194,7 @@ impl Builder {
     ///
     /// [`Elicitation`]: base::interface::elicitation::Elicitation
     pub fn elicitation(mut self, e: Arc<dyn base::interface::elicitation::Elicitation>) -> Self {
-        self.elicitation = Some(e);
+        self.ext.elicitation = Some(e);
         self
     }
 
@@ -361,13 +204,18 @@ impl Builder {
     /// the session has no `AskUserQuestion` — a tool whose every call is
     /// declined is one the model should not be offered.
     pub fn question_prompts(mut self, on: bool) -> Self {
-        self.question_prompts = on;
+        self.spec.question_prompts = on;
         self
     }
 
     /// Whether a clarification this session asks can reach a person.
     fn questions_answered(&self) -> bool {
-        self.question_prompts || self.elicitation.as_ref().is_some_and(|e| e.can_clarify())
+        self.spec.question_prompts
+            || self
+                .ext
+                .elicitation
+                .as_ref()
+                .is_some_and(|e| e.can_clarify())
     }
 
     /// Let something other than the engine contribute to the system prompt.
@@ -382,7 +230,7 @@ impl Builder {
         mut self,
         r: Arc<dyn base::interface::prompt_registry::PromptRegistry>,
     ) -> Self {
-        self.prompt_registry = Some(r);
+        self.ext.prompt_registry = Some(r);
         self
     }
 
@@ -401,7 +249,7 @@ impl Builder {
         mut self,
         a: Arc<dyn base::interface::prompt_assembler::PromptAssembler>,
     ) -> Self {
-        self.prompt_assembler = Some(a);
+        self.ext.prompt_assembler = Some(a);
         self
     }
 
@@ -419,7 +267,7 @@ impl Builder {
         mut self,
         m: Arc<dyn base::interface::tool_middleware::ToolMiddleware>,
     ) -> Self {
-        self.tool_middleware.push(m);
+        self.host.tool_middleware.push(m);
         self
     }
 
@@ -437,7 +285,7 @@ impl Builder {
         mut self,
         m: Arc<dyn base::interface::prompt_middleware::PromptMiddleware>,
     ) -> Self {
-        self.prompt_middleware.push(m);
+        self.host.prompt_middleware.push(m);
         self
     }
 
@@ -453,7 +301,7 @@ impl Builder {
         mut self,
         t: Arc<dyn base::interface::tool_result::ToolResultTransformer>,
     ) -> Self {
-        self.result_transformers.push(t);
+        self.host.result_transformers.push(t);
         self
     }
 
@@ -491,7 +339,7 @@ impl Builder {
     ///
     /// [`TurnPolicy`]: base::interface::turn_policy::TurnPolicy
     pub fn turn_policy(mut self, p: Arc<dyn base::interface::turn_policy::TurnPolicy>) -> Self {
-        self.turn_policy = Some(p);
+        self.ext.turn_policy = Some(p);
         self
     }
 
@@ -510,7 +358,7 @@ impl Builder {
         mut self,
         p: Arc<dyn base::interface::budget_policy::BudgetPolicy>,
     ) -> Self {
-        self.budget_policy = Some(p);
+        self.ext.budget_policy = Some(p);
         self
     }
 
@@ -525,7 +373,7 @@ impl Builder {
     ///
     /// [`Environment`]: base::interface::environment::Environment
     pub fn environment(mut self, e: Arc<dyn base::interface::environment::Environment>) -> Self {
-        self.environment = Some(e);
+        self.host.environment = Some(e);
         self
     }
 
@@ -534,7 +382,7 @@ impl Builder {
     /// builder's own setters; every delegate this session spawns is built
     /// with them too.
     pub fn plugin(mut self, plugin: Arc<dyn crate::plugin::Plugin>) -> Self {
-        self.plugins.push(plugin);
+        self.host.plugins.push(plugin);
         self
     }
 
@@ -549,7 +397,7 @@ impl Builder {
     ///
     /// [`HealthCheck`]: base::interface::health::HealthCheck
     pub fn health_check(mut self, check: Arc<dyn base::interface::health::HealthCheck>) -> Self {
-        self.health_checks.push(check);
+        self.ext.health_checks.push(check);
         self
     }
 
@@ -569,7 +417,7 @@ impl Builder {
         mut self,
         p: Arc<dyn base::interface::recovery_policy::RecoveryPolicy>,
     ) -> Self {
-        self.recovery_policy = Some(p);
+        self.host.recovery_policy = Some(p);
         self
     }
 
@@ -577,7 +425,7 @@ impl Builder {
         mut self,
         i: Arc<dyn base::interface::model_interceptor::ModelInterceptor>,
     ) -> Self {
-        self.model_interceptors.push(i);
+        self.host.model_interceptors.push(i);
         self
     }
 
@@ -585,7 +433,7 @@ impl Builder {
         mut self,
         r: Arc<dyn base::interface::memory_contracts::MemoryRetriever>,
     ) -> Self {
-        self.memory_retriever = Some(r);
+        self.host.memory_retriever = Some(r);
         self
     }
 
@@ -594,7 +442,7 @@ impl Builder {
     /// is unaffected. Off for an agent dropped as soon as its turn returns:
     /// its extraction would be paid for and then abandoned unfinished.
     pub fn memory_extraction(mut self, enabled: bool) -> Self {
-        self.memory_extraction = enabled;
+        self.spec.memory_extraction = enabled;
         self
     }
 
@@ -606,7 +454,7 @@ impl Builder {
         mut self,
         h: Arc<dyn base::interface::memory_contracts::RetrievalHook>,
     ) -> Self {
-        self.retrieval_hooks.push(h);
+        self.host.retrieval_hooks.push(h);
         self
     }
 
@@ -619,46 +467,46 @@ impl Builder {
     /// see a way to delegate further. The count is what actually bounds the
     /// chain, not which tools a delegate is handed.
     pub fn agent_depth(mut self, depth: u32) -> Self {
-        self.agent_depth = depth;
+        self.spec.agent_depth = depth;
         self
     }
 
     /// The team this agent is a member of, and its name there.
     pub fn team_seat(mut self, seat: base::interface::delegate::TeamSeat) -> Self {
-        self.team_seat = Some(seat);
+        self.spec.team_seat = Some(seat);
         self
     }
 
     pub fn scene(mut self, s: Arc<SceneSpec>) -> Self {
-        self.scene = Some(s);
+        self.spec.scene = Some(s);
         self
     }
     pub fn model(mut self, m: Arc<dyn Model>) -> Self {
-        self.model = Some(m);
+        self.spec.model = Some(m);
         self
     }
     pub fn tools(mut self, t: Arc<dyn base::tool::ToolRegistry>) -> Self {
-        self.tools = Some(t);
+        self.spec.tools = Some(t);
         self
     }
     pub fn settings(mut self, s: Arc<LoadedSettings>) -> Self {
-        self.settings = Some(s);
+        self.spec.settings = Some(s);
         self
     }
     pub fn permission(mut self, p: PermissionSet) -> Self {
-        self.permission = Some(p);
+        self.host.permission = Some(p);
         self
     }
     pub fn memory_store(mut self, m: Arc<MemoryStore>) -> Self {
-        self.memory_store = Some(m);
+        self.host.memory_store = Some(m);
         self
     }
     pub fn compactor(mut self, c: Arc<dyn Compactor>) -> Self {
-        self.compactor = Some(c);
+        self.host.compactor = Some(c);
         self
     }
     pub fn hooks(mut self, h: Arc<HookRunner>) -> Self {
-        self.hooks = Some(h);
+        self.ext.hooks = Some(h);
         self
     }
     /// Inject a backing store for session transcript persistence. When set,
@@ -671,7 +519,7 @@ impl Builder {
     /// pass one built from `SessionId`. [`Builder::build`] rejects anything
     /// else rather than persisting nothing.
     pub fn history_store(mut self, store: Arc<dyn history::store::HistoryStore>) -> Self {
-        self.history_store = Some(store);
+        self.host.history_store = Some(store);
         self
     }
     /// When background work completes, something sends `()` on the
@@ -680,37 +528,37 @@ impl Builder {
     /// builds its own hooks runner wakes them when one of its running tasks
     /// ends.
     pub fn wake_receiver(mut self, rx: tokio::sync::mpsc::UnboundedReceiver<()>) -> Self {
-        self.wake_rx = Some(rx);
+        self.ext.wake_rx = Some(rx);
         self
     }
     pub fn session_id(mut self, id: impl Into<String>) -> Self {
-        self.session_id = Some(id.into());
+        self.spec.session_id = Some(id.into());
         self
     }
     /// The lineage a sub-agent spawn already knows: who spawned it and as what.
     pub fn lineage(mut self, parent_session_id: Option<String>, agent_type: Option<&str>) -> Self {
-        self.parent_session_id = parent_session_id;
-        self.agent_type = agent_type.map(str::to_string);
+        self.spec.parent_session_id = parent_session_id;
+        self.spec.agent_type = agent_type.map(str::to_string);
         self
     }
     pub fn instruction(mut self, path: impl Into<PathBuf>) -> Self {
-        self.instruction_file = Some(path.into());
+        self.spec.instruction_file = Some(path.into());
         self
     }
     pub fn telemetry_url(mut self, url: Option<String>) -> Self {
-        self.telemetry_url = url;
+        self.spec.telemetry_url = url;
         self
     }
     /// Inject a pre-built telemetry handle (from e.g. CLI's `telemetry::spawn()`).
     /// Takes precedence over `telemetry_url`.
     pub fn telemetry_handle(mut self, h: TelemetryHandle) -> Self {
-        self.telemetry_handle_override = Some(h);
+        self.host.telemetry_handle_override = Some(h);
         self
     }
     /// Pre-seed the FrozenContext snapshot (skips lazy collection on first turn).
     /// Essential for deterministic replay across runs.
     pub fn frozen(mut self, ctx: base::frozen::FrozenContext) -> Self {
-        self.frozen = Some(ctx);
+        self.spec.frozen = Some(ctx);
         self
     }
 
@@ -720,7 +568,7 @@ impl Builder {
     /// that does not match it, and is announced up front rather than left
     /// for `ToolSearch` to find. What it accepts arrives on `TurnComplete`.
     pub fn output_schema(mut self, schema: serde_json::Value) -> Self {
-        self.output_schema = Some(schema);
+        self.spec.output_schema = Some(schema);
         self
     }
 
@@ -730,7 +578,7 @@ impl Builder {
     /// included. `ToolSearch` and `StructuredOutput` are not narrowed. A
     /// delegate is held to its type's and its caller's tool lists this way.
     pub fn tool_selector(mut self, selector: base::interface::tool_selector::ToolSelector) -> Self {
-        self.tool_selector = selector;
+        self.spec.tool_selector = selector;
         self
     }
 
@@ -742,13 +590,13 @@ impl Builder {
         mut self,
         servers: Box<dyn base::interface::mcp_servers::McpServers>,
     ) -> Self {
-        self.mcp_servers = Some(servers);
+        self.ext.mcp_servers = Some(servers);
         self
     }
 
     /// Disable startup warmup (for tests).
     pub fn skip_warmup(mut self, val: bool) -> Self {
-        self.skip_warmup = val;
+        self.spec.skip_warmup = val;
         self
     }
 
@@ -757,7 +605,7 @@ impl Builder {
     /// fresh for every session. Falls back to a registry over this session's
     /// own skill catalog when not set.
     pub fn commands_override(mut self, c: Arc<crate::commands::CommandRegistry>) -> Self {
-        self.commands_override = Some(c);
+        self.ext.commands_override = Some(c);
         self
     }
 
@@ -769,7 +617,7 @@ impl Builder {
     /// this session's own `model`. Unset (the default) preserves prior
     /// behavior exactly — sub-agents always use the parent's model.
     pub fn task_router(mut self, r: Arc<base::provider::TaskRouter>) -> Self {
-        self.task_router = Some(r);
+        self.host.task_router = Some(r);
         self
     }
 
@@ -778,7 +626,7 @@ impl Builder {
     /// scene is unresolvable and the sub-agent silently inherits its parent's
     /// scene instead.
     pub fn scene_registry(mut self, r: Arc<scene::SceneRegistry>) -> Self {
-        self.scene_registry = Some(r);
+        self.host.scene_registry = Some(r);
         self
     }
 
@@ -793,7 +641,7 @@ impl Builder {
         mut self,
         provider: Arc<dyn base::interface::instruction_provider::InstructionProvider>,
     ) -> Self {
-        self.instruction_provider = Some(provider);
+        self.host.instruction_provider = Some(provider);
         self
     }
 }

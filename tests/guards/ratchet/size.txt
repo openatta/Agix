@@ -14,7 +14,6 @@ file  crates/mcp/src/manager.rs                            -                    
 file  crates/mcp/src/oauth/mod.rs                          -                                        1332
 file  crates/platform/src/sandbox.rs                       -                                        1498
 file  crates/ptc/src/lib.rs                                -                                        973
-file  crates/runtime/src/agent/builder/build.rs            -                                        942
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
@@ -52,7 +51,6 @@ fn    crates/platform/src/sandbox.rs                       build_macos_profile  
 fn    crates/platform/src/sandbox.rs                       linux_wrap                               162
 fn    crates/ptc/src/lib.rs                                RunCodeTool::call                        101
 fn    crates/ptc/src/lib.rs                                execute                                  181
-fn    crates/runtime/src/agent/builder/build.rs            Builder::build                           868
 fn    crates/runtime/src/agent/run.rs                      Agent::run                               285
 fn    crates/runtime/src/streaming.rs                      execute_stream                           330
 fn    crates/runtime/src/turn/compact.rs                   Agent::compact_to_budget                 117

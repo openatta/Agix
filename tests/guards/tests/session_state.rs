@@ -179,7 +179,7 @@ const FIELDS: &[(&str, &str)] = &[
 
 const CREATED_AT: &[(&str, &str)] = &[
     (
-        "crates/runtime/src/agent/builder/build.rs",
+        "crates/runtime/src/agent/builder/build/wiring.rs",
         "an engine built without `Builder::session_state` gets a state of its own",
     ),
     (

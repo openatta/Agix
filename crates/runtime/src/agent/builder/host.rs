@@ -54,12 +54,12 @@ pub struct HostLayers {
 impl Builder {
     pub(super) fn host_layers(&self) -> HostLayers {
         HostLayers {
-            tool_middleware: self.tool_middleware.clone(),
-            prompt_middleware: self.prompt_middleware.clone(),
-            result_transformers: self.result_transformers.clone(),
-            model_interceptors: self.model_interceptors.clone(),
-            recovery_policy: self.recovery_policy.clone(),
-            compactor: self.compactor.clone(),
+            tool_middleware: self.host.tool_middleware.clone(),
+            prompt_middleware: self.host.prompt_middleware.clone(),
+            result_transformers: self.host.result_transformers.clone(),
+            model_interceptors: self.host.model_interceptors.clone(),
+            recovery_policy: self.host.recovery_policy.clone(),
+            compactor: self.host.compactor.clone(),
         }
     }
 
@@ -95,27 +95,27 @@ impl Builder {
                     compactor,
                 },
         } = host;
-        self.exec = Some(exec);
-        self.token_counter = Some(token_counter);
-        self.rule_provider = Some(rules);
-        self.environment = Some(environment);
-        self.permission = Some(permission);
-        self.history_store = history_store;
-        self.telemetry_handle_override = Some(telemetry);
-        self.task_router = task_router;
-        self.scene_registry = scene_registry;
-        self.memory_store = Some(memory_store);
-        self.memory_retriever = memory_retriever;
-        self.retrieval_hooks = retrieval_hooks;
-        self.instruction_provider = Some(instruction_provider);
-        self.plugins = plugins;
-        self.modules = modules;
-        self.tool_middleware = tool_middleware;
-        self.prompt_middleware = prompt_middleware;
-        self.result_transformers = result_transformers;
-        self.model_interceptors = model_interceptors;
-        self.recovery_policy = recovery_policy;
-        self.compactor = compactor;
+        self.host.exec = Some(exec);
+        self.host.token_counter = Some(token_counter);
+        self.host.rule_provider = Some(rules);
+        self.host.environment = Some(environment);
+        self.host.permission = Some(permission);
+        self.host.history_store = history_store;
+        self.host.telemetry_handle_override = Some(telemetry);
+        self.host.task_router = task_router;
+        self.host.scene_registry = scene_registry;
+        self.host.memory_store = Some(memory_store);
+        self.host.memory_retriever = memory_retriever;
+        self.host.retrieval_hooks = retrieval_hooks;
+        self.host.instruction_provider = Some(instruction_provider);
+        self.host.plugins = plugins;
+        self.host.modules = modules;
+        self.host.tool_middleware = tool_middleware;
+        self.host.prompt_middleware = prompt_middleware;
+        self.host.result_transformers = result_transformers;
+        self.host.model_interceptors = model_interceptors;
+        self.host.recovery_policy = recovery_policy;
+        self.host.compactor = compactor;
         self
     }
 }

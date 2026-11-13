@@ -52,7 +52,7 @@ use std::sync::Arc;
 /// `runtime::agent::Builder::tools()` — `Builder::build()` does NOT populate these
 /// itself. It only auto-registers a handful of tools that need engine-internal
 /// state to construct (Skill, TaskStop, TaskOutput, Import, the "Agent" spawner,
-/// MCP adapters) — see `crates/runtime/src/agent/builder/build.rs::Builder::build()`.
+/// MCP adapters) — see `crates/runtime/src/agent/builder/build/mod.rs::Builder::build()`.
 ///
 /// Deliberately excluded, because they need per-session host state this
 /// function has no access to. Each has its own registration helper below,
