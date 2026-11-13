@@ -24,6 +24,7 @@ use crate::dir_lock::DirLock;
 use crate::settings::SETTINGS_LOCAL_FILE;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SettingsFileError {
     #[error("{}: {source}", path.display())]
     Io {

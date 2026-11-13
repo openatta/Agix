@@ -93,6 +93,7 @@ pub struct ProviderPatch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TrustState {
     /// No project tier of its own.
     None,

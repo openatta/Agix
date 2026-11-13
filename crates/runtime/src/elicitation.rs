@@ -231,6 +231,7 @@ impl Elicitation for ChannelElicitation {
                 None => cannot_carry("a clarification"),
             },
             ElicitKind::Import { .. } => cannot_carry("an import confirmation"),
+            _ => cannot_carry("this kind of question"),
         }
     }
 }

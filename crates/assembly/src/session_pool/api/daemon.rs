@@ -138,6 +138,7 @@ pub struct ImportSource {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EvictReason {
     Idle,
     Capacity,
@@ -150,6 +151,7 @@ pub enum EvictReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CloseReason {
     Closed,
     EngineStopped,

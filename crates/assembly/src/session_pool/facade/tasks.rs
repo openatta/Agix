@@ -10,6 +10,7 @@ fn delegate_error(e: base::interface::delegate::DelegateError) -> PoolError {
         DelegateError::Unsupported(m) => PoolError::SpawnUnsupported(m),
         DelegateError::Invalid(m) => PoolError::InvalidRequest(m),
         DelegateError::Build(m) => PoolError::Internal(m),
+        other => PoolError::Internal(other.to_string()),
     }
 }
 

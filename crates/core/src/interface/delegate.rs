@@ -167,6 +167,7 @@ pub enum DelegateEnd {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DelegateError {
     /// As many delegates are running as the session allows.
     #[error("{0}")]

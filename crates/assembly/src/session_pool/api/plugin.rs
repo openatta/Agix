@@ -27,6 +27,7 @@ impl PluginScope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SkillOrigin {
     User,
     Project,

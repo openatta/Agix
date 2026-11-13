@@ -26,6 +26,7 @@ use super::frontmatter::{extract_yaml_field, split_frontmatter};
 /// once is not supported, to avoid `AGENTS.md` append-ordering conflicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ImportSourceKind {
     ClaudeCode,
     Codex,
@@ -54,6 +55,7 @@ impl ImportSourceKind {
 /// A detected candidate for import, carrying enough detail to execute
 /// without re-scanning the filesystem.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ImportSource {
     ClaudeCode {
         claude_md: Option<PathBuf>,
@@ -298,6 +300,7 @@ pub struct ImportSummary {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ImportError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

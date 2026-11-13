@@ -3,6 +3,7 @@
 /// Task type enum — categorises all background/async task kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TaskType {
     /// Shell command executed as a background process.
     Shell,
@@ -409,6 +410,7 @@ fn wire_kind<S: serde::Serializer>(kind: &TaskType, s: S) -> Result<S::Ok, S::Er
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TaskStatus {
     Running,
     /// Running, and waiting on the host to answer a question.

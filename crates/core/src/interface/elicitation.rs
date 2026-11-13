@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 /// What is being asked, and how the answer will be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ElicitKind {
     /// May this tool call run? The answer is the host's permission decision
     /// (`runtime::agent::PermissionDecision`'s wire form).

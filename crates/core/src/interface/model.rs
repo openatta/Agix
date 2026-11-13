@@ -136,6 +136,7 @@ pub struct CallOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallKind {
     /// A call the turn loop made.
     Turn {

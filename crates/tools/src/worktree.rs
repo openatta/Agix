@@ -425,6 +425,7 @@ async fn run_git_capture(
                 WorktreeError::GitFailed(format!("git {} timed out after 15s", args.join(" ")))
             }
             EngineExecError::Failed(e) => WorktreeError::Exec(e),
+            other => WorktreeError::GitFailed(other.to_string()),
         })?;
 
     if !out.status.success {

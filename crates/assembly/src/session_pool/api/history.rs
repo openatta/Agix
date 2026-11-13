@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// Where a history item came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HistoryOrigin {
     /// Typed by the person.
     User,
@@ -96,6 +97,7 @@ pub struct EntryList {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SessionKindName {
     Primary,
     Sidechain,

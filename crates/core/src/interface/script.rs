@@ -74,6 +74,7 @@ impl Default for ScriptLimits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScriptError {
     /// No engine is available to run it.
     NoEngine,

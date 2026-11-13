@@ -101,6 +101,7 @@ impl std::fmt::Debug for ExecProviders {
 /// problem; "the policy refused" is something the model should work around;
 /// "the file does not exist" is the model's to interpret.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ExecError {
     /// The provider itself is not usable — a remote that cannot be reached, a
     /// backend that was never mounted.

@@ -52,6 +52,7 @@ fn default_confidence() -> f64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum MemoryType {
     /// Who the user is (role, expertise, preferences).
     #[default]
@@ -82,6 +83,7 @@ pub struct ScopedMemory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MemoryScope {
     /// Global → write to user_data_dir
     User,
@@ -1093,6 +1095,7 @@ Respond with ONLY valid JSON matching this schema (no markdown, no extra text, n
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum MemoryError {
     #[error("IO error: {0}")]
     Io(String),

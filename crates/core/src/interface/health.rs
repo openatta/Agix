@@ -39,6 +39,7 @@ use std::sync::Arc;
 ///
 /// Ordered worst-last, so aggregating a report is a maximum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum HealthStatus {
     /// Working.
     Ok,

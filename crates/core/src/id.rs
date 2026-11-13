@@ -10,6 +10,7 @@ use std::fmt;
 pub struct Id(#[serde(with = "id_serde")] [u8; 16]);
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum IdError {
     #[error("base58 decode: {0}")]
     Base58(#[from] bs58::decode::Error),

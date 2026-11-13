@@ -31,6 +31,7 @@ pub struct UnrecordedGoalChanges {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum GoalPhase {
     Active,
     Paused,
@@ -56,6 +57,7 @@ pub struct Goal {
 
 /// Who started the turn a goal operation happens in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum TurnOrigin {
     /// A person, through a client or the host.
     #[default]
@@ -85,6 +87,7 @@ impl TurnOrigin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GoalAction {
     Edit {
         objective: Option<String>,
@@ -99,6 +102,7 @@ pub enum GoalAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum GoalError {
     #[error("this session has no goal")]
     NoGoal,

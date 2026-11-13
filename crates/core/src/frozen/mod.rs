@@ -89,6 +89,7 @@ pub struct OutputStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OutputStyleSource {
     /// `~/.agix/scenes/<scope>/output-styles/<name>.md`
     User,

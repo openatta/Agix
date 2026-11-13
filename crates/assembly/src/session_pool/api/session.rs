@@ -37,6 +37,7 @@ pub struct SessionDetail {
 /// What a session in memory is doing; a session not in memory is idle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TurnState {
     Idle,
     Running,
@@ -73,6 +74,7 @@ pub struct ScriptCall {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ScriptCallOutcome {
     Applied,
     NoChange,
@@ -122,6 +124,7 @@ pub struct ResumeReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ResumeStatus {
     AlreadyActive,
     Resumed,
@@ -156,6 +159,7 @@ pub struct Renamed {
 /// When a change to a session's model or prompt takes effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Applies {
     NextTurn,
 }

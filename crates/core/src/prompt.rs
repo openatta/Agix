@@ -76,6 +76,7 @@ pub mod names {
 /// Where a prompt block came from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum BlockOrigin {
     /// The engine itself.
     #[default]

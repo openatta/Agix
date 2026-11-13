@@ -13,6 +13,7 @@
 /// parent's — and an untrusted project's does not replace a built-in, plugin
 /// or user type of the same name.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AgentTypeSource {
     /// Shipped with Agix.
     #[default]

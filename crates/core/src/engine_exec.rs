@@ -90,6 +90,7 @@ enum Program {
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum EngineExecError {
     /// Not started: the admission refused it, or it has to be sandboxed and
     /// the sandbox cannot hold it.

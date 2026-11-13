@@ -217,6 +217,7 @@ pub(crate) fn tool_error(e: DelegateError) -> base::error::ToolError {
         DelegateError::Build(m) | DelegateError::Unsupported(m) => {
             base::error::ToolError::Execution(anyhow!(m))
         }
+        other => base::error::ToolError::Denied(other.to_string()),
     }
 }
 

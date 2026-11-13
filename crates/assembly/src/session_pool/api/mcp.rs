@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum McpServerState {
     Connected,
     /// Connected once and the connection has since dropped; the next request
@@ -24,6 +25,7 @@ pub enum McpServerState {
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum McpAuthState {
     #[default]
     None,

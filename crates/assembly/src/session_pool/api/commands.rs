@@ -11,6 +11,7 @@ pub struct CommandInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub enum CommandKind {
     /// Runs immediately, no model turn.
     #[serde(rename = "local")]
@@ -24,6 +25,7 @@ pub enum CommandKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CommandSource {
     Builtin,
     User,

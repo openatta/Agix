@@ -22,6 +22,7 @@
 
 /// What kind of seam this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Kind {
     /// Replace a whole subsystem by implementing a trait.
     Contract,
@@ -34,6 +35,7 @@ pub enum Kind {
 
 /// How often it fires, to an order of magnitude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Frequency {
     /// Once per process.
     PerProcess,
@@ -74,6 +76,7 @@ impl Frequency {
 
 /// What one kind of author may do at a point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Access {
     /// Everything the point offers.
     Full,
@@ -171,6 +174,7 @@ pub struct ExtensionPoint {
 
 /// How an implementation of a point reaches the engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Wiring {
     /// `runtime::agent::Builder::<method>`.
     Builder(&'static str),

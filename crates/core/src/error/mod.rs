@@ -21,6 +21,7 @@ impl From<String> for ToolError {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum ToolError {
     #[error("denied: {0}")]
     Denied(String),
@@ -54,6 +55,7 @@ pub enum ToolError {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum EffectError {
     #[error("not interactive")]
     NotInteractive,
@@ -70,6 +72,7 @@ pub enum EffectError {
 /// 覆盖常见的 4xx（客户端错误）和 5xx（服务端错误）。
 /// 通过 [`HttpError::from_status`] 按状态码构造。
 #[derive(thiserror::Error, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HttpError {
     #[error("400 Bad Request")]
     BadRequest,
@@ -235,6 +238,7 @@ mod http_error_tests {
 }
 
 #[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
 pub enum ValidationError {
     #[error("{message}")]
     InvalidInput { message: String, code: i32 },
