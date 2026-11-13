@@ -61,21 +61,18 @@ impl ChannelElicitation {
     /// The answers a host may give an authorization question, in the order a
     /// UI should offer them. The keys are `PermissionDecision`'s own wire
     /// tags, so a host can build the answer from the key it was shown.
-    pub fn authorization_options() -> Vec<ElicitOption> {
-        vec![
-            ElicitOption {
-                key: "permit".into(),
-                label: "Allow once".into(),
-            },
-            ElicitOption {
-                key: "permit_always".into(),
-                label: "Allow every time".into(),
-            },
-            ElicitOption {
-                key: "deny".into(),
-                label: "Deny".into(),
-            },
-        ]
+    /// "Allow every time" only where the answer `keeps_grants`.
+    pub fn authorization_options(keeps_grants: bool) -> Vec<ElicitOption> {
+        let option = |key: &str, label: &str| ElicitOption {
+            key: key.into(),
+            label: label.into(),
+        };
+        let mut options = vec![option("permit", "Allow once")];
+        if keeps_grants {
+            options.push(option("permit_always", "Allow every time"));
+        }
+        options.push(option("deny", "Deny"));
+        options
     }
 
     async fn authorize(
@@ -236,7 +233,7 @@ mod tests {
                 tool_use_id: None,
             },
             message: "run `rm -rf /`?".into(),
-            options: ChannelElicitation::authorization_options(),
+            options: ChannelElicitation::authorization_options(true),
         }
     }
 

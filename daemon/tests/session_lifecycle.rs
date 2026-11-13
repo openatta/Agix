@@ -4422,6 +4422,7 @@ async fn settings_permission_rules_finally_reach_the_daemon() {
         vec![base::settings::PermissionRule {
             tool: "Bash(touch ruled.txt)".into(),
             action: base::settings::PermissionAction::Allow,
+            matching: Default::default(),
         }],
     );
 

@@ -1077,7 +1077,7 @@ async fn permission_prompt_answered_permit_always_grants_in_the_scope_asked_for(
             policy: Arc::new(PromptTestPermission {
                 prompt_id: "permit-always",
             }),
-            grants: grants.clone(),
+            grants: Some(grants.clone()),
         };
         ctx.elicitation = base::interface::elicitation::FixedElicitation::new(
             base::interface::elicitation::ElicitOutcome::answered(

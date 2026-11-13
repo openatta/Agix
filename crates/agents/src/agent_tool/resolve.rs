@@ -81,9 +81,11 @@ impl Delegator {
                     rules,
                     turn_grants: turn_grants.clone(),
                 }),
-                grants: Arc::new(ParentGrants {
-                    parent: env.host.permission.grants.clone(),
-                    turn: turn_grants,
+                grants: env.host.permission.grants.clone().map(|parent| {
+                    Arc::new(ParentGrants {
+                        parent,
+                        turn: turn_grants,
+                    }) as Arc<dyn base::interface::permission::PermissionGrants>
                 }),
             },
             elicitation: Arc::new(ParentElicitation {

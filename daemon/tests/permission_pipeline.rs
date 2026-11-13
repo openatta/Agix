@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base::interface::elicitation::{ElicitOutcome, ElicitRequest, Elicitation};
-use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
+use base::interface::permission::{
+    PermissionOutcome, PermissionPolicy, PermissionRequest, PermissionSet,
+};
 use base::settings::PermissionMode;
 use daemon::config::{load_daemon_config, StaticDaemonPaths};
 use daemon::DaemonServer;
@@ -325,18 +327,37 @@ impl PermissionPolicy for AsksAboutEverything {
 }
 
 /// A session whose permission keeps no grants cannot honour "allow every
-/// time", so it does not offer it.
+/// time", so it does not offer it; one that keeps them does.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D1: fix pending"]
 async fn a_session_that_keeps_no_grants_does_not_offer_permit_always() {
+    let offered = offered_answers(true).await;
+    assert!(
+        offered.iter().any(|key| key == "permit_always"),
+        "precondition: a session that keeps grants offers it: {offered:?}"
+    );
+    let offered = offered_answers(false).await;
+    assert!(
+        !offered.iter().any(|key| key == "permit_always"),
+        "offered an answer that keeps nothing: {offered:?}"
+    );
+}
+
+/// The answers a session — given a permission that keeps grants or not —
+/// offers about a call its permission asks about.
+async fn offered_answers(keeps_grants: bool) -> Vec<String> {
     let recorded = Arc::new(RecordsOptions::default());
     let sink = recorded.clone();
     let daemon = Daemon::start(
         Setup {
-            mode: PermissionMode::BypassPermissions,
-            host_policy: Some(Arc::new(AsksAboutEverything)),
             customize: Some(Arc::new(move |builder| {
-                builder.elicitation(Arc::new(Recorder(sink.clone())))
+                let permission = if keeps_grants {
+                    PermissionSet::of(Arc::new(permissions::policy::Policy::empty()))
+                } else {
+                    PermissionSet::without_grants(Arc::new(AsksAboutEverything))
+                };
+                builder
+                    .permission(permission)
+                    .elicitation(Arc::new(Recorder(sink.clone())))
             })),
             ..Default::default()
         },
@@ -351,22 +372,18 @@ async fn a_session_that_keeps_no_grants_does_not_offer_permit_always() {
     daemon.model.push_turn(text_round("done"));
 
     daemon.turn(|_| None).await;
-    let recorded = recorded.0.lock().unwrap().clone();
+    let mut recorded = recorded.0.lock().unwrap().clone();
     assert_eq!(
         recorded.len(),
         1,
         "precondition: the call is asked about: {recorded:?}"
     );
-    assert!(
-        !recorded[0].iter().any(|key| key == "permit_always"),
-        "offered an answer that keeps nothing: {recorded:?}"
-    );
+    recorded.remove(0)
 }
 
 /// What a person allowed for good is the command they were shown, not every
 /// command the text happens to match as a pattern.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "D1: fix pending"]
 async fn a_permanent_allow_of_a_command_with_a_star_allows_only_that_command() {
     let daemon = Daemon::start(Setup::default(), |_, _| {}).await;
     daemon.model.push_turn(tool_round(
@@ -396,6 +413,49 @@ async fn a_permanent_allow_of_a_command_with_a_star_allows_only_that_command() {
         prompts.len(),
         2,
         "the second, different command was allowed by the first answer: {prompts:?}"
+    );
+}
+
+/// "Allow every time, this project" is written as the command itself,
+/// `"match": "exact"`, and a later session reads it back that way.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_permanent_allow_is_written_and_read_back_exact() {
+    let daemon = Daemon::start(Setup::default(), |_, _| {}).await;
+    daemon.model.push_turn(tool_round(
+        "toolu_star",
+        "Bash",
+        json!({"command": "touch *.rs"}),
+    ));
+    daemon.model.push_turn(text_round("done"));
+    daemon.turn(|_| permit_always("local")).await;
+    let written: Value = serde_json::from_str(&daemon.local_settings()).unwrap();
+    let rule = json!({"tool": "Bash(touch *.rs)", "action": "allow", "match": "exact"});
+    assert_eq!(written["permission_rules"], json!([rule]), "{written}");
+
+    let later = Daemon::start(Setup::default(), |_, work| {
+        std::fs::write(
+            work.join(".agix/settings.local.json"),
+            json!({"permission_rules": [rule]}).to_string(),
+        )
+        .unwrap();
+    })
+    .await;
+    later.model.push_turn(tool_round(
+        "toolu_same",
+        "Bash",
+        json!({"command": "touch *.rs"}),
+    ));
+    later.model.push_turn(tool_round(
+        "toolu_other",
+        "Bash",
+        json!({"command": "touch other.rs"}),
+    ));
+    later.model.push_turn(text_round("done"));
+    let prompts = later.turn(|_| deny()).await;
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert_eq!(
+        prompts[0]["tool_use_id"], "toolu_other",
+        "the command allowed for good was asked about again: {prompts:?}"
     );
 }
 

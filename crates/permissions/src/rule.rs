@@ -80,7 +80,14 @@ pub fn rules_from_settings(
     use base::settings::PermissionAction;
     rules
         .iter()
+        .filter(|r| !is_exact_allow(r))
         .filter_map(|r| {
+            if !r.matching.is_pattern() {
+                tracing::warn!(
+                    rule = %r.tool,
+                    "`match: exact` is read on allow rules only; this rule is a pattern"
+                );
+            }
             let behavior = match r.action {
                 PermissionAction::Allow => RuleBehavior::Allow,
                 PermissionAction::Deny => RuleBehavior::Deny,
@@ -106,18 +113,10 @@ pub fn rules_from_settings(
 /// （`ProjectSettings`），`settings.local.json` 是 `LocalSettings`，部署方的
 /// managed 层是 `PolicySettings`。
 pub fn rules_from(loaded: &base::settings::LoadedSettings) -> Vec<PermissionRule> {
-    use base::interface::config_source::Tier;
     let (local, shared): (Vec<_>, Vec<_>) = loaded.rules.iter().partition(|r| r.machine_local);
     let mut rules: Vec<PermissionRule> = shared
         .into_iter()
-        .flat_map(|r| {
-            let source = match r.tier {
-                Tier::Global | Tier::Scene => RuleSource::UserSettings,
-                Tier::Project => RuleSource::ProjectSettings,
-                Tier::Managed => RuleSource::PolicySettings,
-            };
-            rules_from_settings(std::slice::from_ref(&r.rule), source)
-        })
+        .flat_map(|r| rules_from_settings(std::slice::from_ref(&r.rule), source_of(r)))
         .collect();
     let local: Vec<_> = local.into_iter().map(|r| r.rule.clone()).collect();
     rules.extend(rules_from_settings(&local, RuleSource::LocalSettings));
@@ -128,6 +127,46 @@ pub fn rules_from(loaded: &base::settings::LoadedSettings) -> Vec<PermissionRule
         ));
     }
     rules
+}
+
+/// The allow rules of `loaded` written `"match": "exact"` — what "allow every
+/// time" kept — each with its tier's [`RuleSource`]. [`rules_from`] leaves
+/// them out.
+pub fn exact_allows_from(loaded: &base::settings::LoadedSettings) -> Vec<PermissionRule> {
+    loaded
+        .rules
+        .iter()
+        .filter(|r| is_exact_allow(&r.rule))
+        .filter_map(
+            |r| match parse_rule_string(&r.rule.tool, source_of(r), RuleBehavior::Allow) {
+                Ok(rule) => Some(rule),
+                Err(e) => {
+                    tracing::warn!(
+                        rule = %r.rule.tool,
+                        error = %e,
+                        "unparsable permission_rules entry in settings.json, skipping"
+                    );
+                    None
+                }
+            },
+        )
+        .collect()
+}
+
+fn is_exact_allow(rule: &base::settings::PermissionRule) -> bool {
+    rule.action == base::settings::PermissionAction::Allow && !rule.matching.is_pattern()
+}
+
+fn source_of(rule: &base::settings::LoadedRule) -> RuleSource {
+    use base::interface::config_source::Tier;
+    if rule.machine_local {
+        return RuleSource::LocalSettings;
+    }
+    match rule.tier {
+        Tier::Global | Tier::Scene => RuleSource::UserSettings,
+        Tier::Project => RuleSource::ProjectSettings,
+        Tier::Managed => RuleSource::PolicySettings,
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +264,7 @@ mod tests {
         base::settings::PermissionRule {
             tool: tool.to_string(),
             action,
+            matching: Default::default(),
         }
     }
 

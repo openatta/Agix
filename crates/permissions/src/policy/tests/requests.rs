@@ -404,6 +404,36 @@ async fn a_session_grant_permits_matching_content_without_prompting_and_survives
     );
 }
 
+/// A person's answer covers the call they were shown: its text, not what
+/// the text would match as a pattern.
+#[tokio::test]
+async fn a_session_grant_permits_only_the_same_text() {
+    let perm = empty();
+    let session = session(PermissionMode::Default);
+    for (tool, allowed, other) in [
+        ("Bash", "touch *.rs", "touch other.rs"),
+        ("Bash", "git log:*", "git log --all"),
+        ("WebFetch", "https://h.example/a?b", "https://h.example/axb"),
+    ] {
+        perm.grant(Grant::new(tool, Some(allowed.into()), GrantScope::Session))
+            .await
+            .unwrap();
+        let same = decide(&perm, &content_tool(tool, allowed), &session).await;
+        assert!(matches!(same, PermissionOutcome::Permit { .. }), "{same:?}");
+        let different = decide(&perm, &content_tool(tool, other), &session).await;
+        assert!(
+            matches!(different, PermissionOutcome::Prompt { .. }),
+            "{allowed} let {other} through: {different:?}"
+        );
+    }
+    perm.clear(GrantScope::Session);
+    let cleared = decide(&perm, &content_tool("Bash", "touch *.rs"), &session).await;
+    assert!(
+        matches!(cleared, PermissionOutcome::Prompt { .. }),
+        "{cleared:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_session_allow_cannot_carve_an_exception_out_of_a_settings_deny() {
     let perm = Policy::new(RuleSet::new(vec![PermissionRule {
@@ -471,7 +501,13 @@ async fn a_project_grant_is_written_where_the_next_session_reads_it() {
         PermissionOutcome::Permit { .. }
     ));
     let reloaded = project_settings(root.path());
-    let rules: Vec<_> = crate::rule::rules_from(&reloaded)
+    assert!(
+        crate::rule::rules_from(&reloaded)
+            .iter()
+            .all(|r| r.source != RuleSource::LocalSettings),
+        "an exact allow is not a pattern rule"
+    );
+    let rules: Vec<_> = crate::rule::exact_allows_from(&reloaded)
         .into_iter()
         .filter(|r| r.source == RuleSource::LocalSettings)
         .collect();

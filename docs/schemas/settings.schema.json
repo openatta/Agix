@@ -149,6 +149,21 @@
       },
       "type": "object"
     },
+    "GrantMatch": {
+      "description": "How an allow's content meets a call's.",
+      "oneOf": [
+        {
+          "const": "pattern",
+          "description": "As a `settings.json` rule's content is: `*`, `prefix:*`, path and URL\npatterns.",
+          "type": "string"
+        },
+        {
+          "const": "exact",
+          "description": "Only a call whose content is the same text.",
+          "type": "string"
+        }
+      ]
+    },
     "ModelSettings": {
       "description": "LLM model configuration for a single provider.",
       "properties": {
@@ -260,6 +275,10 @@
         "action": {
           "$ref": "#/$defs/PermissionAction",
           "description": "Action: \"allow\", \"deny\", or \"ask\"."
+        },
+        "match": {
+          "$ref": "#/$defs/GrantMatch",
+          "description": "`\"exact\"`: the content in `tool` allows only a call whose content is\nthat same text, as \"allow every time\" records it. Read on allow rules\nonly; a deny or ask is always a pattern."
         },
         "tool": {
           "description": "Tool name pattern (e.g. \"Bash\", \"Bash(git push:*)\", \"FileWrite\").",

@@ -210,7 +210,9 @@ async fn ask(
                 tool_use_id: Some(ctx.tool_use_id.clone()),
             },
             message,
-            options: crate::elicitation::ChannelElicitation::authorization_options(),
+            options: crate::elicitation::ChannelElicitation::authorization_options(
+                ctx.permission.grants.is_some(),
+            ),
         });
     tokio::pin!(ask);
     let prompt_timeout = ctx.config.permission_prompt_timeout_secs;
@@ -274,19 +276,21 @@ async fn grant_always(
     input: &serde_json::Value,
     scope: crate::agent::PersistScope,
 ) {
-    use base::interface::permission::{Grant, GrantError, GrantScope};
+    use base::interface::permission::{Grant, GrantScope};
+    let Some(grants) = &ctx.permission.grants else {
+        tracing::warn!(
+            tool_name = %name,
+            "answered permit_always, which this session did not offer: it keeps no grants, so \
+             the call is allowed once"
+        );
+        return;
+    };
     let scope = match scope {
         crate::agent::PersistScope::Session => GrantScope::Session,
         crate::agent::PersistScope::Local => GrantScope::Project,
     };
     let grant = Grant::new(name, tool.permission_match_content(input), scope);
-    match ctx.permission.grants.grant(grant).await {
-        Ok(()) => {}
-        Err(GrantError::NotKept) => {
-            tracing::debug!(tool_name = %name, "permit-always: this session keeps no grants");
-        }
-        Err(e) => {
-            tracing::warn!(tool_name = %name, error = %e, "permit-always not kept as asked");
-        }
+    if let Err(e) = grants.grant(grant).await {
+        tracing::warn!(tool_name = %name, error = %e, "permit-always not kept as asked");
     }
 }

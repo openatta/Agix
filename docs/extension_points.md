@@ -294,8 +294,9 @@ Builder::new().permission(PermissionSet::without_grants(Arc::new(MyPolicy)));
 `PermissionRequest` 带着判定要用的全部状态:分发用的那个 registry 里查到的工具(`tool`,
 查不到是 `None`——引擎自己的 `Policy` 对它询问而不放行)、策略所属会话的实时
 `SessionState`(`session`,会话中途的模式切换从这里看到),以及子 Agent、团队成员转来的调用的
-`SessionState`(`delegate`)。`without_grants` 给的 `NoGrants` 对每次授权都回 `GrantError::NotKept`,
-调用方由此知道放行没有被记下。
+`SessionState`(`delegate`)。`without_grants` 的 `grants` 是 `None`:会话不记放行,询问时也就不提供
+`permit_always`。`Session` / `Project` 的放行是 `GrantMatch::Exact`,只放行内容与当时那次调用逐字相同的
+调用;`Turn`(skill 的 `allowed-tools`)按规则模式匹配。
 
 `BypassPermissions` 下 `Policy` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
 判定;凭据照样拒绝,部署方 managed 层的 deny / ask 照样生效;输入校验("改文件前先读过"、

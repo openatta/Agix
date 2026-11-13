@@ -194,10 +194,9 @@ impl Tool for SkillTool {
 
         self.skill_manager.record_invocation(skill_name);
 
-        if let Some(permission) = &self.permission {
+        if let Some(grants) = self.permission.as_ref().and_then(|p| p.grants.as_ref()) {
             for (tool_name, rule_content) in &expansion.grants {
-                let _ = permission
-                    .grants
+                let _ = grants
                     .grant(base::interface::permission::Grant::new(
                         tool_name.clone(),
                         rule_content.clone(),

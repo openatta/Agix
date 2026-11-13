@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use base::interface::permission::GrantMatch;
 use base::settings_file::{SettingsDir, SettingsFileError};
 
 /// Which behavior bucket to append to.
@@ -55,6 +56,26 @@ pub fn append_permission_rule(
     target: AppendTarget,
     rule_string: &str,
 ) -> Result<bool, AppendError> {
+    append(settings_path, target, rule_string, GrantMatch::Pattern)
+}
+
+/// [`append_permission_rule`] for an allow whose content is matched only by
+/// the same text, written with `"match": "exact"`.
+pub fn append_exact_allow(settings_path: &Path, rule_string: &str) -> Result<bool, AppendError> {
+    append(
+        settings_path,
+        AppendTarget::Allow,
+        rule_string,
+        GrantMatch::Exact,
+    )
+}
+
+fn append(
+    settings_path: &Path,
+    target: AppendTarget,
+    rule_string: &str,
+    matching: GrantMatch,
+) -> Result<bool, AppendError> {
     let file = settings_path
         .file_name()
         .and_then(|f| f.to_str())
@@ -72,28 +93,31 @@ pub fn append_permission_rule(
     let arr = arr.as_array_mut().ok_or(AppendError::NotAList)?;
 
     let action = target.action();
+    let mut entry = serde_json::json!({ "tool": rule_string, "action": action });
+    if !matching.is_pattern() {
+        entry["match"] = serde_json::to_value(matching).unwrap_or_default();
+    }
     let already = arr.iter().any(|v| {
-        v.get("tool").and_then(|t| t.as_str()) == Some(rule_string)
-            && v.get("action").and_then(|a| a.as_str()) == Some(action)
+        ["tool", "action", "match"]
+            .iter()
+            .all(|key| v.get(key) == entry.get(key))
     });
     if already {
         return Ok(false);
     }
-    arr.push(serde_json::json!({ "tool": rule_string, "action": action }));
+    arr.push(entry);
 
     tier.write(file, &value)?;
     Ok(true)
 }
 
-/// Build a canonical rule string `<tool_name>(<content>)` that matches the
-/// call `match_content` came from (`ruleset::literal_rule_content`). Returns
-/// None when content is empty (no useful pattern can be derived).
+/// The rule string `<tool_name>(<content>)` for a call whose content is
+/// `match_content`. None when there is no content to scope it to.
 pub fn build_rule_string(tool_name: &str, match_content: Option<&str>) -> Option<String> {
     let content = match_content?.trim();
     if content.is_empty() {
         return None;
     }
-    let content = crate::ruleset::literal_rule_content(tool_name, content);
     Some(format!("{tool_name}({content})"))
 }
 
@@ -304,14 +328,30 @@ mod tests {
     }
 
     #[test]
-    fn a_url_with_glob_characters_is_recorded_as_a_literal() {
+    fn a_rule_string_carries_the_content_as_written() {
         assert_eq!(
             build_rule_string("WebFetch", Some("https://h.example/**")).as_deref(),
-            Some("WebFetch(https://h.example/[*][*])")
+            Some("WebFetch(https://h.example/**)")
         );
+    }
+
+    /// An exact allow is written with `"match": "exact"`, once, and apart
+    /// from a pattern rule of the same text.
+    #[test]
+    fn an_exact_allow_is_written_with_its_match() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path().join("settings.local.json");
+        assert!(append_permission_rule(&p, AppendTarget::Allow, "Bash(ls *)").unwrap());
+        assert!(append_exact_allow(&p, "Bash(ls *)").unwrap());
+        assert!(!append_exact_allow(&p, "Bash(ls *)").unwrap());
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(
-            build_rule_string("WebFetch", Some("https://h.example/a?b")).as_deref(),
-            Some("WebFetch(https://h.example/a?b)")
+            written["permission_rules"],
+            serde_json::json!([
+                {"tool": "Bash(ls *)", "action": "allow"},
+                {"tool": "Bash(ls *)", "action": "allow", "match": "exact"},
+            ])
         );
     }
 }

@@ -201,6 +201,10 @@ impl Policy {
                 None => ask,
             }
         });
+        let allow = match (allow, &ask) {
+            (None, None) => self.exact_allow(call.name, call.named.content()),
+            (allow, _) => allow,
+        };
         match &call.host {
             HostSays::Nothing => Ok((allow, ask)),
             HostSays::Deny(reason) => Err(Verdict::Deny(reason.clone())),

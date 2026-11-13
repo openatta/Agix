@@ -7,6 +7,10 @@
 //! that holds an unattended command, a hook's approve — and refuses it where
 //! nobody can be asked. A question still open is the caller's to put.
 //!
+//! A person's "allow every time" is kept apart from the rules (`exact`): it
+//! allows the call it was given for, by the same text, and nothing its text
+//! would match as a pattern.
+//!
 //! A host's own policy is one more tier of rules (`host`): asked about every
 //! call, its refusal stands, its permit is an allow rule and no more.
 //!
@@ -25,8 +29,9 @@ mod tests;
 use crate::ruleset::RuleSet;
 use async_trait::async_trait;
 use base::interface::permission::{
-    Answerable, Attendance, Basis, Grant, GrantError, GrantScope, HookAnswer, PermissionGrants,
-    PermissionOutcome, PermissionPolicy, PermissionRequest, Reason, Stage, ToolFacts,
+    Answerable, Attendance, Basis, Grant, GrantError, GrantMatch, GrantScope, HookAnswer,
+    PermissionGrants, PermissionOutcome, PermissionPolicy, PermissionRequest, Reason, Stage,
+    ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::tool::{SandboxSettings, ToolContext};
@@ -37,6 +42,8 @@ use std::sync::{Arc, RwLock};
 
 pub struct Policy {
     rules: RwLock<RuleSet>,
+    /// Allows matched by their content's exact text.
+    exact: RwLock<Vec<PermissionRule>>,
     managed: ManagedLayer,
     /// What the context of a call made without one is given, and where its
     /// credential locations are named.
@@ -131,6 +138,7 @@ impl Policy {
     pub fn new(rules: RuleSet) -> Self {
         Self {
             rules: RwLock::new(rules),
+            exact: RwLock::default(),
             managed: ManagedLayer::default(),
             sandbox: SandboxSettings::default(),
             local_settings_file: None,
@@ -155,7 +163,9 @@ impl Policy {
     ) -> Self {
         let mut rules = crate::rule::rules_from(settings);
         rules.extend(extra_rules);
-        Self::new(RuleSet::new(rules))
+        let mut policy = Self::new(RuleSet::new(rules));
+        policy.exact = RwLock::new(crate::rule::exact_allows_from(settings));
+        policy
             .with_managed(ManagedLayer::from(&settings.managed))
             .with_sandbox(SandboxSettings {
                 allow_read: settings.sandbox.allow_read.clone(),
@@ -226,6 +236,27 @@ impl Policy {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove_by_source(source);
+        self.exact
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|r| r.source != source);
+    }
+
+    /// The exact allow for a call to `tool_name` whose content is `content`.
+    fn exact_allow(&self, tool_name: &str, content: Option<&str>) -> Option<PermissionRule> {
+        self.exact
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|r| {
+                r.tool_name == tool_name
+                    && match (r.rule_content.as_deref(), content) {
+                        (None, _) => true,
+                        (Some(allowed), Some(content)) => allowed.trim() == content.trim(),
+                        (Some(_), None) => false,
+                    }
+            })
+            .cloned()
     }
 
     fn rules_now(&self) -> std::sync::RwLockReadGuard<'_, RuleSet> {
@@ -300,12 +331,14 @@ impl Policy {
             ));
         };
         let target = path.to_path_buf();
-        match tokio::task::spawn_blocking(move || {
-            crate::settings_patch::append_permission_rule(
+        let matching = grant.matching;
+        match tokio::task::spawn_blocking(move || match matching {
+            GrantMatch::Exact => crate::settings_patch::append_exact_allow(&target, &rule),
+            _ => crate::settings_patch::append_permission_rule(
                 &target,
                 crate::settings_patch::AppendTarget::Allow,
                 &rule,
-            )
+            ),
         })
         .await
         {
@@ -315,13 +348,21 @@ impl Policy {
         }
     }
 
-    fn allow(&self, source: RuleSource, tool_name: &str, rule_content: Option<String>) {
-        self.add_rules(vec![PermissionRule {
+    fn allow(&self, source: RuleSource, grant: &Grant) {
+        let rule = PermissionRule {
             source,
             behavior: RuleBehavior::Allow,
-            tool_name: tool_name.to_string(),
-            rule_content,
-        }]);
+            tool_name: grant.tool_name.clone(),
+            rule_content: grant.content.clone(),
+        };
+        match grant.matching {
+            GrantMatch::Exact => self
+                .exact
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(rule),
+            _ => self.add_rules(vec![rule]),
+        }
     }
 }
 
@@ -407,19 +448,12 @@ impl PermissionPolicy for Policy {
 impl PermissionGrants for Policy {
     async fn grant(&self, grant: Grant) -> Result<(), GrantError> {
         if grant.scope == GrantScope::Turn {
-            self.allow(RuleSource::Command, &grant.tool_name, grant.content);
+            self.allow(RuleSource::Command, &grant);
             return Ok(());
         }
         // `Session`, not `Command`: `clear(Turn)` drops every `Command` rule
         // when a skill's turn ends, and a person's answer must outlive that.
-        self.allow(
-            RuleSource::Session,
-            &grant.tool_name,
-            grant
-                .content
-                .as_deref()
-                .map(|content| crate::ruleset::literal_rule_content(&grant.tool_name, content)),
-        );
+        self.allow(RuleSource::Session, &grant);
         match (grant.scope, &self.local_settings_file) {
             (GrantScope::Project, Some(path)) => self.write_project_rule(path, &grant).await,
             _ => Ok(()),

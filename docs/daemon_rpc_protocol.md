@@ -479,6 +479,10 @@ bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会�
 { "type": "permit_always", "scope": "local" }     // 另外写进 .agix/settings.local.json,之后新建的会话即可见
 ```
 
+`permit_always` 放行的是这一次调用的原文:`touch *.rs` 不会放行 `touch other.rs`。`local` 写下的是
+`{"tool": "Bash(touch *.rs)", "action": "allow", "match": "exact"}`,`match: "exact"` 让之后的会话
+同样按原文比对。会话的权限不记放行时(嵌入方给了 `without_grants`),提问里不提供 `permit_always`。
+
 未信任的项目(§3.6)不读它 `settings.local.json` 里的 allow 规则,`local` 写下的规则因此
 不会被之后的会话读回;要它持久,先信任这个项目。无项目会话(`project_root: null`)没有
 "这个项目",`local` 与 `session` 一样只在本会话内生效,什么也不写。

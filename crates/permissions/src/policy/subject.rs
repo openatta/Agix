@@ -42,6 +42,10 @@ impl Named {
         }
     }
 
+    pub(super) fn content(&self) -> Option<&str> {
+        self.content.as_deref()
+    }
+
     pub(super) fn hit(&self, rules: &RuleSet, tool_name: &str, ctx: &ToolContext) -> RuleHit {
         match (
             path_rule_group(self.kind),

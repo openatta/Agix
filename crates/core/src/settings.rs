@@ -299,6 +299,15 @@ pub struct PermissionRule {
     pub tool: String,
     /// Action: "allow", "deny", or "ask".
     pub action: PermissionAction,
+    /// `"exact"`: the content in `tool` allows only a call whose content is
+    /// that same text, as "allow every time" records it. Read on allow rules
+    /// only; a deny or ask is always a pattern.
+    #[serde(
+        default,
+        rename = "match",
+        skip_serializing_if = "crate::interface::permission::GrantMatch::is_pattern"
+    )]
+    pub matching: crate::interface::permission::GrantMatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

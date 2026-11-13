@@ -288,6 +288,7 @@ fn permission(tool: &str, case: RuleCase) -> Policy {
                 permission_rules: vec![base::settings::PermissionRule {
                     tool: tool.into(),
                     action: PermissionAction::Ask,
+                    matching: Default::default(),
                 }],
                 disable_bypass_permissions_mode: false,
             });

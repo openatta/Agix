@@ -677,22 +677,53 @@ pub enum GrantScope {
     Project,
 }
 
+/// How an allow's content meets a call's.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum GrantMatch {
+    /// As a `settings.json` rule's content is: `*`, `prefix:*`, path and URL
+    /// patterns.
+    #[default]
+    Pattern,
+    /// Only a call whose content is the same text.
+    Exact,
+}
+
+impl GrantMatch {
+    pub fn is_pattern(&self) -> bool {
+        *self == Self::Pattern
+    }
+}
+
 /// An allow for calls to one tool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Grant {
     pub tool_name: String,
-    /// `None` allows every call to the tool. For [`GrantScope::Turn`] this is
-    /// a rule pattern, matched as a `settings.json` rule's content is; for
-    /// [`GrantScope::Session`] and [`GrantScope::Project`] it is the
-    /// approved call's own match content, kept literally so the allow covers
-    /// that call and not whatever its text happens to match as a pattern.
+    /// `None` allows every call to the tool. Otherwise matched as `matching`
+    /// says.
     ///
     /// A grant relayed from project-controlled data — a skill's frontmatter —
     /// must not be `None`: anyone who can write a file in the repository could
     /// then switch off confirmation for `Bash` wholesale.
     pub content: Option<String>,
     pub scope: GrantScope,
+    /// A [`GrantScope::Turn`] grant is a skill's rule pattern; a
+    /// [`GrantScope::Session`] or [`GrantScope::Project`] one is a person's
+    /// answer about one call, so it covers that call's content exactly and
+    /// not whatever the text happens to match as a pattern.
+    pub matching: GrantMatch,
 }
 
 impl Grant {
@@ -700,6 +731,10 @@ impl Grant {
         Self {
             tool_name: tool_name.into(),
             content,
+            matching: match scope {
+                GrantScope::Turn => GrantMatch::Pattern,
+                GrantScope::Session | GrantScope::Project => GrantMatch::Exact,
+            },
             scope,
         }
     }
@@ -708,9 +743,6 @@ impl Grant {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum GrantError {
-    /// This permission keeps no allows of its own.
-    #[error("this permission keeps no grants")]
-    NotKept,
     /// Kept for the session, but not written where it would outlast it.
     #[error("kept for this session only, not written to {}: {reason}", .path.display())]
     NotPersisted { path: PathBuf, reason: String },
@@ -724,24 +756,13 @@ pub trait PermissionGrants: Send + Sync {
     fn clear(&self, scope: GrantScope);
 }
 
-/// Keeps nothing: [`PermissionGrants::grant`] answers
-/// [`GrantError::NotKept`], so a caller can tell an allow was not kept.
-pub struct NoGrants;
-
-#[async_trait]
-impl PermissionGrants for NoGrants {
-    async fn grant(&self, _: Grant) -> Result<(), GrantError> {
-        Err(GrantError::NotKept)
-    }
-    fn clear(&self, _: GrantScope) {}
-}
-
 /// A session's permission: the policy its calls are judged by and where the
-/// allows it is handed are kept.
+/// allows it is handed are kept. With no `grants` nothing is kept, so nobody
+/// is offered an "allow every time".
 #[derive(Clone)]
 pub struct PermissionSet {
     pub policy: Arc<dyn PermissionPolicy>,
-    pub grants: Arc<dyn PermissionGrants>,
+    pub grants: Option<Arc<dyn PermissionGrants>>,
 }
 
 impl PermissionSet {
@@ -750,14 +771,14 @@ impl PermissionSet {
     pub fn of<P: PermissionPolicy + PermissionGrants + 'static>(p: Arc<P>) -> Self {
         Self {
             policy: p.clone(),
-            grants: p,
+            grants: Some(p),
         }
     }
 
     pub fn without_grants(policy: Arc<dyn PermissionPolicy>) -> Self {
         Self {
             policy,
-            grants: Arc::new(NoGrants),
+            grants: None,
         }
     }
 }

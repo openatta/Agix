@@ -191,6 +191,7 @@ async fn an_admitted_plugin_tool_passes_the_scene_whitelist_and_the_rest_do_not(
                 PermissionRule {
                     tool: tool.into(),
                     action: PermissionAction::Allow,
+                    matching: Default::default(),
                 },
                 base::interface::config_source::Tier::Project,
                 false,

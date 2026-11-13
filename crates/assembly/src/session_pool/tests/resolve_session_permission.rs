@@ -43,6 +43,7 @@ fn denying(tool: &str) -> base::settings::LoadedRule {
         base::settings::PermissionRule {
             tool: tool.into(),
             action: base::settings::PermissionAction::Deny,
+            matching: Default::default(),
         },
         base::interface::config_source::Tier::Project,
         false,

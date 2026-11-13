@@ -109,16 +109,15 @@ impl Agent {
         // tools only for the rest of the turn it was invoked in — clear
         // whatever the *previous* turn granted before this new user message
         // starts a fresh one.
-        let grants = &self.gate.permission.grants;
-        grants.clear(base::interface::permission::GrantScope::Turn);
-        for (tool, pattern) in std::mem::take(&mut self.slash_skill_grants) {
-            let _ = grants
-                .grant(base::interface::permission::Grant::new(
-                    tool,
-                    pattern,
-                    base::interface::permission::GrantScope::Turn,
-                ))
-                .await;
+        use base::interface::permission::{Grant, GrantScope};
+        let slash_skill_grants = std::mem::take(&mut self.slash_skill_grants);
+        if let Some(grants) = &self.gate.permission.grants {
+            grants.clear(GrantScope::Turn);
+            for (tool, pattern) in slash_skill_grants {
+                let _ = grants
+                    .grant(Grant::new(tool, pattern, GrantScope::Turn))
+                    .await;
+            }
         }
 
         let _timer = self.telemetry.perf.start_timer("turn", "total");

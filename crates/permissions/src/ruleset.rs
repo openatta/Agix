@@ -416,18 +416,6 @@ fn matches_url(pattern: &str, content: &str, behavior: RuleBehavior) -> bool {
     }
 }
 
-/// The rule content a "permit always" answer records for a call whose match
-/// content is `content`: one that matches that call and no other. A URL may
-/// carry glob characters a URL pattern would read as wildcards
-/// (`base::url_rule::literal_pattern`).
-pub fn literal_rule_content(tool_name: &str, content: &str) -> String {
-    if URL_RULE_TOOLS.contains(&tool_name) {
-        base::url_rule::literal_pattern(content)
-    } else {
-        content.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,24 +835,5 @@ mod tests {
                 "allow {content} on {url}"
             );
         }
-    }
-
-    #[test]
-    fn permit_always_on_a_url_records_a_rule_for_that_url_alone() {
-        let rs = RuleSet::new(vec![rule(
-            "WebFetch",
-            Some(&literal_rule_content("WebFetch", "https://h.example/**")),
-            RuleBehavior::Allow,
-            RuleSource::Session,
-        )]);
-        assert!(matches!(
-            rs.evaluate("WebFetch", Some("https://h.example/**")),
-            RuleHit::Allow(_)
-        ));
-        assert!(matches!(
-            rs.evaluate("WebFetch", Some("https://h.example/secret")),
-            RuleHit::None
-        ));
-        assert_eq!(literal_rule_content("Bash", "ls *"), "ls *");
     }
 }

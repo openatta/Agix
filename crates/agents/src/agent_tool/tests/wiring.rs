@@ -705,7 +705,7 @@ fn authorization(id: &str, message: &str) -> base::interface::elicitation::Elici
             tool_use_id: Some("toolu_sub".into()),
         },
         message: message.into(),
-        options: runtime::elicitation::ChannelElicitation::authorization_options(),
+        options: runtime::elicitation::ChannelElicitation::authorization_options(true),
     }
 }
 
@@ -922,7 +922,7 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
         ..test_parent()
     }
     .agent_tool();
-    let grants = agent_tool.sub_permission().grants;
+    let grants = agent_tool.sub_permission().grants.unwrap();
     grants
         .grant(Grant::new(
             "Deploy",
@@ -1017,6 +1017,8 @@ async fn a_delegates_grants_are_its_own() {
 
     let sub = agent_tool.sub_permission();
     sub.grants
+        .as_ref()
+        .unwrap()
         .grant(Grant::new("Deploy", Some("qa".into()), GrantScope::Turn))
         .await
         .unwrap();
@@ -1028,7 +1030,7 @@ async fn a_delegates_grants_are_its_own() {
         decides(parent, parent_session, "qa").await,
         PermissionOutcome::Prompt { .. }
     ));
-    sub.grants.clear(GrantScope::Turn);
+    sub.grants.as_ref().unwrap().clear(GrantScope::Turn);
     assert!(matches!(
         decides(sub, sub_session, "qa").await,
         PermissionOutcome::Prompt { .. }
