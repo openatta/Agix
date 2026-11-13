@@ -58,12 +58,5 @@ fn    crates/skills/src/tool.rs                            build_bundled_files_i
 fn    crates/team/src/coordinator.rs                       DefaultCoordinator::orchestrate          474
 fn    crates/telemetry/src/recorder/mod.rs                 RecorderModel::replay                    106
 fn    crates/telemetry/src/recorder/reader.rs              load                                     113
-fn    crates/tools/src/bash/mod.rs                         BashTool::call                           116
 fn    crates/tools/src/bash/paths.rs                       path_args_stay_within                    111
-fn    crates/tools/src/glob.rs                             GlobTool::call                           106
-fn    crates/tools/src/grep.rs                             GrepTool::call                           218
-fn    crates/tools/src/monitor.rs                          Watch::run                               149
-fn    crates/tools/src/notebook_edit.rs                    NotebookEditTool::call                   111
-fn    crates/tools/src/task_output.rs                      TaskOutputTool::retrieve                 102
-fn    crates/tools/src/tool_search.rs                      ToolSearchTool::call                     118
 fn    daemon/src/main.rs                                   serve                                    333

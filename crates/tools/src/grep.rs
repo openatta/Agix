@@ -132,211 +132,45 @@ impl Tool for GrepTool {
             GrepMode::Content => DEFAULT_HEAD_LIMIT,
             _ => 0,
         });
-
         let root = match &input.path {
             Some(p) => resolve_path(p, &ctx.cwd),
             None => ctx.cwd.clone(),
         };
+        let (re, glob_matcher) = compile_matchers(&input)?;
 
-        // 构造 regex
-        let multiline = input.multiline.unwrap_or(false);
-        let mut regex_builder = regex::RegexBuilder::new(&input.pattern);
-        regex_builder.case_insensitive(input.case_insensitive.unwrap_or(false));
-        if multiline {
-            regex_builder.multi_line(true).dot_matches_new_line(true);
-        }
-        let re = match regex_builder.build() {
-            Ok(r) => r,
-            Err(e) => return Err(ToolError::Validation(format!("invalid regex pattern: {e}"))),
-        };
-
-        // 构造可选 glob filter
-        let glob_matcher = if let Some(g) = &input.glob {
-            match globset::Glob::new(g) {
-                Ok(g) => Some(g.compile_matcher()),
-                Err(e) => return Err(ToolError::Validation(format!("invalid glob '{g}': {e}"))),
-            }
-        } else {
-            None
-        };
-
-        let line_numbers = input.line_numbers.unwrap_or(false);
-        let cancel = ctx.cancel.clone();
-
-        // 跑 walk 在 spawn_blocking 里以便对接 cancel
-        let pattern_arc = Arc::new(re);
-        let glob_arc = Arc::new(glob_matcher);
-        let root_owned = root.clone();
-        let style = ctx.config.path_style;
-        let cwd = ctx.cwd.clone();
-        let filesystem = ctx.exec.filesystem.clone();
-        // The walk runs on `ignore`'s own threads, which are outside any
-        // runtime, so blocking on them cannot stall a reactor.
-        let runtime = tokio::runtime::Handle::current();
-
-        // 检查 cancel 后再进 blocking walk
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
 
-        let cap = if head_limit > 0 {
-            head_limit
-        } else {
-            usize::MAX
+        let walk = Walk {
+            excluded: Box::new(crate::security::credentials(&ctx).excluded_from_walk(&root)),
+            root,
+            pattern: Arc::new(re),
+            glob: Arc::new(glob_matcher),
+            style: ctx.config.path_style,
+            cwd: ctx.cwd.clone(),
+            filesystem: ctx.exec.filesystem.clone(),
+            // The walk runs on `ignore`'s own threads, which are outside any
+            // runtime, so blocking on them cannot stall a reactor.
+            runtime: tokio::runtime::Handle::current(),
+            cancel: ctx.cancel.clone(),
+            mode,
+            multiline: input.multiline.unwrap_or(false),
+            line_numbers: input.line_numbers.unwrap_or(false),
+            cap: if head_limit > 0 {
+                head_limit
+            } else {
+                usize::MAX
+            },
         };
-        let walk_cancel = cancel.clone();
-        let excluded = crate::security::credentials(&ctx).excluded_from_walk(&root);
-        let result = tokio::task::spawn_blocking(move || {
-            let found = Arc::new(Mutex::new(Collected::new(cap)));
+        let result = tokio::task::spawn_blocking(move || walk.run()).await;
 
-            // 用 ignore::WalkBuilder 自动遵守 .gitignore + 排除 .git/
-            let mut wb = WalkBuilder::new(&root_owned);
-            wb.standard_filters(true)
-                .hidden(false)
-                .filter_entry(move |entry| !excluded(entry.path()));
-            wb.build_parallel().run(|| {
-                let found = found.clone();
-                let pat = pattern_arc.clone();
-                let glob = glob_arc.clone();
-                let filesystem: Arc<dyn FileSystem> = filesystem.clone();
-                let runtime = runtime.clone();
-                let cwd = cwd.clone();
-                let cancel = walk_cancel.clone();
-                Box::new(move |entry| {
-                    if cancel.is_cancelled() {
-                        return WalkState::Quit;
-                    }
-                    let entry = match entry {
-                        Ok(e) => e,
-                        Err(_) => return WalkState::Continue,
-                    };
-                    let path = entry.path();
-                    if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                        return WalkState::Continue;
-                    }
-                    // glob filter（按文件名 + 全路径都试一下）
-                    if let Some(g) = glob.as_ref().as_ref() {
-                        let name_match = path.file_name().map(|n| g.is_match(n)).unwrap_or(false);
-                        let path_match = g.is_match(path);
-                        if !name_match && !path_match {
-                            return WalkState::Continue;
-                        }
-                    }
-                    let shown = style.render(path, &cwd);
-                    if runtime
-                        .block_on(filesystem.metadata(path))
-                        .is_ok_and(|m| m.len > MAX_FILE_BYTES)
-                    {
-                        found
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .too_large
-                            .push(shown);
-                        return WalkState::Continue;
-                    }
-                    let bytes = match runtime.block_on(filesystem.read(path)) {
-                        Ok(b) => b,
-                        Err(_) => return WalkState::Continue,
-                    };
-                    if is_binary(&bytes) {
-                        return WalkState::Continue;
-                    }
-                    let content = match std::str::from_utf8(&bytes) {
-                        Ok(s) => s,
-                        Err(_) => return WalkState::Continue,
-                    };
-                    let lines = match_lines(&pat, content, mode, multiline, line_numbers, &shown);
-                    if !lines.is_empty() {
-                        let mut g = found
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        for line in lines {
-                            g.push(line);
-                        }
-                    }
-                    WalkState::Continue
-                })
-            });
-
-            let mut found = std::mem::replace(
-                &mut *found
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                Collected::new(cap),
-            );
-            found.too_large.sort();
-            found
-        })
-        .await;
-
-        // cancel 在 spawn_blocking 之外检查
-        if cancel.is_cancelled() {
+        if ctx.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
 
         let found = result.map_err(|e| ToolError::exec(format!("grep walk panicked: {e}")))?;
-        let total_lines = found.total;
-        let dropped_for_size = found.dropped_for_size;
-        let too_large = found.too_large.clone();
-        let mut lines = found.into_sorted();
-
-        let structured = match mode {
-            GrepMode::FilesWithMatches => Some(serde_json::json!({
-                "files": lines.iter().map(|l| l.trim_end_matches('\n')).collect::<Vec<_>>(),
-            })),
-            GrepMode::Count => Some(serde_json::json!({
-                "counts": lines
-                    .iter()
-                    .filter_map(|l| {
-                        let (path, n) = l.trim_end_matches('\n').rsplit_once(':')?;
-                        Some((path.to_string(), serde_json::json!(n.parse::<u64>().ok()?)))
-                    })
-                    .collect::<serde_json::Map<_, _>>(),
-            })),
-            GrepMode::Content => None,
-        };
-
-        if head_limit > 0 && total_lines > head_limit && !dropped_for_size {
-            lines.push(format!(
-                "\n[output truncated to first {} of {} lines]\n",
-                head_limit, total_lines
-            ));
-        }
-
-        let mut text: String = lines.concat();
-        if text.len() > MAX_OUTPUT_BYTES {
-            let kept = base::text::truncate_at_char_boundary(&text, MAX_OUTPUT_BYTES).len();
-            text.truncate(kept);
-            text.push_str("\n[output truncated]\n");
-        } else if dropped_for_size {
-            text.push_str("\n[output truncated]\n");
-        }
-        if text.is_empty() {
-            text.push_str("(no matches)\n");
-        }
-        if !too_large.is_empty() {
-            let listed = too_large
-                .iter()
-                .take(LISTED_SKIPPED_FILES)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            let more = too_large.len().saturating_sub(LISTED_SKIPPED_FILES);
-            text.push_str(&format!(
-                "\n[{} file(s) larger than {} MiB were not searched: {listed}{}]\n",
-                too_large.len(),
-                MAX_FILE_BYTES / (1024 * 1024),
-                if more > 0 {
-                    format!(" and {more} more")
-                } else {
-                    String::new()
-                }
-            ));
-        }
-
-        let mut result = ToolResult::text(text);
-        result.structured_content = structured;
-        Ok(result)
+        Ok(render_result(found, mode, head_limit))
     }
 }
 
@@ -481,6 +315,221 @@ fn resolve_path(s: &str, cwd: &Path) -> PathBuf {
         p
     } else {
         cwd.join(p)
+    }
+}
+
+fn compile_matchers(
+    input: &GrepInput,
+) -> Result<(regex::Regex, Option<globset::GlobMatcher>), ToolError> {
+    let mut regex_builder = regex::RegexBuilder::new(&input.pattern);
+    regex_builder.case_insensitive(input.case_insensitive.unwrap_or(false));
+    if input.multiline.unwrap_or(false) {
+        regex_builder.multi_line(true).dot_matches_new_line(true);
+    }
+    let re = regex_builder
+        .build()
+        .map_err(|e| ToolError::Validation(format!("invalid regex pattern: {e}")))?;
+    let glob_matcher = match &input.glob {
+        Some(g) => Some(
+            globset::Glob::new(g)
+                .map_err(|e| ToolError::Validation(format!("invalid glob '{g}': {e}")))?
+                .compile_matcher(),
+        ),
+        None => None,
+    };
+    Ok((re, glob_matcher))
+}
+
+fn render_result(found: Collected, mode: GrepMode, head_limit: usize) -> ToolResult {
+    let total_lines = found.total;
+    let dropped_for_size = found.dropped_for_size;
+    let too_large = found.too_large.clone();
+    let mut lines = found.into_sorted();
+
+    let structured = match mode {
+        GrepMode::FilesWithMatches => Some(serde_json::json!({
+            "files": lines.iter().map(|l| l.trim_end_matches('\n')).collect::<Vec<_>>(),
+        })),
+        GrepMode::Count => Some(serde_json::json!({
+            "counts": lines
+                .iter()
+                .filter_map(|l| {
+                    let (path, n) = l.trim_end_matches('\n').rsplit_once(':')?;
+                    Some((path.to_string(), serde_json::json!(n.parse::<u64>().ok()?)))
+                })
+                .collect::<serde_json::Map<_, _>>(),
+        })),
+        GrepMode::Content => None,
+    };
+
+    if head_limit > 0 && total_lines > head_limit && !dropped_for_size {
+        lines.push(format!(
+            "\n[output truncated to first {} of {} lines]\n",
+            head_limit, total_lines
+        ));
+    }
+
+    let mut text: String = lines.concat();
+    if text.len() > MAX_OUTPUT_BYTES {
+        let kept = base::text::truncate_at_char_boundary(&text, MAX_OUTPUT_BYTES).len();
+        text.truncate(kept);
+        text.push_str("\n[output truncated]\n");
+    } else if dropped_for_size {
+        text.push_str("\n[output truncated]\n");
+    }
+    if text.is_empty() {
+        text.push_str("(no matches)\n");
+    }
+    if !too_large.is_empty() {
+        let listed = too_large
+            .iter()
+            .take(LISTED_SKIPPED_FILES)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = too_large.len().saturating_sub(LISTED_SKIPPED_FILES);
+        text.push_str(&format!(
+            "\n[{} file(s) larger than {} MiB were not searched: {listed}{}]\n",
+            too_large.len(),
+            MAX_FILE_BYTES / (1024 * 1024),
+            if more > 0 {
+                format!(" and {more} more")
+            } else {
+                String::new()
+            }
+        ));
+    }
+
+    let mut result = ToolResult::text(text);
+    result.structured_content = structured;
+    result
+}
+
+struct Walk {
+    root: PathBuf,
+    excluded: Box<dyn Fn(&Path) -> bool + Send + Sync>,
+    pattern: Arc<regex::Regex>,
+    glob: Arc<Option<globset::GlobMatcher>>,
+    style: base::tool::PathStyle,
+    cwd: PathBuf,
+    filesystem: Arc<dyn FileSystem>,
+    runtime: tokio::runtime::Handle,
+    cancel: tokio_util::sync::CancellationToken,
+    mode: GrepMode,
+    multiline: bool,
+    line_numbers: bool,
+    cap: usize,
+}
+
+impl Walk {
+    fn run(self) -> Collected {
+        let found = Arc::new(Mutex::new(Collected::new(self.cap)));
+        let mut wb = WalkBuilder::new(&self.root);
+        let excluded = self.excluded;
+        wb.standard_filters(true)
+            .hidden(false)
+            .filter_entry(move |entry| !excluded(entry.path()));
+        let shared = Arc::new(WalkShared {
+            pattern: self.pattern,
+            glob: self.glob,
+            style: self.style,
+            cwd: self.cwd,
+            filesystem: self.filesystem,
+            runtime: self.runtime,
+            mode: self.mode,
+            multiline: self.multiline,
+            line_numbers: self.line_numbers,
+        });
+        let cancel = self.cancel;
+        wb.build_parallel().run(|| {
+            let found = found.clone();
+            let shared = shared.clone();
+            let cancel = cancel.clone();
+            Box::new(move |entry| {
+                if cancel.is_cancelled() {
+                    return WalkState::Quit;
+                }
+                if let Ok(entry) = entry {
+                    shared.search_entry(&entry, &found);
+                }
+                WalkState::Continue
+            })
+        });
+
+        let mut found = std::mem::replace(
+            &mut *found
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            Collected::new(self.cap),
+        );
+        found.too_large.sort();
+        found
+    }
+}
+
+struct WalkShared {
+    pattern: Arc<regex::Regex>,
+    glob: Arc<Option<globset::GlobMatcher>>,
+    style: base::tool::PathStyle,
+    cwd: PathBuf,
+    filesystem: Arc<dyn FileSystem>,
+    runtime: tokio::runtime::Handle,
+    mode: GrepMode,
+    multiline: bool,
+    line_numbers: bool,
+}
+
+impl WalkShared {
+    fn search_entry(&self, entry: &ignore::DirEntry, found: &Mutex<Collected>) {
+        let path = entry.path();
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            return;
+        }
+        if let Some(g) = self.glob.as_ref().as_ref() {
+            let name_match = path.file_name().map(|n| g.is_match(n)).unwrap_or(false);
+            let path_match = g.is_match(path);
+            if !name_match && !path_match {
+                return;
+            }
+        }
+        let shown = self.style.render(path, &self.cwd);
+        if self
+            .runtime
+            .block_on(self.filesystem.metadata(path))
+            .is_ok_and(|m| m.len > MAX_FILE_BYTES)
+        {
+            found
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .too_large
+                .push(shown);
+            return;
+        }
+        let Ok(bytes) = self.runtime.block_on(self.filesystem.read(path)) else {
+            return;
+        };
+        if is_binary(&bytes) {
+            return;
+        }
+        let Ok(content) = std::str::from_utf8(&bytes) else {
+            return;
+        };
+        let lines = match_lines(
+            &self.pattern,
+            content,
+            self.mode,
+            self.multiline,
+            self.line_numbers,
+            &shown,
+        );
+        if !lines.is_empty() {
+            let mut g = found
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for line in lines {
+                g.push(line);
+            }
+        }
     }
 }
 

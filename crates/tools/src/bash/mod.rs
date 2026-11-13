@@ -238,48 +238,64 @@ impl Tool for BashTool {
             }
         };
         let (stdout_text, stderr_text) = drained.unwrap_or_default();
-        let structured = serde_json::json!({
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-            "exit_code": status.as_ref().and_then(|s| s.code),
-            "timed_out": status.is_none(),
-        });
-        let mut combined = stdout_text;
-        if !stderr_text.is_empty() {
-            if !combined.is_empty() && !combined.ends_with('\n') {
-                combined.push('\n');
-            }
-            combined.push_str(&stderr_text);
-        }
-
-        if combined.is_empty() {
-            combined.push_str("(no output)");
-        }
-        if left_running {
-            combined.push_str(
-                "\n[the command exited but processes it started in the background were \
-                 still holding its output open; they have been stopped. Run a long-lived \
-                 process with the Monitor tool instead]",
-            );
-        }
-        let is_error = status.as_ref().is_none_or(|s| !s.success);
-        match &status {
-            None => combined.push_str(&format!("\n[timed out after {}ms]", timeout.as_millis())),
-            Some(s) if !s.success => match s.code {
-                Some(code) => combined.push_str(&format!("\n[exit code: {code}]")),
-                None => combined.push_str("\n[killed by signal]"),
-            },
-            Some(_) => {}
-        }
-
-        let mut result = if is_error {
-            ToolResult::error_text(combined)
-        } else {
-            ToolResult::text(combined)
-        };
-        result.structured_content = Some(structured);
-        Ok(result)
+        Ok(shell_result(
+            stdout_text,
+            stderr_text,
+            status,
+            left_running,
+            timeout,
+        ))
     }
+}
+
+fn shell_result(
+    stdout_text: String,
+    stderr_text: String,
+    status: Option<base::interface::exec::ExitStatus>,
+    left_running: bool,
+    timeout: Duration,
+) -> ToolResult {
+    let structured = serde_json::json!({
+        "stdout": stdout_text,
+        "stderr": stderr_text,
+        "exit_code": status.as_ref().and_then(|s| s.code),
+        "timed_out": status.is_none(),
+    });
+    let mut combined = stdout_text;
+    if !stderr_text.is_empty() {
+        if !combined.is_empty() && !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+        combined.push_str(&stderr_text);
+    }
+
+    if combined.is_empty() {
+        combined.push_str("(no output)");
+    }
+    if left_running {
+        combined.push_str(
+            "\n[the command exited but processes it started in the background were \
+             still holding its output open; they have been stopped. Run a long-lived \
+             process with the Monitor tool instead]",
+        );
+    }
+    let is_error = status.as_ref().is_none_or(|s| !s.success);
+    match &status {
+        None => combined.push_str(&format!("\n[timed out after {}ms]", timeout.as_millis())),
+        Some(s) if !s.success => match s.code {
+            Some(code) => combined.push_str(&format!("\n[exit code: {code}]")),
+            None => combined.push_str("\n[killed by signal]"),
+        },
+        Some(_) => {}
+    }
+
+    let mut result = if is_error {
+        ToolResult::error_text(combined)
+    } else {
+        ToolResult::text(combined)
+    };
+    result.structured_content = Some(structured);
+    result
 }
 
 impl BashTool {

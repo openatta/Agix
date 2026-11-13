@@ -120,50 +120,20 @@ impl Tool for GlobTool {
             .map_err(|e| ToolError::Validation(format!("invalid glob pattern: {e}")))?
             .compile_matcher();
 
-        // walk 在阻塞线程里跑（ignore crate 是 sync IO）
-        let walker_root = root.clone();
-        let cancel = ctx.cancel.clone();
-        let scan_early_stop = max_results * 4; // scan up to 4x for early cutoff
+        let scan_early_stop = max_results * 4;
         let excluded = crate::security::credentials(&ctx).excluded_from_walk(&root);
-        let scan = tokio::task::spawn_blocking(
-            move || -> Result<Vec<(PathBuf, SystemTime)>, ToolError> {
-                let mut results = Vec::new();
-                let walker = ignore::WalkBuilder::new(&walker_root)
-                    .git_ignore(input.respect_gitignore)
-                    .git_exclude(input.respect_gitignore)
-                    .git_global(input.respect_gitignore)
-                    .hidden(false)
-                    .filter_entry(move |entry| !excluded(entry.path()))
-                    .build();
-                for entry in walker {
-                    if cancel.is_cancelled() {
-                        return Err(ToolError::Cancelled);
-                    }
-                    let Ok(entry) = entry else { continue };
-                    let path = entry.path();
-                    if !path.is_file() {
-                        continue;
-                    }
-                    // glob 匹配：优先用相对 root 的路径；fallback 绝对路径
-                    let rel_path = path.strip_prefix(&walker_root).unwrap_or(path);
-                    if !glob.is_match(rel_path) && !glob.is_match(path) {
-                        continue;
-                    }
-                    // entry.metadata() 是 ignore::Result，m.modified() 是 std::io::Result —— 跨不通；分两步
-                    let mtime = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    results.push((path.to_path_buf(), mtime));
-                    // 硬上限：超过 max_results * 4 时早停省时
-                    if results.len() >= scan_early_stop {
-                        break;
-                    }
-                }
-                Ok(results)
-            },
-        );
+        let cancel = ctx.cancel.clone();
+        let respect_gitignore = input.respect_gitignore;
+        let scan = tokio::task::spawn_blocking(move || {
+            scan_matches(
+                &root,
+                &glob,
+                respect_gitignore,
+                scan_early_stop,
+                excluded,
+                &cancel,
+            )
+        });
 
         let result = tokio::select! {
         biased;
@@ -172,39 +142,95 @@ impl Tool for GlobTool {
             Ok(inner) => inner?,
             Err(e) => return Err(ToolError::exec(e.to_string()))}};
 
-        let total = result.len();
-        let mut paths = result;
-        paths.sort_by_key(|b| std::cmp::Reverse(b.1)); // 新→旧
-        let truncated = paths.len() > max_results;
-        if truncated {
-            paths.truncate(max_results);
-        }
-
-        let mut output = String::with_capacity(paths.len() * 80);
-        for (p, _) in &paths {
-            output.push_str(&ctx.config.path_style.render(p, &ctx.cwd));
-            output.push('\n');
-        }
-        if truncated {
-            output.push_str(&format!(
-                "\n[{} more not shown — narrow the pattern or path to see them]\n",
-                total - max_results
-            ));
-        }
-        if output.is_empty() {
-            output.push_str("(no matches)\n");
-        }
-
-        let mut result = ToolResult::text(output);
-        result.structured_content = Some(serde_json::json!({
-            "paths": paths
-                .iter()
-                .map(|(p, _)| ctx.config.path_style.render(p, &ctx.cwd))
-                .collect::<Vec<_>>(),
-            "more": total - paths.len(),
-        }));
-        Ok(result)
+        Ok(render_paths(
+            result,
+            max_results,
+            ctx.config.path_style,
+            &ctx.cwd,
+        ))
     }
+}
+
+fn scan_matches(
+    root: &Path,
+    glob: &globset::GlobMatcher,
+    respect_gitignore: bool,
+    scan_early_stop: usize,
+    excluded: impl Fn(&Path) -> bool + Send + Sync + 'static,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<Vec<(PathBuf, SystemTime)>, ToolError> {
+    let mut results = Vec::new();
+    let walker = ignore::WalkBuilder::new(root)
+        .git_ignore(respect_gitignore)
+        .git_exclude(respect_gitignore)
+        .git_global(respect_gitignore)
+        .hidden(false)
+        .filter_entry(move |entry| !excluded(entry.path()))
+        .build();
+    for entry in walker {
+        if cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        if !glob.is_match(rel_path) && !glob.is_match(path) {
+            continue;
+        }
+        // entry.metadata() is ignore::Result while modified() is io::Result, so they cannot be chained
+        let mtime = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        results.push((path.to_path_buf(), mtime));
+        if results.len() >= scan_early_stop {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+fn render_paths(
+    mut paths: Vec<(PathBuf, SystemTime)>,
+    max_results: usize,
+    style: base::tool::PathStyle,
+    cwd: &Path,
+) -> ToolResult {
+    let total = paths.len();
+    paths.sort_by_key(|b| std::cmp::Reverse(b.1));
+    let truncated = paths.len() > max_results;
+    if truncated {
+        paths.truncate(max_results);
+    }
+
+    let mut output = String::with_capacity(paths.len() * 80);
+    for (p, _) in &paths {
+        output.push_str(&style.render(p, cwd));
+        output.push('\n');
+    }
+    if truncated {
+        output.push_str(&format!(
+            "\n[{} more not shown — narrow the pattern or path to see them]\n",
+            total - max_results
+        ));
+    }
+    if output.is_empty() {
+        output.push_str("(no matches)\n");
+    }
+
+    let mut result = ToolResult::text(output);
+    result.structured_content = Some(serde_json::json!({
+        "paths": paths
+            .iter()
+            .map(|(p, _)| style.render(p, cwd))
+            .collect::<Vec<_>>(),
+        "more": total - paths.len(),
+    }));
+    result
 }
 
 impl GlobTool {

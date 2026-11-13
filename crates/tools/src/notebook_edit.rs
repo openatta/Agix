@@ -130,53 +130,7 @@ impl Tool for NotebookEditTool {
             .and_then(|v| v.as_array_mut())
             .ok_or_else(|| ToolError::exec("ipynb missing 'cells' array".to_string()))?;
 
-        match input.mode {
-            NotebookEditMode::Insert => {
-                if input.cell_index > cells.len() {
-                    return Err(ToolError::exec(format!(
-                        "cell_index {} out of range (cells.len={})",
-                        input.cell_index,
-                        cells.len()
-                    )));
-                }
-                let new_cell = build_cell(
-                    input.cell_type.unwrap_or(NotebookCellType::Code),
-                    input.new_source.as_deref().unwrap_or(""),
-                );
-                cells.insert(input.cell_index, new_cell);
-            }
-            NotebookEditMode::Edit => {
-                if input.cell_index >= cells.len() {
-                    return Err(ToolError::exec(format!(
-                        "cell_index {} out of range (cells.len={})",
-                        input.cell_index,
-                        cells.len()
-                    )));
-                }
-                if let Some(cell) = cells
-                    .get_mut(input.cell_index)
-                    .and_then(|v| v.as_object_mut())
-                {
-                    let new_source = input.new_source.as_deref().unwrap_or("");
-                    cell.insert("source".into(), source_to_lines(new_source));
-                    // edit code cell 时清 outputs / execution_count（旧值过时）
-                    if cell.get("cell_type").and_then(|v| v.as_str()) == Some("code") {
-                        cell.insert("outputs".into(), json!([]));
-                        cell.insert("execution_count".into(), Value::Null);
-                    }
-                }
-            }
-            NotebookEditMode::Delete => {
-                if input.cell_index >= cells.len() {
-                    return Err(ToolError::exec(format!(
-                        "cell_index {} out of range (cells.len={})",
-                        input.cell_index,
-                        cells.len()
-                    )));
-                }
-                cells.remove(input.cell_index);
-            }
-        }
+        apply_edit(cells, &input)?;
 
         // 写回（pretty-print 让 git diff 可读）
         let new_content = serde_json::to_string_pretty(&nb)
@@ -207,6 +161,52 @@ impl Tool for NotebookEditTool {
             new_messages: Some(vec![]),
         })
     }
+}
+
+fn apply_edit(cells: &mut Vec<Value>, input: &NotebookEditInput) -> Result<(), ToolError> {
+    let out_of_range = || {
+        ToolError::exec(format!(
+            "cell_index {} out of range (cells.len={})",
+            input.cell_index,
+            cells.len()
+        ))
+    };
+    match input.mode {
+        NotebookEditMode::Insert => {
+            if input.cell_index > cells.len() {
+                return Err(out_of_range());
+            }
+            let new_cell = build_cell(
+                input.cell_type.unwrap_or(NotebookCellType::Code),
+                input.new_source.as_deref().unwrap_or(""),
+            );
+            cells.insert(input.cell_index, new_cell);
+        }
+        NotebookEditMode::Edit => {
+            if input.cell_index >= cells.len() {
+                return Err(out_of_range());
+            }
+            if let Some(cell) = cells
+                .get_mut(input.cell_index)
+                .and_then(|v| v.as_object_mut())
+            {
+                let new_source = input.new_source.as_deref().unwrap_or("");
+                cell.insert("source".into(), source_to_lines(new_source));
+                // A stale output and execution count would outlive the source they came from.
+                if cell.get("cell_type").and_then(|v| v.as_str()) == Some("code") {
+                    cell.insert("outputs".into(), json!([]));
+                    cell.insert("execution_count".into(), Value::Null);
+                }
+            }
+        }
+        NotebookEditMode::Delete => {
+            if input.cell_index >= cells.len() {
+                return Err(out_of_range());
+            }
+            cells.remove(input.cell_index);
+        }
+    }
+    Ok(())
 }
 
 impl NotebookEditTool {

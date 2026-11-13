@@ -232,38 +232,8 @@ impl Watch {
         let (lines_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
         #[allow(clippy::expect_used)]
         let chunks = child.output().expect("the first call owns the pipes");
-        let task = self.task.clone();
         let stop_reading = CancellationToken::new();
-        let stop = stop_reading.clone();
-        let reader = tokio::spawn(async move {
-            // Only stdout is an event. Stderr is kept as output rather than
-            // left unread: a pipe nobody drains stalls the child.
-            let stdout = tokio_util::io::StreamReader::new(chunks.map(move |chunk| match chunk {
-                Ok(c) if c.stream == OutputStream::Stdout => Ok(std::io::Cursor::new(c.bytes)),
-                Ok(c) => {
-                    task.append_output(&String::from_utf8_lossy(&c.bytes));
-                    Ok(std::io::Cursor::new(Vec::new()))
-                }
-                Err(e) => Err(std::io::Error::other(e.to_string())),
-            }));
-            let mut framed =
-                FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
-            loop {
-                let next = tokio::select! {
-                    biased;
-                    _ = stop.cancelled() => None,
-                    n = framed.next() => n,
-                };
-                match next {
-                    Some(Ok(line)) => {
-                        if lines_tx.send(line).is_err() {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
-        });
+        let reader = spawn_stdout_reader(self.task.clone(), chunks, lines_tx, stop_reading.clone());
 
         let deadline = self.timeout.map(|t| tokio::time::Instant::now() + t);
         let mut batch: Vec<String> = Vec::new();
@@ -335,43 +305,7 @@ impl Watch {
             self.task.append_output(&format!("{line}\n"));
             batch.push(line);
         }
-        let (status, closing) = match ending {
-            Ending::Stopped => (RunningStatus::Cancelled, None),
-            Ending::Exited(status) if status.success => (
-                RunningStatus::Completed,
-                Some("The command exited with code 0; the watch is over.".to_string()),
-            ),
-            Ending::Exited(status) => {
-                let how = status
-                    .code
-                    .map_or("was killed by a signal".to_string(), |c| {
-                        format!("exited with code {c}")
-                    });
-                (
-                    RunningStatus::Failed(format!("the command {how}")),
-                    Some(format!("The command {how}; the watch is over.")),
-                )
-            }
-            Ending::TimedOut(after) => (
-                RunningStatus::Failed(format!("timed out after {}s", after.as_secs())),
-                Some(format!(
-                    "Timed out after {}s and was stopped; set persistent for a session-long watch.",
-                    after.as_secs()
-                )),
-            ),
-            Ending::Flooded => (
-                RunningStatus::Failed("too many events".into()),
-                Some(format!(
-                    "Stopped: more than {FLOOD_LINES} events within {}s. Restart it with a \
-                     tighter filter.",
-                    FLOOD_WINDOW.as_secs()
-                )),
-            ),
-            Ending::Failed(why) => (
-                RunningStatus::Failed(why.clone()),
-                Some(format!("The watch failed: {why}")),
-            ),
-        };
+        let (status, closing) = ending_outcome(ending);
         if closing.is_some() || !batch.is_empty() {
             self.notify(&mut batch, closing.as_deref(), &mut unread);
         }
@@ -427,6 +361,85 @@ impl Watch {
 struct Unread {
     lines: Vec<String>,
     omitted: usize,
+}
+
+fn spawn_stdout_reader(
+    task: Arc<RunningTask>,
+    chunks: futures::stream::BoxStream<
+        'static,
+        Result<base::interface::exec::OutputChunk, base::interface::exec::ExecError>,
+    >,
+    lines_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    stop: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Only stdout is an event. Stderr is kept as output rather than
+        // left unread: a pipe nobody drains stalls the child.
+        let stdout = tokio_util::io::StreamReader::new(chunks.map(move |chunk| match chunk {
+            Ok(c) if c.stream == OutputStream::Stdout => Ok(std::io::Cursor::new(c.bytes)),
+            Ok(c) => {
+                task.append_output(&String::from_utf8_lossy(&c.bytes));
+                Ok(std::io::Cursor::new(Vec::new()))
+            }
+            Err(e) => Err(std::io::Error::other(e.to_string())),
+        }));
+        let mut framed = FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_LENGTH));
+        loop {
+            let next = tokio::select! {
+                biased;
+                _ = stop.cancelled() => None,
+                n = framed.next() => n,
+            };
+            match next {
+                Some(Ok(line)) => {
+                    if lines_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
+    })
+}
+
+fn ending_outcome(ending: Ending) -> (RunningStatus, Option<String>) {
+    match ending {
+        Ending::Stopped => (RunningStatus::Cancelled, None),
+        Ending::Exited(status) if status.success => (
+            RunningStatus::Completed,
+            Some("The command exited with code 0; the watch is over.".to_string()),
+        ),
+        Ending::Exited(status) => {
+            let how = status
+                .code
+                .map_or("was killed by a signal".to_string(), |c| {
+                    format!("exited with code {c}")
+                });
+            (
+                RunningStatus::Failed(format!("the command {how}")),
+                Some(format!("The command {how}; the watch is over.")),
+            )
+        }
+        Ending::TimedOut(after) => (
+            RunningStatus::Failed(format!("timed out after {}s", after.as_secs())),
+            Some(format!(
+                "Timed out after {}s and was stopped; set persistent for a session-long watch.",
+                after.as_secs()
+            )),
+        ),
+        Ending::Flooded => (
+            RunningStatus::Failed("too many events".into()),
+            Some(format!(
+                "Stopped: more than {FLOOD_LINES} events within {}s. Restart it with a \
+                 tighter filter.",
+                FLOOD_WINDOW.as_secs()
+            )),
+        ),
+        Ending::Failed(why) => (
+            RunningStatus::Failed(why.clone()),
+            Some(format!("The watch failed: {why}")),
+        ),
+    }
 }
 
 #[cfg(test)]

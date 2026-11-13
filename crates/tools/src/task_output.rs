@@ -114,29 +114,15 @@ impl TaskOutputTool {
         input: &TaskOutputInput,
         ctx: &ToolContext,
     ) -> Result<ToolResult, ToolError> {
-        // Look up the task in the running task store
-        let (output, status) = match ctx
-            .running_tasks
-            .as_ref()
-            .and_then(|rt| rt.find(&input.task_id))
-        {
-            None => {
-                // Task not found
-                return Ok(ToolResult {
-                    content: base::tool::ToolResultContent::Text("task not found".to_string()),
-                    is_error: true,
-                    structured_content: Some(json!({
-                        "retrieval_status": "not_found",
-                        "task_id": input.task_id,
-                    })),
-                    mcp_meta: None,
-                    new_messages: None,
-                });
-            }
-            Some((output, _, status)) => (output, status),
+        let find = || {
+            ctx.running_tasks
+                .as_ref()
+                .and_then(|rt| rt.find(&input.task_id))
+        };
+        let Some((output, _, status)) = find() else {
+            return Ok(not_found(&input.task_id, "task not found"));
         };
 
-        // If running and block=true, wait for completion (poll up to timeout)
         if status == RunningStatus::Running && input.block {
             let deadline = tokio::time::Instant::now() + Duration::from_millis(input.timeout);
             let mut current_output = output;
@@ -144,72 +130,62 @@ impl TaskOutputTool {
             while tokio::time::Instant::now() < deadline {
                 sleep(Duration::from_millis(500)).await;
 
-                if let Some((new_output, _, new_status)) = ctx
-                    .running_tasks
-                    .as_ref()
-                    .and_then(|rt| rt.find(&input.task_id))
-                {
-                    current_output = new_output;
-                    if new_status != RunningStatus::Running {
-                        // Task completed (naturally, cancelled, or failed)
-                        return Ok(ToolResult {
-                            content: base::tool::ToolResultContent::Text(current_output.clone()),
-                            is_error: false,
-                            structured_content: Some(json!({
-                                "retrieval_status": "success",
-                                "task_id": input.task_id,
-                                "output": current_output,
-                                "status": status_to_str(&new_status),
-                            })),
-                            mcp_meta: None,
-                            new_messages: None,
-                        });
-                    }
-                } else {
-                    // Task was removed during wait
-                    return Ok(ToolResult {
-                        content: base::tool::ToolResultContent::Text(
-                            "task disappeared during wait".to_string(),
-                        ),
-                        is_error: true,
-                        structured_content: Some(json!({
-                            "retrieval_status": "not_found",
-                            "task_id": input.task_id,
-                        })),
-                        mcp_meta: None,
-                        new_messages: None,
-                    });
+                let Some((new_output, _, new_status)) = find() else {
+                    return Ok(not_found(&input.task_id, "task disappeared during wait"));
+                };
+                current_output = new_output;
+                if new_status != RunningStatus::Running {
+                    return Ok(snapshot(
+                        &input.task_id,
+                        "success",
+                        current_output,
+                        status_to_str(&new_status),
+                    ));
                 }
             }
 
-            // Timeout expired, task still running
-            return Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text(current_output.clone()),
-                is_error: false,
-                structured_content: Some(json!({
-                    "retrieval_status": "not_ready",
-                    "task_id": input.task_id,
-                    "output": current_output,
-                    "status": "running",
-                })),
-                mcp_meta: None,
-                new_messages: None,
-            });
+            return Ok(snapshot(
+                &input.task_id,
+                "not_ready",
+                current_output,
+                "running",
+            ));
         }
 
-        // Task is not running (completed/cancelled/failed), or block=false — return current state
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(output.clone()),
-            is_error: false,
-            structured_content: Some(json!({
-                "retrieval_status": "success",
-                "task_id": input.task_id,
-                "output": output,
-                "status": status_to_str(&status),
-            })),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(snapshot(
+            &input.task_id,
+            "success",
+            output,
+            status_to_str(&status),
+        ))
+    }
+}
+
+fn not_found(task_id: &str, message: &str) -> ToolResult {
+    ToolResult {
+        content: base::tool::ToolResultContent::Text(message.to_string()),
+        is_error: true,
+        structured_content: Some(json!({
+            "retrieval_status": "not_found",
+            "task_id": task_id,
+        })),
+        mcp_meta: None,
+        new_messages: None,
+    }
+}
+
+fn snapshot(task_id: &str, retrieval_status: &str, output: String, status: &str) -> ToolResult {
+    ToolResult {
+        content: base::tool::ToolResultContent::Text(output.clone()),
+        is_error: false,
+        structured_content: Some(json!({
+            "retrieval_status": retrieval_status,
+            "task_id": task_id,
+            "output": output,
+            "status": status,
+        })),
+        mcp_meta: None,
+        new_messages: None,
     }
 }
 
