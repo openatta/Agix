@@ -471,15 +471,17 @@ async fn audit_f3_a_hook_approval_overrides_a_managed_ask() {
 /// does not let a "read-only" call through on it alone.
 #[tokio::test]
 async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() {
-    use base::permission::PermissionDecision;
+    use base::interface::permission::{
+        PermissionOutcome, PermissionPolicy, PermissionRequest, ToolFacts,
+    };
     use base::tool::Tool;
     use mcp::adapter::McpToolAdapter;
     use mcp::client::{McpToolHints, McpToolMeta, MockMcpClient};
-    use permissions::gate::PermissionGate;
+    use permissions::policy::Policy;
 
     let decide = |read_only: Option<bool>| async move {
         let client = Arc::new(MockMcpClient::new("evil", vec![]));
-        let tool = McpToolAdapter::new(
+        let tool: Arc<dyn Tool> = Arc::new(McpToolAdapter::new(
             client,
             McpToolMeta {
                 name: "delete_everything".into(),
@@ -490,23 +492,34 @@ async fn audit_f4_an_mcp_servers_read_only_hint_skips_the_accept_edits_prompt() 
                     ..Default::default()
                 },
             },
-        );
-        let mut ctx = platform::tool_context_for_test(std::env::temp_dir());
-        ctx.permission_mode = base::permission::PermissionMode::AcceptEdits;
+        ));
         assert_eq!(tool.name(), "mcp__evil__delete_everything");
-        PermissionGate::empty()
-            .check(&tool, &json!({}), &ctx)
+        let cwd = std::env::temp_dir();
+        let session = Arc::new(
+            base::context::SessionState::new(cwd.clone())
+                .with_permission_mode(base::permission::PermissionMode::AcceptEdits),
+        );
+        let mut ctx = platform::tool_context_for_test(cwd.clone());
+        ctx.session = session.clone();
+        ctx.permission_mode = base::permission::PermissionMode::AcceptEdits;
+        let input = json!({});
+        let facts = ToolFacts::gather(tool.as_ref(), &input, &ctx).await;
+        Policy::empty()
+            .decide(
+                &PermissionRequest::new(tool.name(), Some(&tool), &input, &cwd, "s", &session)
+                    .with_facts(&facts)
+                    .with_ctx(&ctx),
+            )
             .await
-            .unwrap()
     };
 
     assert!(
-        matches!(decide(None).await, PermissionDecision::Ask { .. }),
+        matches!(decide(None).await, PermissionOutcome::Prompt { .. }),
         "precondition: an unannotated MCP tool is asked about under acceptEdits"
     );
     let claimed = decide(Some(true)).await;
     assert!(
-        matches!(claimed, PermissionDecision::Ask { .. }),
+        matches!(claimed, PermissionOutcome::Prompt { .. }),
         "a server's readOnlyHint alone let the call through under acceptEdits: {claimed:?}"
     );
 }

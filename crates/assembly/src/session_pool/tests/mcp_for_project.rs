@@ -9,7 +9,11 @@ impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Permit
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }
 

@@ -71,14 +71,17 @@ impl Builder {
             settings.model.model_name.clone(),
         ));
         let permission = self.permission.unwrap_or_else(|| {
+            use base::interface::permission::{Basis, PermissionOutcome, PermissionRequest};
             struct AllowAll;
             #[async_trait::async_trait]
             impl base::interface::permission::PermissionPolicy for AllowAll {
-                async fn decide(
-                    &self,
-                    _: &base::interface::permission::PermissionRequest<'_>,
-                ) -> base::interface::permission::PermissionOutcome {
-                    base::interface::permission::PermissionOutcome::Permit
+                async fn decide(&self, _: &PermissionRequest<'_>) -> PermissionOutcome {
+                    let (profile, obligations) = Default::default();
+                    PermissionOutcome::Permit {
+                        basis: Basis::Bypass,
+                        profile,
+                        obligations,
+                    }
                 }
             }
             PermissionSet::without_grants(Arc::new(AllowAll))

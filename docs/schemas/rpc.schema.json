@@ -3788,7 +3788,7 @@
         },
         {
           "const": "plugin",
-          "description": "由已安装插件贡献。卸载插件时用 `PermissionGate::remove_rules_by_source`\n整批撤销。",
+          "description": "由已安装插件贡献。卸载插件时用 `Policy::remove_rules_by_source`\n整批撤销。",
           "type": "string"
         }
       ]
@@ -4629,7 +4629,7 @@
           "description": "This session's permission mode. `None` takes the settings'\n`permission_mode`. A session may always ask for a stricter mode than\nthe settings'; a looser one is clamped unless the settings set\n`allow_client_permission_override`."
         },
         "permission_rules": {
-          "description": "Allow/deny/ask rules for the `RuleSetPermission` this session's\n`permission_mode` (if set) constructs. Ignored when `permission_mode`\nis `None`.",
+          "description": "Allow/deny/ask rules for the `Policy` this session's\n`permission_mode` (if set) constructs. Ignored when `permission_mode`\nis `None`.",
           "items": {
             "$ref": "#/$defs/PermissionRule"
           },

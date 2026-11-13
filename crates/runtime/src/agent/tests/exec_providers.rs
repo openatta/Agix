@@ -62,7 +62,7 @@ async fn the_permission_judges_a_call_on_the_providers_it_runs_on() {
     tools.register(Arc::new(ExecProbe(seen.clone())));
     let settings = test_settings();
     let permission = base::interface::permission::PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::from_settings(&settings, []),
+        permissions::policy::Policy::from_settings(&settings, []),
     ));
     let (mut agent, _event_rx, _input_tx) = Builder::new()
         .scene(Arc::new(scene::code::spec(

@@ -110,9 +110,10 @@ impl base::interface::permission::PermissionPolicy for DenyingPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Deny {
-            reason: "denied by test rule engine".into(),
-        }
+        base::interface::permission::PermissionOutcome::deny(
+            base::interface::permission::Stage::Rule,
+            "denied by test rule engine",
+        )
     }
 }
 
@@ -123,7 +124,11 @@ impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Permit
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }
 
@@ -835,9 +840,10 @@ impl base::interface::permission::PermissionPolicy for DenyAllTestPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Deny {
-            reason: "denied by test".into(),
-        }
+        base::interface::permission::PermissionOutcome::deny(
+            base::interface::permission::Stage::Rule,
+            "denied by test",
+        )
     }
 }
 
@@ -856,7 +862,11 @@ impl base::interface::permission::PermissionPolicy for PromptTestPermission {
             prompt_id: self.prompt_id.into(),
             message: "allow?".into(),
             paths: vec![],
-            managed: false,
+            reason: base::interface::permission::Reason::new(
+                base::interface::permission::Stage::ModeDefault,
+                "asked",
+            ),
+            answerable: base::interface::permission::Answerable::HookOrPerson,
         }
     }
 }

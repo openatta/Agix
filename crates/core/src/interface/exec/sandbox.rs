@@ -157,3 +157,63 @@ pub struct Confined {
 pub trait Sandbox: Send + Sync {
     fn confine(&self, spec: ProcessSpec, policy: &SandboxPolicy) -> Confined;
 }
+
+/// What the session's sandbox holds a command to, found once when the session
+/// is built. The permission policy reads it and never probes the sandbox
+/// itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ConfinementReport {
+    /// How much of the session's policy holds a command.
+    pub session: Enforcement,
+    /// The model cannot reach whatever host it likes.
+    pub network_restricted: bool,
+    pub require_enforcement: bool,
+    pub unattended_requires_network_policy: bool,
+}
+
+impl Default for ConfinementReport {
+    /// Nothing found out: no command is held.
+    fn default() -> Self {
+        Self {
+            session: Enforcement::None,
+            network_restricted: false,
+            require_enforcement: false,
+            unattended_requires_network_policy: false,
+        }
+    }
+}
+
+impl ConfinementReport {
+    /// Confine a probe command under `policy` and report how much of it held.
+    pub fn probe(
+        sandbox: &dyn Sandbox,
+        probe: ProcessSpec,
+        policy: &SandboxPolicy,
+        require_enforcement: bool,
+        unattended_requires_network_policy: bool,
+    ) -> Self {
+        Self {
+            session: sandbox.confine(probe, policy).enforcement,
+            network_restricted: !matches!(policy.network_mode, NetworkMode::Unrestricted),
+            require_enforcement,
+            unattended_requires_network_policy,
+        }
+    }
+
+    /// No sandbox at all: the session turned it off.
+    pub fn disabled(require_enforcement: bool, unattended_requires_network_policy: bool) -> Self {
+        Self {
+            require_enforcement,
+            unattended_requires_network_policy,
+            ..Self::default()
+        }
+    }
+
+    /// A command nobody can be asked about may run: the sandbox fully holds
+    /// it, and the network is restricted when the settings ask for that too.
+    pub fn holds_unattended(&self) -> bool {
+        self.session == Enforcement::Full
+            && (!self.unattended_requires_network_policy || self.network_restricted)
+    }
+}

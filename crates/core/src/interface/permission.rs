@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::context::SessionState;
 use crate::interface::tool::{CallTraits, PermissionDecision, Tool, ToolContext, ToolOrigin};
+use crate::permission::PermissionRule;
 
 /// What a tool's permission match content is, which decides how rules are
 /// matched against it.
@@ -223,7 +224,7 @@ impl PermissionFacts {
 
     /// The facts a tool's `check_permissions`, `permission_match_content`,
     /// `accept_edits_allows` and `spec().permission` amount to, so that a tool
-    /// written against those is judged as `PermissionGate` judges it.
+    /// written against those is judged as before it stated facts of its own.
     ///
     /// - `Deny` is [`Reach::Refused`] with its reason.
     /// - `Allow` is contained: [`Reach::Inside`] when the subject is a path or
@@ -294,6 +295,22 @@ impl ToolFacts {
         }
     }
 
+    /// [`Self::gather`] with what the tool's old answers amount to
+    /// ([`PermissionFacts::bridged`]) in place of what it states.
+    pub async fn bridged(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> Self {
+        let spec = tool.spec();
+        let facts = PermissionFacts::bridged(tool, input, ctx).await;
+        Self {
+            subject: facts.subject,
+            traits: tool.call_traits(input),
+            stance: spec.stance,
+            origin: spec.origin,
+            reach: facts.reach,
+            runs: facts.runs,
+            question: facts.question,
+        }
+    }
+
     /// For a name no tool answers to: claims nothing, not even a read.
     pub fn unknown_tool() -> Self {
         Self {
@@ -333,24 +350,156 @@ pub enum Attendance {
     NoOneToAsk(&'static str),
 }
 
-/// Permission check outcome.
+/// What a policy concluded about one call.
 #[derive(Debug, Clone)]
 pub enum PermissionOutcome {
-    /// Allowed.
-    Permit,
-    /// Denied with a reason.
-    Deny { reason: String },
-    /// Needs upper-layer decision. Engine emits `AgentEvent::PermissionPrompt`
-    /// and waits for `InputMessage::PermissionResponse`.
+    Permit {
+        basis: Basis,
+        profile: ExecProfile,
+        obligations: Obligations,
+    },
+    Deny {
+        reason: Reason,
+    },
+    /// Put to whoever can answer: the engine emits
+    /// `AgentEvent::PermissionPrompt` and waits for the answer.
     Prompt {
         prompt_id: String,
         message: String,
         paths: Vec<PathBuf>,
-        /// The deployment's managed layer asks this. A `PreToolUse` hook's
-        /// `approve` answers any other question, but not this one: only the
-        /// person at the session does.
-        managed: bool,
+        reason: Reason,
+        answerable: Answerable,
     },
+}
+
+impl PermissionOutcome {
+    pub fn deny(stage: Stage, message: impl Into<String>) -> Self {
+        Self::Deny {
+            reason: Reason::new(stage, message),
+        }
+    }
+
+    /// A question anyone who can answer may answer, under a fresh id.
+    pub fn prompt(stage: Stage, message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self::Prompt {
+            prompt_id: uuid::Uuid::new_v4().to_string(),
+            reason: Reason::new(stage, message.clone()),
+            message,
+            paths: Vec::new(),
+            answerable: Answerable::HookOrPerson,
+        }
+    }
+
+    pub fn is_permit(&self) -> bool {
+        matches!(self, Self::Permit { .. })
+    }
+}
+
+/// On whose word a call runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Basis {
+    Rule(PermissionRule),
+    /// It stays where the session works without asking.
+    Contained,
+    AcceptEdits,
+    Bypass,
+    /// A `PreToolUse` hook approved it, by name.
+    HookApproved(String),
+    /// A command nobody can be asked about, which the session's sandbox holds.
+    UnattendedConfined,
+    Person,
+}
+
+/// Who may answer a question a policy asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Answerable {
+    HookOrPerson,
+    /// The deployment's managed layer asks it: a hook's approve does not
+    /// answer it.
+    PersonOnly,
+}
+
+/// Where in the policy's order a call was refused or asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Stage {
+    ManagedUnreadable,
+    UnknownTool,
+    Credentials,
+    Hook,
+    ToolRefusal,
+    Rule,
+    ManagedRule,
+    /// A rule the delegate runs under: its type's deny rules.
+    DelegateRule,
+    BypassImmune,
+    PlanMode,
+    DontAsk,
+    /// A write to the agent's or the repository's configuration, which the
+    /// tool's own word does not let through.
+    Configuration,
+    ModeDefault,
+    Attendance,
+}
+
+/// Why a call was refused or asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Reason {
+    pub stage: Stage,
+    pub rule: Option<PermissionRule>,
+    pub message: String,
+}
+
+impl Reason {
+    pub fn new(stage: Stage, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            rule: None,
+            message: message.into(),
+        }
+    }
+
+    pub fn with_rule(mut self, rule: PermissionRule) -> Self {
+        self.rule = Some(rule);
+        self
+    }
+}
+
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// How a permitted command is confined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ExecProfile {
+    #[default]
+    Session,
+    /// Let through on its own word: held tighter than one a person approved.
+    Strict,
+    /// Nobody attends the session.
+    Unattended,
+}
+
+/// What the caller owes once a permitted call has run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct Obligations {
+    pub scan_nested_repos: bool,
+}
+
+impl Obligations {
+    pub fn scanning_nested_repos(yes: bool) -> Self {
+        Self {
+            scan_nested_repos: yes,
+        }
+    }
 }
 
 /// One tool call put to a [`PermissionPolicy`].
@@ -437,7 +586,7 @@ impl<'a> PermissionRequest<'a> {
 }
 
 /// Whether a tool call runs. The engine's own is
-/// `permissions::rule_set_permission::RuleSetPermission` (rules, modes, the
+/// `permissions::policy::Policy` (rules, modes, the
 /// tools' own verdicts).
 #[async_trait]
 pub trait PermissionPolicy: Send + Sync {

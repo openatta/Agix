@@ -3,7 +3,7 @@ SystemInit
 TurnStart
 StepStart step=0
 ToolUse GoldenAsk {}
-ToolResult GoldenAsk is_error=Some(true) content="Denied by permission: Allow GoldenAsk? — and nobody is attending this session … <291 bytes total>"
+ToolResult GoldenAsk is_error=Some(true) content="Denied by permission: GoldenAsk wants to run — and nobody is attending this se… <297 bytes total>"
 StepEnd step=0 stop_reason=tool_use tool_calls=1
 StepStart step=1
 TextDelta "not allowed here, reporting it"
@@ -19,5 +19,5 @@ Assistant
 
 == model calls ==
 golden-model max_tokens=1024 messages=3 content_bytes=619 truncated_results=0
-golden-model max_tokens=1024 messages=5 content_bytes=910 truncated_results=0
+golden-model max_tokens=1024 messages=5 content_bytes=916 truncated_results=0
 unconsumed_replies=0

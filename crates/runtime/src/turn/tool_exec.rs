@@ -310,7 +310,7 @@ pub(super) async fn execute_tool_inner(
         });
     }
 
-    use base::interface::permission::PermissionOutcome;
+    use base::interface::permission::{Answerable, PermissionOutcome, Reason};
     let check_started = std::time::Instant::now();
     let checked = ctx
         .permission
@@ -327,16 +327,23 @@ pub(super) async fn execute_tool_inner(
     record_permission_decision(ctx, &tool, name, &input, &checked, check_started);
     // Before the unattended refusal below: a hook's approve is an answer given
     // in advance, so nobody needs to be attending for it to count.
-    let checked = match checked {
-        PermissionOutcome::Prompt { managed: false, .. } if hook_approved => {
-            PermissionOutcome::Permit
-        }
-        other => other,
-    };
-    let user_approved = matches!(checked, PermissionOutcome::Prompt { .. });
+    let hook_answers = hook_approved
+        && matches!(
+            checked,
+            PermissionOutcome::Prompt {
+                answerable: Answerable::HookOrPerson,
+                ..
+            }
+        );
+    let user_approved = matches!(checked, PermissionOutcome::Prompt { .. }) && !hook_answers;
     match checked {
-        PermissionOutcome::Permit => {}
-        PermissionOutcome::Deny { reason } => {
+        PermissionOutcome::Permit { .. } => {}
+        PermissionOutcome::Prompt { .. } if hook_answers => {}
+        PermissionOutcome::Deny {
+            reason: Reason {
+                message: reason, ..
+            },
+        } => {
             fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionDenied, |i| {
                 i.with_tool(name, input.clone()).with_reason(reason.clone())
             })
@@ -424,7 +431,7 @@ pub(super) async fn execute_tool_inner(
                         Some(crate::agent::PermissionDecision::PermitAlways { scope }) => {
                             // Same content derivation the rule engine itself
                             // uses to match a tool call against a rule (see
-                            // `PermissionGate::check` step 3 — `RuleHit`
+                            // `Policy::decide` step 3 — `RuleHit`
                             // evaluation) — this is what makes the persisted
                             // pattern actually match future calls the same
                             // way the one the user just answered did.

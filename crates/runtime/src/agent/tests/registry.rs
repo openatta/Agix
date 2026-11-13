@@ -760,11 +760,7 @@ async fn every_registered_tool_is_judged_by_the_permission_policy() {
     // built-ins and build the handler over *that*.
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
-    let permission = PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-            permissions::gate::PermissionGate::empty(),
-        )),
-    ));
+    let permission = PermissionSet::of(Arc::new(permissions::policy::Policy::empty()));
 
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
@@ -825,11 +821,7 @@ async fn entering_plan_mode_moves_the_permission_gate() {
 
     let template = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&template);
-    let permission = PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-            permissions::gate::PermissionGate::empty(),
-        )),
-    ));
+    let permission = PermissionSet::of(Arc::new(permissions::policy::Policy::empty()));
 
     let (agent, _event_rx, _input_tx) = Builder::new()
         .scene(scene)
@@ -845,7 +837,7 @@ async fn entering_plan_mode_moves_the_permission_gate() {
     assert!(
         matches!(
             decided_by(&agent, "Write", &write).await,
-            PermissionOutcome::Permit
+            PermissionOutcome::Permit { .. }
         ),
         "an in-project write is allowed in Default mode"
     );

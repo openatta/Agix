@@ -53,11 +53,9 @@ pub(crate) fn with_deny_rules(
     }
     PermissionSet {
         policy: Arc::new(DenyRulesFirst {
-            rules: permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-                permissions::gate::PermissionGate::deny_rules_only(
-                    permissions::ruleset::RuleSet::new(deny_rules.to_vec()),
-                ),
-            )),
+            rules: permissions::policy::Policy::deny_rules_only(
+                permissions::ruleset::RuleSet::new(deny_rules.to_vec()),
+            ),
             inner: base.policy,
         }),
         grants: base.grants,

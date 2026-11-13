@@ -50,7 +50,11 @@ impl PermissionPolicy for AllowAllPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> PermissionOutcome {
-        PermissionOutcome::Permit
+        PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }
 

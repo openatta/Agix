@@ -12,7 +12,7 @@
 //! deployment wrote.
 //!
 //! What the layer means for a tool call is the permission gate's business
-//! (`permissions::gate::ManagedPolicy`); this module only says what the file
+//! (`permissions::policy::ManagedLayer`); this module only says what the file
 //! holds. Semantics: `docs/ARCHITECTURE.md` §6.1.
 
 use crate::settings::PermissionRule;

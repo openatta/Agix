@@ -9,8 +9,7 @@
 
 use base::interface::permission::{PermissionOutcome, PermissionPolicy, PermissionRequest};
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
-use permissions::gate::PermissionGate;
-use permissions::rule_set_permission::RuleSetPermission;
+use permissions::policy::Policy;
 use permissions::ruleset::RuleSet;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -28,7 +27,7 @@ fn rule(behavior: RuleBehavior, tool: &str, content: impl Into<String>) -> Permi
 /// The rules, the built-in tools they are asked about, and the mode the
 /// session runs in.
 struct Judged {
-    rules: RuleSetPermission,
+    rules: Policy,
     tools: Arc<base::tool::InMemoryToolRegistry>,
     mode: PermissionMode,
 }
@@ -37,7 +36,7 @@ fn permission(rules: Vec<PermissionRule>, mode: PermissionMode) -> Judged {
     let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
     tools::register_builtin_tools(&tools);
     Judged {
-        rules: RuleSetPermission::new(Arc::new(PermissionGate::new(RuleSet::new(rules)))),
+        rules: Policy::new(RuleSet::new(rules)),
         tools,
         mode,
     }
@@ -90,7 +89,7 @@ async fn a_denied_file_inside_cwd_cannot_be_read_by_a_relative_or_dotted_name() 
         assert!(is_deny(&o), "{name}: {o:?}");
     }
     let o = check(&perm, "Read", json!({"file_path": "src/other.rs"}), cwd).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }
 
 #[tokio::test]
@@ -237,7 +236,7 @@ async fn a_single_star_in_a_path_rule_stays_within_one_directory() {
         PermissionMode::DontAsk,
     );
     let o = check(&perm, "Read", json!({"file_path": "docs/a.md"}), cwd).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
     let o = check(&perm, "Read", json!({"file_path": "docs/sub/b.md"}), cwd).await;
     assert!(is_deny(&o), "{o:?}");
 }
@@ -278,7 +277,7 @@ async fn an_ask_rule_is_not_waved_through_by_the_tools_own_allow() {
         cwd,
     )
     .await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }
 
 fn bash(command: &str) -> Value {
@@ -293,7 +292,7 @@ async fn an_allow_for_one_command_does_not_cover_what_is_chained_after_it() {
         PermissionMode::DontAsk,
     );
     let o = check(&perm, "Bash", bash("cd sub"), dir.path()).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
     for line in [
         "cd . && xforge approve",
         "cd .; xforge approve",
@@ -323,7 +322,7 @@ async fn a_deny_for_one_command_reaches_it_wherever_it_sits_in_the_line() {
         assert!(is_deny(&o), "{line}: {o:?}");
     }
     let o = check(&perm, "Bash", bash("echo 'rm -rf build'"), dir.path()).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }
 
 /// An allow for a bare command does not cover the same command run under a
@@ -339,7 +338,10 @@ async fn an_allow_for_a_bare_command_does_not_cover_a_dangerous_assignment() {
     );
     for allowed in ["ls -la", "FOO=1 ls", "LC_ALL=C ls"] {
         let o = check(&perm, "Bash", bash(allowed), dir.path()).await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{allowed}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{allowed}: {o:?}"
+        );
     }
     for guarded in ["PATH=. ls", "LD_PRELOAD=x.so ls", "env PATH=. ls"] {
         let o = check(&perm, "Bash", bash(guarded), dir.path()).await;
@@ -350,7 +352,7 @@ async fn an_allow_for_a_bare_command_does_not_cover_a_dangerous_assignment() {
         PermissionMode::DontAsk,
     );
     let o = check(&names_it, "Bash", bash("PATH=. ls"), dir.path()).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }
 
 /// What a user who wants "anything but deleting" writes.
@@ -411,7 +413,10 @@ async fn a_deny_reaches_the_program_however_its_name_is_spelled() {
     }
     for line in ["echo rm", "git rm --cached x", "command -v rm", "ls rm"] {
         let o = check(&perm, "Bash", bash(line), dir.path()).await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{line}: {o:?}"
+        );
     }
 }
 
@@ -459,7 +464,7 @@ async fn a_program_that_cannot_be_read_off_the_line_is_asked_about_under_a_deny(
     );
     let o = check(&unruled, "Bash", bash("$CMD -rf build"), dir.path()).await;
     assert!(
-        matches!(o, PermissionOutcome::Permit),
+        matches!(o, PermissionOutcome::Permit { .. }),
         "with no deny to slip past, nothing changes: {o:?}"
     );
 }
@@ -492,7 +497,7 @@ async fn an_exact_allow_for_a_whole_line_still_permits_that_line() {
         PermissionMode::DontAsk,
     );
     let o = check(&perm, "Bash", bash("npm run build && npm test"), dir.path()).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }
 
 #[tokio::test]
@@ -507,7 +512,10 @@ async fn a_read_only_command_is_only_silent_inside_the_project() {
         "grep -r foo .",
     ] {
         let o = check(&perm, "Bash", bash(line), cwd).await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{line}: {o:?}"
+        );
     }
     for line in [
         "cat /etc/hosts",
@@ -563,7 +571,10 @@ async fn a_read_through_anything_the_shell_still_expands_is_asked_about() {
         "echo '$HOME'",
     ] {
         let o = check(&perm, "Bash", bash(line), cwd).await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{line}: {o:?}"
+        );
     }
 }
 
@@ -612,7 +623,7 @@ async fn a_shell_command_writing_the_engines_configuration_is_asked_about() {
     let o = check(&perm, "Bash", bash("git config user.name x"), dir.path()).await;
     assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
     let o = check(&perm, "Bash", bash("git config user.name"), dir.path()).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "read: {o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "read: {o:?}");
 }
 
 fn monitor(command: &str) -> Value {
@@ -640,7 +651,7 @@ async fn a_bash_deny_also_holds_monitor() {
     let o = check(&perm, "Monitor", monitor("curl -s x"), dir.path()).await;
     assert!(matches!(o, PermissionOutcome::Prompt { .. }), "{o:?}");
     let o = check(&perm, "Monitor", monitor("tail -f log"), dir.path()).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }
 
 /// A watch script is only as read-only as the command it runs: plan mode
@@ -672,7 +683,7 @@ async fn a_monitor_script_is_read_only_only_when_its_command_is() {
     );
     let o = check(&accept_edits, "Monitor", monitor("tail -f log"), cwd).await;
     assert!(
-        matches!(o, PermissionOutcome::Permit),
+        matches!(o, PermissionOutcome::Permit { .. }),
         "acceptEdits, read-only: {o:?}"
     );
 }
@@ -697,7 +708,10 @@ async fn plan_mode_asks_before_reading_outside_the_project() {
             cwd,
         )
         .await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{mode:?}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{mode:?}: {o:?}"
+        );
         let o = check(&perm, "Read", read(elsewhere.clone()), cwd).await;
         assert!(
             matches!(o, PermissionOutcome::Prompt { .. }),
@@ -796,7 +810,10 @@ async fn a_read_only_name_the_line_does_not_really_run_is_not_read_only() {
         "ls 2>&-",
     ] {
         let o = check(&perm, "Bash", bash(line), dir.path()).await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{line}: {o:?}"
+        );
     }
 }
 
@@ -820,7 +837,10 @@ async fn a_read_outside_through_a_brace_or_a_dot_glob_is_asked_about() {
     }
     for line in ["cat src/*.rs", "ls *.md", "ls -a", "ls src/.?*"] {
         let o = check(&perm, "Bash", bash(line), cwd).await;
-        assert!(matches!(o, PermissionOutcome::Permit), "{line}: {o:?}");
+        assert!(
+            matches!(o, PermissionOutcome::Permit { .. }),
+            "{line}: {o:?}"
+        );
     }
 }
 
@@ -924,7 +944,7 @@ async fn git_in_a_repository_other_than_the_projects_own_is_asked_about() {
         for line in ["git status", "cd src && git status", "git log --oneline -3"] {
             let o = check(&perm, "Bash", bash(line), cwd).await;
             assert!(
-                matches!(o, PermissionOutcome::Permit),
+                matches!(o, PermissionOutcome::Permit { .. }),
                 "{mode:?} {line}: {o:?}"
             );
         }
@@ -959,7 +979,7 @@ async fn accept_edits_asks_before_reaching_a_host_the_settings_do_not_name() {
     ] {
         let o = check(&listed, tool, fetch(url), cwd).await;
         assert!(
-            matches!(o, PermissionOutcome::Permit),
+            matches!(o, PermissionOutcome::Permit { .. }),
             "{tool} {url}: {o:?}"
         );
     }
@@ -968,5 +988,5 @@ async fn accept_edits_asks_before_reaching_a_host_the_settings_do_not_name() {
         assert!(is_prompt(&o), "{url}: {o:?}");
     }
     let o = check(&accept, "Read", json!({ "file_path": "a.txt" }), cwd).await;
-    assert!(matches!(o, PermissionOutcome::Permit), "{o:?}");
+    assert!(matches!(o, PermissionOutcome::Permit { .. }), "{o:?}");
 }

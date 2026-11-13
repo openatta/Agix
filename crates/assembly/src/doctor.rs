@@ -308,7 +308,7 @@ impl ManagedSettingsCheck {
         Self {
             path,
             managed: settings.managed.clone(),
-            unreadable: permissions::gate::ManagedPolicy::from(&settings.managed)
+            unreadable: permissions::policy::ManagedLayer::from(&settings.managed)
                 .unreadable()
                 .map(str::to_string),
         }

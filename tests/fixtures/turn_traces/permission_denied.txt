@@ -3,7 +3,7 @@ SystemInit
 TurnStart
 StepStart step=0
 ToolUse GoldenAsk {}
-PermissionPrompt "Allow GoldenAsk?"
+PermissionPrompt "GoldenAsk wants to run"
 ToolResult GoldenAsk is_error=Some(true) content="Denied by permission: denied by the behavior net"
 StepEnd step=0 stop_reason=tool_use tool_calls=1
 StepStart step=1

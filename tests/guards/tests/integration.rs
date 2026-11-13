@@ -7,6 +7,7 @@ mod base;
 mod delegation;
 mod deps;
 mod layering;
+mod permissions;
 mod process_state;
 mod size;
 mod sources;

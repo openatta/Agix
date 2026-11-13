@@ -159,7 +159,11 @@ impl base::interface::permission::PermissionPolicy for AllowAllPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Permit
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }
 
@@ -176,7 +180,11 @@ impl base::interface::permission::PermissionPolicy for AskEverythingPermission {
             prompt_id: uuid::Uuid::new_v4().to_string(),
             message: "may I?".into(),
             paths: Vec::new(),
-            managed: false,
+            reason: base::interface::permission::Reason::new(
+                base::interface::permission::Stage::ModeDefault,
+                "asked",
+            ),
+            answerable: base::interface::permission::Answerable::HookOrPerson,
         }
     }
 }

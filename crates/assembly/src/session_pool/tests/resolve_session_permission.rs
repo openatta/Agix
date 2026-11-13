@@ -9,7 +9,11 @@ impl base::interface::permission::PermissionPolicy for AllowAllTestPermission {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> base::interface::permission::PermissionOutcome {
-        base::interface::permission::PermissionOutcome::Permit
+        base::interface::permission::PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }
 
@@ -98,7 +102,7 @@ async fn a_bypass_session_gets_the_hosts_permission_or_else_a_gate_that_only_val
     };
     assert!(matches!(
         bash_says(serde_json::json!({"command": "ls"})).await,
-        PermissionOutcome::Permit
+        PermissionOutcome::Permit { .. }
     ));
     assert!(
         matches!(

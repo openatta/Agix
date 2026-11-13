@@ -178,11 +178,16 @@ impl PermissionPolicy for RecordingPermission {
             .unwrap_or_else(|e| e.into_inner())
             .push(tool_name.to_string());
         if self.deny {
-            base::interface::permission::PermissionOutcome::Deny {
-                reason: "parent said no".into(),
-            }
+            base::interface::permission::PermissionOutcome::deny(
+                base::interface::permission::Stage::Rule,
+                "parent said no",
+            )
         } else {
-            base::interface::permission::PermissionOutcome::Permit
+            base::interface::permission::PermissionOutcome::Permit {
+                basis: base::interface::permission::Basis::Bypass,
+                profile: Default::default(),
+                obligations: Default::default(),
+            }
         }
     }
 }
@@ -657,7 +662,11 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
                 prompt_id: "p1".into(),
                 message: "run rm -rf?".into(),
                 paths: vec![],
-                managed: false,
+                reason: base::interface::permission::Reason::new(
+                    base::interface::permission::Stage::ModeDefault,
+                    "asked",
+                ),
+                answerable: base::interface::permission::Answerable::HookOrPerson,
             }
         }
     }
@@ -680,8 +689,8 @@ async fn parent_prompt_outcome_becomes_a_legible_denial_inside_a_subagent() {
     .await;
     match outcome {
         base::interface::permission::PermissionOutcome::Deny { reason } => {
-            assert!(reason.contains("parent session"), "got {reason}");
-            assert!(reason.contains("run rm -rf?"), "got {reason}");
+            assert!(reason.message.contains("parent session"), "got {reason}");
+            assert!(reason.message.contains("run rm -rf?"), "got {reason}");
         }
         other => panic!("expected a denial, got {other:?}"),
     }
@@ -715,7 +724,7 @@ async fn parent_permit_passes_through_unchanged() {
     .await;
     assert!(matches!(
         outcome,
-        base::interface::permission::PermissionOutcome::Permit
+        base::interface::permission::PermissionOutcome::Permit { .. }
     ));
     assert_eq!(seen.lock().unwrap().as_slice(), ["Bash"]);
 }
@@ -730,11 +739,7 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     std::fs::write(project.path().join("notes.txt"), "x").unwrap();
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
-    let parent = PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-            permissions::gate::PermissionGate::empty(),
-        )),
-    ));
+    let parent = PermissionSet::of(Arc::new(permissions::policy::Policy::empty()));
     let parent_session = Arc::new(
         base::context::SessionState::new(project.path().to_path_buf())
             .with_permission_mode(PermissionMode::AcceptEdits),
@@ -765,16 +770,18 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     sub_session.set_permission_mode(PermissionMode::AcceptEdits);
     assert!(matches!(
         check("Write", write.clone()).await,
-        PermissionOutcome::Permit
+        PermissionOutcome::Permit { .. }
     ));
     assert!(matches!(
         check("Monitor", watch.clone()).await,
-        PermissionOutcome::Permit
+        PermissionOutcome::Permit { .. }
     ));
 
     sub_session.set_permission_mode(PermissionMode::Plan);
     match check("Write", write.clone()).await {
-        PermissionOutcome::Deny { reason } => assert!(reason.contains("plan mode"), "{reason}"),
+        PermissionOutcome::Deny { reason } => {
+            assert!(reason.message.contains("plan mode"), "{reason}")
+        }
         other => panic!("a plan-mode sub-agent wrote: {other:?}"),
     }
 
@@ -791,7 +798,7 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     assert!(
         matches!(
             check("Bash", serde_json::json!({"command": "touch made"})).await,
-            PermissionOutcome::Permit
+            PermissionOutcome::Permit { .. }
         ),
         "a bypassing sub-agent is not asked what its acceptEdits parent would be"
     );
@@ -799,7 +806,9 @@ async fn a_sub_agents_call_is_judged_in_its_own_mode_unless_the_parent_plans() {
     parent_session.set_permission_mode(PermissionMode::Plan);
     sub_session.set_permission_mode(PermissionMode::AcceptEdits);
     match check("Write", write.clone()).await {
-        PermissionOutcome::Deny { reason } => assert!(reason.contains("plan mode"), "{reason}"),
+        PermissionOutcome::Deny { reason } => {
+            assert!(reason.message.contains("plan mode"), "{reason}")
+        }
         other => panic!("a sub-agent wrote while its parent planned: {other:?}"),
     }
 }
@@ -813,18 +822,14 @@ async fn a_team_member_is_judged_by_the_parents_rules() {
     let project = tempfile::tempdir().unwrap();
     let registry = Arc::new(InMemoryToolRegistry::new());
     tools::register_builtin_tools(&registry);
-    let parent = PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-            permissions::gate::PermissionGate::new(permissions::ruleset::RuleSet::new(vec![
-                PermissionRule {
-                    source: RuleSource::ProjectSettings,
-                    behavior: RuleBehavior::Deny,
-                    tool_name: "Write".into(),
-                    rule_content: Some("**/locked/**".into()),
-                },
-            ])),
-        )),
-    ));
+    let parent = PermissionSet::of(Arc::new(permissions::policy::Policy::new(
+        permissions::ruleset::RuleSet::new(vec![PermissionRule {
+            source: RuleSource::ProjectSettings,
+            behavior: RuleBehavior::Deny,
+            tool_name: "Write".into(),
+            rule_content: Some("**/locked/**".into()),
+        }]),
+    )));
     let agent_tool = TestParent {
         permission: Some(parent),
         state: Arc::new(
@@ -896,9 +901,7 @@ impl base::tool::Tool for AsksAboutDeploys {
 #[tokio::test]
 async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
     use base::interface::permission::{PermissionOutcome, PermissionRequest};
-    let rules = Arc::new(permissions::rule_set_permission::RuleSetPermission::new(
-        Arc::new(permissions::gate::PermissionGate::empty()),
-    ));
+    let rules = Arc::new(permissions::policy::Policy::empty());
     let parent_session = Arc::new(base::context::SessionState::new("/tmp".into()));
     let parent = test_parent();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -954,7 +957,10 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
             scope: runtime::agent::PersistScope::Session,
         })
         .unwrap();
-    assert!(matches!(asked.await.unwrap(), PermissionOutcome::Permit));
+    assert!(matches!(
+        asked.await.unwrap(),
+        PermissionOutcome::Permit { .. }
+    ));
 
     let parent_decides = |input: Value| {
         let (rules, parent_session, deploy) =
@@ -974,7 +980,7 @@ async fn a_sub_agents_permit_always_lands_in_the_parents_rules() {
     };
     assert!(matches!(
         parent_decides(staging.clone()).await,
-        PermissionOutcome::Permit
+        PermissionOutcome::Permit { .. }
     ));
     assert!(matches!(
         parent_decides(serde_json::json!({"target": "production"})).await,
@@ -1038,7 +1044,7 @@ async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
         })
         .unwrap();
     match asked.await.unwrap() {
-        PermissionOutcome::Deny { reason } => assert_eq!(reason, "HOST-SAYS-NO"),
+        PermissionOutcome::Deny { reason } => assert_eq!(reason.message, "HOST-SAYS-NO"),
         other => panic!("the host's answer did not decide the call: {other:?}"),
     }
 }
@@ -1096,7 +1102,11 @@ impl PermissionPolicy for PromptsForEverything {
             prompt_id: base::id::Id::new().to_string(),
             message: "run the probe?".into(),
             paths: vec![],
-            managed: false,
+            reason: base::interface::permission::Reason::new(
+                base::interface::permission::Stage::ModeDefault,
+                "asked",
+            ),
+            answerable: base::interface::permission::Answerable::HookOrPerson,
         }
     }
 }

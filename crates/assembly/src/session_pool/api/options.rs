@@ -27,7 +27,7 @@ pub struct SessionOptions {
     /// `allow_client_permission_override`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<base::settings::PermissionMode>,
-    /// Allow/deny/ask rules for the `RuleSetPermission` this session's
+    /// Allow/deny/ask rules for the `Policy` this session's
     /// `permission_mode` (if set) constructs. Ignored when `permission_mode`
     /// is `None`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

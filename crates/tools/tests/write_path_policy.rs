@@ -205,7 +205,7 @@ async fn gate_decision(
 ) -> PermissionOutcome {
     let write: std::sync::Arc<dyn base::interface::tool::Tool> =
         std::sync::Arc::new(tools::file_write::FileWriteTool);
-    let gate = permissions::rule_set_permission::RuleSetPermission::from_settings(settings, []);
+    let gate = permissions::policy::Policy::from_settings(settings, []);
     let session = std::sync::Arc::new(base::context::SessionState::new(cwd.to_path_buf()));
     gate.decide(&PermissionRequest::new(
         "Write",

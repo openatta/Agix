@@ -141,7 +141,7 @@ async fn trace(case: Case) -> String {
     // would pass while proving nothing. The first draft of this file did
     // exactly that: the approve and deny goldens came out byte-identical.
     let permission = base::interface::permission::PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::from_settings(&settings, []),
+        permissions::policy::Policy::from_settings(&settings, []),
     ));
 
     let scene: Arc<SceneSpec> = {

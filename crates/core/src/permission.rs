@@ -21,7 +21,7 @@ pub enum PermissionMode {
 
 /// `settings::PermissionMode` (serde/JSON-schema-facing, what
 /// `Settings`/RPC params deserialize into) and this `PermissionMode`
-/// (what `PermissionGate` actually dispatches on) are two distinct types
+/// (what `Policy` actually dispatches on) are two distinct types
 /// with identical variant sets.
 impl From<crate::settings::PermissionMode> for PermissionMode {
     fn from(m: crate::settings::PermissionMode) -> Self {
@@ -166,7 +166,7 @@ pub enum RuleSource {
     PolicySettings,
     /// 由命令展开时临时注入
     Command,
-    /// 由已安装插件贡献。卸载插件时用 `PermissionGate::remove_rules_by_source`
+    /// 由已安装插件贡献。卸载插件时用 `Policy::remove_rules_by_source`
     /// 整批撤销。
     Plugin,
 }

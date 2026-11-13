@@ -24,7 +24,7 @@ pub(super) fn record_permission_decision(
 ) {
     use base::interface::permission::PermissionOutcome;
     let outcome = match checked {
-        PermissionOutcome::Permit => telemetry::PermissionDecisionOutcome::AutoAllow,
+        PermissionOutcome::Permit { .. } => telemetry::PermissionDecisionOutcome::AutoAllow,
         PermissionOutcome::Deny { .. } => telemetry::PermissionDecisionOutcome::Deny,
         PermissionOutcome::Prompt { .. } => telemetry::PermissionDecisionOutcome::Ask,
     };

@@ -332,10 +332,7 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     // ordering between a script and the gate needs a gate that really asks.
     let permission = session.asking.then(|| {
         base::interface::permission::PermissionSet::of(Arc::new(
-            permissions::rule_set_permission::RuleSetPermission::from_settings(
-                &settings,
-                Vec::new(),
-            ),
+            permissions::policy::Policy::from_settings(&settings, Vec::new()),
         ))
     });
     let mut builder = Builder::new()

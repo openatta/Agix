@@ -749,14 +749,17 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 
 权限分两半,会话以 `PermissionSet { policy, grants }` 持有:`PermissionPolicy::decide` 裁决一次调用,
 `PermissionGrants` 记下会话里给出的放行(`Turn` / `Session` / `Project` 三档;`Project` 写项目的
-`settings.local.json`)。内建的 `RuleSetPermission` 两个都实现,宿主只给策略时配 `without_grants`。
-内建的 `PermissionGate` 按固定顺序走:凭据(任何模式都拒)→ 工具自己的判定(拒绝即拒;
-放行只先记下,等后面都没否掉才兑现)→ 规则 → 免于 bypass 的路径 → 模式级硬拒绝 → 兑现 →
-模式分派。完整顺序在 `crates/permissions/src/gate.rs` 的模块头。
+`settings.local.json`)。内建的 `permissions::policy::Policy` 两个都实现,宿主只给策略时配
+`without_grants`。它按固定顺序走,分判定与应答两段:managed 层读不了即拒 → 未知工具要问 → 凭据
+(任何模式都拒)→ hook 拦截 → bypass(只看 managed 层)→ 工具自己拒绝 → 规则 → 免于 bypass 的
+路径 → 模式级硬拒绝 → 规则 ask → 自含的快速通道(写配置目录除外)→ 规则 allow → 模式分派;
+应答段再看无人值守时沙箱兜得住的命令、hook 的 approve、没人可问即拒。每个结论带它所在的
+`Stage` 或放行依据 `Basis`。判定段在 `crates/permissions/src/policy/judge.rs`,应答段在
+`policy/answer.rs`。
 
 **两份敏感路径名单。** 它们都登记在 `base::paths::sensitive`:凭据在 `CREDENTIALS` 表
 (`Scope` × `Secret`),引擎配置在 `ENGINE_CONFIG_*` 一组常量;`SensitivePaths` 按会话的状态目录
-与项目解析一次,会话内共享。gate 与文件工具(`tools::security::read_allowed`、`Grep` / `Glob`
+与项目解析一次,会话内共享。权限判定与文件工具(`tools::security::read_allowed`、`Grep` / `Glob`
 的遍历、只读 `Bash` 的路径判断)问它(`is_credential`、`is_engine_settings_file` 等),`PromptFiles`
 内部也走它,两个 OS 沙箱后端从它的 `credential_locations` 生成各自的规则,不各抄一份:
 

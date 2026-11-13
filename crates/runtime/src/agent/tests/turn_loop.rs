@@ -463,13 +463,21 @@ impl base::interface::permission::PermissionPolicy for AsksForAllButRunCode {
     ) -> base::interface::permission::PermissionOutcome {
         let tool_name = req.tool_name;
         if tool_name == "RunCode" {
-            return base::interface::permission::PermissionOutcome::Permit;
+            return base::interface::permission::PermissionOutcome::Permit {
+                basis: base::interface::permission::Basis::Bypass,
+                profile: Default::default(),
+                obligations: Default::default(),
+            };
         }
         base::interface::permission::PermissionOutcome::Prompt {
             prompt_id: "p1".into(),
             message: format!("allow {tool_name}?"),
             paths: vec![],
-            managed: false,
+            reason: base::interface::permission::Reason::new(
+                base::interface::permission::Stage::ModeDefault,
+                "asked",
+            ),
+            answerable: base::interface::permission::Answerable::HookOrPerson,
         }
     }
 }
@@ -1003,7 +1011,11 @@ impl base::interface::permission::PermissionPolicy for PromptingPermission {
             prompt_id: "p1".into(),
             message: format!("allow {tool_name}?"),
             paths: vec![],
-            managed: false,
+            reason: base::interface::permission::Reason::new(
+                base::interface::permission::Stage::ModeDefault,
+                "asked",
+            ),
+            answerable: base::interface::permission::Answerable::HookOrPerson,
         }
     }
 }

@@ -326,6 +326,8 @@ pub struct ToolContext {
     /// The call comes from a program (`RunCode`), not from the model: there
     /// is nobody to ask and no conversation to report back to mid-call.
     pub from_code: bool,
+    /// What the session's sandbox holds a command to.
+    pub confinement: crate::interface::exec::ConfinementReport,
 }
 impl ToolContext {
     pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
@@ -353,6 +355,7 @@ impl ToolContext {
             exec,
             dispatch: None,
             from_code: false,
+            confinement: Default::default(),
         }
     }
     pub fn from_engine_ctx_with(
@@ -384,6 +387,7 @@ impl ToolContext {
             exec,
             dispatch: None,
             from_code: false,
+            confinement: Default::default(),
         }
     }
 }

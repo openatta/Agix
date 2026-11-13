@@ -730,8 +730,8 @@ async fn run_skill_shell_command(
             ))
             .await
         {
-            PermissionOutcome::Permit => None,
-            PermissionOutcome::Deny { reason } => Some(reason),
+            PermissionOutcome::Permit { .. } => None,
+            PermissionOutcome::Deny { reason } => Some(reason.message),
             PermissionOutcome::Prompt { message, .. } => Some(format!(
                 "it needs the user's approval, which a skill's inline command cannot ask for \
                  ({message}); run it with the Bash tool instead"
@@ -789,7 +789,11 @@ mod dynamic_context_tests {
             &self,
             _req: &base::interface::permission::PermissionRequest<'_>,
         ) -> PermissionOutcome {
-            PermissionOutcome::Permit
+            PermissionOutcome::Permit {
+                basis: base::interface::permission::Basis::Bypass,
+                profile: Default::default(),
+                obligations: Default::default(),
+            }
         }
     }
 
@@ -809,12 +813,8 @@ mod dynamic_context_tests {
     }
 
     /// The session's real gate over the real `Bash`, under `rules`.
-    fn gate(
-        rules: Vec<base::permission::PermissionRule>,
-    ) -> permissions::rule_set_permission::RuleSetPermission {
-        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-            permissions::gate::PermissionGate::new(permissions::ruleset::RuleSet::new(rules)),
-        ))
+    fn gate(rules: Vec<base::permission::PermissionRule>) -> permissions::policy::Policy {
+        permissions::policy::Policy::new(permissions::ruleset::RuleSet::new(rules))
     }
 
     fn bash_rule(
@@ -1219,10 +1219,10 @@ mod tests {
 
     /// `allowed_tools` end to end: before the skill runs, `Bash` has no
     /// rule and would `Ask` in `Default` mode (see
-    /// `permissions::rule_set_permission`'s own `default_mode_with_no_rule_prompts`
+    /// `permissions::policy`'s own `default_mode_with_no_rule_prompts`
     /// test for that baseline) — invoking a skill that scopes its grant
     /// (`Bash(cargo test)`) must make an immediately-following check for
-    /// exactly that call come back `Permit`, via the real `PermissionGate`,
+    /// exactly that call come back `Permit`, via the real `Policy`,
     /// not a test double.
     ///
     /// The grant is *scoped*. A bare `Bash` from a project-supplied
@@ -1231,8 +1231,7 @@ mod tests {
     #[tokio::test]
     async fn allowed_tools_injects_a_real_temporary_allow_rule() {
         use base::interface::permission::{PermissionOutcome, PermissionSet};
-        use permissions::gate::PermissionGate;
-        use permissions::rule_set_permission::RuleSetPermission;
+        use permissions::policy::Policy;
 
         let mgr = Arc::new(crate::manager::SkillManager::new());
         let dir = tempfile::tempdir().unwrap();
@@ -1273,7 +1272,7 @@ mod tests {
                 _: &ToolContext,
             ) -> base::tool::PermissionDecision {
                 // Default `Tool::check_permissions` is `allow()`, which would
-                // short-circuit `PermissionGate::check` before it ever
+                // short-circuit `Policy::decide` before it ever
                 // reaches rule/mode dispatch — defeating the point of this
                 // test. A real `Bash`-shaped tool defers to the gate.
                 base::tool::PermissionDecision::ask("run?")
@@ -1294,7 +1293,7 @@ mod tests {
         }
 
         let bash: Arc<dyn Tool> = Arc::new(FakeBashTool);
-        let real_permission = Arc::new(RuleSetPermission::new(Arc::new(PermissionGate::empty())));
+        let real_permission = Arc::new(Policy::empty());
 
         let sanity = decide_bash(real_permission.as_ref(), &bash).await;
         assert!(
@@ -1315,7 +1314,7 @@ mod tests {
 
         let after = decide_bash(real_permission.as_ref(), &bash).await;
         assert!(
-            matches!(after, PermissionOutcome::Permit),
+            matches!(after, PermissionOutcome::Permit { .. }),
             "expected allowed_tools to have injected a real Allow rule, got {after:?}"
         );
     }
@@ -1441,15 +1440,14 @@ mod tests {
     async fn user_skill_blanket_allowed_tools_grant_is_honored() {
         assert!(matches!(
             bash_after_a_blanket_grant_from(FrozenSkillSource::User).await,
-            base::interface::permission::PermissionOutcome::Permit
+            base::interface::permission::PermissionOutcome::Permit { .. }
         ));
     }
 
     async fn bash_after_a_blanket_grant_from(
         source: FrozenSkillSource,
     ) -> base::interface::permission::PermissionOutcome {
-        use permissions::gate::PermissionGate;
-        use permissions::rule_set_permission::RuleSetPermission;
+        use permissions::policy::Policy;
 
         let mgr = Arc::new(crate::manager::SkillManager::new());
         let dir = tempfile::tempdir().unwrap();
@@ -1503,7 +1501,7 @@ mod tests {
         }
 
         let bash: Arc<dyn Tool> = Arc::new(AskingBash);
-        let permission = Arc::new(RuleSetPermission::new(Arc::new(PermissionGate::empty())));
+        let permission = Arc::new(Policy::empty());
 
         let tool = SkillTool::new(mgr).with_permission(
             base::interface::permission::PermissionSet::of(permission.clone()),

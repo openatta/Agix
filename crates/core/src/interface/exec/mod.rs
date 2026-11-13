@@ -44,8 +44,8 @@ pub use process::{
     OUTPUT_GRACE_AFTER_EXIT,
 };
 pub use sandbox::{
-    default_deny_read, default_deny_read_in, Confined, Enforcement, NetworkMode, Sandbox,
-    SandboxMode, SandboxPolicy,
+    default_deny_read, default_deny_read_in, Confined, ConfinementReport, Enforcement, NetworkMode,
+    Sandbox, SandboxMode, SandboxPolicy,
 };
 
 /// The four providers a tool reaches the machine through.

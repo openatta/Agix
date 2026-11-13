@@ -146,7 +146,7 @@ impl Tool for WebFetchTool {
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 网络访问默认 Ask；上层 PermissionGate 用 `WebFetch(https://example.com/**)`
+        // 网络访问默认 Ask；上层 Policy 用 `WebFetch(https://example.com/**)`
         // 之类的规则放行
         PermissionDecision::Ask {
             message: "WebFetch requires confirmation".into(),

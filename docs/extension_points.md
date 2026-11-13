@@ -292,12 +292,12 @@ Builder::new().permission(PermissionSet::without_grants(Arc::new(MyPolicy)));
 ```
 
 `PermissionRequest` 带着判定要用的全部状态:分发用的那个 registry 里查到的工具(`tool`,
-查不到是 `None`——引擎自己的 `RuleSetPermission` 对它询问而不放行)、策略所属会话的实时
+查不到是 `None`——引擎自己的 `Policy` 对它询问而不放行)、策略所属会话的实时
 `SessionState`(`session`,会话中途的模式切换从这里看到),以及子 Agent、团队成员转来的调用的
 `SessionState`(`delegate`)。`without_grants` 给的 `NoGrants` 对每次授权都回 `GrantError::NotKept`,
 调用方由此知道放行没有被记下。
 
-`BypassPermissions` 下 `PermissionGate` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
+`BypassPermissions` 下 `Policy` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
 判定;凭据照样拒绝,部署方 managed 层的 deny / ask 照样生效;输入校验("改文件前先读过"、
 大小上限、会被读错的路径)照样拒绝,直接调用和程序里的调用一样(`ARCHITECTURE.md` §6.1)。
 `agixd` 的会话池对 `bypassPermissions` 会话也装这道 gate;宿主给了 `Assembly.permission`、

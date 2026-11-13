@@ -541,7 +541,7 @@ pub fn alternate_daemon_binary(var: &str, how_to_build: &str) -> anyhow::Result<
 
 /// The pool's permission of last resort, matching what `main.rs` hands it.
 /// A session only ever receives it in `bypassPermissions`; everything else
-/// builds a real `RuleSetPermission` from its own settings.
+/// builds a real `Policy` from its own settings.
 struct AllowAll;
 
 #[async_trait::async_trait]
@@ -550,6 +550,10 @@ impl PermissionPolicy for AllowAll {
         &self,
         _req: &base::interface::permission::PermissionRequest<'_>,
     ) -> PermissionOutcome {
-        PermissionOutcome::Permit
+        PermissionOutcome::Permit {
+            basis: base::interface::permission::Basis::Bypass,
+            profile: Default::default(),
+            obligations: Default::default(),
+        }
     }
 }

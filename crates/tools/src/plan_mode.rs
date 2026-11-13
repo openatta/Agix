@@ -1,12 +1,12 @@
 //! `EnterPlanModeTool` / `ExitPlanModeTool` —— 模型自己进出 plan 模式。
 //!
-//! plan 模式：只允许只读工具运行（FileEdit / FileWrite / Bash 等被 PermissionGate
+//! plan 模式：只允许只读工具运行（FileEdit / FileWrite / Bash 等被 Policy
 //! 直接 deny）。模型在这个模式下"想"清楚再退出，避免误改文件。
 //!
 //! 模式存储在 **每个会话自己的 [`SessionState`]** 上
 //! （`SessionState::{permission_mode, set_permission_mode}`），落在
 //! `ToolContext.session` 上（引擎为整个会话持有同一个
-//! `Arc<SessionState>`，见 `runtime::agent::Builder::build()`）：`PermissionGate`
+//! `Arc<SessionState>`，见 `runtime::agent::Builder::build()`）：`Policy`
 //! 分派读的就是 `ctx.session.permission_mode()`，所以立刻能看到模式切换；daemon
 //! 是多会话的，状态挂在会话上，A 会话进 plan 模式不会影响 B 会话。
 //!
@@ -95,7 +95,7 @@ impl Tool for EnterPlanModeTool {
 
         let _input: EnterPlanModeInput = serde_json::from_value(input)?;
         // Flip the *session's* permission mode, which is what
-        // `PermissionGate` dispatches on — so from the next tool call
+        // `Policy` dispatches on — so from the next tool call
         // onwards, non-read-only tools are actually denied rather than
         // merely discouraged by the text below.
         ctx.session.enter_plan_mode();
@@ -252,7 +252,7 @@ mod tests {
         ));
 
         // call switches the *session's* permission mode to Plan — which is
-        // the thing `PermissionGate` dispatches on.
+        // the thing `Policy` dispatches on.
         let c2 = session_ctx();
         let r = tool
             .call(serde_json::json!({}), c2.clone(), ProgressSender::noop("t"))

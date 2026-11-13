@@ -190,7 +190,7 @@ pub(super) fn bind_scripts(
     (None, faults)
 }
 
-/// Which permission a new session gets: a `RuleSetPermission` over every
+/// Which permission a new session gets: a `Policy` over every
 /// tier's rules plus `options.permission_rules`, keeping its own grants.
 ///
 /// `bypassPermissions` with a host permission returns that very set, not an
@@ -213,7 +213,7 @@ pub(super) fn resolve_session_permission(
         .map(|o| o.permission_rules.clone())
         .unwrap_or_default();
 
-    PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::from_settings(settings, extra),
-    ))
+    PermissionSet::of(Arc::new(permissions::policy::Policy::from_settings(
+        settings, extra,
+    )))
 }

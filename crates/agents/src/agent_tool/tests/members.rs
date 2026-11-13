@@ -693,11 +693,11 @@ impl base::tool::Tool for AskingWriteTool {
 }
 
 /// Empirical check (not just reading the gate's source): does the
-/// `RuleSetPermission` built for team members under the zero-config
-/// `Plan` default actually deny `SendMessage`, the way `PermissionGate`'s
+/// `Policy` built for team members under the zero-config
+/// `Plan` default actually deny `SendMessage`, the way `Policy`'s
 /// bare mode-dispatch (`Plan if !read_only => Deny`) would suggest in
 /// isolation? `SendMessageTool::check_permissions()` returns `Allow`
-/// unconditionally, and `PermissionGate::check()`'s step 2 consults the
+/// unconditionally, and `Policy::decide`'s step 2 consults the
 /// tool's own `check_permissions()` *before* falling through to mode
 /// dispatch — so the real answer depends on call-path order, not just
 /// the mode-dispatch snippet alone. `SendMessage`/`ReadMail`/`ListPeers`
@@ -715,11 +715,9 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
     )));
     tools.register(Arc::new(AskingWriteTool));
 
-    let perm = PermissionSet::of(Arc::new(
-        permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-            permissions::gate::PermissionGate::new(permissions::ruleset::RuleSet::new(vec![])),
-        )),
-    ));
+    let perm = PermissionSet::of(Arc::new(permissions::policy::Policy::new(
+        permissions::ruleset::RuleSet::new(vec![]),
+    )));
     let session = Arc::new(
         base::context::SessionState::new("/tmp".into())
             .with_permission_mode(base::permission::PermissionMode::Plan),
@@ -747,7 +745,7 @@ async fn plan_mode_permits_send_message_despite_not_being_read_only() {
     assert!(
         matches!(
             send_outcome,
-            base::interface::permission::PermissionOutcome::Permit
+            base::interface::permission::PermissionOutcome::Permit { .. }
         ),
         "SendMessage must be permitted under Plan mode (via its own \
          check_permissions(), not the read-only mode dispatch) — got {send_outcome:?}"

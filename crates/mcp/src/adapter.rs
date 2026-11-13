@@ -188,7 +188,7 @@ impl Tool for McpToolAdapter {
     }
 
     async fn check_permissions(&self, _: &Value, _: &ToolContext) -> PermissionDecision {
-        // 默认 Ask —— 上层 PermissionGate 用规则（如 `mcp__github` allow）放行
+        // 默认 Ask —— 上层 Policy 用规则（如 `mcp__github` allow）放行
         PermissionDecision::Ask {
             message: format!("Allow MCP tool {} ?", self.full_name),
             decision_reason: None,

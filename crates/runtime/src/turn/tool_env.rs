@@ -231,6 +231,7 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
                 as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
         }),
         from_code: ctx.from_code,
+        confinement: Default::default(),
     }
 }
 
@@ -262,6 +263,7 @@ impl Agent {
             exec: self.exec.clone(),
             dispatch: None,
             from_code: false,
+            confinement: Default::default(),
         }
     }
 }

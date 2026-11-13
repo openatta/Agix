@@ -214,9 +214,7 @@ async fn a_team_create_member_is_judged_in_its_mode_held_to_the_parents() {
             // Not interactive: what would be asked is refused instead.
             scene: Arc::new(super::lifecycle::scene_with_probe()),
             permission: Some(PermissionSet::of(Arc::new(
-                permissions::rule_set_permission::RuleSetPermission::new(Arc::new(
-                    permissions::gate::PermissionGate::empty(),
-                )),
+                permissions::policy::Policy::empty(),
             ))),
             ..TestParent::new(Arc::new(ProbeThenTextModel {
                 calls: Default::default(),

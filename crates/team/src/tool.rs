@@ -156,7 +156,7 @@ impl base::tool::Tool for TeamCreateTool {
         let inp: TeamCreateInput =
             serde_json::from_value(input).map_err(|e| ToolError::Validation(format!("{e}")))?;
         // Defense in depth: `validate_input` above is the real enforcement
-        // point (wired into `PermissionGate::check`), but `call()` can also
+        // point (wired into `Policy::decide`), but `call()` can also
         // be invoked directly (tests, alternate call paths), so the check
         // is repeated here rather than assumed.
         if let Err(msg) = validate_team_name(&inp.name) {

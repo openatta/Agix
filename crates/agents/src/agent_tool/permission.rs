@@ -4,9 +4,17 @@
 
 use super::*;
 use base::interface::permission::{
-    GrantError, GrantScope, PermissionGrants, PermissionOutcome, PermissionPolicy,
-    PermissionRequest,
+    Basis, GrantError, GrantScope, PermissionGrants, PermissionOutcome, PermissionPolicy,
+    PermissionRequest, Reason, Stage,
 };
+
+fn permitted(basis: Basis) -> PermissionOutcome {
+    PermissionOutcome::Permit {
+        basis,
+        profile: Default::default(),
+        obligations: Default::default(),
+    }
+}
 
 /// A permission with a host's `deny` rules in front: what they refuse is
 /// refused, anything else is decided as it would have been.
@@ -14,7 +22,7 @@ use base::interface::permission::{
 /// The rules sit in a deny-only gate, so its only verdicts of its own are
 /// the denials; its mode never decides anything here.
 pub(super) struct DenyRulesFirst {
-    pub(super) rules: permissions::rule_set_permission::RuleSetPermission,
+    pub(super) rules: permissions::policy::Policy,
     pub(super) inner: Arc<dyn PermissionPolicy>,
 }
 
@@ -86,13 +94,14 @@ pub(super) struct NoPrompt(pub(super) Arc<dyn PermissionPolicy>);
 
 pub(super) fn refuse_a_question(tool_name: &str, outcome: PermissionOutcome) -> PermissionOutcome {
     match outcome {
-        PermissionOutcome::Prompt { message, .. } => PermissionOutcome::Deny {
-            reason: format!(
+        PermissionOutcome::Prompt { message, .. } => PermissionOutcome::deny(
+            Stage::Attendance,
+            format!(
                 "`{tool_name}` needs the user's approval, which a sub-agent started from a \
                  program cannot ask for. Leave this step out of the program and run it \
                  directly. Approval asked: {message}"
             ),
-        },
+        ),
         other => other,
     }
 }
@@ -148,14 +157,10 @@ pub(super) fn held_to_mode(
                     && !permission.leaves_plan_mode
             }) =>
         {
-            PermissionOutcome::Deny {
-                reason: "plan mode forbids non-readonly tools".into(),
-            }
+            PermissionOutcome::deny(Stage::PlanMode, "plan mode forbids non-readonly tools")
         }
         (PermissionMode::DontAsk, PermissionOutcome::Prompt { message, .. }) => {
-            PermissionOutcome::Deny {
-                reason: format!("dontAsk mode: {message}"),
-            }
+            PermissionOutcome::deny(Stage::DontAsk, format!("dontAsk mode: {message}"))
         }
         (_, outcome) => outcome,
     }
@@ -181,7 +186,7 @@ impl PermissionPolicy for ParentPermission {
             if let base::tool::ValidationResult::Err(reason, _) =
                 tool.validate_input(req.input, &ctx).await
             {
-                return PermissionOutcome::Deny { reason };
+                return PermissionOutcome::deny(Stage::ToolRefusal, reason);
             }
         }
         let mode = req
@@ -203,6 +208,7 @@ impl PermissionPolicy for ParentPermission {
             prompt_id,
             message,
             paths,
+            reason: asked,
             ..
         } = outcome
         else {
@@ -237,9 +243,12 @@ impl PermissionPolicy for ParentPermission {
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&prompt_id);
             return PermissionOutcome::Deny {
-                reason: format!(
-                    "`{tool_name}`: the parent session closed before it could answer. Original \
-                     prompt: {message}"
+                reason: Reason::new(
+                    asked.stage,
+                    format!(
+                        "`{tool_name}`: the parent session closed before it could answer. \
+                         Original prompt: {message}"
+                    ),
                 ),
             };
         }
@@ -254,15 +263,18 @@ impl PermissionPolicy for ParentPermission {
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(&prompt_id);
                     return PermissionOutcome::Deny {
-                        reason: format!(
-                            "`{tool_name}`: no answer to the permission prompt within {secs}s"
+                        reason: Reason::new(
+                            asked.stage,
+                            format!(
+                                "`{tool_name}`: no answer to the permission prompt within {secs}s"
+                            ),
                         ),
                     };
                 }
             },
         };
         match answer {
-            Ok(runtime::agent::PermissionDecision::Permit) => PermissionOutcome::Permit,
+            Ok(runtime::agent::PermissionDecision::Permit) => permitted(Basis::Person),
             Ok(runtime::agent::PermissionDecision::PermitAlways { .. }) => {
                 // Kept by the parent, where the rule engine deciding this
                 // sub-agent's calls lives, for what was asked — this command,
@@ -279,15 +291,18 @@ impl PermissionPolicy for ParentPermission {
                         tracing::debug!(tool_name, error = %e, "sub-agent permit-always not kept");
                     }
                 }
-                PermissionOutcome::Permit
+                permitted(Basis::Person)
             }
-            Ok(runtime::agent::PermissionDecision::Deny { reason }) => {
-                PermissionOutcome::Deny { reason }
-            }
+            Ok(runtime::agent::PermissionDecision::Deny { reason }) => PermissionOutcome::Deny {
+                reason: Reason::new(asked.stage, reason),
+            },
             // Sender dropped without an answer — fail closed, same as the
             // parent's own path does.
             Err(_) => PermissionOutcome::Deny {
-                reason: format!("`{tool_name}`: permission request closed without an answer"),
+                reason: Reason::new(
+                    asked.stage,
+                    format!("`{tool_name}`: permission request closed without an answer"),
+                ),
             },
         }
     }
@@ -299,6 +314,6 @@ pub(super) struct AlwaysPermit;
 #[async_trait]
 impl PermissionPolicy for AlwaysPermit {
     async fn decide(&self, _: &PermissionRequest<'_>) -> PermissionOutcome {
-        PermissionOutcome::Permit
+        permitted(Basis::Bypass)
     }
 }

@@ -17,6 +17,29 @@ fn ctx_in(cwd: &Path, state: impl FnOnce(&mut SessionState)) -> ToolContext {
     ctx
 }
 
+/// The policy's word on a call made in `ctx`, in the mode `ctx` says.
+async fn judged(
+    tool: Arc<dyn Tool>,
+    input: &serde_json::Value,
+    ctx: &ToolContext,
+) -> base::interface::permission::PermissionOutcome {
+    use base::interface::permission::{PermissionPolicy, PermissionRequest};
+    ctx.session.set_permission_mode(ctx.permission_mode);
+    permissions::policy::Policy::empty()
+        .decide(
+            &PermissionRequest::new(
+                tool.name(),
+                Some(&tool),
+                input,
+                &ctx.cwd,
+                &ctx.session_id,
+                &ctx.session,
+            )
+            .with_ctx(ctx),
+        )
+        .await
+}
+
 fn allowed(d: &PermissionDecision) -> bool {
     matches!(d, PermissionDecision::Allow { .. })
 }
@@ -114,7 +137,7 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
     let registry = Arc::new(base::interface::tool::InMemoryToolRegistry::new());
     registry.register(Arc::new(tools::file_read::FileReadTool));
     registry.register(Arc::new(tools::file_write::FileWriteTool));
-    let gate = permissions::rule_set_permission::RuleSetPermission::from_settings(
+    let gate = permissions::policy::Policy::from_settings(
         &base::settings::LoadedSettings::new(
             base::settings::Settings::defaults_for("m"),
             base::settings::PathSettings::default(),
@@ -151,7 +174,7 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
     };
 
     let read = check("Read", serde_json::json!({ "file_path": config })).await;
-    assert!(matches!(read, PermissionOutcome::Permit), "{read:?}");
+    assert!(matches!(read, PermissionOutcome::Permit { .. }), "{read:?}");
     let new_config = project
         .path()
         .join(".agix/agents/b.md")
@@ -171,46 +194,49 @@ async fn agent_configuration_is_confirmed_before_a_write_not_a_read() {
         serde_json::json!({ "file_path": scratch, "content": "y" }),
     )
     .await;
-    assert!(matches!(scratch, PermissionOutcome::Permit), "{scratch:?}");
+    assert!(
+        matches!(scratch, PermissionOutcome::Permit { .. }),
+        "{scratch:?}"
+    );
 }
 
 async fn accept_edits_allows_reading(ctx: &ToolContext, dir: &Path) -> [bool; 5] {
-    let gate = permissions::gate::PermissionGate::empty();
     let file = dir.join("notes.txt").display().to_string();
     let dir = dir.display().to_string();
-    let calls: [(&dyn Tool, serde_json::Value); 5] = [
+    let calls: [(Arc<dyn Tool>, serde_json::Value); 5] = [
         (
-            &tools::file_read::FileReadTool,
+            Arc::new(tools::file_read::FileReadTool),
             serde_json::json!({ "file_path": file }),
         ),
         (
-            &tools::glob::GlobTool,
+            Arc::new(tools::glob::GlobTool),
             serde_json::json!({ "pattern": "*", "path": dir }),
         ),
         (
-            &tools::grep::GrepTool,
+            Arc::new(tools::grep::GrepTool),
             serde_json::json!({ "pattern": "x", "path": dir }),
         ),
         (
-            &tools::bash::BashTool,
+            Arc::new(tools::bash::BashTool),
             serde_json::json!({ "command": format!("cat {file}") }),
         ),
         (
-            &tools::monitor::MonitorTool,
+            Arc::new(tools::monitor::MonitorTool),
             serde_json::json!({ "command": format!("tail -f {file}"), "description": "watch" }),
         ),
     ];
     let mut out = [false; 5];
     for (slot, (tool, input)) in out.iter_mut().zip(calls) {
-        let Ok(decision) = gate.check(tool, &input, ctx).await else {
-            panic!("{} refused its input: {input}", tool.name());
-        };
+        let name = tool.name().to_string();
+        let decision = judged(tool, &input, ctx).await;
         assert!(
-            !matches!(decision, base::permission::PermissionDecision::Deny { .. }),
-            "{}: {decision:?}",
-            tool.name()
+            !matches!(
+                decision,
+                base::interface::permission::PermissionOutcome::Deny { .. }
+            ),
+            "{name}: {decision:?}"
         );
-        *slot = matches!(decision, base::permission::PermissionDecision::Allow { .. });
+        *slot = decision.is_permit();
     }
     out
 }
@@ -255,16 +281,17 @@ async fn accept_edits_asks_before_a_shell_read_of_the_home_directory() {
     let project = tempfile::tempdir().unwrap();
     let mut ctx = ctx_in(project.path(), |_| {});
     ctx.permission_mode = base::permission::PermissionMode::AcceptEdits;
-    let decision = permissions::gate::PermissionGate::empty()
-        .check(
-            &tools::bash::BashTool,
-            &serde_json::json!({ "command": "cat ~/.zshrc" }),
-            &ctx,
-        )
-        .await
-        .unwrap();
+    let decision = judged(
+        Arc::new(tools::bash::BashTool),
+        &serde_json::json!({ "command": "cat ~/.zshrc" }),
+        &ctx,
+    )
+    .await;
     assert!(
-        matches!(decision, base::permission::PermissionDecision::Ask { .. }),
+        matches!(
+            decision,
+            base::interface::permission::PermissionOutcome::Prompt { .. }
+        ),
         "{decision:?}"
     );
 }

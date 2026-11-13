@@ -1,7 +1,7 @@
 //! 权限判定的决策矩阵：每个内建工具 × 若干样例输入 × 5 种模式 × 5 种规则 ×
 //! {有人值守, 无人值守} × {无 hook, hook approve}，每格一个结论，冻结成一份 golden。
 //!
-//! 判定走 `RuleSetPermission::from_settings`（生产路径）；runtime 里
+//! 判定走 `Policy::from_settings`（生产路径），请求不带事实，由策略从工具的旧答案桥接；runtime 里
 //! `turn/tool_exec.rs` 的 R6（hook approve 只能回答非 managed 的 Prompt）和 R7
 //! （无人值守时 Prompt 转 Deny）在这里照现行逻辑复刻。判定管线重构之后，这份
 //! 快照必须逐字不变：`UPDATE_GOLDEN=1 cargo test -p tools --test integration
@@ -11,7 +11,7 @@
 //! Bash 放行通道不随运行机器变化。
 //!
 //! 自己声明 `permission_facts` 的工具另有一条等价断言：它的事实和从旧方法桥接推出的
-//! 事实，经同一个按中心判定顺序写的 `conclusion` 得出相同结论，且与 gate 的结论一致。
+//! 事实，经同一个按中心判定顺序写的 `conclusion` 得出相同结论，且与策略对桥接事实的结论一致。
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -20,13 +20,13 @@ use base::interface::exec::{
     Confined, Enforcement, ExecProviders, ProcessSpec, Sandbox, SandboxMode, SandboxPolicy,
 };
 use base::interface::permission::{
-    ModeStance, PermissionFacts, PermissionOutcome, PermissionPolicy, PermissionRequest, Reach,
-    ToolFacts,
+    Answerable, Attendance, HookAnswer, ModeStance, PermissionFacts, PermissionOutcome,
+    PermissionPolicy, PermissionRequest, Reach, Stage, ToolFacts,
 };
 use base::permission::{PermissionMode, PermissionRule, RuleBehavior, RuleSource};
 use base::settings::{PermissionAction, Settings};
 use base::tool::{InMemoryToolRegistry, SandboxSettings, Tool, ToolContext};
-use permissions::rule_set_permission::RuleSetPermission;
+use permissions::policy::Policy;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -262,7 +262,7 @@ const RULES: [(&str, RuleCase); 5] = [
     ("managed-ask", RuleCase::ManagedAsk),
 ];
 
-fn permission(tool: &str, case: RuleCase) -> RuleSetPermission {
+fn permission(tool: &str, case: RuleCase) -> Policy {
     let mut settings = base::settings::LoadedSettings::new(
         Settings::defaults_for("matrix-model"),
         base::settings::PathSettings::default(),
@@ -291,7 +291,7 @@ fn permission(tool: &str, case: RuleCase) -> RuleSetPermission {
             });
         }
     }
-    RuleSetPermission::from_settings(&settings, extra)
+    Policy::from_settings(&settings, extra)
 }
 
 /// What `turn/tool_exec.rs` makes of the policy's outcome: R6, then R7.
@@ -301,10 +301,10 @@ fn after_runtime(
     unattended: bool,
 ) -> &'static str {
     match outcome {
-        PermissionOutcome::Permit => "Permit",
+        PermissionOutcome::Permit { .. } => "Permit",
         PermissionOutcome::Deny { .. } => "Deny",
-        PermissionOutcome::Prompt { managed, .. } => {
-            if hook_approved && !managed {
+        PermissionOutcome::Prompt { answerable, .. } => {
+            if hook_approved && *answerable == Answerable::HookOrPerson {
                 "Permit"
             } else if unattended {
                 "Deny"
@@ -317,10 +317,13 @@ fn after_runtime(
 
 fn raw(outcome: &PermissionOutcome) -> &'static str {
     match outcome {
-        PermissionOutcome::Permit => "Permit",
+        PermissionOutcome::Permit { .. } => "Permit",
         PermissionOutcome::Deny { .. } => "Deny",
-        PermissionOutcome::Prompt { managed: false, .. } => "Prompt",
-        PermissionOutcome::Prompt { managed: true, .. } => "Prompt+managed",
+        PermissionOutcome::Prompt {
+            answerable: Answerable::PersonOnly,
+            ..
+        } => "Prompt+managed",
+        PermissionOutcome::Prompt { .. } => "Prompt",
     }
 }
 
@@ -335,7 +338,7 @@ fn session(cwd: &Path, mode: PermissionMode, unattended: bool) -> Arc<SessionSta
 }
 
 async fn decide(
-    policy: &RuleSetPermission,
+    policy: &Policy,
     tool: &Arc<dyn Tool>,
     input: &Value,
     cwd: &Path,
@@ -431,7 +434,7 @@ async fn every_builtin_tool_is_decided_the_same_in_every_cell() {
     }
 }
 
-/// What `RuleSetPermission` hands a tool's own checks, for the same session.
+/// What `Policy` hands a tool's own checks, for the same session.
 fn context_like_the_gates(session: &Arc<SessionState>, cwd: &Path) -> ToolContext {
     let settings = base::settings::LoadedSettings::new(
         Settings::defaults_for("matrix-model"),
@@ -512,7 +515,11 @@ fn conclusion(facts: &ToolFacts, cell: Cell) -> &'static str {
         return "Deny";
     }
     if matches!(cell.rule, RuleCase::Ask | RuleCase::ManagedAsk) {
-        return answer(managed);
+        return if cell.mode == DontAsk {
+            "Deny"
+        } else {
+            answer(managed)
+        };
     }
     let writes_configuration = !facts.traits.read_only
         && facts.subject.content().is_some_and(|s| {
@@ -560,7 +567,7 @@ async fn bridged(tool: &dyn Tool, input: &Value, ctx: &ToolContext) -> ToolFacts
 }
 
 /// One cell of one call: the conclusion the tool's own facts lead to, the one
-/// the facts bridged from its old answers lead to, and the gate's where it did
+/// the facts bridged from its old answers lead to, and the policy's where it did
 /// not refuse the sample before reading the tool.
 struct Compared {
     at: String,
@@ -637,21 +644,12 @@ fn leaves_something_behind(name: &str, input: &Value) -> bool {
     name == "CronCreate" && input["durable"] == json!(true)
 }
 
-/// The gate denies a coordination tool under `dontAsk` when an `ask` rule
-/// matches, where `conclusion` spares it and asks. The facts are not what
-/// differs: `TaskMessage` is declared the same either way.
-fn gate_differs_from_the_model(name: &str, c: &Compared) -> bool {
-    name == "TaskMessage"
-        && c.cell.mode == PermissionMode::DontAsk
-        && matches!(c.cell.rule, RuleCase::Ask | RuleCase::ManagedAsk)
-}
-
 /// Tools that state their own facts: what those lead to must be what the facts
-/// bridged from their old answers lead to, in every cell. Where the gate does
+/// bridged from their old answers lead to, in every cell. Where the policy does
 /// not refuse a sample before reading the tool, both must also be what the
 /// gate concludes, so the comparison is about the decisions and not only about
 /// itself. Returns how many cells were compared, and how many of those
-/// against the gate.
+/// against the policy.
 async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().canonicalize().unwrap();
@@ -664,7 +662,7 @@ async fn assert_facts_conclude_as_bridged(names: &[&str]) -> (usize, usize) {
             for c in compare_stated_with_bridged(name, &sample.input, &cwd).await {
                 assert_eq!(c.stated, c.old, "{}", c.at);
                 compared += 1;
-                if let Some(gate) = c.gate.filter(|_| !gate_differs_from_the_model(name, &c)) {
+                if let Some(gate) = c.gate {
                     assert_eq!(c.old, gate, "{}", c.at);
                     against_the_gate += 1;
                 }
@@ -769,4 +767,202 @@ async fn a_durable_cron_job_is_asked_about_where_it_used_to_run() {
         (attended_default.old, attended_default.stated),
         ("Permit", "Prompt")
     );
+}
+
+fn stage_of(outcome: &PermissionOutcome) -> Option<Stage> {
+    match outcome {
+        PermissionOutcome::Deny { reason } | PermissionOutcome::Prompt { reason, .. } => {
+            Some(reason.stage)
+        }
+        PermissionOutcome::Permit { .. } => None,
+    }
+}
+
+async fn stage_with(
+    policy: &Policy,
+    name: Option<&str>,
+    input: &Value,
+    cwd: &Path,
+    hook: &HookAnswer,
+    attendance: Attendance,
+) -> Option<Stage> {
+    let session = session(cwd, PermissionMode::Default, false);
+    let registry = builtin_tools();
+    let tool = name.and_then(|n| registry.get(n));
+    let request = PermissionRequest::new(
+        name.unwrap_or("Nope"),
+        tool.as_ref(),
+        input,
+        cwd,
+        "matrix",
+        &session,
+    )
+    .with_hook(hook)
+    .with_attendance(attendance);
+    stage_of(&policy.decide(&request).await)
+}
+
+/// PERM-8: every stage the policy refuses or asks at is reached by a call
+/// here, so a stage added to the policy is added to the matrix too.
+#[tokio::test]
+async fn every_stage_of_the_policy_is_reached() {
+    use PermissionMode::*;
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let registry = builtin_tools();
+    let inside = |p: &str| cwd.join(p).display().to_string();
+    let bash = |command: &str| json!({ "command": command });
+    let plain = |rule| permission("Bash", rule);
+    let reached = |policy: Policy, name: &str, input: Value, mode| {
+        let tool = registry.get(name).unwrap();
+        let cwd = cwd.clone();
+        async move { stage_of(&decide(&policy, &tool, &input, &cwd, mode, false).await) }
+    };
+    let attended = Attendance::Attended;
+    let no_hook = HookAnswer::None;
+
+    let mut unreadable = base::settings::LoadedSettings::new(
+        Settings::defaults_for("matrix-model"),
+        base::settings::PathSettings::default(),
+    );
+    unreadable.managed = Some(base::managed_settings::ManagedSettings {
+        origin: "matrix".into(),
+        error: Some("not JSON".into()),
+        permission_rules: Vec::new(),
+        disable_bypass_permissions_mode: false,
+    });
+    let deny_bash =
+        Policy::deny_rules_only(permissions::ruleset::RuleSet::new(vec![PermissionRule {
+            source: RuleSource::Session,
+            behavior: RuleBehavior::Deny,
+            tool_name: "Bash".into(),
+            rule_content: None,
+        }]));
+    let block = HookAnswer::Block {
+        hook: "guard".into(),
+        reason: "not today".into(),
+    };
+    let build = bash("cargo build");
+
+    let seen = [
+        (
+            Stage::ManagedUnreadable,
+            reached(
+                Policy::from_settings(&unreadable, []),
+                "Bash",
+                bash("ls"),
+                Default,
+            )
+            .await,
+        ),
+        (
+            Stage::UnknownTool,
+            stage_with(
+                &plain(RuleCase::None),
+                None,
+                &json!({}),
+                &cwd,
+                &no_hook,
+                attended,
+            )
+            .await,
+        ),
+        (
+            Stage::Credentials,
+            reached(
+                plain(RuleCase::None),
+                "Read",
+                json!({ "file_path": "/home/matrix/.ssh/id_rsa" }),
+                BypassPermissions,
+            )
+            .await,
+        ),
+        (
+            Stage::Hook,
+            stage_with(
+                &plain(RuleCase::None),
+                Some("Bash"),
+                &build,
+                &cwd,
+                &block,
+                attended,
+            )
+            .await,
+        ),
+        (
+            Stage::ToolRefusal,
+            reached(
+                permission("Write", RuleCase::None),
+                "Write",
+                json!({ "file_path": "/usr/bin/evil", "content": "x" }),
+                Default,
+            )
+            .await,
+        ),
+        (
+            Stage::Rule,
+            reached(plain(RuleCase::Deny), "Bash", bash("ls"), Default).await,
+        ),
+        (
+            Stage::ManagedRule,
+            reached(
+                plain(RuleCase::ManagedAsk),
+                "Bash",
+                bash("ls"),
+                BypassPermissions,
+            )
+            .await,
+        ),
+        (
+            Stage::DelegateRule,
+            reached(deny_bash, "Bash", bash("ls"), Default).await,
+        ),
+        (
+            Stage::BypassImmune,
+            reached(
+                plain(RuleCase::None),
+                "Bash",
+                bash("cat /etc/passwd"),
+                Default,
+            )
+            .await,
+        ),
+        (
+            Stage::PlanMode,
+            reached(plain(RuleCase::None), "Bash", build.clone(), Plan).await,
+        ),
+        (
+            Stage::DontAsk,
+            reached(plain(RuleCase::None), "Bash", build.clone(), DontAsk).await,
+        ),
+        (
+            Stage::Configuration,
+            reached(
+                permission("Write", RuleCase::None),
+                "Write",
+                json!({ "file_path": inside(".agix/skills/s/SKILL.md"), "content": "x" }),
+                Default,
+            )
+            .await,
+        ),
+        (
+            Stage::ModeDefault,
+            reached(plain(RuleCase::None), "Bash", build.clone(), Default).await,
+        ),
+        (
+            Stage::Attendance,
+            stage_with(
+                &plain(RuleCase::None),
+                Some("Bash"),
+                &build,
+                &cwd,
+                &no_hook,
+                Attendance::NoOneToAsk("nobody here"),
+            )
+            .await,
+        ),
+    ];
+    for (expected, got) in seen {
+        assert_eq!(got, Some(expected));
+    }
 }

@@ -318,7 +318,11 @@ impl PermissionPolicy for AsksAboutEverything {
             prompt_id: uuid::Uuid::new_v4().to_string(),
             message: "the host asks".into(),
             paths: Vec::new(),
-            managed: false,
+            reason: base::interface::permission::Reason::new(
+                base::interface::permission::Stage::ModeDefault,
+                "asked",
+            ),
+            answerable: base::interface::permission::Answerable::HookOrPerson,
         }
     }
 }

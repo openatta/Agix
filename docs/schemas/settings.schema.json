@@ -19,7 +19,7 @@
       "type": "object"
     },
     "CompactionConfig": {
-      "description": "Context compaction, over what the scene asks for. A field left out keeps\nthe scene's own value (`Scene::token_budget`).",
+      "description": "Context compaction, over what the scene asks for. A field left out keeps\nthe scene's own value (`SceneSpec::token_budget`).",
       "properties": {
         "cached_microcompact": {
           "description": "Once an hour — the lifetime of the provider's prompt cache — blank all\nbut the 20 newest tool results and send the provider `cache_edits`\nfor the ones it still holds.",
@@ -122,7 +122,7 @@
         },
         "team_enabled": {
           "default": false,
-          "description": "Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at\nall for a session (`agents::AgentsModule`), and only in a scene whose\n`Scene::supports_team` is true. Default `false`: most\ndeployments never use multi-agent team coordination, and an\nalways-registered tool means its `tool.prompt.md` \"When to Use\"\nsection is always in the system prompt and its `team`/`name` input\nfields are always in the `Agent` tool's schema, whether or not the\noperator ever intends to allow it. Flipping this only affects\nsessions built *after* the change (existing sessions keep whatever\ntool set they were built with — same as every other setting here);\nthere is no separate restart requirement.",
+          "description": "Gates whether `TeamCreate`/`TeamList`/`TeamDelete` are registered at\nall for a session (`agents::AgentsModule`), and only in a scene whose\n`SceneSpec::supports_team` is true. Default `false`: most\ndeployments never use multi-agent team coordination, and an\nalways-registered tool means its `tool.prompt.md` \"When to Use\"\nsection is always in the system prompt and its `team`/`name` input\nfields are always in the `Agent` tool's schema, whether or not the\noperator ever intends to allow it. Flipping this only affects\nsessions built *after* the change (existing sessions keep whatever\ntool set they were built with — same as every other setting here);\nthere is no separate restart requirement.",
           "type": "boolean"
         },
         "team_max_persistent_members": {
@@ -804,7 +804,7 @@
           "type": "null"
         }
       ],
-      "description": "How the file tools word paths for the model. `absolute` keeps\ntoday's text; `workspace_relative` makes tool descriptions say paths\nare relative to the working directory and prints Grep / Glob / Write /\nEdit paths under it relative, so a recorded session replays in another\nworking directory and long paths stop repeating in every call.\nResolving paths is unchanged. Unset, the scene decides\n(`Scene::path_style`: `harnix` is relative, the rest absolute)."
+      "description": "How the file tools word paths for the model. `absolute` keeps\ntoday's text; `workspace_relative` makes tool descriptions say paths\nare relative to the working directory and prints Grep / Glob / Write /\nEdit paths under it relative, so a recorded session replays in another\nworking directory and long paths stop repeating in every call.\nResolving paths is unchanged. Unset, the scene decides\n(`SceneSpec::path_style`: `harnix` is relative, the rest absolute)."
     },
     "permission_mode": {
       "$ref": "#/$defs/PermissionMode",
