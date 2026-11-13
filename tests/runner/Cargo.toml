@@ -14,7 +14,6 @@ path = "src/lib.rs"
 base          = { workspace = true }
 runtime       = { workspace = true }
 agents        = { workspace = true }
-model         = { workspace = true }
 scene         = { workspace = true }
 telemetry     = { workspace = true }
 tools         = { workspace = true, features = ["web", "structured-output"] }

@@ -33,7 +33,6 @@ permissions = { workspace = true }
 platform = { workspace = true }
 skills   = { workspace = true }
 tempfile = { workspace = true }
-model    = { workspace = true }
 time     = { workspace = true }
 
 [lints.clippy]
