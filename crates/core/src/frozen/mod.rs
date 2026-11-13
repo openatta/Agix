@@ -230,19 +230,21 @@ async fn detect_main_branch(engine: &EngineExec, cwd: &Path) -> Option<String> {
         return Some(out);
     }
     for &cand in &["main", "master"] {
-        if run_git_text(
-            engine,
-            cwd,
-            &[
-                "show-ref",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{cand}"),
-            ],
-        )
-        .await
-        .is_some()
-        {
+        let exists = engine
+            .git(
+                cwd,
+                GitAccess::ReadOnly,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{cand}"),
+                ],
+                GIT_TIMEOUT,
+            )
+            .await
+            .is_ok_and(|out| out.status.success);
+        if exists {
             return Some(cand.to_string());
         }
     }

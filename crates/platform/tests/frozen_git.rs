@@ -142,6 +142,27 @@ async fn a_git_the_sandbox_cannot_hold_is_not_run_when_the_host_requires_one() {
     assert!(collect(false).await.is_git);
 }
 
+#[tokio::test]
+async fn without_origin_head_the_main_branch_is_the_local_main_or_master() {
+    let dir = TempDir::new().unwrap();
+    let run = run_git(dir.path());
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["commit", "--allow-empty", "-q", "-m", "init"]);
+    run(&["branch", "-M", "master"]);
+    run(&["checkout", "-q", "-b", "feature"]);
+
+    let ctx = FrozenContext::collect(
+        dir.path().to_path_buf(),
+        &test_paths(dir.path()),
+        &SystemEnvironment,
+        &direct(),
+    )
+    .await;
+    assert_eq!(ctx.git_main_branch.as_deref(), Some("master"));
+}
+
 /// `refresh_git` exists precisely to relax the module's "not refreshed
 /// during a session" characteristic for the git-derived fields — this
 /// pins down that calling it after the branch actually changes on disk
