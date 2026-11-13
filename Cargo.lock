@@ -602,7 +602,6 @@ dependencies = [
  "schemars",
  "script-host",
  "serde_json",
- "session",
  "sha2 0.10.9",
  "skills",
  "telemetry",

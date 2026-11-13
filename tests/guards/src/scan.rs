@@ -119,6 +119,17 @@ pub fn paths(f: &SourceFile, v: View) -> Vec<(Vec<String>, Hit)> {
         .collect()
 }
 
+/// [`paths`] that can name a crate: a lone identifier counts only as a `use`,
+/// an `extern crate` or a macro, since otherwise it is as often a local binding.
+pub fn crate_paths(f: &SourceFile, v: View) -> Vec<(Vec<String>, Hit)> {
+    collect(f, v, Want::PATHS)
+        .paths
+        .into_iter()
+        .filter(|p| !p.bare)
+        .map(|p| (p.segments, p.hit))
+        .collect()
+}
+
 pub fn expr_paths(f: &SourceFile, v: View) -> Vec<(Vec<String>, Hit)> {
     collect(f, v, Want::EXPR_PATHS).expr_paths
 }
@@ -287,6 +298,7 @@ pub(crate) struct ScopedPath {
     /// The inline `mod` blocks around it within the file.
     pub mods: Vec<String>,
     pub hit: Hit,
+    bare: bool,
 }
 
 pub(crate) fn scoped_paths(f: &SourceFile, v: View) -> Vec<ScopedPath> {
@@ -481,8 +493,13 @@ impl Collector<'_> {
     }
 
     fn push_path(&mut self, segs: Vec<String>, span: Span, from_use: bool) {
+        self.record_path(segs, span, from_use, from_use);
+    }
+
+    fn record_path(&mut self, segs: Vec<String>, span: Span, from_use: bool, names_item: bool) {
         let segments = if from_use { segs } else { self.expand(segs) };
         self.found.paths.push(ScopedPath {
+            bare: !names_item && segments.len() == 1,
             segments,
             mods: self.mods.clone(),
             hit: self.f.hit(span),
@@ -872,7 +889,10 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             let hit = self.f.hit(mac.path.span());
             self.found.macros.push((name.clone(), hit));
         }
-        self.visit_path(&mac.path);
+        if self.want.paths {
+            self.record_path(segments(&mac.path), mac.path.span(), false, true);
+        }
+        visit::visit_path(self, &mac.path);
         if self.want.features && name == "cfg" {
             self.feature_tokens(mac.tokens.clone());
         }
@@ -887,6 +907,13 @@ impl<'ast> Visit<'ast> for Collector<'_> {
             }
             Err(_) => self.fallback(mac.tokens.clone()),
         }
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        if self.want.paths {
+            self.push_path(vec![item.ident.to_string()], item.ident.span(), true);
+        }
+        visit::visit_item_extern_crate(self, item);
     }
 
     fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {

@@ -35,7 +35,6 @@ model         = { workspace = true }
 permissions   = { workspace = true }
 history       = { workspace = true }
 hooks         = { workspace = true }
-session       = { workspace = true }
 tools         = { workspace = true }
 async-trait   = { workspace = true }
 futures       = { workspace = true }

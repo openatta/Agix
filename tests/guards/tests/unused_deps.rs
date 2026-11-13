@@ -4,7 +4,9 @@
 //! library from its tests and is fooled by a local module named like a
 //! dependency; this reads the same syntax trees as the other guards. For each
 //! package, the first segment of every path in the production view of its
-//! library and binaries is what production uses; the full view of every file
+//! library and binaries is what production uses (a lone identifier only as a
+//! `use`, an `extern crate` or a macro: otherwise it is as often a local
+//! binding named like the dependency); the full view of every file
 //! (test modules, integration tests, examples) is what anything uses. A normal
 //! dependency used only by tests belongs in `dev-dependencies`; one used by
 //! nothing is deleted. A crate module declared at the root with a
@@ -17,7 +19,7 @@ use std::collections::BTreeSet;
 
 use guards::allow::{self, Finding};
 use guards::scan;
-use guards::{par_flat_map, ws, DepKind, Hit, Package, TargetKind, View};
+use guards::{par_flat_map, ws, DepKind, Hit, Package, SourceFile, TargetKind, View};
 
 /// `(package, dependency)`: declared on purpose although no path in its code
 /// names it, with why.
@@ -36,16 +38,22 @@ enum Used {
 
 type Uses = BTreeSet<(String, Used, String)>;
 
+fn roots(f: &SourceFile, view: View) -> Vec<String> {
+    scan::crate_paths(f, view)
+        .into_iter()
+        .filter_map(|(segments, _)| match segments.as_slice() {
+            [colons, name, ..] if colons == "::" => Some(format!("::{name}")),
+            [name, ..] => Some(name.clone()),
+            [] => None,
+        })
+        .collect()
+}
+
 fn crate_uses() -> Uses {
     par_flat_map(ws().files(), |f| {
         let mut out = Vec::new();
         let mut note = |view: View, used: Used| {
-            for (segments, _) in scan::paths(f, view) {
-                let name = match segments.as_slice() {
-                    [colons, name, ..] if colons == "::" => format!("::{name}"),
-                    [name, ..] => name.clone(),
-                    [] => continue,
-                };
+            for name in roots(f, view) {
                 out.push((f.package.clone(), used, name));
             }
         };
@@ -172,6 +180,30 @@ fn the_use_scan_sees_what_it_must() {
         );
     }
     allow::non_vacuous("unused_deps::uses", uses.len(), 300);
+}
+
+#[test]
+fn a_local_binding_named_like_a_dependency_is_not_a_use_of_it() {
+    let f = guards::source::standalone(
+        "a.rs",
+        r#"
+extern crate base64;
+use serde;
+fn f() {
+    let hex = 1;
+    let _ = hex + 1;
+    uuid::Uuid::new_v4();
+    md5!(hex);
+}
+"#
+        .into(),
+    )
+    .unwrap();
+    let found = roots(&f, View::Prod);
+    for used in ["base64", "serde", "uuid", "md5"] {
+        assert!(found.iter().any(|r| r == used), "{used}: {found:?}");
+    }
+    assert!(!found.iter().any(|r| r == "hex"), "{found:?}");
 }
 
 #[test]
