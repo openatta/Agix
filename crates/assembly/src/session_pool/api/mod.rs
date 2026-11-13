@@ -5,6 +5,7 @@ mod commands;
 mod daemon;
 mod error;
 mod events;
+mod history;
 mod mcp;
 mod plugin;
 mod scene;
@@ -17,6 +18,10 @@ pub use error::{Busy, BusyReason, EngineFailure, PoolError};
 pub use events::{
     emitted_outside_turns, AskKind, PendingAsk, SessionEvent, SessionFrame, SessionWatcher,
     Subscribed, WatcherId,
+};
+pub use history::{
+    ArchiveFormat, EntryList, EntryView, ExportSummary, ExportedSession, HistoryItem,
+    HistoryOrigin, HistoryPage, HistoryUsage, SessionKindName,
 };
 pub use mcp::{
     McpAuthDone, McpAuthStarted, McpAuthState, McpAuthStatus, McpIdentity, McpReconnected,

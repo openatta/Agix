@@ -88,9 +88,12 @@ impl SessionPool {
 
     /// `session.goal`: the session's goal, read from its log when the session
     /// is not in memory (and then reported disarmed).
-    pub async fn session_goal(&self, sid: &str) -> Result<serde_json::Value, PoolError> {
+    pub async fn session_goal(
+        &self,
+        sid: &str,
+    ) -> Result<Option<base::context::goal::GoalView>, PoolError> {
         if let Some(state) = self.live_state(sid).await {
-            return Ok(serde_json::json!({ "goal": state.goal_view() }));
+            return Ok(state.goal_view());
         }
         let entries = self.load_entries(sid).await?;
         let goal: Option<base::context::goal::Goal> = entries
@@ -106,9 +109,7 @@ impl SessionPool {
                 _ => None,
             })
             .and_then(|goal| serde_json::from_value(goal).ok());
-        Ok(serde_json::json!({
-            "goal": base::context::goal::GoalSlot::restored(goal).view()
-        }))
+        Ok(base::context::goal::GoalSlot::restored(goal).view())
     }
 
     /// `session.setGoal` / `session.updateGoal`: a host acts on the goal with
@@ -118,7 +119,7 @@ impl SessionPool {
         &self,
         sid: &str,
         change: GoalChange,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<Option<base::context::goal::GoalView>, PoolError> {
         self.refuse_scene_mismatch(sid).await?;
         if self.live_state(sid).await.is_none() {
             self.resume_unchecked(sid, false, None).await?;
@@ -191,7 +192,7 @@ impl SessionPool {
             Some(None) => self.continue_goal(sid).await,
             _ => {}
         }
-        Ok(serde_json::json!({ "goal": state.goal_view() }))
+        Ok(state.goal_view())
     }
 
     /// Push `session_id`'s goal changes to whoever watches the session.

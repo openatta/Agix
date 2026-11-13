@@ -100,7 +100,11 @@ async fn a_closed_session_s_log_has_the_goal_change_still_being_written() {
             },
         )
     });
-    assert_eq!(cold["goal"]["phase"], "blocked", "{cold}");
+    assert_eq!(
+        cold.as_ref().map(|g| g.goal.phase),
+        Some(base::context::goal::GoalPhase::Blocked),
+        "{cold:?}"
+    );
 }
 
 #[tokio::test]
@@ -111,7 +115,11 @@ async fn a_closed_session_s_log_has_the_goal_change_nobody_wrote_yet() {
 
     pool.shutdown_session(&sid).await.unwrap();
     let cold = pool.session_goal(&sid).await.unwrap();
-    assert_eq!(cold["goal"]["phase"], "blocked", "{cold}");
+    assert_eq!(
+        cold.as_ref().map(|g| g.goal.phase),
+        Some(base::context::goal::GoalPhase::Blocked),
+        "{cold:?}"
+    );
 }
 
 #[tokio::test]
@@ -124,7 +132,11 @@ async fn an_evicted_session_s_engine_writes_its_goal_changes_as_it_stops() {
     pool.evict(&sid, &live);
     pool.wait_until_stopped(&sid).await.unwrap();
     let cold = pool.session_goal(&sid).await.unwrap();
-    assert_eq!(cold["goal"]["phase"], "blocked", "{cold}");
+    assert_eq!(
+        cold.as_ref().map(|g| g.goal.phase),
+        Some(base::context::goal::GoalPhase::Blocked),
+        "{cold:?}"
+    );
 }
 
 /// Answers every call with a line of text, counting the turn-loop calls.

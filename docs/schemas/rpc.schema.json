@@ -1,5 +1,55 @@
 {
   "$defs": {
+    "AppendEntryParams": {
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "ns": {
+          "type": "string"
+        },
+        "payload": {
+          "default": null
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "ns",
+        "event"
+      ],
+      "type": "object"
+    },
+    "ArchiveFormat": {
+      "enum": [
+        "zip",
+        "dir"
+      ],
+      "type": "string"
+    },
+    "CacheEdit": {
+      "description": "A single cache edit operation sent in the `cache_edits` content block.\nCurrently only supports `delete_tool_result`.",
+      "oneOf": [
+        {
+          "properties": {
+            "tool_use_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "delete_tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_use_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "CloseReason": {
       "enum": [
         "closed",
@@ -229,6 +279,161 @@
         "effective"
       ],
       "type": "string"
+    },
+    "ContentBlock": {
+      "description": "内容块。`type` 字段做 enum tag。\n\n字段名 / 取值与 Anthropic API 一致；外部 JSON 直传可读。",
+      "oneOf": [
+        {
+          "properties": {
+            "cache_control": true,
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "source": {
+              "$ref": "#/$defs/ImageSource"
+            },
+            "type": {
+              "const": "image",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "source"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "input": true,
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_use",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "input"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "$ref": "#/$defs/ToolResultContent",
+              "description": "可以是 string 或 array of ContentBlock；用 ToolResultContent 区分"
+            },
+            "is_error": {
+              "type": "boolean"
+            },
+            "tool_use_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tool_use_id",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "provider": {
+              "description": "Which provider produced it. Transcript-only: request builders\nalways leave it `None`, so it never reaches a provider's wire.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "signature": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "thinking": {
+              "type": "string"
+            },
+            "type": {
+              "const": "thinking",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "thinking"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "data": {
+              "type": "string"
+            },
+            "provider": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "redacted_thinking",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Anthropic `cache_edits` content block: requests server-side deletion of\ncached tool result content by tool_use_id. Only meaningful in the request;\nnever returned by the API. Requires the `context-management-2025-06-27`\nbeta header.",
+          "properties": {
+            "cache_edits": {
+              "items": {
+                "$ref": "#/$defs/CacheEdit"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "cache_edits",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "cache_edits"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "CronJob": {
       "properties": {
@@ -689,6 +894,78 @@
       ],
       "type": "object"
     },
+    "EntriesParams": {
+      "properties": {
+        "namespaces": {
+          "default": null,
+          "description": "Only these namespaces; all of the host's when omitted.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "EntryList": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/EntryView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "EntryView": {
+      "description": "An extension entry as `session.entries` lists it and `session.appendEntry`\nanswers.",
+      "properties": {
+        "at": {
+          "description": "Messages before this entry, in `session.history`'s coordinates.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "event": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "ns": {
+          "type": "string"
+        },
+        "payload": {
+          "description": "The host's own content."
+        },
+        "ts": {
+          "description": "RFC 3339.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "ts",
+        "ns",
+        "event",
+        "payload",
+        "at"
+      ],
+      "type": "object"
+    },
     "EventsSubscribed": {
       "properties": {
         "subscribed": {
@@ -713,6 +990,537 @@
           "const": "rebuild",
           "description": "The old engine of an in-place rebuild did not stop in time.",
           "type": "string"
+        }
+      ]
+    },
+    "ExportParams": {
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ArchiveFormat",
+          "default": "zip"
+        },
+        "include": {
+          "default": null,
+          "description": "`sidechains`, `attachments`, `recording`; the first two when omitted.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Absolute, on the daemon's machine; must not exist yet.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ExportSummary": {
+      "description": "What `session.export` wrote.",
+      "properties": {
+        "attachments": {
+          "description": "Files under `attachments/`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes": {
+          "description": "Size on disk.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cut_at": {
+          "description": "The moment the snapshot was cut, RFC 3339.",
+          "type": "string"
+        },
+        "format": {
+          "$ref": "#/$defs/ArchiveFormat"
+        },
+        "format_version": {
+          "description": "The archive format's version, as in `manifest.json`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "recording": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/ExportedSession"
+          },
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "session_id",
+        "path",
+        "format",
+        "format_version",
+        "bytes",
+        "cut_at",
+        "sessions",
+        "attachments",
+        "recording",
+        "warnings"
+      ],
+      "type": "object"
+    },
+    "ExportedSession": {
+      "properties": {
+        "entry_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/$defs/SessionKindName"
+        },
+        "parent_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "kind",
+        "entry_count"
+      ],
+      "type": "object"
+    },
+    "GoalActionName": {
+      "enum": [
+        "pause",
+        "resume",
+        "edit",
+        "clear"
+      ],
+      "type": "string"
+    },
+    "GoalPhase": {
+      "enum": [
+        "active",
+        "paused",
+        "blocked",
+        "complete"
+      ],
+      "type": "string"
+    },
+    "GoalResult": {
+      "properties": {
+        "goal": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GoalView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GoalView": {
+      "description": "A goal as hosts and the model see it: the goal, and whether automatic\nrounds are armed.",
+      "properties": {
+        "armed": {
+          "type": "boolean"
+        },
+        "blocked_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "max_rounds": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/GoalPhase"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rounds_since_armed": {
+          "default": 0,
+          "description": "Rounds started since the goal was last armed; what the blocked lower\nbound counts.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rounds_started": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "objective",
+        "phase",
+        "max_rounds",
+        "rounds_started",
+        "armed"
+      ],
+      "type": "object"
+    },
+    "HistoryItem": {
+      "description": "One projected message, plus where it sits and where it came from.",
+      "oneOf": [
+        {
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/ContentBlock"
+              },
+              "type": "array"
+            },
+            "role": {
+              "const": "user",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "content": {
+              "items": {
+                "$ref": "#/$defs/ContentBlock"
+              },
+              "type": "array"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "role": {
+              "const": "assistant",
+              "type": "string"
+            },
+            "stop_reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StopReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "role",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "UI-only：本地命令输出、提醒、通知。**不**进 API。",
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/SystemKind"
+            },
+            "role": {
+              "const": "system",
+              "type": "string"
+            }
+          },
+          "required": [
+            "role",
+            "content",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoryOrigin"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` on lines written before origins were recorded."
+        },
+        "seq": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ts": {
+          "description": "RFC 3339.",
+          "type": "string"
+        },
+        "turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoryUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The model call's usage, on an assistant message."
+        }
+      },
+      "required": [
+        "seq",
+        "id",
+        "ts"
+      ],
+      "type": "object"
+    },
+    "HistoryOrigin": {
+      "description": "Where a history item came from.",
+      "oneOf": [
+        {
+          "enum": [
+            "tool_result",
+            "assistant",
+            "extension"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "Typed by the person.",
+          "type": "string"
+        },
+        {
+          "const": "steer",
+          "description": "Sent by the person while a turn was running.",
+          "type": "string"
+        },
+        {
+          "const": "command",
+          "description": "The expansion of a slash command.",
+          "type": "string"
+        },
+        {
+          "const": "injected",
+          "description": "Put there by the engine or a tool: reminders, recalled memory, a\nskill's instructions.",
+          "type": "string"
+        },
+        {
+          "const": "compact",
+          "description": "A compaction's summary or kept history.",
+          "type": "string"
+        }
+      ]
+    },
+    "HistoryPage": {
+      "properties": {
+        "active": {
+          "description": "Whether the session is in memory; a step in flight is not visible yet.",
+          "type": "boolean"
+        },
+        "entry_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "limit": {
+          "description": "The limit actually applied.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/HistoryItem"
+          },
+          "type": "array"
+        },
+        "offset": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "total": {
+          "description": "Projected messages in the whole transcript.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session_id",
+        "messages",
+        "total",
+        "offset",
+        "limit",
+        "has_more",
+        "entry_count",
+        "active"
+      ],
+      "type": "object"
+    },
+    "HistoryParams": {
+      "properties": {
+        "limit": {
+          "default": null,
+          "description": "Clamped to 500 rather than refused; 100 when omitted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "HistoryUsage": {
+      "properties": {
+        "cache_creation_input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cache_read_input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "output_tokens"
+      ],
+      "type": "object"
+    },
+    "ImageSource": {
+      "oneOf": [
+        {
+          "properties": {
+            "data": {
+              "type": "string"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "type": {
+              "const": "base64",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "media_type",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "url",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "url"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -2301,6 +3109,13 @@
         }
       ]
     },
+    "SessionKindName": {
+      "enum": [
+        "primary",
+        "sidechain"
+      ],
+      "type": "string"
+    },
     "SessionPersistence": {
       "properties": {
         "history_store_wired": {
@@ -2309,6 +3124,43 @@
       },
       "required": [
         "history_store_wired"
+      ],
+      "type": "object"
+    },
+    "SessionRef": {
+      "description": "Params that name one session and nothing else.",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SetGoalParams": {
+      "description": "Params that name one session and nothing else.",
+      "properties": {
+        "max_rounds": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "objective": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "objective"
       ],
       "type": "object"
     },
@@ -2470,6 +3322,39 @@
       ],
       "type": "object"
     },
+    "StopReason": {
+      "description": "模型停止原因。Anthropic API 取值。",
+      "oneOf": [
+        {
+          "enum": [
+            "end_turn",
+            "max_tokens",
+            "tool_use",
+            "stop_sequence",
+            "pause_turn"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "max_turns_reached",
+          "description": "+**: agent hit `EngineConfig.max_api_calls_per_turn`. Not from\nthe Anthropic API — emitted by our engine when the configured per-\nturn budget is exhausted. Caller (e.g. `AgentTool` for sub-agents)\nshould handle gracefully: return whatever partial work exists,\nflagged but **not** is_error=true. Carries the same\n`max_turns_reached` attachment + early-return semantics.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "兜底未来新增：避免反序列化失败",
+          "type": "string"
+        }
+      ]
+    },
+    "SystemKind": {
+      "enum": [
+        "local_command",
+        "reminder",
+        "notice"
+      ],
+      "type": "string"
+    },
     "TaskModelOverride": {
       "anyOf": [
         {
@@ -2496,6 +3381,20 @@
       ],
       "description": "A `task_models.<task>` entry. Accepts either the shorthand `\"provider_id\"`\nstring form or the detailed `{ \"provider\": ..., \"model\": ... }` object form."
     },
+    "ToolResultContent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "$ref": "#/$defs/ContentBlock"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "`tool_result.content` 字段：string 或 ContentBlock 数组。\n\n`#[serde(untagged)]` 让 JSON `\"hello\"` 直接解到 Text 变体，`[…]` 解到 Blocks。"
+    },
     "TrustLevel": {
       "description": "What a project no `trusted` pattern names is.",
       "enum": [
@@ -2519,6 +3418,40 @@
           "type": "string"
         }
       ]
+    },
+    "UpdateGoalParams": {
+      "description": "Params that name one session and nothing else.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/GoalActionName"
+        },
+        "max_rounds": {
+          "default": null,
+          "description": "For `edit`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "objective": {
+          "default": null,
+          "description": "For `edit`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "action"
+      ],
+      "type": "object"
     },
     "VisibleText": {
       "description": "A piece of text that will reach the model, and where it came from.",
@@ -2999,10 +3932,10 @@
     },
     "session.appendEntry": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/AppendEntryParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/EntryView"
       }
     },
     "session.clear": {
@@ -3063,18 +3996,18 @@
     },
     "session.entries": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/EntriesParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/EntryList"
       }
     },
     "session.export": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ExportParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/ExportSummary"
       }
     },
     "session.fork": {
@@ -3095,18 +4028,18 @@
     },
     "session.goal": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SessionRef"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/GoalResult"
       }
     },
     "session.history": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/HistoryParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/HistoryPage"
       }
     },
     "session.inspectContext": {
@@ -3175,10 +4108,10 @@
     },
     "session.setGoal": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/SetGoalParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/GoalResult"
       }
     },
     "session.setModel": {
@@ -3248,10 +4181,10 @@
     },
     "session.updateGoal": {
       "params": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/UpdateGoalParams"
       },
       "result": {
-        "description": "未类型化:字段见 docs/daemon_rpc_protocol.md 对应小节"
+        "$ref": "#/$defs/GoalResult"
       }
     }
   },

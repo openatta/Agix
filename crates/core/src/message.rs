@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 /// transcript 中的一条消息。User / Assistant 进 API；System 仅 UI 持久化用。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
     User {
@@ -31,7 +31,7 @@ pub enum Role {
     Assistant,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemKind {
     LocalCommand,
@@ -42,7 +42,7 @@ pub enum SystemKind {
 /// 内容块。`type` 字段做 enum tag。
 ///
 /// 字段名 / 取值与 Anthropic API 一致；外部 JSON 直传可读。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
@@ -89,7 +89,7 @@ pub enum ContentBlock {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImageSource {
     Base64 { media_type: String, data: String },
@@ -99,7 +99,7 @@ pub enum ImageSource {
 /// `tool_result.content` 字段：string 或 ContentBlock 数组。
 ///
 /// `#[serde(untagged)]` 让 JSON `"hello"` 直接解到 Text 变体，`[…]` 解到 Blocks。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 #[serde(untagged)]
 pub enum ToolResultContent {
     Text(String),
@@ -122,14 +122,14 @@ impl ToolResultContent {
 
 /// A single cache edit operation sent in the `cache_edits` content block.
 /// Currently only supports `delete_tool_result`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CacheEdit {
     DeleteToolResult { tool_use_id: String },
 }
 
 /// 模型停止原因。Anthropic API 取值。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,

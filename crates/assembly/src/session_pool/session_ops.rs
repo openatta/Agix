@@ -87,7 +87,7 @@ impl SessionPool {
         ns: &str,
         event: &str,
         payload: serde_json::Value,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::EntryView, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
         if ns.is_empty() || ns.len() > Self::MAX_ENTRY_NS || ns.chars().any(char::is_control) {
             return Err(PoolError::InvalidRequest(format!(
@@ -142,8 +142,11 @@ impl SessionPool {
                 PoolError::Internal("the entry was not found after writing it".to_string())
             })?;
 
-        self.publish_between_turns(session_id, SessionEvent::ExtensionEntry(written.clone()))
-            .await;
+        self.publish_between_turns(
+            session_id,
+            SessionEvent::ExtensionEntry(serde_json::to_value(&written).unwrap_or_default()),
+        )
+        .await;
         Ok(written)
     }
 
@@ -151,11 +154,11 @@ impl SessionPool {
         &self,
         session_id: &str,
         namespaces: Option<&[String]>,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::EntryList, PoolError> {
         let store = self.require_history_store()?;
         let entries = self.load_entries(session_id).await?;
         let lengths = history::transcript::projected_lengths_with(&entries, store.projection());
-        let listed: Vec<serde_json::Value> = entries
+        let listed: Vec<api::EntryView> = entries
             .iter()
             .enumerate()
             .filter(|(_, env)| match &env.entry {
@@ -167,7 +170,7 @@ impl SessionPool {
             })
             .filter_map(|(i, env)| entry_view(i, env, &lengths))
             .collect();
-        Ok(serde_json::json!({ "entries": listed }))
+        Ok(api::EntryList { entries: listed })
     }
 
     /// `session.setModel` — what the next API call this session makes should

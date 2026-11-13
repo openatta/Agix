@@ -4,6 +4,8 @@
 
 pub mod config;
 pub mod daemon;
+pub mod goal;
+pub mod history;
 pub mod import;
 pub mod mcp;
 pub mod plugin;
@@ -12,3 +14,11 @@ pub mod scene;
 pub mod schedule;
 
 pub use config::ConfigTarget;
+
+use serde::Deserialize;
+
+/// Params that name one session and nothing else.
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct SessionRef {
+    pub session_id: String,
+}

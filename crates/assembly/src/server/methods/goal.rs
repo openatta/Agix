@@ -1,18 +1,57 @@
 //! 会话目标：`session.goal` / `setGoal` / `updateGoal`。
 
 use super::*;
+use crate::rpc::methods::goal::{GoalActionName, GoalResult, SetGoalParams, UpdateGoalParams};
+use crate::rpc::methods::SessionRef;
+use crate::session_pool::GoalChange;
 
 rpc_methods! {
-    "session.goal" => goal(Untyped) -> Untyped;
-    "session.setGoal" => change_goal(Untyped) -> Untyped;
-    "session.updateGoal" => change_goal(Untyped) -> Untyped;
+    "session.goal" => goal(SessionRef) -> GoalResult;
+    "session.setGoal" => set_goal(SetGoalParams) -> GoalResult;
+    "session.updateGoal" => update_goal(UpdateGoalParams) -> GoalResult;
 }
 
-async fn goal(s: &DaemonServer, cx: &Call, Untyped(params): Untyped) -> RpcResponse {
-    s.method_session_goal(cx.id(), params).await
+async fn goal(s: &DaemonServer, _: &Call, params: SessionRef) -> Result<GoalResult, PoolError> {
+    Ok(GoalResult {
+        goal: s.pool.session_goal(&params.session_id).await?,
+    })
 }
 
-async fn change_goal(s: &DaemonServer, cx: &Call, Untyped(params): Untyped) -> RpcResponse {
-    s.method_session_change_goal(cx.id(), cx.method, params)
-        .await
+async fn set_goal(
+    s: &DaemonServer,
+    _: &Call,
+    params: SetGoalParams,
+) -> Result<GoalResult, PoolError> {
+    let change = GoalChange::Set {
+        objective: params.objective,
+        max_rounds: params.max_rounds,
+    };
+    Ok(GoalResult {
+        goal: s
+            .pool
+            .change_session_goal(&params.session.session_id, change)
+            .await?,
+    })
+}
+
+async fn update_goal(
+    s: &DaemonServer,
+    _: &Call,
+    params: UpdateGoalParams,
+) -> Result<GoalResult, PoolError> {
+    let change = match params.action {
+        GoalActionName::Pause => GoalChange::Pause,
+        GoalActionName::Resume => GoalChange::Resume,
+        GoalActionName::Clear => GoalChange::Clear,
+        GoalActionName::Edit => GoalChange::Edit {
+            objective: params.objective,
+            max_rounds: params.max_rounds,
+        },
+    };
+    Ok(GoalResult {
+        goal: s
+            .pool
+            .change_session_goal(&params.session.session_id, change)
+            .await?,
+    })
 }

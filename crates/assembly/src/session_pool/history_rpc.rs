@@ -62,7 +62,7 @@ impl SessionPool {
         session_id: &str,
         offset: usize,
         limit: usize,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::HistoryPage, PoolError> {
         let entries = self.load_entries(session_id).await?;
         let messages = history::transcript::project_messages_sourced(
             &entries,
@@ -75,20 +75,19 @@ impl SessionPool {
             .iter()
             .enumerate()
             .map(|(i, m)| history_item(start + i, m))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| PoolError::Internal(format!("failed to serialize transcript: {e}")))?;
+            .collect();
         let active = self.sessions.lock().await.contains_key(session_id);
 
-        Ok(serde_json::json!({
-            "session_id": session_id,
-            "messages": page,
-            "total": total,
-            "offset": start,
-            "limit": limit,
-            "has_more": end < total,
-            "entry_count": entries.len(),
-            "active": active,
-        }))
+        Ok(api::HistoryPage {
+            session_id: session_id.to_string(),
+            messages: page,
+            total,
+            offset: start,
+            limit,
+            has_more: end < total,
+            entry_count: entries.len(),
+            active,
+        })
     }
 
     /// `session.export` — the session, its sidechains and what they refer to,
@@ -103,7 +102,7 @@ impl SessionPool {
     pub async fn export_session(
         &self,
         request: crate::export::ExportRequest,
-    ) -> Result<serde_json::Value, PoolError> {
+    ) -> Result<api::ExportSummary, PoolError> {
         let store = self.require_history_store()?.clone();
         let root = base::session::SessionId::parse(&request.session_id).map_err(|e| {
             PoolError::InvalidRequest(format!("invalid session_id `{}`: {e}", request.session_id))
@@ -444,7 +443,7 @@ pub(super) fn entry_view(
     index: usize,
     env: &history::entry::EnvelopedEntry,
     lengths: &[usize],
-) -> Option<serde_json::Value> {
+) -> Option<api::EntryView> {
     if env.is_sidechain {
         return None;
     }
@@ -458,14 +457,14 @@ pub(super) fn entry_view(
         .ts
         .format(&time::format_description::well_known::Rfc3339)
         .ok()?;
-    Some(serde_json::json!({
-        "id": env.id,
-        "ts": ts,
-        "ns": ns,
-        "event": event,
-        "payload": payload,
-        "at": at,
-    }))
+    Some(api::EntryView {
+        id: env.id.to_string(),
+        ts,
+        ns: ns.clone(),
+        event: event.clone(),
+        payload: payload.clone(),
+        at,
+    })
 }
 
 /// A whole transcript as `session.history` pages it and the rows
@@ -477,7 +476,7 @@ pub(super) fn export_views(
     let history = history::transcript::project_messages_sourced(entries, projection)
         .iter()
         .enumerate()
-        .map(|(seq, m)| history_item(seq, m))
+        .map(|(seq, m)| serde_json::to_value(history_item(seq, m)))
         .collect::<Result<Vec<_>, _>>()?;
     let lengths = history::transcript::projected_lengths_with(entries, projection);
     let rows = entries
@@ -488,7 +487,8 @@ pub(super) fn export_views(
                 if !ns.starts_with(ENGINE_NS_PREFIX))
         })
         .filter_map(|(i, env)| entry_view(i, env, &lengths))
-        .collect();
+        .map(|view| serde_json::to_value(view))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok((history, rows))
 }
 
@@ -497,39 +497,42 @@ pub(super) fn export_views(
 pub(super) fn history_item(
     seq: usize,
     sourced: &history::transcript::SourcedMessage<'_>,
-) -> Result<serde_json::Value, serde_json::Error> {
-    use history::entry::LogEntry;
+) -> api::HistoryItem {
+    use api::HistoryOrigin;
+    use history::entry::{LogEntry, MessageOrigin};
     let env = sourced.entry;
-    let mut item = serde_json::to_value(&sourced.message)?;
     let id = match sourced.part {
-        Some(part) => serde_json::json!(format!(
-            "{}#{part}",
-            serde_json::to_value(env.id)?.as_str().unwrap_or_default()
-        )),
-        None => serde_json::to_value(env.id)?,
+        Some(part) => format!("{}#{part}", env.id),
+        None => env.id.to_string(),
     };
     let origin = match (&sourced.message, sourced.part, &env.entry) {
-        (base::message::Message::Assistant { .. }, _, _) => serde_json::json!("assistant"),
-        (_, Some(_), _) => serde_json::json!("compact"),
-        (_, None, LogEntry::ToolResult { .. }) => serde_json::json!("tool_result"),
-        (_, None, LogEntry::Extension { .. }) => serde_json::json!("extension"),
-        _ => serde_json::to_value(env.origin)?,
+        (base::message::Message::Assistant { .. }, _, _) => Some(HistoryOrigin::Assistant),
+        (_, Some(_), _) => Some(HistoryOrigin::Compact),
+        (_, None, LogEntry::ToolResult { .. }) => Some(HistoryOrigin::ToolResult),
+        (_, None, LogEntry::Extension { .. }) => Some(HistoryOrigin::Extension),
+        _ => env.origin.map(|origin| match origin {
+            MessageOrigin::User => HistoryOrigin::User,
+            MessageOrigin::Steer => HistoryOrigin::Steer,
+            MessageOrigin::Command => HistoryOrigin::Command,
+            MessageOrigin::Injected => HistoryOrigin::Injected,
+            MessageOrigin::ToolResult => HistoryOrigin::ToolResult,
+        }),
     };
     let usage = match (&env.entry, sourced.part) {
-        (LogEntry::Assistant { usage: Some(u), .. }, None) => serde_json::to_value(u)?,
-        _ => serde_json::Value::Null,
+        (LogEntry::Assistant { usage: Some(u), .. }, None) => Some(api::HistoryUsage::from(u)),
+        _ => None,
     };
     let ts = env
         .ts
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
-    if let Some(map) = item.as_object_mut() {
-        map.insert("seq".into(), serde_json::json!(seq));
-        map.insert("id".into(), id);
-        map.insert("ts".into(), serde_json::json!(ts));
-        map.insert("turn_id".into(), serde_json::json!(env.turn_id));
-        map.insert("origin".into(), origin);
-        map.insert("usage".into(), usage);
+    api::HistoryItem {
+        message: sourced.message.clone(),
+        seq,
+        id,
+        ts,
+        turn_id: env.turn_id.clone(),
+        origin,
+        usage,
     }
-    Ok(item)
 }

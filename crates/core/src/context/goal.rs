@@ -29,7 +29,7 @@ pub struct UnrecordedGoalChanges {
     pub(crate) _writing: tokio::sync::OwnedMutexGuard<()>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalPhase {
     Active,
@@ -38,7 +38,7 @@ pub enum GoalPhase {
     Complete,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Goal {
     pub id: String,
     pub revision: u64,
@@ -136,7 +136,7 @@ pub struct GoalSlot {
 
 /// A goal as hosts and the model see it: the goal, and whether automatic
 /// rounds are armed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct GoalView {
     #[serde(flatten)]
     pub goal: Goal,

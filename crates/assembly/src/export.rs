@@ -25,28 +25,8 @@ use std::path::{Path, PathBuf};
 pub const FORMAT: &str = "agix.session-export";
 pub const FORMAT_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveFormat {
-    Zip,
-    Dir,
-}
-
-impl ArchiveFormat {
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "zip" => Some(Self::Zip),
-            "dir" => Some(Self::Dir),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Zip => "zip",
-            Self::Dir => "dir",
-        }
-    }
-}
+pub use crate::session_pool::api::ArchiveFormat;
+use crate::session_pool::api::{ExportSummary, ExportedSession};
 
 /// What goes into the archive beyond the root session's own log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +184,10 @@ pub struct ExportSnapshot {
 }
 
 /// Write the archive and answer with what `session.export` returns.
-pub fn write(request: &ExportRequest, snapshot: ExportSnapshot) -> Result<Value, ExportError> {
+pub fn write(
+    request: &ExportRequest,
+    snapshot: ExportSnapshot,
+) -> Result<ExportSummary, ExportError> {
     let partial = partial_path(&request.path);
     let result = write_to(request, snapshot, &partial).and_then(|summary| {
         finish(&partial, &request.path, request.format)?;
@@ -218,7 +201,7 @@ pub fn write(request: &ExportRequest, snapshot: ExportSnapshot) -> Result<Value,
     }
     let mut summary = result?;
     let bytes = archive_bytes(&request.path, request.format);
-    summary["bytes"] = json!(bytes);
+    summary.bytes = bytes;
     Ok(summary)
 }
 
@@ -234,7 +217,7 @@ fn write_to(
     request: &ExportRequest,
     snapshot: ExportSnapshot,
     partial: &Path,
-) -> Result<Value, ExportError> {
+) -> Result<ExportSummary, ExportError> {
     let failed =
         |e: std::io::Error| ExportError::Failed(format!("could not write the archive: {e}"));
     let mut sink: Box<dyn Sink> = match request.format {
@@ -582,7 +565,7 @@ fn pack(
     request: &ExportRequest,
     snapshot: ExportSnapshot,
     sink: &mut dyn Sink,
-) -> std::io::Result<Value> {
+) -> std::io::Result<ExportSummary> {
     let include = request.include;
     let mut attachments = Attachments::default();
     let mut findings = Findings {
@@ -590,6 +573,7 @@ fn pack(
         ..Findings::default()
     };
     let mut rows = Vec::with_capacity(snapshot.sessions.len());
+    let mut exported = Vec::with_capacity(snapshot.sessions.len());
     let mut id_map = serde_json::Map::new();
     let mut depths: BTreeMap<String, usize> = BTreeMap::new();
 
@@ -687,6 +671,12 @@ fn pack(
             )?;
         }
 
+        exported.push(ExportedSession {
+            session_id: sid.clone(),
+            kind: facts.session_kind.into(),
+            parent_session_id: facts.parent_session_id.clone(),
+            entry_count: part.entries.len(),
+        });
         rows.push(json!({
             "session_id": sid,
             "kind": facts.session_kind,
@@ -772,20 +762,16 @@ fn pack(
         true,
     )?;
 
-    Ok(json!({
-        "session_id": snapshot.root.to_string(),
-        "path": request.path.display().to_string(),
-        "format": request.format.name(),
-        "format_version": FORMAT_VERSION,
-        "cut_at": cut_at,
-        "sessions": rows.iter().map(|row| json!({
-            "session_id": row["session_id"],
-            "kind": row["kind"],
-            "parent_session_id": row["parent_session_id"],
-            "entry_count": row["entry_count"],
-        })).collect::<Vec<_>>(),
-        "attachments": attachments.by_sha.len(),
-        "recording": !recordings.is_empty(),
-        "warnings": manifest["warnings"],
-    }))
+    Ok(ExportSummary {
+        session_id: snapshot.root.to_string(),
+        path: request.path.display().to_string(),
+        format: request.format,
+        format_version: FORMAT_VERSION,
+        bytes: 0,
+        cut_at,
+        sessions: exported,
+        attachments: attachments.by_sha.len(),
+        recording: !recordings.is_empty(),
+        warnings: findings.warnings,
+    })
 }
