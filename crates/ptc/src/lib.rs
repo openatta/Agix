@@ -94,14 +94,13 @@ pub struct RunCodeTool {
     run_slots: Arc<Semaphore>,
 }
 
-/// How many programs may run at once in this process, foreground and
-/// background together: each one is a thread of its own.
+/// A fresh budget of how many programs may run at once, foreground and
+/// background together — each one is a thread of its own — sized for this
+/// machine. Whoever hands one to several engines decides how far it reaches;
+/// a session pool shares one among its sessions.
 pub fn default_run_slots() -> Arc<Semaphore> {
-    static SLOTS: std::sync::LazyLock<Arc<Semaphore>> = std::sync::LazyLock::new(|| {
-        let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
-        Arc::new(Semaphore::new(cpus * 2))
-    });
-    SLOTS.clone()
+    let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
+    Arc::new(Semaphore::new(cpus * 2))
 }
 
 impl RunCodeTool {
@@ -138,8 +137,8 @@ impl RunCodeTool {
         }
     }
 
-    /// Share `slots` instead of the process-wide [`default_run_slots`]: a
-    /// program waits for one before it starts and holds it until it ends.
+    /// Share `slots` instead of a budget of this tool's own: a program waits
+    /// for one before it starts and holds it until it ends.
     pub fn with_run_slots(mut self, slots: Arc<Semaphore>) -> Self {
         self.run_slots = slots;
         self

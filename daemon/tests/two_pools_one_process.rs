@@ -196,3 +196,73 @@ async fn two_pools_in_one_process_see_nothing_of_each_other() {
         "MCP OAuth tokens persist under each pool's own root"
     );
 }
+
+#[cfg(feature = "ptc")]
+fn run_code_round(code: &str) -> Vec<StreamEvent> {
+    vec![
+        StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: ContentBlockStart::ToolUse {
+                id: "toolu_program".into(),
+                name: "RunCode".into(),
+                input: serde_json::Value::Null,
+            },
+        },
+        StreamEvent::ContentBlockDelta {
+            index: 0,
+            delta: BlockDelta::InputJsonDelta {
+                partial_json: serde_json::json!({ "code": code }).to_string(),
+            },
+        },
+        StreamEvent::ContentBlockStop { index: 0 },
+        StreamEvent::MessageDelta {
+            delta: MessageDeltaPayload {
+                stop_reason: Some(base::message::StopReason::ToolUse),
+                stop_sequence: None,
+            },
+            usage: Some(Usage::default()),
+        },
+    ]
+}
+
+/// Each pool has its own `RunCode` budget: one pool's programs holding
+/// every slot it has leave another pool's programs free to start.
+#[cfg(feature = "ptc")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pool_with_every_program_slot_taken_leaves_the_other_pools_programs_running() {
+    let a = Pool::start("alpha", Vec::new()).await;
+    let b = Pool::start("beta", Vec::new()).await;
+    let slots = a.pool.run_slots();
+    let _held = slots
+        .clone()
+        .acquire_many_owned(slots.available_permits() as u32)
+        .await
+        .unwrap();
+    assert_eq!(slots.available_permits(), 0);
+
+    b.one_turn_session().await;
+    b.model
+        .push_turn(run_code_round("return 'pool-beta-ran-' + (6 * 7);"));
+    b.model.push_turn(one_turn());
+    let session = b.call("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        b.call(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "run it"}),
+        ),
+    )
+    .await
+    .expect("pool beta's program waited for a slot pool alpha holds");
+
+    let answered = serde_json::to_string(
+        &b.model
+            .nth_request(2)
+            .expect("the program's result went back"),
+    )
+    .unwrap();
+    assert!(answered.contains("pool-beta-ran-42"), "{answered}");
+}

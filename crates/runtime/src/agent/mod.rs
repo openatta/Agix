@@ -24,7 +24,7 @@ mod builder;
 mod commands;
 mod messages;
 mod run;
-pub use builder::{Builder, HostContracts, HostLayers};
+pub use builder::{default_run_slots, Builder, HostContracts, HostLayers};
 pub use messages::*;
 
 /// The `task_models` key that routes `WebSearch` to a provider of its own.

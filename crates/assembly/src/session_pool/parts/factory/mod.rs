@@ -39,6 +39,10 @@ pub(in crate::session_pool) struct EngineFactory {
     /// the engine answers it with a `Deny`. `Duration::ZERO` waits forever.
     permission_prompt_timeout: Duration,
     history_store: Option<Arc<dyn history::store::HistoryStore>>,
+    /// How many `RunCode` programs this pool's sessions may run at once,
+    /// together. One per pool, so a pool filling it leaves the others in the
+    /// process their own.
+    run_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// One session's engine to build, with what the facade gathered for it from
@@ -92,7 +96,12 @@ impl EngineFactory {
             customize,
             permission_prompt_timeout,
             history_store,
+            run_slots: runtime::agent::default_run_slots(),
         }
+    }
+
+    pub(in crate::session_pool) fn run_slots(&self) -> &Arc<tokio::sync::Semaphore> {
+        &self.run_slots
     }
 
     pub(in crate::session_pool) fn permission_prompt_timeout(&self) -> Duration {
@@ -127,6 +136,7 @@ impl EngineFactory {
             .session_id(session_id.to_string())
             .commands_override(binding.commands.clone())
             .cron_store(req.cron_store)
+            .run_slots(self.run_slots.clone())
             .question_prompts(options.is_some_and(SessionOptions::answers_questions));
         if let Some(store) = &self.history_store {
             builder = builder.history_store(store.clone());

@@ -126,11 +126,12 @@ tools.Read({file_path, offset?, limit?}) → text, each line prefixed with its n
   （`→ Read(src/a.rs)` / `← ok` / `← error: …`）。`TaskOutput` 给的是这份完整的子调用记录
   加最后的结果，供审计。
 - **线程**：脚本在一个专门的线程上、一个单线程的 QuickJS 异步运行时里跑；每次子调用经通道交给
-  引擎的多线程运行时执行，结果送回脚本里的 Promise。所以 `Promise.all` 是真并行。整个进程里
+  引擎的多线程运行时执行，结果送回脚本里的 Promise。所以 `Promise.all` 是真并行。一个会话池里
   由主对话直接起的程序（前台、后台合计）同时至多 2×CPU 个，超出的等空位再开始，计时从开始算；
-  等待中被中断或 `TaskStop` 就不开始。子 Agent 里起的程序不占也不等空位——它已经受起那个子
-  Agent 的程序的限额约束，而让它等祖先占着的空位会互相卡死。嵌入方可以用 `RunCodeTool::with_run_slots` 换成自己的
-  `Semaphore`。
+  等待中被中断或 `TaskStop` 就不开始。空位按池算：池在建引擎时把自己那份交给 `Builder::run_slots`，
+  同一进程里的两个池互不占用；不经池、自己用 `Builder` 建的引擎没给的话各有一份。子 Agent 里起的
+  程序不占也不等空位——它已经受起那个子 Agent 的程序的限额约束，而让它等祖先占着的空位会互相
+  卡死。
 - **并发**：可并行的工具（读取、检索、`agent()`）同时至多 8 个在跑；不可并行的（写文件、Bash）
   按提交顺序一个接一个——与模型一次发多个工具调用时的规则相同，排队时不占并行名额，读取照跑。
   子 Agent 另受引擎的委派并发上限（`execution.max_concurrent_subagents`，缺省 6）约束：程序里

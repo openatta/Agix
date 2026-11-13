@@ -535,7 +535,7 @@ impl Builder {
         // one delegation down.
         #[cfg(feature = "ptc")]
         if self.agent_depth == 0 && tool_policy.scene_permits(ptc::TOOL_NAME) {
-            tools.register(Arc::new(ptc::RunCodeTool::for_registry(tools.as_ref())));
+            tools.register(run_code_for(tools.as_ref(), self.run_slots.clone()));
         }
 
         let names = tools.names();

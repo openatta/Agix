@@ -124,6 +124,10 @@ const NOT_FOR_DELEGATES: &[(&str, &str)] = &[
         "a host's own queue, kept across its engines; a delegate takes messages through its own",
     ),
     (
+        "run_slots",
+        "only the root conversation writes programs; one run inside a delegate takes no slot",
+    ),
+    (
         "wake_rx",
         "the tree's wake channel is wired on the root's runner",
     ),

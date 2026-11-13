@@ -300,6 +300,12 @@ impl SessionPool {
         self.bindings.cwd()
     }
 
+    /// The `RunCode` budget this pool's sessions share: how many programs
+    /// their conversations may run at once. Other pools have their own.
+    pub fn run_slots(&self) -> Arc<tokio::sync::Semaphore> {
+        self.factory.run_slots().clone()
+    }
+
     /// Full slash command catalog — built-in locals + skill-derived
     /// (see `build_shared_commands`) — for the
     /// `commands.list` RPC. Executing one is not a separate RPC: send

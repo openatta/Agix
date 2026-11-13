@@ -31,7 +31,9 @@ enum Kind {
     ProcessEnv,
     /// A cache or pool keyed by everything it depends on.
     SharedCache,
-    /// Shared today and should not be; says what removes it.
+    /// Shared today and should not be; says what removes it. No entry needs
+    /// it right now; the next one that does is listed under it.
+    #[allow(dead_code)]
     NotYet(&'static str),
 }
 
@@ -52,7 +54,6 @@ const PROCESS_STATE: &[(&str, &str, Kind, &str)] = &[
     ("crates/platform/src/orphans.rs", "ORPHANS", OsResource, "the process groups this process leads: an OS resource of the process, which an aborting panic hook must reach in full"),
     ("crates/assembly/src/telemetry_otel.rs", "PROCESS_EXPORTER", OsResource, "the OpenTelemetry exporter installs process-wide providers; see assemble::pool"),
     ("crates/history/src/lock.rs", "HELD", OsResource, "the session-log locks this process holds: an flock belongs to an open file, so every pool writing one state directory must share the one open file per log"),
-    ("crates/ptc/src/lib.rs", "SLOTS", NotYet("an EngineFactory that builds run_slots per pool"), "the RunCode thread budget; nothing in production passes `with_run_slots`, so every pool in the process draws on this one semaphore"),
     ("crates/ptc/src/engine.rs", "ORIGIN", Constant, "the epoch of a monotonic clock, fixed on first read"),
     ("crates/core/src/settings.rs", "KNOWN", Constant, "the settings keys, derived once from the schema"),
     ("crates/core/src/public_suffix.rs", "RULES", Constant, "the public suffix list compiled into the binary, parsed once"),
@@ -238,7 +239,7 @@ fn each_listed_static_is_the_kind_it_says() {
 #[test]
 fn the_scan_sees_the_statics_it_must() {
     let names: Vec<&str> = scanned().iter().map(|s| s.name.as_str()).collect();
-    for expected in ["WARNED", "NEXT_FENCE", "SLOTS"] {
+    for expected in ["WARNED", "NEXT_FENCE", "ORIGIN"] {
         assert!(
             names.contains(&expected),
             "the scan misses `{expected}`: {names:?}"

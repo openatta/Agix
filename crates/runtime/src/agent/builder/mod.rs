@@ -115,6 +115,32 @@ pub struct Builder {
     session_state: Option<Arc<base::context::SessionState>>,
     /// See [`Builder::steering`].
     steering: Option<crate::steering::SteerHandle>,
+    /// See [`Builder::run_slots`].
+    #[cfg_attr(not(feature = "ptc"), allow(dead_code))]
+    run_slots: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+/// A `RunCode` budget sized for this machine, for a host to share among the
+/// engines it builds — see [`Builder::run_slots`]. Without `RunCode` in the
+/// build no program runs, and the budget has no room.
+pub fn default_run_slots() -> Arc<tokio::sync::Semaphore> {
+    #[cfg(feature = "ptc")]
+    return ptc::default_run_slots();
+    #[cfg(not(feature = "ptc"))]
+    Arc::new(tokio::sync::Semaphore::new(0))
+}
+
+/// `RunCode` listing the tools registered so far, on `slots` when given.
+#[cfg(feature = "ptc")]
+fn run_code_for(
+    tools: &dyn base::tool::ToolRegistry,
+    slots: Option<Arc<tokio::sync::Semaphore>>,
+) -> Arc<ptc::RunCodeTool> {
+    let run_code = ptc::RunCodeTool::for_registry(tools);
+    Arc::new(match slots {
+        Some(slots) => run_code.with_run_slots(slots),
+        None => run_code,
+    })
 }
 
 impl Builder {
@@ -175,6 +201,7 @@ impl Builder {
             session_prompt: None,
             session_state: None,
             steering: None,
+            run_slots: None,
         }
     }
 
@@ -193,6 +220,14 @@ impl Builder {
     /// may keep across engines, instead of a queue of the engine's own.
     pub fn steering(mut self, queue: crate::steering::SteerHandle) -> Self {
         self.steering = Some(queue);
+        self
+    }
+
+    /// How many `RunCode` programs this session's conversation may run at
+    /// once, counted together with every other engine given the same
+    /// `slots`. Without this the session has a budget of its own.
+    pub fn run_slots(mut self, slots: Arc<tokio::sync::Semaphore>) -> Self {
+        self.run_slots = Some(slots);
         self
     }
 

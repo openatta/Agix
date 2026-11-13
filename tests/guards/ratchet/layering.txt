@@ -14,7 +14,7 @@ json!  crates/assembly/src/session_pool/parts/mcp_hub/live.rs  2
 fields  SessionPool       12
 fields  BindingCache      11
 fields  LiveSessions      8
-fields  EngineFactory     6
+fields  EngineFactory     7
 fields  SceneCatalog      6
 fields  SpecStore         4
 fields  McpHub            3
