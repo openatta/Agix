@@ -557,10 +557,7 @@ impl BudgetScene {
         );
         s.description = harnix.description;
         s.interactive = self.interactive;
-        s.token_budget = base::interface::scene::TokenBudget {
-            compact_threshold: self.compact_threshold,
-            compact_keep_recent: 2,
-        };
+        s.token_budget = base::interface::scene::TokenBudget::new(self.compact_threshold, 2);
         if let Some(max) = self.max_api_calls {
             s.execution.max_api_calls_per_turn = max;
         }

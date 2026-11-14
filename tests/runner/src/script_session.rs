@@ -24,7 +24,7 @@ use base::interface::scene::SceneSpec;
 use base::interface::script::{ScriptLedger, ScriptOutcome, ScriptRecord};
 use base::interface::tool::{InMemoryToolRegistry, Tool};
 use base::memory::MemoryStore;
-use base::settings::{PathSettings, ScriptBinding, Settings, ThinkingMode};
+use base::settings::{ScriptBinding, Settings, ThinkingMode};
 use runtime::agent::{Builder, InputMessage};
 use tokio_util::sync::CancellationToken;
 
@@ -298,13 +298,11 @@ pub async fn drive(root: &Path, session: Session) -> Ran {
     settings.values.model.model_name = "script-model".into();
     settings.values.model.max_tokens = 1024;
     settings.values.model.thinking_mode = ThinkingMode::Off;
-    settings.paths = PathSettings {
-        user_data_dir: root.join("user"),
-        global_data_dir: root.join("global"),
-        workspace: base::settings::Workspace::project_of(&root.join("local")),
-        local_data_dir: root.join("local"),
-        scope: "code".into(),
-    };
+    settings.paths.user_data_dir = root.join("user");
+    settings.paths.global_data_dir = root.join("global");
+    settings.paths.workspace = base::settings::Workspace::project_of(&root.join("local"));
+    settings.paths.local_data_dir = root.join("local");
+    settings.paths.scope = "code".into();
     settings.values.memory_enabled = session.memory.is_some();
     // The same choice the daemon makes for a non-interactive host: nothing is
     // here to answer a prompt, and a case that hung on one would look like a

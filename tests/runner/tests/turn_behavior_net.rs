@@ -29,7 +29,7 @@ use base::interface::recovery_policy::RecoveryPolicy;
 use base::interface::scene::SceneSpec;
 use base::interface::tool::{InMemoryToolRegistry, Tool};
 use base::interface::turn_policy::TurnPolicy;
-use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
+use base::settings::{PermissionMode, Settings, ThinkingMode};
 use history::store::HistoryStore as _;
 use runtime::agent::{Builder, InputMessage};
 use std::sync::Arc;
@@ -146,13 +146,11 @@ async fn trace(case: Case) -> String {
     settings.values.model.max_tokens = 1024;
     settings.values.model.thinking_mode = ThinkingMode::Off;
     settings.values.model.fallback_model = case.fallback_model.clone();
-    settings.paths = PathSettings {
-        user_data_dir: root.join("user"),
-        global_data_dir: root.join("global"),
-        workspace: base::settings::Workspace::project_of(&root.join("local")),
-        local_data_dir: root.join("local"),
-        scope: "code".into(),
-    };
+    settings.paths.user_data_dir = root.join("user");
+    settings.paths.global_data_dir = root.join("global");
+    settings.paths.workspace = base::settings::Workspace::project_of(&root.join("local"));
+    settings.paths.local_data_dir = root.join("local");
+    settings.paths.scope = "code".into();
     settings.values.memory_enabled = false;
     settings.values.permission_mode = case.permission_mode;
     settings.values.hooks_config = case.hooks_config.clone();

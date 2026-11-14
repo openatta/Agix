@@ -9,7 +9,7 @@ use base::id::Id;
 use base::interface::environment::FixedEnvironment;
 use base::interface::model::Model;
 use base::interface::tool::InMemoryToolRegistry;
-use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
+use base::settings::{PermissionMode, Settings, ThinkingMode};
 use runtime::agent::{Builder, InputMessage};
 use std::sync::Arc;
 use test_runner::scripted_model::{Reply, ScriptedModel};
@@ -35,13 +35,11 @@ async fn run_and_read_log(root: &std::path::Path, fixed: bool) -> String {
     settings.values.model.model_name = "golden-model".into();
     settings.values.model.max_tokens = 1024;
     settings.values.model.thinking_mode = ThinkingMode::Off;
-    settings.paths = PathSettings {
-        user_data_dir: root.join("user"),
-        global_data_dir: root.join("global"),
-        workspace: base::settings::Workspace::project_of(&root.join("local")),
-        local_data_dir: root.join("local"),
-        scope: "code".into(),
-    };
+    settings.paths.user_data_dir = root.join("user");
+    settings.paths.global_data_dir = root.join("global");
+    settings.paths.workspace = base::settings::Workspace::project_of(&root.join("local"));
+    settings.paths.local_data_dir = root.join("local");
+    settings.paths.scope = "code".into();
     settings.values.memory_enabled = false;
     settings.values.permission_mode = PermissionMode::BypassPermissions;
     let settings = Arc::new(settings);

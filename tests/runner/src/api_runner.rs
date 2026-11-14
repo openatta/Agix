@@ -257,24 +257,20 @@ async fn build_agent(
             base::settings::PathSettings::default(),
         )
     };
-    settings.values.model = base::settings::ModelSettings {
-        api_type: ApiType::Anthropic,
-        base_url: String::new(),
-        auth_token: String::new(),
-        model_name: model_name.clone(),
-        max_tokens: 2000,
-        thinking_mode: ThinkingMode::Off,
-        effort: None,
-        fallback_model: None,
-    };
+    settings.values.model.api_type = ApiType::Anthropic;
+    settings.values.model.base_url = String::new();
+    settings.values.model.auth_token = String::new();
+    settings.values.model.model_name = model_name.clone();
+    settings.values.model.max_tokens = 2000;
+    settings.values.model.thinking_mode = ThinkingMode::Off;
+    settings.values.model.effort = None;
+    settings.values.model.fallback_model = None;
     if config.fixture_dir.is_none() {
-        settings.paths = base::settings::PathSettings {
-            user_data_dir: tmp.join("user"),
-            global_data_dir: tmp.join("global"),
-            workspace: base::settings::Workspace::project_of(&tmp.join("local")),
-            local_data_dir: tmp.join("local"),
-            scope: "code".into(),
-        };
+        settings.paths.user_data_dir = tmp.join("user");
+        settings.paths.global_data_dir = tmp.join("global");
+        settings.paths.workspace = base::settings::Workspace::project_of(&tmp.join("local"));
+        settings.paths.local_data_dir = tmp.join("local");
+        settings.paths.scope = "code".into();
     }
     settings.values.memory_enabled = false;
     // 测试非交互运行,始终旁路权限确认——和 daemon 的生产选择一致（IDE/测试

@@ -18,7 +18,7 @@ use base::interface::model::{Model, Usage};
 use base::interface::tool::{
     InMemoryToolRegistry, PathStyle, ProgressSender, Tool, ToolContext, ToolResult,
 };
-use base::settings::{PathSettings, PermissionMode, Settings, ThinkingMode};
+use base::settings::{PermissionMode, Settings, ThinkingMode};
 use runtime::agent::Builder;
 use std::sync::Arc;
 use test_runner::scripted_model::{Reply, ScriptedModel};
@@ -65,13 +65,11 @@ async fn one_turn_of_two_calls() -> Ran {
     settings.values.model.thinking_mode = ThinkingMode::Off;
     settings.values.memory_enabled = false;
     settings.values.permission_mode = PermissionMode::BypassPermissions;
-    settings.paths = PathSettings {
-        user_data_dir: root.join("user"),
-        global_data_dir: root.join("global"),
-        workspace: base::settings::Workspace::project_of(&root.join("local")),
-        local_data_dir: root.join("local"),
-        scope: "code".into(),
-    };
+    settings.paths.user_data_dir = root.join("user");
+    settings.paths.global_data_dir = root.join("global");
+    settings.paths.workspace = base::settings::Workspace::project_of(&root.join("local"));
+    settings.paths.local_data_dir = root.join("local");
+    settings.paths.scope = "code".into();
 
     let registry = Arc::new(InMemoryToolRegistry::new());
     registry.register(Arc::new(Echo) as Arc<dyn Tool>);
