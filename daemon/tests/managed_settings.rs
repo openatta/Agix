@@ -133,7 +133,7 @@ impl Daemon {
             Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
             daemon::Assembly {
                 cwd: Some(work.clone()),
-                permission_prompt_timeout: prompt_timeout,
+                permission_prompt_timeout: Some(prompt_timeout),
                 model_client: Some(client as Arc<dyn AnthropicClient>),
                 transcripts: daemon::Transcripts::Nowhere,
                 ..Default::default()

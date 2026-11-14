@@ -46,7 +46,8 @@ Options:
                                    [default: the active scenes, sorted and comma-joined]
       --permission-prompt-timeout <SECS>
                                    Seconds a permission prompt may go unanswered before it is
-                                   denied (0 = wait forever) [default: 300]
+                                   denied (0 = wait forever)
+                                   [default: execution.permission_prompt_timeout_secs, else 300]
       --worker-threads <N>         Async worker threads [env: AGIX_WORKER_THREADS]
                                    [default: the number of CPU cores]
       --mcp-policy <PATH>          MCP policy file to enforce instead of the managed one
@@ -131,7 +132,7 @@ struct Cli {
     /// `session.run_turn` call forever. The timeout fails *closed* — it
     /// denies the tool call, never approves it — and the turn then continues
     /// normally with an error `tool_result`.
-    permission_prompt_timeout: u64,
+    permission_prompt_timeout: Option<u64>,
 
     /// Async worker threads; `None` leaves tokio's default of one per CPU
     /// core. Blocking work (file I/O, searches, scripts) runs on its own pool
@@ -214,7 +215,7 @@ impl Cli {
             scene: "code".into(),
             scenes: Vec::new(),
             instance: None,
-            permission_prompt_timeout: 300,
+            permission_prompt_timeout: None,
             worker_threads: None,
             mcp_policy: None,
             managed_settings: None,
@@ -245,7 +246,7 @@ impl Cli {
                 Long("instance") => cli.instance = Some(parser.value()?.string()?),
                 Long("permission-prompt-timeout") => {
                     cli.permission_prompt_timeout =
-                        number(&mut parser, "permission-prompt-timeout")?
+                        Some(number(&mut parser, "permission-prompt-timeout")?)
                 }
                 Long("worker-threads") => {
                     cli.worker_threads = Some(worker_threads(&parser.value()?.string()?)?)
@@ -599,9 +600,9 @@ async fn build_pool(
         daemon::Assembly {
             cwd: Some(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
             extra_scenes: cli.scenes.clone(),
-            permission_prompt_timeout: std::time::Duration::from_secs(
-                cli.permission_prompt_timeout,
-            ),
+            permission_prompt_timeout: cli
+                .permission_prompt_timeout
+                .map(std::time::Duration::from_secs),
             ..Default::default()
         },
     )
@@ -858,7 +859,7 @@ mod tests {
         assert_eq!(cli.model, "claude-sonnet-4-6");
         assert_eq!(cli.max_tokens, 32_000);
         assert_eq!(cli.scene, "code");
-        assert_eq!(cli.permission_prompt_timeout, 300);
+        assert_eq!(cli.permission_prompt_timeout, None);
         assert!(cli.socket.is_none() && cli.instance.is_none() && cli.scenes.is_empty());
         assert_eq!(cli.worker_threads, None);
         assert_eq!(cli.mcp_policy, None);

@@ -224,7 +224,7 @@ impl Daemon {
             agent_scene,
             daemon::Assembly {
                 cwd: Some(opts.project.clone()),
-                permission_prompt_timeout: opts.prompt_timeout,
+                permission_prompt_timeout: Some(opts.prompt_timeout),
                 model_client: Some(client),
                 extra_scenes: opts.host.scenes.iter().map(|s| s.id.clone()).collect(),
                 scenes: opts.host.scenes.clone(),

@@ -292,7 +292,7 @@ async fn start_scripted_server_holding(
         agent_scene,
         daemon::Assembly {
             cwd: Some(cwd.clone()),
-            permission_prompt_timeout: prompt_timeout,
+            permission_prompt_timeout: Some(prompt_timeout),
             model_client: Some(client),
             transcripts: daemon::Transcripts::In(store.clone()),
             ..Default::default()

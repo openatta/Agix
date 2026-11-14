@@ -2008,9 +2008,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   它写 `settings.local.json` 改在 `spawn_blocking` 里做,不再占 async 线程。
 - **设置里的 `execution.permission_prompt_timeout_secs` 生效了。** 以前 daemon 总拿
   `--permission-prompt-timeout`(缺省 300)盖掉它;现在优先级是命令行 > 设置 > 300。嵌入方的
-  `Assembly::permission_prompt_timeout` 留在 `DEFAULT_PERMISSION_PROMPT_TIMEOUT` 即算没给,由设置决定;
-  因此显式传 `--permission-prompt-timeout 300` 也让位于设置。要改的:设置里写了这个值、却靠命令行的
-  300 兜底的部署,删掉设置里的值或在命令行写明。
+  `Assembly::permission_prompt_timeout` 改为 `Option<Duration>`,`None` 由设置决定。要改的:设置里写了
+  这个值、却靠命令行缺省的 300 兜底的部署,删掉设置里的值或在命令行写明。
 
 #### 引擎自己起的进程
 

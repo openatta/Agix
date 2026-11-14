@@ -26,7 +26,7 @@ use tracing::{info, warn};
 
 use crate::config::DaemonConfig;
 pub use crate::session_pool::McpOptions;
-use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PROMPT_TIMEOUT};
+use crate::session_pool::{SessionCustomizer, SessionPool};
 
 /// The parts of an assembly a caller may legitimately differ on.
 ///
@@ -35,6 +35,7 @@ use crate::session_pool::{SessionCustomizer, SessionPool, DEFAULT_PERMISSION_PRO
 /// a host genuinely substitutes (the model, the store, the permission). The
 /// rest of the assembly is not configurable, because a host choosing its own
 /// order for it is the problem this module exists to remove.
+#[derive(Default)]
 pub struct Assembly {
     /// The project new sessions belong to when they name none. `None` is the
     /// process's own working directory.
@@ -49,9 +50,8 @@ pub struct Assembly {
     pub scenes: Vec<Arc<SceneSpec>>,
     /// How long an unanswered permission prompt may block a turn, over every
     /// session's `execution.permission_prompt_timeout_secs`. Left at
-    /// [`DEFAULT_PERMISSION_PROMPT_TIMEOUT`] it counts as not given, and the
-    /// settings decide (300 seconds when they say nothing either).
-    pub permission_prompt_timeout: Duration,
+    /// `None` the settings decide, and 300 seconds when they say nothing either.
+    pub permission_prompt_timeout: Option<Duration>,
     /// Where model calls go. `None` builds an Anthropic client keyed from
     /// `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, else from `credentials`
     /// asked for provider `"default"`.
@@ -74,24 +74,6 @@ pub struct Assembly {
     /// MCP: where sign-ins are kept, the OAuth client, the enterprise IdP
     /// and the policy. An empty struct in a build without the `mcp` module.
     pub mcp: McpOptions,
-}
-
-impl Default for Assembly {
-    fn default() -> Self {
-        Self {
-            cwd: None,
-            extra_scenes: Vec::new(),
-            scenes: Vec::new(),
-            permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
-            model_client: None,
-            credentials: None,
-            transcripts: Transcripts::default(),
-            host_policy: None,
-            plugins: Vec::new(),
-            customize_session: None,
-            mcp: McpOptions::default(),
-        }
-    }
 }
 
 /// Where a pool keeps transcripts.
@@ -187,10 +169,7 @@ pub async fn pool(
         history_store,
         config.paths.clone(),
     )
-    .permission_prompt_timeout(
-        (assembly.permission_prompt_timeout != DEFAULT_PERMISSION_PROMPT_TIMEOUT)
-            .then_some(assembly.permission_prompt_timeout),
-    )
+    .permission_prompt_timeout(assembly.permission_prompt_timeout)
     .credentials(credentials)
     .managed_settings(managed_path, managed)
     .host_changes(&own_settings_on_disk(config), &config.settings)
