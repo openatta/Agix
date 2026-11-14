@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base::interface::scene::SceneSpec;
-use base::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent};
+use base::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult};
 use live::{Host, LiveRun, Mode, Watcher};
 use serde_json::{json, Value};
 
@@ -497,16 +497,10 @@ impl Tool for ServiceStatus {
             .lock()
             .unwrap()
             .push((ctx.session_id.clone(), service.clone()));
-        Ok(ToolResult {
-            content: ToolResultContent::Text(format!(
-                "{service}: degraded since 09:14, incident {}-{service}",
-                self.incident
-            )),
-            is_error: false,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(format!(
+            "{service}: degraded since 09:14, incident {}-{service}",
+            self.incident
+        )))
     }
 }
 
