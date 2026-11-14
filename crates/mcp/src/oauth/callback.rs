@@ -59,10 +59,32 @@ pub fn is_callback_for(callback: &Url, redirect_uri: &Url) -> bool {
         && callback.path() == redirect_uri.path()
 }
 
+const REBIND_ATTEMPTS: u32 = 100;
+const REBIND_PAUSE: Duration = Duration::from_millis(10);
+
+/// A fixed port a sign-in has just closed can stay unbindable for a few
+/// milliseconds under load on macOS, so `AddrInUse` is retried for about a
+/// second before it is reported.
 pub async fn bind_loopback(port: Option<u16>) -> Result<(TcpListener, String), String> {
-    let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0)))
-        .await
-        .map_err(|e| format!("cannot listen for the OAuth callback on 127.0.0.1: {e}"))?;
+    let mut attempts = 0;
+    let listener = loop {
+        match TcpListener::bind(("127.0.0.1", port.unwrap_or(0))).await {
+            Ok(listener) => break listener,
+            Err(e)
+                if port.is_some()
+                    && e.kind() == std::io::ErrorKind::AddrInUse
+                    && attempts < REBIND_ATTEMPTS =>
+            {
+                attempts += 1;
+                tokio::time::sleep(REBIND_PAUSE).await;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "cannot listen for the OAuth callback on 127.0.0.1: {e}"
+                ))
+            }
+        }
+    };
     let port = listener
         .local_addr()
         .map_err(|e| format!("cannot listen for the OAuth callback: {e}"))?
@@ -207,6 +229,22 @@ async fn respond(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+
+    #[tokio::test]
+    async fn a_fixed_port_still_being_released_is_bound_once_it_is() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let mut binding = Box::pin(bind_loopback(Some(port)));
+        std::future::poll_fn(|cx| {
+            assert!(binding.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(held);
+        let (_listener, uri) = binding.await.unwrap();
+        assert_eq!(uri, format!("http://127.0.0.1:{port}{CALLBACK_PATH}"));
+    }
 
     #[test]
     fn redirect_uris_are_https_loopback_or_a_private_scheme() {
