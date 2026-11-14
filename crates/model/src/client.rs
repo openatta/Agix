@@ -158,8 +158,8 @@ type Opened = (
     crate::parser::ParsedStream,
 );
 
-/// 200 响应的开头就是失败：第一个事件是 `error`，或者 body 是空的。这时还什么都
-/// 没交给调用方，按首字节前的失败一样交给退避策略。
+/// 200 响应的开头就是失败：第一个事件是 `error`，读第一个事件时传输出错或超时，
+/// 或者 body 是空的。这时还什么都没交给调用方，按首字节前的失败一样交给退避策略。
 fn failed_opening(
     first: &Option<Result<StreamEvent, AnthropicError>>,
 ) -> Option<(RequestFailure, String)> {
@@ -169,13 +169,14 @@ fn failed_opening(
             classify(None, Some(&error.kind), &error.message).request_failure(),
             format!("error event {}: {}", error.kind, error.message),
         )),
-        Some(_) => None,
+        Some(Err(e)) => Some((e.kind().request_failure(), e.to_string())),
+        Some(Ok(_)) => None,
     }
 }
 
 /// 在首字节前重试：等多久、还试不试由 `BackoffPolicy` 决定；
 /// `retry-after` 头的解析留在本协议这一侧，作为提示交给策略。
-/// 放弃时原样交回最后一次的结果，开头的 `error` 事件仍由调用方按事件处理。
+/// 放弃时原样交回最后一次的结果，开头的 `error` 事件或错误仍由调用方按事件处理。
 async fn send_with_retry(
     inner: &HttpInner,
     req: &MessagesRequest,
@@ -491,6 +492,85 @@ data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"messag
             events.as_slice(),
             [Ok(StreamEvent::Error { error })] if error.kind == "invalid_request_error"
         ));
+    }
+
+    enum Opening {
+        Body(&'static str),
+        BrokenBody,
+        SilentBody,
+    }
+
+    /// Answers every request with 200 and streams the next scripted opening.
+    struct ScriptedStream {
+        openings: std::sync::Mutex<Vec<Opening>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Network for ScriptedStream {
+        async fn send(
+            &self,
+            _req: HttpRequest,
+            _origin: Origin,
+        ) -> Result<base::interface::exec::HttpResponse, base::interface::exec::ExecError> {
+            unreachable!("the client streams")
+        }
+
+        async fn open(
+            &self,
+            _req: HttpRequest,
+            _origin: Origin,
+        ) -> Result<HttpStream, base::interface::exec::ExecError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body: futures::stream::BoxStream<'static, _> =
+                match self.openings.lock().unwrap().remove(0) {
+                    Opening::Body(b) => {
+                        Box::pin(futures::stream::once(
+                            async move { Ok(b.as_bytes().to_vec()) },
+                        ))
+                    }
+                    Opening::BrokenBody => Box::pin(futures::stream::once(async {
+                        Err(base::interface::exec::ExecError::failed("connection reset"))
+                    })),
+                    Opening::SilentBody => Box::pin(futures::stream::pending()),
+                };
+            Ok(HttpStream {
+                status: 200,
+                headers: Default::default(),
+                body,
+            })
+        }
+
+        fn permits(&self, _host: &str, _origin: Origin) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_200_whose_body_fails_or_stalls_before_the_first_event_is_retried() {
+        const OK: &str = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n\
+event: message_stop\n\
+data: {\"type\":\"message_stop\"}\n\n";
+        for opening in [Opening::BrokenBody, Opening::SilentBody] {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let client = HttpAnthropicClient::new(AuthMode::ApiKey("k".into()))
+                .unwrap()
+                .with_network(Arc::new(ScriptedStream {
+                    openings: std::sync::Mutex::new(vec![opening, Opening::Body(OK)]),
+                    calls: calls.clone(),
+                }))
+                .with_backoff(vec![1, 1]);
+            let events: Vec<_> = client
+                .stream_messages(MessagesRequest::minimal("m", "hi"))
+                .collect()
+                .await;
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+            assert!(
+                matches!(events.last(), Some(Ok(StreamEvent::MessageStop))),
+                "{events:?}"
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

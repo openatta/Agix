@@ -6,7 +6,7 @@
 use crate::error::AnthropicError;
 use crate::stream::StreamEvent;
 use bytes::Bytes;
-use eventsource_stream::Eventsource;
+use eventsource_stream::{EventStreamError, Eventsource};
 use futures::stream::{Stream, StreamExt};
 use std::pin::Pin;
 
@@ -31,6 +31,7 @@ where
     S: Stream<Item = Result<Bytes, AnthropicError>> + Send + 'static,
 {
     let mapped = byte_stream.eventsource().map(|res| match res {
+        Err(EventStreamError::Transport(e)) => Err(e),
         Err(e) => Err(AnthropicError::Sse(format!("{e}"))),
         Ok(event) => {
             if event.data.is_empty() {
