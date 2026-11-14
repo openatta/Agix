@@ -34,10 +34,7 @@ fn hair_trigger_scene() -> SceneSpec {
         "Hair Trigger",
         scene::code::spec(scene::code::Interaction::Interactive).prompt,
     );
-    s.token_budget = TokenBudget {
-        compact_threshold: 1,
-        compact_keep_recent: 1,
-    };
+    s.token_budget = TokenBudget::new(1, 1);
     s
 }
 

@@ -1394,10 +1394,7 @@ struct TunedScene;
 impl TunedScene {
     fn compacting() -> Arc<base::interface::scene::SceneSpec> {
         let mut s = Self::code();
-        s.token_budget = base::interface::scene::TokenBudget {
-            compact_threshold: 1,
-            compact_keep_recent: 1,
-        };
+        s.token_budget = base::interface::scene::TokenBudget::new(1, 1);
         Arc::new(s)
     }
 
