@@ -123,10 +123,12 @@ impl SessionPool {
         } else {
             Restore::New
         };
+        self.live.refuse_while_shutting_down()?;
         let generation = self.live.next_generation();
         let mut built = self
             .build_engine(&core, scene, &binding, &spec, restore, generation)
             .await?;
+        self.live.refuse_while_shutting_down()?;
 
         // First `Meta` line for a genuinely new primary session — resumed
         // sessions already have one from when they were first created, and

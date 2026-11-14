@@ -811,3 +811,87 @@ async fn a_shutdown_during_a_rebuild_keeps_the_new_engine_off_the_session() {
     );
     assert_eq!(pool.live.len().await, 0);
 }
+
+/// A shutdown that starts while a session is being created gives up on it
+/// before its engine starts: no `SessionStart` hook runs for a session the
+/// pool will never hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shutdown_during_a_create_starts_no_engine() {
+    let (builder, dir, _store) = builder_with_history().await;
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (entered, go, held) = (
+        std::sync::Mutex::new(entered_tx),
+        std::sync::Mutex::new(go_rx),
+        hold.clone(),
+    );
+    let pool = builder
+        .session_customizer(Arc::new(move |builder, _| {
+            if held.load(Ordering::SeqCst) {
+                let _ = entered.lock().unwrap().send(());
+                let _ = go.lock().unwrap().recv();
+            }
+            builder
+        }))
+        .build();
+    let started = dir.path().join("started.log");
+    let mut settings = (*pool.bindings.pool_settings().await).clone();
+    settings.values.hooks_config = Some(serde_json::json!({
+        "SessionStart": [
+            { "type": "command", "command": format!("echo start >> '{}'", started.display()) }
+        ]
+    }));
+    let binding = pool.bindings.binding_from(settings);
+    pool.bindings
+        .insert(
+            (Some(pool.cwd().to_path_buf()), "code".to_string()),
+            binding,
+        )
+        .await;
+    let starts = || {
+        std::fs::read_to_string(&started)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    new_session(&pool).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while starts() < 1 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("a session's SessionStart hook runs");
+
+    hold.store(true, Ordering::SeqCst);
+    let create = {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            pool.create_session(None, ProjectSelector::Default, None)
+                .await
+                .is_ok()
+        })
+    };
+    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
+        .await
+        .unwrap();
+    let shutdown = {
+        let pool = pool.clone();
+        tokio::spawn(async move { pool.shutdown_all().await })
+    };
+    while pool.live.refuse_while_shutting_down().is_ok() {
+        tokio::task::yield_now().await;
+    }
+    go_tx.send(()).unwrap();
+    assert!(!create.await.unwrap(), "created during the shutdown");
+    shutdown.await.unwrap();
+
+    let late = tokio::time::timeout(Duration::from_secs(3), async {
+        while starts() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(late.is_err(), "the refused session's engine ran");
+}
