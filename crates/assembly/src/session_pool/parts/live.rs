@@ -349,14 +349,21 @@ impl LiveSessions {
 
     /// Put `live` in the table under `sid`, making room for it. Refused once
     /// the pool is shutting down — checked under the lock `shutdown_all`
-    /// drains the table with, so nothing inserted outlives the shutdown.
+    /// drains the table with, so nothing inserted outlives the shutdown — and
+    /// when `served` says its scene no longer is, checked under the lock
+    /// [`Self::retire_scene`] deactivates under.
     pub(in crate::session_pool) async fn insert_evicting(
         &self,
         sid: &str,
         live: LiveSession,
-    ) -> Result<Displaced, String> {
+        served: impl FnOnce(&str) -> bool,
+    ) -> Result<Displaced, CreateError> {
         let mut sessions = self.sessions.lock().await;
         self.refuse_while_shutting_down()?;
+        let scene = &live.core.scene().id;
+        if !served(scene) {
+            return Err(CreateError::SceneNotActive(scene.clone()));
+        }
         let evicted = if sessions.contains_key(sid) || sessions.len() < self.cap {
             None
         } else {
@@ -382,6 +389,26 @@ impl LiveSessions {
         } else {
             None
         }
+    }
+
+    /// The sessions in memory that run in `scene_id`; when there are none,
+    /// `deactivate` runs before the lock is let go, so no session of that
+    /// scene is inserted between the check and the deactivation.
+    pub(in crate::session_pool) async fn retire_scene(
+        &self,
+        scene_id: &str,
+        deactivate: impl FnOnce(),
+    ) -> Vec<String> {
+        let sessions = self.sessions.lock().await;
+        let in_scene: Vec<String> = sessions
+            .iter()
+            .filter(|(_, live)| live.core.scene().id == scene_id)
+            .map(|(sid, _)| sid.clone())
+            .collect();
+        if in_scene.is_empty() {
+            deactivate();
+        }
+        in_scene
     }
 
     /// Take every session out, each handed to `f` under the same lock.

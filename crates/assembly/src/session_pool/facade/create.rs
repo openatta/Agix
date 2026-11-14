@@ -176,11 +176,13 @@ impl SessionPool {
             engine,
             turn,
         };
-        let displaced = match self.live.insert_evicting(&session_id, live).await {
+        let served =
+            |scene: &str| scene == self.scenes.default_id() || self.scenes.is_active(scene);
+        let displaced = match self.live.insert_evicting(&session_id, live, served).await {
             Ok(displaced) => displaced,
             Err(e) => {
                 cancel.cancel();
-                return Err(e.into());
+                return Err(e);
             }
         };
         if let Some((evicted, live)) = displaced.evicted {

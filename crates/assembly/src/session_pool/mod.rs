@@ -350,6 +350,8 @@ pub(super) enum CreateError {
     /// The session's log lacks some of what the session holds, and its engine
     /// could not write it: rebuilding from the log would lose it.
     PersistFailed(String),
+    /// The session's scene was deactivated while the session was built.
+    SceneNotActive(String),
     Failed(String),
 }
 
@@ -379,6 +381,7 @@ impl CreateError {
                 message: outer(message),
             },
             Self::PersistFailed(e) => Self::PersistFailed(outer(e)),
+            Self::SceneNotActive(scene) => Self::SceneNotActive(scene),
             Self::Failed(e) => Self::Failed(outer(e)),
         }
     }
@@ -395,6 +398,7 @@ impl From<CreateError> for PoolError {
                 base::event::FailureKind::PersistFailed,
                 e,
             )),
+            CreateError::SceneNotActive(scene) => Self::SceneNotActive { scene },
             CreateError::Failed(e) => Self::Internal(e),
         }
     }

@@ -130,3 +130,44 @@ async fn two_scenes_can_be_active_in_one_process() {
         "harnix restricts its tools to a whitelist"
     );
 }
+
+/// `scene.deactivate` is refused while a session in memory runs in the scene
+/// — known from the session itself, with or without a transcript — and a
+/// session still being created when the scene goes is not left running in it.
+#[tokio::test]
+async fn a_deactivated_scene_keeps_no_session_in_memory() {
+    let (pool, _dir) = test_pool().await;
+    pool.activate_scene("harnix").await.unwrap();
+
+    let held = pool.bindings.hold().await;
+    let creating = {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            pool.create_session(Some("harnix"), ProjectSelector::Default, None)
+                .await
+        })
+    };
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    let deactivated = pool.deactivate_scene("harnix").await;
+    drop(held);
+    let created = creating.await.unwrap();
+    assert!(
+        deactivated.is_err() || created.is_err(),
+        "both the deactivation and the session in that scene went through"
+    );
+
+    pool.activate_scene("harnix").await.unwrap();
+    let sid = pool
+        .create_session(Some("harnix"), ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+    match pool.deactivate_scene("harnix").await {
+        Err(PoolError::SceneHasActiveSessions { sessions, .. }) => {
+            assert!(sessions.contains(&sid), "{sessions:?}")
+        }
+        other => panic!("deactivated with a session in memory: {other:?}"),
+    }
+}

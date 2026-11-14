@@ -17,7 +17,7 @@ impl SessionPool {
     /// worth it just for this summary view).
     pub async fn list_scenes(&self) -> Vec<api::SceneSummary> {
         let mut counts: HashMap<String, usize> = HashMap::new();
-        for sid in self.live_ids().await {
+        for sid in self.live.ids().await {
             if let Some(scene) = self.directory.facts_of(&sid).await.scene {
                 *counts.entry(scene).or_insert(0) += 1;
             }
@@ -78,30 +78,24 @@ impl SessionPool {
         self.scenes.activate(scene_id)
     }
 
-    /// `scene.deactivate {scene}` — refuses while any *in-memory* session is
-    /// recorded under this scene (`SCENE_HAS_ACTIVE_SESSIONS`, with the
+    /// `scene.deactivate {scene}` — refuses while any *in-memory* session
+    /// runs in this scene (`SCENE_HAS_ACTIVE_SESSIONS`, with the
     /// blocking session ids so the caller can close them and retry).
     /// Deactivating only removes it from the active scenes — no session
     /// history is touched, and a deactivated scene's sessions can still be
     /// listed (`session.list`) and resumed once it's reactivated.
     pub async fn deactivate_scene(&self, scene_id: &str) -> Result<(), PoolError> {
-        let mut blocking = Vec::new();
-        for sid in self.live_ids().await {
-            if self.directory.facts_of(&sid).await.scene.as_deref() == Some(scene_id) {
-                blocking.push(sid);
-            }
-        }
+        let mut blocking = self
+            .live
+            .retire_scene(scene_id, || self.scenes.deactivate_unchecked(scene_id))
+            .await;
         if !blocking.is_empty() {
+            blocking.sort();
             return Err(PoolError::SceneHasActiveSessions {
                 scene: scene_id.to_string(),
                 sessions: blocking,
             });
         }
-        self.scenes.deactivate_unchecked(scene_id);
         Ok(())
-    }
-
-    async fn live_ids(&self) -> Vec<String> {
-        self.live.ids().await
     }
 }
