@@ -2527,8 +2527,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 委派只剩一条路:`base::interface::delegate::Delegator`。设计见 `ARCHITECTURE.md` §3.4,用法见
 `extension_points.md` 的"委派"。
 
-- **`Delegator::live_members() -> Vec<LiveMember>`**(带缺省实现,返回空):池靠它知道会话里有没有活着的
-  常驻成员。包装 `Delegator` 的实现要转发它,否则重建会停掉成员。
+- **`Delegator::live_members() -> Vec<LiveMember>`**:池靠它知道会话里有没有活着的常驻成员。没有缺省实现
+  (`Agix-v0.3.12-2026111302` 及更早带一个返回空的缺省),每个实现都要写:包装别的 `Delegator` 的转发它,
+  没有常驻成员的返回空。
 
 - **`AgentSpawner` 一族删除。** `Delegator::delegate(DelegateRequest) -> Result<Delegated,
   DelegateError>` 与 `stop_member(&TeamSeat)` 取代它;`DelegateRequest` 是 `#[non_exhaustive]`,

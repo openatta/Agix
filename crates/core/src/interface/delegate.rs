@@ -213,9 +213,7 @@ pub trait Delegator: Send + Sync {
 
     /// The persistent members alive, sorted by id. They run under the engine
     /// that holds this delegator and stop with it.
-    fn live_members(&self) -> Vec<LiveMember> {
-        Vec::new()
-    }
+    fn live_members(&self) -> Vec<LiveMember>;
 }
 
 #[cfg(test)]
@@ -245,6 +243,10 @@ mod tests {
         }
 
         async fn stop_member(&self, _: &TeamSeat) {}
+
+        fn live_members(&self) -> Vec<LiveMember> {
+            Vec::new()
+        }
     }
 
     #[test]

@@ -340,6 +340,10 @@ impl base::interface::delegate::Delegator for LateDelegator {
     async fn stop_member(&self, seat: &TeamSeat) {
         self.0.get().expect("wired").stop_member(seat).await
     }
+
+    fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+        self.0.get().expect("wired").live_members()
+    }
 }
 
 /// A hook agent's own tool calls are not judged by the agent hook it runs

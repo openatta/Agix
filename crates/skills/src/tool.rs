@@ -981,6 +981,10 @@ mod dynamic_context_tests {
         }
 
         async fn stop_member(&self, _: &base::interface::delegate::TeamSeat) {}
+
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
     }
 
     /// The `Skill` tool inline, a forked skill and a `/name` command (which
@@ -1147,6 +1151,10 @@ mod tests {
         }
 
         async fn stop_member(&self, _: &base::interface::delegate::TeamSeat) {}
+
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
     }
 
     /// A project-defined skill (e.g. loaded from `.agents/skills/`) is

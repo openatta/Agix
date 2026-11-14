@@ -276,6 +276,10 @@ mod tests {
         }
 
         async fn stop_member(&self, _: &base::interface::delegate::TeamSeat) {}
+
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
     }
 
     fn judge() -> DelegatorHookExecutor {

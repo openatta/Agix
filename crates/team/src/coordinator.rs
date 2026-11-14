@@ -1079,6 +1079,10 @@ mod tests {
     impl Delegator for FakeDelegator {
         async fn stop_member(&self, _: &TeamSeat) {}
 
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
+
         async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             let prompt = request.prompt;
             let cur = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1127,6 +1131,10 @@ mod tests {
     #[async_trait]
     impl Delegator for GatheringDelegator {
         async fn stop_member(&self, _: &TeamSeat) {}
+
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
 
         async fn delegate(&self, _: DelegateRequest) -> Result<Delegated, DelegateError> {
             self.gathered.wait().await;
@@ -1296,6 +1304,10 @@ mod tests {
     impl Delegator for MailboxAwareDelegator {
         async fn stop_member(&self, _: &TeamSeat) {}
 
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
+
         async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             let ctx = platform::tool_context_for_test(cwd_of(&request));
             let extra_tools = stage_tools(request);
@@ -1371,6 +1383,10 @@ mod tests {
     #[async_trait]
     impl Delegator for MemoryAwareDelegator {
         async fn stop_member(&self, _: &TeamSeat) {}
+
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
 
         async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             if !request.prompt.contains("remember") {
@@ -1793,6 +1809,10 @@ mod tests {
         impl Delegator for AlwaysFails {
             async fn stop_member(&self, _: &TeamSeat) {}
 
+            fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+                Vec::new()
+            }
+
             async fn delegate(&self, _: DelegateRequest) -> Result<Delegated, DelegateError> {
                 finished_as("", DelegateEnd::Failed("boom".into()))
             }
@@ -1864,6 +1884,10 @@ mod tests {
     #[async_trait]
     impl Delegator for CancelsTheLead {
         async fn stop_member(&self, _: &TeamSeat) {}
+
+        fn live_members(&self) -> Vec<base::interface::delegate::LiveMember> {
+            Vec::new()
+        }
 
         async fn delegate(&self, request: DelegateRequest) -> Result<Delegated, DelegateError> {
             let task = task_text(&request.prompt);
