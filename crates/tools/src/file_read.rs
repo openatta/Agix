@@ -369,12 +369,18 @@ async fn read_pdf_text(
     }
     let page_range = pages.unwrap_or("1-20");
     let cwd = path.parent().unwrap_or(path);
+    let Some(target) = pdftotext_target(path) else {
+        return Err(ToolError::Validation(format!(
+            "PDF file name is not valid UTF-8: {}",
+            path.display()
+        )));
+    };
     let pdftotext = ProcessSpec::new("pdftotext", cwd).args([
         "-f".to_string(),
         page_range.split('-').next().unwrap_or("1").to_string(),
         "-l".to_string(),
         page_range.split('-').nth(1).unwrap_or("20").to_string(),
-        path.to_string_lossy().into_owned(),
+        target,
         "-".to_string(), // stdout
     ]);
     let output = engine.helper(pdftotext, &[], PDFTOTEXT_TIMEOUT).await;
@@ -415,6 +421,16 @@ async fn read_pdf_text(
                 metadata.len,
             ))
         }
+    }
+}
+
+/// How `pdftotext`, started in `path`'s directory, names `path`: whole when
+/// it is UTF-8, else by its file name, since `ProcessSpec` arguments are
+/// strings and a lossy path names some other file.
+fn pdftotext_target(path: &Path) -> Option<String> {
+    match path.to_str() {
+        Some(whole) => Some(whole.to_string()),
+        None => Some(format!("./{}", path.file_name()?.to_str()?)),
     }
 }
 
@@ -1182,6 +1198,44 @@ mod tests {
                     .block_on(read_text(&p, ctx_in(dir.path())));
                 assert!(text.contains("has-no-terminal"), "{text}");
             },
+        );
+    }
+
+    /// A working directory whose name is not UTF-8 cannot be spelled in a
+    /// `String` argument, so `pdftotext` is pointed at the file from inside
+    /// it. macOS refuses such names outright, hence a provider's file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pdf_under_a_directory_whose_name_is_not_utf8_is_still_extracted() {
+        use base::interface::exec::in_process::{ScriptedProcess, ScriptedRun};
+        use std::os::unix::ffi::OsStrExt;
+        let cwd = PathBuf::from(std::ffi::OsStr::from_bytes(b"/proj/\xff\xfe"));
+        let process = ScriptedProcess::new().with(
+            "pdftotext -f 1 -l 20 ./doc.pdf -",
+            ScriptedRun::ok("extracted words"),
+        );
+        let mut ctx = ctx_in(&cwd);
+        ctx.exec.filesystem = Arc::new(OneFile {
+            path: cwd.join("doc.pdf"),
+            body: "%PDF-1.4\n",
+        });
+        ctx.exec.process = Arc::new(process.clone());
+
+        let r = FileReadTool
+            .call(
+                json!({"file_path": "doc.pdf"}),
+                ctx,
+                ProgressSender::noop("t"),
+            )
+            .await
+            .unwrap();
+        let ToolResultContent::Text(text) = r.content else {
+            panic!("PDF reads stay plain text");
+        };
+        assert!(
+            text.contains("extracted words"),
+            "{text}; ran {:?}",
+            process.seen()
         );
     }
 
