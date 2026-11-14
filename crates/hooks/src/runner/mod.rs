@@ -369,12 +369,23 @@ impl HookRunner {
     ///
     /// Once `stop` is cancelled, every hook still running is stopped and
     /// reported [`HookOutcome::Cancelled`] rather than left to its timeout.
+    /// Not at an event whose answer is ignored ([`Answer::Ignored`]): it
+    /// reports something that already happened, and the turn or session that
+    /// fired it going away is no reason to keep that from its hooks, which
+    /// run to their own timeout.
+    ///
+    /// [`Answer::Ignored`]: crate::catalog::Answer::Ignored
     pub async fn run(
         &self,
         event: HookEvent,
         input: &HookInput,
         stop: &CancellationToken,
     ) -> HookRunResult {
+        let unstoppable = CancellationToken::new();
+        let stop = match event.spec().answer {
+            crate::catalog::Answer::Ignored => &unstoppable,
+            crate::catalog::Answer::Acts(_) => stop,
+        };
         let configs = match self.settings.get(&event) {
             Some(v) => v,
             None => return HookRunResult::default(),
@@ -1904,6 +1915,31 @@ mod tests {
             result.outcomes
         );
         assert!(result.blocked().is_some(), "{:?}", result.outcomes);
+    }
+
+    /// A hook at an event that only reports what happened runs even once
+    /// the turn or session that fired it has been stopped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_observer_hook_runs_though_its_turn_was_stopped() {
+        let r = HookRunner::new(HashMap::from([(
+            HookEvent::SubagentStop,
+            vec![command("echo ran")],
+        )]));
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let result = r
+            .run(
+                HookEvent::SubagentStop,
+                &HookInput::lifecycle("SubagentStop", "s", ".", "default"),
+                &stop,
+            )
+            .await;
+        assert!(
+            matches!(result.outcomes[0], HookOutcome::Ran { .. }),
+            "{:?}",
+            result.outcomes
+        );
     }
 
     fn blocking_on_error(mut hook: HookConfig) -> HookConfig {

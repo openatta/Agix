@@ -418,9 +418,15 @@ async fn post_tool_use(
             user_prompt: None,
             ..Default::default()
         };
+        // Not the turn's token: the tool already ran, and a turn cancelled
+        // since still owes its hooks the news.
         let hook_result = ctx
             .hooks
-            .run(hooks::HookEvent::PostToolUse, &post_input, &ctx.cancel)
+            .run(
+                hooks::HookEvent::PostToolUse,
+                &post_input,
+                &tokio_util::sync::CancellationToken::new(),
+            )
             .await;
         if let Some(response) = hook_result.blocked() {
             *outcome = Err(format!(

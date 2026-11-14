@@ -653,6 +653,54 @@ async fn post_tool_use_hook_fires_after_execution() {
     );
 }
 
+/// Cancels the turn it runs in, then finishes.
+struct CancelsItsTurn(tokio_util::sync::CancellationToken);
+#[async_trait::async_trait]
+impl base::tool::Tool for CancelsItsTurn {
+    fn name(&self) -> &str {
+        "CancelsItsTurn"
+    }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "cancels its turn (test tool)"
+    }
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: base::tool::ToolContext,
+        _progress: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        self.0.cancel();
+        Ok(base::tool::ToolResult::text(
+            "done before the cancel landed",
+        ))
+    }
+}
+
+/// A tool that ran is reported to `PostToolUse` and `PostToolUseFailure`
+/// even when its turn was cancelled while it ran.
+#[tokio::test]
+async fn post_tool_use_hooks_run_for_a_tool_whose_turn_was_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("post-hook-ran");
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    let ctx = ctx_with_marker_hook(hooks::HookEvent::PostToolUse, &marker, tools.clone());
+    tools.register(Arc::new(CancelsItsTurn(ctx.cancel.clone())));
+
+    let _ = execute_tool_with_telemetry(&ctx, "CancelsItsTurn", serde_json::json!({})).await;
+
+    assert!(ctx.cancel.is_cancelled());
+    assert!(
+        marker.exists(),
+        "PostToolUse did not run for a tool that ran"
+    );
+}
+
 /// Builds a `ToolExecCtx` whose runner touches `marker` when `event` fires.
 fn ctx_with_marker_hook(
     event: hooks::HookEvent,
