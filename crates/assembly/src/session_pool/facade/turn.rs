@@ -531,10 +531,16 @@ impl SessionPool {
     /// Whether a session names itself is its *own* scene's call, not this
     /// pool's default scene's: a `harnix` session created on a `--scene code`
     /// daemon is still a harnix session, and the two scenes disagree about
-    /// this exactly as they disagree about the system prompt. The naming call
-    /// is made with no lock held — it is a model call.
+    /// this exactly as they disagree about the system prompt. The scene is
+    /// read as the catalog has it now, so a `scene.reload` reaches sessions
+    /// built before it. The naming call is made with no lock held — it is a
+    /// model call.
     async fn name_after_turn(&self, ticket: &TurnTicket, message: &str) -> Option<String> {
         let core = &ticket.core;
+        let scene = self
+            .scenes
+            .resolve(Some(&core.scene().id))
+            .unwrap_or_else(|| core.scene().clone());
         let prompt = {
             let mut naming = core.naming();
             // A slash command is not what the conversation is about.
@@ -545,7 +551,7 @@ impl SessionPool {
             if naming.named_by_user {
                 return None;
             }
-            core.scene().session_name_prompt(message)?
+            scene.session_name_prompt(message)?
         };
         let namer = self
             .live

@@ -2630,6 +2630,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **会话命名改由 `session_naming` 模板(`{first_message}`)给出**,`auto_name_session` /
   `session_name_prompt` 删除;`memory_extraction_prompt` 改为字段 `memory_extraction_intro`;
   `declarative::Reminder` 是 `base` 的 `Reminder` 的重导出;`Interaction` 实现 `Default`(`Interactive`)。
+- **首轮之后的命名读场景表里现在的那份 `SceneSpec`。** `register_scene` 换了定义、再经 `reload_scenes`
+  (`scene.reload`)生效后,在跑的会话起名用新的 `session_naming`;以前用会话建起时的那份。
 
 #### 设置
 

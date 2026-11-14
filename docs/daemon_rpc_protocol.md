@@ -1037,7 +1037,8 @@ HashMap),客户端要按 `scene` 找条目,不要按下标。
 ```
 
 已激活、重建后仍在的场景指向新的定义:改过 `prompt.md` 的场景,此后新建的会话用改过的版本;
-已经在跑的会话保持建会话时的那份。新增的场景照常需要 `scene.activate`。消失的场景从场景表
+已经在跑的会话保持建会话时的那份(提示词、工具面),只有首轮之后给会话起名用新定义的
+`session_naming`。新增的场景照常需要 `scene.activate`。消失的场景从场景表
 移除,已激活的仍需 `scene.deactivate`。
 
 #### `scene.register` / `scene.unregister`

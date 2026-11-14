@@ -271,3 +271,35 @@ async fn a_session_is_named_through_its_own_projects_title_route() {
     assert_eq!(titler.naming_calls(), ["title-model"]);
     assert!(main.naming_calls().is_empty());
 }
+
+/// A session's first turn names it as its scene says now: a `scene.reload`
+/// that turned naming on for the scene a live session runs in reaches it.
+#[tokio::test]
+async fn naming_follows_the_scene_as_reloaded_not_as_the_session_was_built() {
+    let (pool, dir) = test_pool().await;
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let scene_as = |naming: Option<&str>| {
+        let mut spec = scene::harnix::spec();
+        spec.id = "renamer".into();
+        spec.session_naming = naming.map(str::to_string);
+        Arc::new(spec)
+    };
+    pool.register_scene(scene_as(None));
+    pool.activate_scene("renamer").await.unwrap();
+    bind(&pool, &project, "renamer", Answering::new("发布清单"), None).await;
+    let sid = pool
+        .create_session(
+            Some("renamer"),
+            ProjectSelector::Path(project.clone()),
+            None,
+        )
+        .await
+        .unwrap()
+        .session_id;
+
+    pool.register_scene(scene_as(Some("{first_message}")));
+    pool.reload_scenes().await;
+
+    assert_eq!(first_turn(&pool, &sid).await["name"], "发布清单");
+}
