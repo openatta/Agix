@@ -178,25 +178,25 @@ fn system_blocks(turn: u32) -> Vec<PromptBlock> {
 
 fn tool_table() -> Vec<ToolDef> {
     vec![
-        ToolDef {
-            name: "Read".into(),
-            description: "Read a file".into(),
-            input_schema: serde_json::json!({
+        ToolDef::new(
+            "Read",
+            "Read a file",
+            serde_json::json!({
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
                 "required": ["path"]
             }),
-            source: Some("builtin".into()),
-        },
-        ToolDef {
-            name: "Bash".into(),
-            description: "Run a shell command".into(),
-            input_schema: serde_json::json!({
+        )
+        .with_source("builtin"),
+        ToolDef::new(
+            "Bash",
+            "Run a shell command",
+            serde_json::json!({
                 "type": "object",
                 "properties": {"command": {"type": "string"}}
             }),
-            source: Some("builtin".into()),
-        },
+        )
+        .with_source("builtin"),
     ]
 }
 

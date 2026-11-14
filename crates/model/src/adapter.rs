@@ -1197,12 +1197,7 @@ mod provider_search_tests {
     }
 
     fn tool(name: &str) -> ToolDef {
-        ToolDef {
-            name: name.into(),
-            description: String::new(),
-            input_schema: serde_json::json!({"type": "object"}),
-            source: None,
-        }
+        ToolDef::new(name, "", serde_json::json!({"type": "object"}))
     }
 
     async fn sent(

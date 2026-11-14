@@ -435,13 +435,12 @@ mod tests {
                 // Empty blocks must not produce stray blank lines.
                 PromptBlock::system("   "),
             ],
-            vec![ToolDef {
-                name: "Bash".into(),
-                description: "Run a shell command".into(),
-                input_schema: json!({"type": "object", "properties": {"cmd": {"type": "string"}}}),
-                // Dropped by `to_chat_tool` — asserted below.
-                source: Some("builtin".into()),
-            }],
+            vec![ToolDef::new(
+                "Bash",
+                "Run a shell command",
+                json!({"type": "object", "properties": {"cmd": {"type": "string"}}}),
+            )
+            .with_source("builtin")],
             vec![msg(MessageRole::User, vec![text("hi")])],
             Some(4096),
             &Reasoning::default(),

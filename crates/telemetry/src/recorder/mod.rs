@@ -1033,12 +1033,7 @@ mod tests {
     }
 
     fn tools() -> Vec<ToolDef> {
-        vec![ToolDef {
-            name: "Bash".into(),
-            description: "run".into(),
-            input_schema: serde_json::json!({}),
-            source: None,
-        }]
+        vec![ToolDef::new("Bash", "run", serde_json::json!({}))]
     }
 
     fn params(session: &str, step: u32) -> StreamParams {
