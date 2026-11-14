@@ -113,9 +113,10 @@ feature 下(`assembly` / `daemon` 的同名 feature 转发过去)。
 `SessionContext` 把正在构建的会话交给模块。两样东西是**晚绑定**的,因为读它们的
 东西比提供它们的模块先建好:
 
-- **delegator**:`"agent"` 型 hook、`context: fork` 的 skill 与宿主的 `startAgent` 拿到的
-  是一个之后才填入实现的 `Delegator`,由 agents 模块 `provide_delegator`;没有人提供时委派
-  被拒绝。
+- **delegator**:`"agent"` 型 hook、`context: fork` 的 skill 与宿主的 `session.startAgent` 拿到的
+  是 `runtime` 里的 `LateDelegator`——一个只能被填一次的壳,agents 模块在 `on_session` 里
+  `provide_delegator` 填入真正的实现;没有人提供时每个请求都被拒绝(`DelegateError::Unsupported`)。
+  壳只转发,不做任何委派的决定(`DLG-2`)。
 - **skill 目录**:命令表、agent、其它模块拿到的都是同一个晚绑定的 `SkillCatalog`,
   由 skills 模块提供;没有时为空。
 
@@ -135,7 +136,7 @@ fork 型 skill 要 agents 提供的 delegator。委派出去的子会话用父�
 授予的工具和父会话的一样宣告给模型、随 server 的变更通知刷新,没授予的 server 看不到(§3.4)。
 
 宿主能换掉的、会话读的几样东西,都有 `Builder` 上的注入口,缺省是本机的那一套,`build()` 里
-各接一处,子 Agent 的会话沿用父会话的:
+各接一处,子 Agent 的会话经 `Builder::inherit(HostContracts)` 整份沿用父会话的(§3.4):
 
 | 注入口 | 换掉的契约 | 说明 |
 |---|---|---|
@@ -523,30 +524,91 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
 
 关闭父会话会**级联删除**其全部 sidechain:父会话一旦关闭,就没有任何路径能再触达它们。
 
-### 3.4 委派深度
+### 3.4 委派
+
+#### 一个入口
+
+模型调 `Agent`、`TeamCreate` 的成员、常驻团队成员、Skill `context: fork`、`"agent"` 型 hook、
+宿主的 `session.startAgent`,都构造一个 `base::interface::delegate::DelegateRequest`,交给
+`Delegator::delegate`。这是委派唯一的分派:谁来调、怎么跑,由请求里的 `DelegateMode` 决定,
+其余(类型、模型、工具收窄、拒绝规则、授予、输出 schema、工作目录、取消、询问去向、调用点)
+都在请求的字段里。
+
+| 调用方 | `DelegateMode` | 返回 |
+|---|---|---|
+| 模型的前台 `Agent`;不带 `background` 的 skill fork | `Wait` | `Finished(DelegateOutcome)` |
+| 模型的后台 `Agent`;`background` 的 skill fork | `Background { notify_parent }` | `Started(StartedAgent)` |
+| `session.startAgent` | `Host { notify_parent }` | `Started` |
+| `TeamCreate` 的阶段成员 | `TeamMember { lifetime: Stage { .. } }` | `Finished` |
+| `Agent` 的 `team_name` + `name` | `TeamMember { lifetime: Persistent }` | `Started`(这条消息的任务) |
+| `"agent"` hook | `Hook { judged_session }` | `Finished` |
+
+- `DelegateMode` 是封闭枚举,没有 `#[non_exhaustive]`:分派对每个模式写明分支,不留通配
+  (`DLG-6`),新加一个模式不写它的规则就编不过。`DelegateRequest` 与 `DelegateError` 是
+  `#[non_exhaustive]`,crate 外用 `DelegateRequest::new(prompt, mode, stops_with)` 构造再改字段。
+- `DelegateOutcome` 带最终文本、`DelegateEnd`(`Completed` / `Cancelled` / `Failed` /
+  `CutShort`)、结构化输出和子会话 id;失败和被取消是一次结果,不是 `Err`。`DelegateError`
+  只表示没起来:`Limit`、`Depth`、`Unsupported`、`Build`、`Invalid`、`NotJudged`。
+- 调用方的取消经 `StopsWith` 进来:`Call(token)` 是调用方的令牌(子会话停在它的子令牌上),
+  `Session` 是父会话的结束令牌。委派路径与 hook 执行器不自造无源的 `CancellationToken`(`DLG-8`)。
+- `Delegator::stop_member` 停一个常驻成员。
+
+实现在 agents:`agents::delegate::Delegator` 持有 `DelegateEnv`、`AgentCatalog`、`ToolPool`、
+`Limits`、`PersistentMembers`。`DelegateRequest` 的字段在 `delegate` 里折成内部的 `Spec`,再按
+模式走 `wait` / `start` / `stage_member` / `message_member` / `judge`,它们最终经
+`Delegator::build_delegate` 建出子会话(`DLG-2`)。
+
+#### 父会话只捕获一次
+
+`DelegateEnv` 在 agents 模块的 `on_session` 里由 `SessionContext` 一次取全:宿主契约、
+父会话的 id、状态、事件、待决权限与结束令牌、hook runner(弱引用)、场景、设置、模型、
+给子会话的 MCP 份额、skill 目录、深度。之后不改,没有「事后填入」的槽:`agents` 与 `team`
+里没有 `SetLater`、没有 `RwLock<Option<…>>` 字段、`AgentTool` 与 `Delegator` 上没有 `set_*`
+(`DLG-4`)。唯一晚绑定的是 runtime 的 `LateDelegator`,因为读它的 hook、skill 与宿主比 agents
+模块先建好。
+
+#### 子会话继承什么
+
+子会话由 `runtime::agent::Builder` 建出,在整个 agents crate 里只有 `build_delegate` 一处
+`Builder::new`,它先 `.inherit(env.host.clone())`(`DLG-1`)。`HostContracts` 是宿主为这台机器
+与部署答出的那一整份:`exec`、`token_counter`、`rules`、`environment`、`permission`、
+`history_store`、`telemetry`、`task_router`、`scene_registry`、记忆(存储、召回、召回钩子)、
+`instruction_provider`、`plugins`、`modules`,以及 `HostLayers`(工具与提示中间件、结果变换、
+模型拦截、恢复策略、压缩器)。`Builder::build` 解析一次,交给每个模块看(`SessionContext::host`),
+`inherit` 把这一整份设到子会话的 builder 上。
+
+`Builder` 的每个字段恰好属于三类之一(`DLG-3`):由 `HostContracts` 整份继承;由每个委派自己
+决定(场景、模型、工具、设置、会话 id、血统、`tool_selector`、`mcp_servers`、深度、team 席位……);
+不给委派(`frozen`、`session_state`、`steering`、`run_slots`、`cron_store` 这类宿主自己的)。
+新增 `Builder` 字段不分类,守卫过不了。`inherit` 必须先于委派自己的 setter 调用——自己的
+(例如收窄后的权限)后设、覆盖继承来的。
+
+#### 深度
 
 委派链由 `execution.max_agent_depth`(默认 3,即 `EngineConfig::max_agent_depth`)**计数**约束,
-不靠从工具集里摘掉 `Agent`。
-`Inner::spawn_guard` 在每一条 spawn 路径上检查;到顶时返回普通工具错误,模型看得见,
-可以改为自己做。同时在跑的个数另有上限,见 §3.8。
+不靠从工具集里摘掉 `Agent`。`Limits::spawn_guard` 在每一条建会话的路径上检查;到顶时返回
+`DelegateError::Depth`,模型看得见,可以改为自己做。同时在跑的个数另有上限,见 §3.8。
 
 **过滤工具名不构成约束**:`Builder::build()` 会为子会话新建注册表,子会话自己的 agents
 模块再把 `Agent` 注册进去(到顶时不注册),与父级传入的工具集无关。
 
-子会话的工具在 `Delegator::build_delegate` 一处决定,模型调 `Agent`(前台、后台、团队成员)、
-宿主的 `session.startAgent`、Skill fork、`TeamCreate` 成员、agent hook 都走它:
+#### 子会话的工具
+
+子会话的工具在 `Delegator::build_delegate` 一处决定,上表的每条路径都走它:
 
 - **只继承模板里的内建工具**:父会话建的时候传进 `Builder::tools` 的那一份
   (`SessionContext::template_tools`),只要 origin 是 `Builtin`、不是 `Agent`、父会话还留着
   的。引擎、模块、场景、插件、MCP 在建会话时注册的不继承,子会话建的时候注册自己的那份。
 - **收窄只在子会话的 `ToolPolicy`**:agent 类型的 `allowed_tools` / `disallowed_tools`,
-  加上调用方给的 allowed / disallowed(skill 的 `allowed-tools`、`session.startAgent` 的两个
-  列表),合成一个 `ToolSelector` 经 `Builder::tool_selector` 交给子会话;它和场景的工具面
-  一起管子会话的全部工具:继承的、引擎和模块注册的、场景和插件贡献的、MCP 适配器(运行期
-  才接入的也算)。只有 `ToolSearch`、`StructuredOutput` 不受它收窄。
+  加上请求的 `tools`(skill 的 `allowed-tools`、`session.startAgent` 的两个列表),合成一个
+  `ToolSelector` 经 `Builder::tool_selector` 交给子会话;它和场景的工具面一起管子会话的
+  全部工具:继承的、引擎和模块注册的、场景和插件贡献的、MCP 适配器(运行期才接入的也算)。
+  只有 `ToolSearch`、`StructuredOutput` 不受它收窄。请求只能收窄,不能放宽。
+- **拒绝与授予**:请求的 `deny_rules` 只有 `deny` 生效——子会话可以比父会话多被拒绝,
+  不能多被允许;`grants` 是只在子会话自己会话里生效的 Turn 授予,不回传父会话。
 - **MCP 按 server 授予**:按 `mcp_servers` 授予(§1.1);类型写了 `allowed_tools` 时,
   授予的 server 视同列在其中。`mcp__<server>` 按工具的 `ToolOrigin::Mcp` 比对配置里的
-  server 名,不从工具名里解析。
+  server 名,不从工具名里解析(`DLG-5`)。
 - **子 Agent 没有定时任务**:子会话不注册 `Cron*`,也不起调度。
 
 `build()` 结束时检查工具表没有重名(重名时分发只认第一个):测试与 debug 构建里断言失败,
@@ -645,11 +707,22 @@ tokio 运行时上的**一个任务**,带自己的循环与上下文。一个 Ag
 是这个任务里交错执行的 future(`runtime::streaming`),不另起任务——它们共享这个
 Agent 的上下文,本来就该在一处。
 
-前台子 Agent 也是独立任务:父 Agent 的工具调用 spawn 它并等结果
+前台子 Agent 也是独立任务:`DelegateMode::Wait` 的分支 spawn 它并等结果
 (`run_one_turn_detached`),所以同一轮的几个前台 `Agent` 调用、`TeamCreate` 同一阶段
 的成员是真并行,一个子 Agent 的同步重活不会卡住兄弟和父 Agent。父 Agent 的调用被丢弃
 时子任务被中止,不留无人观察的子 Agent;子任务 panic 变成父 Agent 的工具错误;取消照旧
-走 `CancellationToken`。
+走 `CancellationToken`(`StopsWith`,§3.4)。
+
+**任务只经租约登记。** 委派出来的每个任务(前台、后台、宿主起的、常驻成员的每条消息)
+都由一个 `base::context::TaskLease` 持有:创建即在父会话上登记,持有者用 `conclude(status,
+notice)` 说它怎么结束的。租约被丢弃而没有 `conclude`——工作 panic 了、从队列里被丢掉、
+持有者自己没了——任务记为被停止(`Cancelled`),带 `notifying` 的还会给父会话发一条停止通知;
+已经被外部停掉的任务不重复通知。所以不会有任务停在 `running` 上无人收尾。agents 里不直接调
+`register_task`、不持有 `TaskScope`(`DLG-7`)。
+
+常驻成员的收件箱是 `MemberInbox`:排一条消息就是登记它的任务(租约随消息进队列),消息被拒
+(成员已停)或成员停止时还留在队列里,租约丢弃,这条任务以 stopped 结束。成员的循环
+一次处理一条消息,在同一个 Agent 上续跑——复用就是「常驻」。
 
 **Agent 之间只经通道说话,不共享可变状态:**
 
@@ -677,18 +750,23 @@ Agent 的上下文,本来就该在一处。
    空闲的,全在忙就拒绝新成员)。常驻成员的取消令牌是父会话结束令牌的子令牌:会话结束时,
    空闲的和正在跑一轮的成员都停下。
 
-**名额只有一条规则:持名额者不等。** 子 Agent 自己跑在一个名额上,它再为自己的子 Agent
-申请名额时,拿不到就被拒绝,不排队——否则整棵树的名额可能全被这样的等待者占着。拒绝是一个
-模型看得见的工具错误,它可以等(`TaskWait`)或自己做。根会话不占名额,它的申请可以排队;
-会话持不持名额在建会话时按深度定下(`agents::delegate::SlotRule`),调用方改不了。
-- 模型的 `Agent` 调用和宿主的 `session.startAgent` 在根会话里也直接拒绝,让模型和宿主立刻
-  知道;`RunCode` 程序里的 `agent()`(程序只在根会话里跑)排队等空位(`docs/ptc.md` §5)。
-- `TeamCreate` 的阶段成员占名额:lead 是根会话时排队等,lead 是子 Agent 时拿不到就记为失败,
-  团队如实报出;每阶段另受 `team_stage_concurrency` 约束。
+**名额只有一条规则:持名额者不等。** 规则是 `agents::delegate::SlotRule`:子 Agent 自己跑在
+一个名额上,它再为自己的子 Agent 申请名额时,拿不到就被拒绝(`DelegateError::Limit`),不排队——
+否则整棵树的名额可能全被这样的等待者占着。拒绝是一个模型看得见的工具错误,它可以等
+(`TaskWait`)或自己做。根会话不占名额,它的申请可以排队。会话持不持名额在建它的 `Limits`
+时按深度定下(深度大于 0 即持有),调用方改不了。整棵会话树共用一个名额池(`SubagentSlots`)。
+各模式怎么取名额:
+- `Wait` 和 `Background`、`Host`:调用方会问人(`AskRoute::Host`,模型的 `Agent` 调用、
+  宿主的 `session.startAgent`)时立即取,到上限直接拒绝,根会话里也一样,让模型和宿主立刻
+  知道;`Wait` 而 `AskRoute::Refuse` 的(`RunCode` 程序里的 `agent()`,以及程序里触发的 skill
+  fork)走 `SlotRule::take`:根会话里排队等空位(`docs/ptc.md` §5)。
+- `TeamMember` 的阶段成员走 `SlotRule::take`:lead 是根会话时排队等,lead 是子 Agent 时拿不到
+  就记为失败,团队如实报出;每阶段另受 `team_stage_concurrency` 约束。
 - 常驻成员只在处理一条消息的那一轮占名额,空闲时归还;按起它的会话的规则申请,根会话的成员
   排队等,子 Agent 的成员拿不到时这条消息的任务以失败结束。
-- agent hook 起的子 Agent 不计入:名额是模型的,模型占得满的守卫不是守卫;它们靠"hook 起的
-  子 Agent 自己的事件不再起 agent hook"收住,不会一层套一层。
+- `Hook`(agent hook 起的子 Agent)不占名额:名额是模型的,模型占得满的守卫不是守卫;它们靠
+  "hook 起的子 Agent 自己的事件不再起 agent hook"收住(`DelegateError::NotJudged`),不会
+  一层套一层。
 
 **为什么不是一个 Agent 一个 OS 线程。** 多线程运行时已经把任务分到所有核上,一个 Agent
 绝大部分时间在等模型 API;专用线程意味着每个 Agent 一个运行时或一套同步桥,换来的只是

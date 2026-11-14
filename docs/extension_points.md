@@ -1327,6 +1327,58 @@ Builder::new().module(Arc::new(agents::AgentsModule::new())).module(Arc::new(Tic
 - 自带的三个:`agents::AgentsModule`、`mcp::McpModule`、`skills::SkillsModule`,
   装配顺序 mcp → agents → skills。`agixd` 的会话池按档位装配它们(`ARCHITECTURE.md` §1.2)。
 
+### 委派 — `base::interface::delegate::Delegator`
+
+子 Agent、skill fork、团队成员、`"agent"` hook、宿主的 `session.startAgent` 是同一件事,
+只有一个入口。它不是上面表里的扩展点(没有配置、脚本、插件入口),这里写的是嵌入方怎么
+**调用**它,和什么时候才需要**实现**它。
+
+```rust
+#[async_trait]
+pub trait Delegator: Send + Sync {
+    async fn delegate(&self, req: DelegateRequest) -> Result<Delegated, DelegateError>;
+    async fn stop_member(&self, seat: &TeamSeat);
+}
+```
+
+**调用。** 会话装了 `agents::AgentsModule` 时,`Agent::delegator()` 交出这个会话的 `Delegator`。
+宿主起一个子 Agent,就是构造 `DelegateMode::Host` 的请求(daemon 下是 `session.startAgent`,
+不必自己调):
+
+```rust
+let req = DelegateRequest::new(
+    "整理这周的 issue",
+    DelegateMode::Host { notify_parent: true },
+    StopsWith::Session,              // 随父会话结束;或 Call(token) 随你的令牌
+);
+// 其余按需改:agent_type、model、tools(只能收窄)、deny_rules(只有 deny 生效)、
+// grants、output_schema、workdir、asks、tag
+match agent.delegator().delegate(req).await? {
+    Delegated::Started(s) => { /* s.task_id、s.agent_session_id */ }
+    Delegated::Finished(outcome) => { /* outcome.text、outcome.end */ }
+}
+```
+
+- `DelegateMode`:`Wait`(等最终结果,返回 `Finished`)、`Background`、`Host`(都是父会话的一个任务,
+  立即返回 `Started`)、`TeamMember`(阶段成员 `Finished`,常驻成员 `Started`)、`Hook`
+  (agent hook 的评判,`Finished`)。它是封闭枚举:自己 `match` 它要写全每个模式。
+- `DelegateRequest` 与 `DelegateError` 标了 `#[non_exhaustive]`:用 `DelegateRequest::new(prompt,
+  mode, stops_with)` 构造,再逐字段赋值;`match DelegateError` 要有通配分支。
+- 子会话能做的只会比父会话少:`tools` 只收窄,`deny_rules` 只有 `deny` 生效,权限模式只能更严;
+  `grants` 是只在子会话里生效的 Turn 授予。
+- `DelegateError` 只表示没起来(`Limit`、`Depth`、`Unsupported`、`Build`、`Invalid`、`NotJudged`);
+  子 Agent 跑失败或被取消是 `Finished` 里的 `DelegateEnd`,不是 `Err`。
+- 子会话继承的东西不在请求里:它整份沿用父会话的 `HostContracts`(执行层、权限、历史存储、
+  遥测、记忆、插件、模块、中间件……),你给 `Builder` 配的这些,子会话自动一样
+  (`ARCHITECTURE.md` §3.4)。
+
+**实现。** 一般不需要:`agents::AgentsModule` 提供生产实现,装配时 `provide_delegator`。
+自己实现的场合是测试替身,或者一个不在本进程里起子会话的后端——写一个 `delegate`,对每个
+`DelegateMode` 给出结果或 `Unsupported`,再让自己的模块 `cx.provide_delegator(..)`。
+`provide_delegator` 只能提供一次;没有人提供时,hook、skill 和宿主拿到的 `LateDelegator`
+对每个请求返回 `DelegateError::Unsupported`。生产代码里只有 agents 的那一个实现和这个
+转发壳(`tests/guards` 的 `DLG-2` 守着)。
+
 ---
 
 ## 引擎自带、宿主要接上的两项能力
