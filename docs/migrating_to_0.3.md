@@ -2162,8 +2162,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   OpenAI 兼容侧也读;Anthropic 的过载与服务端错误也带上它,不只 429。有它时它是等待的下限(再加至多
   10% 抖动),超过 60 秒就放弃;首字节之后的原样重发用同一个上限,超过就以 `ENGINE_ERROR` 结束这一轮,
   由宿主决定什么时候再发。
-- **响应头之前超时、200 响应开头就是 `error` 事件或 body 为空,都走首字节前的退避阶梯。** 以前前者在
-  Anthropic 侧不重试,后者两层都不重试。
+- **响应头之前超时、200 响应开头就是 `error` 事件或 body 为空、第一个事件之前传输出错或空闲超时,都走
+  首字节前的退避阶梯。** 以前前者在 Anthropic 侧不重试,后几种两层都不重试。Anthropic 响应体的传输错误
+  现在按 `transport` 分类(以前包成协议错误,流中途出现也不重发)。
 - **流开始之后的瞬时失败原样重发。** 中途断流、流中途空闲超时以前直接失败;现在引擎自带的恢复策略
   原样重发至多两次(等服务端给的时长,没给就 2 秒、8 秒),发 `model_retry` 帧;工具已经跑过的照旧直接
   失败。限流也会切到备用模型(以前只有过载)。一次调用至多恢复 4 次。
@@ -2171,7 +2172,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   …),不再是 `api` / `network` / `internal`;`http_status` 对所有带状态码的失败都有值。
 - **录像里失败的 `end` 记录格式变了**(`{error: <分类>, http_status?, retry_after_ms?, message?}`),
   旧录像里的失败读不回来。
-- **换模型重试、压缩后重发带上失败那次请求的 `cache_edits`**(以前置空)。
+- **换模型重试带上失败那次请求的 `cache_edits`**(以前置空);压缩后重发带压缩之后还指向现存工具结果的
+  那些。压缩删掉的工具结果,待发的 `cache_edits` 里对应的一项随之丢掉,不再发出去。
 - **尺寸被拒后压缩重试也失败时,报摘要失败的分类**(如 `rate_limited`,可重试),`context_too_long`
   写进消息;以前总报 `context_too_long`。
 
@@ -2188,6 +2190,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **压缩被取消或失败时撤回已经做的老化**,被清掉的工具结果原样留着,不发 `compact` 事件。
   撤回的是整步:工具结果预算的裁剪、预测式压缩一并放回,它们的上报与断路器计数在整步成功后才算。
   自动压缩时摘要失败、级联也没东西可丢,以前保留老化结果,现在整步撤回并退避。
+- **`ListMcpResources`、`ReadMcpResource`、`MCP`、`TeamMemorySave`、`TeamMemoryRead`、`SendMessage`、
+  `ReadMail`、`ListPeers` 有了描述**(以前发给模型的是空描述加指南指引);
+  `TeamMemoryRead` 不再有指南。
 - **会话中途接入的 MCP 工具按场景的 `deferred_tools()` 名单延迟。** 以前只对 `build()` 时已注册的
   工具生效。要改的:不想让某个 MCP 工具延迟的,把它从场景的 `deferred_tools()` 里去掉。
 - **没有 `origin/HEAD` 的仓库里,快照的主分支回落到本地的 `main` / `master`**(以前回落从不生效,
