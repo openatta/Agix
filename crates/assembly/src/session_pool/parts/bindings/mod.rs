@@ -115,16 +115,13 @@ pub(in crate::session_pool) fn own_settings_in(
     if host.paths.workspace.project_root() == Some(cwd) {
         return host;
     }
-    let mut loaded = LoadedSettings::load(
+    let loaded = LoadedSettings::load(
         paths.global_root(),
         paths.config_root(),
         cwd.join(".agix"),
         &host.paths.scope,
         &host.values.model.model_name,
     );
-    if loaded.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
-        loaded.values.model.max_tokens = host.values.model.max_tokens;
-    }
     Arc::new(host_overrides.apply_to_own(loaded).with_managed(managed))
 }
 

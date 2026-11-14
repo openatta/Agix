@@ -917,3 +917,20 @@ async fn doctor_lists_the_project_settings_of_the_directory_the_daemon_works_in(
     );
     assert_eq!(project["parses"], false, "{check}");
 }
+
+/// A reload of the daemon's own settings keeps the `--max-tokens` fallback
+/// when no settings file sets it.
+#[tokio::test]
+async fn a_reload_keeps_the_max_tokens_fallback() {
+    let daemon = Daemon::start(json!({}), json!({})).await;
+    assert_eq!(
+        daemon.effective().await["model"]["max_tokens"],
+        2000,
+        "the fallback before any reload"
+    );
+
+    daemon.ok("config.reload", json!({})).await;
+
+    let settings = daemon.effective().await;
+    assert_eq!(settings["model"]["max_tokens"], 2000, "{settings}");
+}

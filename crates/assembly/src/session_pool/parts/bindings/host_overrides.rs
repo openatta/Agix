@@ -1,16 +1,19 @@
 //! 宿主在内存里改过的设置：宿主拿到守护进程自己那一对的设置之后、交给池之前改掉的值，
-//! 作为一层叠在池从盘上读入的每份设置上，和托管层在同一个位置；宿主加的权限规则只回到
-//! 守护进程自己那一对上。
+//! 作为一层叠在池从盘上读入的每份设置上，和托管层在同一个位置；宿主加的权限规则和
+//! `max_tokens` 兜底只回到守护进程自己那一对上。
 
 use base::settings::{LoadedRule, LoadedSettings, Settings};
 use serde_json::Value;
 
 /// What the host's settings hold that the same pair read from disk does not:
-/// the values it set in memory, as a JSON layer, and the rules it added.
+/// the values it set in memory, as a JSON layer, and the rules it added. And
+/// the `max_tokens` they hold, which the pair falls back to when no settings
+/// file sets one (`--max-tokens`).
 #[derive(Debug, Default, Clone)]
 pub(in crate::session_pool) struct HostOverrides {
     values: Option<Value>,
     rules: Vec<LoadedRule>,
+    max_tokens: Option<u32>,
 }
 
 impl HostOverrides {
@@ -32,7 +35,11 @@ impl HostOverrides {
             .filter(|rule| !on_disk.contains(&rule_key(rule)))
             .cloned()
             .collect();
-        Self { values, rules }
+        Self {
+            values,
+            rules,
+            max_tokens: Some(host.values.model.max_tokens),
+        }
     }
 
     /// `settings` with the values this layer holds merged over its own.
@@ -51,9 +58,18 @@ impl HostOverrides {
         settings
     }
 
-    /// [`Self::apply`], and the rules the host added after them: what the
-    /// host made of this daemon's own pair, on that pair read from disk.
-    pub(in crate::session_pool) fn apply_to_own(&self, settings: LoadedSettings) -> LoadedSettings {
+    /// The host's `max_tokens` where no file set one, [`Self::apply`], and
+    /// the rules the host added after them: what the host made of this
+    /// daemon's own pair, on that pair read from disk.
+    pub(in crate::session_pool) fn apply_to_own(
+        &self,
+        mut settings: LoadedSettings,
+    ) -> LoadedSettings {
+        if let Some(max_tokens) = self.max_tokens {
+            if settings.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
+                settings.values.model.max_tokens = max_tokens;
+            }
+        }
         let mut settings = self.apply(settings);
         settings.rules.extend(self.rules.iter().cloned());
         settings
