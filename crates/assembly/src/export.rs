@@ -14,8 +14,10 @@
 
 use crate::session_pool::api::PoolError;
 use base::session::SessionId;
-use base64::Engine as _;
+mod images;
+
 use history::entry::{EnvelopedEntry, LogEntry};
+use images::{decode_image, for_each_image, placeholder, rewrite_history_images, Decoded};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -478,81 +480,6 @@ fn pack_recording(recording: &RecordingPart, sink: &mut dyn Sink) -> std::io::Re
     Ok(count)
 }
 
-/// An inline image decoded: its content, what it is, and the archive file it
-/// goes to.
-struct Decoded {
-    bytes: Vec<u8>,
-    media_type: String,
-    sha256: String,
-    file: String,
-}
-
-fn decode_image(block: &Value) -> Option<Decoded> {
-    let source = block.get("source")?;
-    if source.get("type")?.as_str()? != "base64" {
-        return None;
-    }
-    let media_type = source.get("media_type")?.as_str()?.to_string();
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(source.get("data")?.as_str()?)
-        .ok()?;
-    let sha256 = hex::encode(Sha256::digest(&bytes));
-    let file = format!("attachments/{sha256}.{}", extension_of(&media_type));
-    Some(Decoded {
-        bytes,
-        media_type,
-        sha256,
-        file,
-    })
-}
-
-fn extension_of(media_type: &str) -> &'static str {
-    match media_type {
-        "image/png" => "png",
-        "image/jpeg" | "image/jpg" => "jpg",
-        "image/gif" => "gif",
-        "image/webp" => "webp",
-        "image/svg+xml" => "svg",
-        _ => "bin",
-    }
-}
-
-fn placeholder(image: &Decoded) -> Value {
-    json!({
-        "type": "text",
-        "text": format!(
-            "[image omitted from export: {}, {} bytes, sha256 {}]",
-            image.media_type,
-            image.bytes.len(),
-            image.sha256
-        ),
-    })
-}
-
-/// Call `visit` on every image block under `value`: message content, tool
-/// results nested in it, a compaction's replacement history.
-fn for_each_image(value: &mut Value, visit: &mut dyn FnMut(&mut Value)) {
-    match value {
-        Value::Object(map) => {
-            if map.get("type").and_then(Value::as_str) == Some("image")
-                && map.get("source").is_some_and(Value::is_object)
-            {
-                visit(value);
-                return;
-            }
-            for child in map.values_mut() {
-                for_each_image(child, visit);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                for_each_image(item, visit);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// What packing one session's transcript found that the manifest reports.
 #[derive(Default)]
 struct Findings {
@@ -574,6 +501,160 @@ fn exported_session(
     }
 }
 
+fn put_session_files(
+    sink: &mut dyn Sink,
+    dir: &str,
+    sid: &str,
+    meta: Option<Value>,
+    part: &SessionPart,
+    history: &[Value],
+) -> std::io::Result<()> {
+    sink.put(
+        &format!("{dir}/history.json"),
+        &serde_json::to_vec_pretty(history)?,
+        true,
+    )?;
+    sink.put(
+        &format!("{dir}/entries.json"),
+        &serde_json::to_vec_pretty(&part.extension_entries)?,
+        true,
+    )?;
+    sink.put(
+        &format!("{dir}/meta.json"),
+        &serde_json::to_vec_pretty(&json!({
+            "session_id": sid,
+            "meta": meta,
+            "title": part.title,
+            "tags": part.tags,
+            "total_input_tokens": part.total_input_tokens,
+            "total_output_tokens": part.total_output_tokens,
+            "compact_count": part.compact_count,
+        }))?,
+        true,
+    )?;
+    if let Some(memory) = &part.memory {
+        sink.put(&format!("{dir}/session_memory.md"), memory.as_bytes(), true)?;
+    }
+    if let Some(runtime) = &part.runtime {
+        sink.put(
+            &format!("{dir}/runtime.json"),
+            &serde_json::to_vec_pretty(runtime)?,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+fn pack_recordings(
+    recordings: &[RecordingPart],
+    sink: &mut dyn Sink,
+    findings: &mut Findings,
+) -> Vec<Value> {
+    let mut packed = Vec::with_capacity(recordings.len());
+    for recording in recordings {
+        match pack_recording(recording, sink) {
+            Ok(calls) => packed.push(json!({
+                "dir": format!("recordings/{}", recording.name),
+                "sessions": recording.sessions,
+                "calls": calls,
+                "covers": "latest_run",
+            })),
+            Err(e) => findings.warnings.push(format!(
+                "recording `{}` could not be read: {e}",
+                recording.name
+            )),
+        }
+    }
+    packed
+}
+
+fn attachment_rows(attachments: &Attachments) -> Vec<Value> {
+    attachments
+        .by_sha
+        .iter()
+        .map(|(sha, a)| {
+            json!({
+                "file": a.file,
+                "sha256": sha,
+                "media_type": a.media_type,
+                "bytes": a.bytes,
+                "refs": a.refs.iter().map(|((session_id, entry_id), seq)| json!({
+                    "session_id": session_id,
+                    "entry_id": entry_id,
+                    "seq": seq,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
+fn transcript_meta(entries: &[EnvelopedEntry]) -> Option<Value> {
+    entries.iter().find_map(|env| match &env.entry {
+        LogEntry::Meta { .. } => serde_json::to_value(&env.entry).ok(),
+        _ => None,
+    })
+}
+
+fn session_facts(entries: &[EnvelopedEntry]) -> history::store::SessionFacts {
+    entries
+        .iter()
+        .find_map(|env| history::store::SessionFacts::of(&env.entry))
+        .unwrap_or_default()
+}
+
+fn terminal_state(entries: &[EnvelopedEntry]) -> Option<Value> {
+    entries.iter().rev().find_map(|env| match &env.entry {
+        LogEntry::SessionEnd { state } => serde_json::to_value(state).ok(),
+        _ => None,
+    })
+}
+
+fn rfc3339(at: time::OffsetDateTime) -> String {
+    at.format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+fn depth_below_parent(
+    depths: &mut BTreeMap<String, usize>,
+    sid: &str,
+    facts: &history::store::SessionFacts,
+) -> usize {
+    let depth = facts
+        .parent_session_id
+        .as_ref()
+        .and_then(|p| depths.get(p))
+        .map_or(0, |d| d + 1);
+    depths.insert(sid.to_string(), depth);
+    depth
+}
+
+fn session_row(
+    dir: &str,
+    facts: &history::store::SessionFacts,
+    depth: usize,
+    part: &SessionPart,
+    message_count: usize,
+    terminal: Option<Value>,
+    transcript_sha256: &str,
+) -> Value {
+    json!({
+        "session_id": part.session_id.to_string(),
+        "kind": facts.session_kind,
+        "parent_session_id": facts.parent_session_id,
+        "depth": depth,
+        "scene": facts.scene,
+        "project_root": facts.project_root,
+        "title": part.title,
+        "dir": dir,
+        "entry_count": part.entries.len(),
+        "message_count": message_count,
+        "active": part.active,
+        "turn_state": part.turn_state,
+        "terminal": terminal,
+        "transcript_sha256": transcript_sha256,
+    })
+}
+
 fn pack(
     request: &ExportRequest,
     snapshot: ExportSnapshot,
@@ -590,30 +671,14 @@ fn pack(
     let mut id_map = serde_json::Map::new();
     let mut depths: BTreeMap<String, usize> = BTreeMap::new();
 
-    for part in snapshot.sessions {
+    for mut part in snapshot.sessions {
         let sid = part.session_id.to_string();
         let dir = format!("sessions/{sid}");
         id_map.insert(sid.clone(), json!(dir));
 
-        let meta = part.entries.iter().find_map(|env| match &env.entry {
-            LogEntry::Meta { .. } => serde_json::to_value(&env.entry).ok(),
-            _ => None,
-        });
-        let facts = part
-            .entries
-            .iter()
-            .find_map(|env| history::store::SessionFacts::of(&env.entry))
-            .unwrap_or_default();
-        let depth = facts
-            .parent_session_id
-            .as_ref()
-            .and_then(|p| depths.get(p))
-            .map_or(0, |d| d + 1);
-        depths.insert(sid.clone(), depth);
-        let terminal = part.entries.iter().rev().find_map(|env| match &env.entry {
-            LogEntry::SessionEnd { state } => serde_json::to_value(state).ok(),
-            _ => None,
-        });
+        let (meta, facts) = (transcript_meta(&part.entries), session_facts(&part.entries));
+        let depth = depth_below_parent(&mut depths, &sid, &facts);
+        let terminal = terminal_state(&part.entries);
 
         let transcript = pack_transcript(
             &sid,
@@ -629,122 +694,29 @@ fn pack(
             true,
         )?;
 
-        let mut history = part.history;
-        for item in &mut history {
-            let entry_id = item.get("id").and_then(Value::as_str).map(str::to_string);
-            let seq = item.get("seq").and_then(Value::as_u64).map(|n| n as usize);
-            for_each_image(item, &mut |block| {
-                let Some(image) = decode_image(block) else {
-                    return;
-                };
-                if !include.attachments {
-                    *block = placeholder(&image);
-                    return;
-                }
-                if let Some(entry_id) = &entry_id {
-                    attachments.note(&sid, entry_id, seq, &image);
-                }
-                block["source"] = json!({
-                    "attachment": image.file,
-                    "media_type": image.media_type,
-                });
-            });
-        }
-        sink.put(
-            &format!("{dir}/history.json"),
-            &serde_json::to_vec_pretty(&history)?,
-            true,
-        )?;
-        sink.put(
-            &format!("{dir}/entries.json"),
-            &serde_json::to_vec_pretty(&part.extension_entries)?,
-            true,
-        )?;
-        sink.put(
-            &format!("{dir}/meta.json"),
-            &serde_json::to_vec_pretty(&json!({
-                "session_id": sid,
-                "meta": meta,
-                "title": part.title,
-                "tags": part.tags,
-                "total_input_tokens": part.total_input_tokens,
-                "total_output_tokens": part.total_output_tokens,
-                "compact_count": part.compact_count,
-            }))?,
-            true,
-        )?;
-        if let Some(memory) = &part.memory {
-            sink.put(&format!("{dir}/session_memory.md"), memory.as_bytes(), true)?;
-        }
-        if let Some(runtime) = &part.runtime {
-            sink.put(
-                &format!("{dir}/runtime.json"),
-                &serde_json::to_vec_pretty(runtime)?,
-                true,
-            )?;
-        }
+        let mut history = std::mem::take(&mut part.history);
+        rewrite_history_images(&mut history, &sid, include, &mut attachments);
+        put_session_files(sink, &dir, &sid, meta, &part, &history)?;
 
         exported.push(exported_session(&sid, &facts, part.entries.len()));
-        rows.push(json!({
-            "session_id": sid,
-            "kind": facts.session_kind,
-            "parent_session_id": facts.parent_session_id,
-            "depth": depth,
-            "scene": facts.scene,
-            "project_root": facts.project_root,
-            "title": part.title,
-            "dir": dir,
-            "entry_count": part.entries.len(),
-            "message_count": history.len(),
-            "active": part.active,
-            "turn_state": part.turn_state,
-            "terminal": terminal,
-            "transcript_sha256": transcript_sha256,
-        }));
+        rows.push(session_row(
+            &dir,
+            &facts,
+            depth,
+            &part,
+            history.len(),
+            terminal,
+            &transcript_sha256,
+        ));
 
         for (file, bytes) in attachments.pending.drain(..) {
             sink.put(&file, &bytes, false)?;
         }
     }
 
-    let mut recordings = Vec::with_capacity(snapshot.recordings.len());
-    for recording in &snapshot.recordings {
-        match pack_recording(recording, sink) {
-            Ok(calls) => recordings.push(json!({
-                "dir": format!("recordings/{}", recording.name),
-                "sessions": recording.sessions,
-                "calls": calls,
-                "covers": "latest_run",
-            })),
-            Err(e) => findings.warnings.push(format!(
-                "recording `{}` could not be read: {e}",
-                recording.name
-            )),
-        }
-    }
+    let recordings = pack_recordings(&snapshot.recordings, sink, &mut findings);
 
-    let attachment_rows: Vec<Value> = attachments
-        .by_sha
-        .iter()
-        .map(|(sha, a)| {
-            json!({
-                "file": a.file,
-                "sha256": sha,
-                "media_type": a.media_type,
-                "bytes": a.bytes,
-                "refs": a.refs.iter().map(|((session_id, entry_id), seq)| json!({
-                    "session_id": session_id,
-                    "entry_id": entry_id,
-                    "seq": seq,
-                })).collect::<Vec<_>>(),
-            })
-        })
-        .collect();
-
-    let cut_at = snapshot
-        .cut_at
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
+    let cut_at = rfc3339(snapshot.cut_at);
     let importable = include.attachments && findings.unresolved_blobs.is_empty();
     let manifest = json!({
         "format": FORMAT,
@@ -757,7 +729,7 @@ fn pack(
         "importable": importable,
         "sessions": rows,
         "id_map": id_map,
-        "attachments": attachment_rows,
+        "attachments": attachment_rows(&attachments),
         "url_images": findings.url_images,
         "unresolved_blobs": findings.unresolved_blobs,
         "forks": snapshot.forks.iter().map(SessionId::to_string).collect::<Vec<_>>(),

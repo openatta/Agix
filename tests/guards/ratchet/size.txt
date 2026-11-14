@@ -19,7 +19,6 @@ file  crates/telemetry/src/recorder/mod.rs                 -                    
 fn    crates/agents/src/agent_tool/mod.rs                  AgentTool::call                          187
 fn    crates/agents/src/lib.rs                             AgentsModule::on_session                 111
 fn    crates/assembly/src/assemble.rs                      pool                                     137
-fn    crates/assembly/src/export.rs                        pack                                     211
 fn    crates/assembly/src/rpc/events.rs                    SessionEventPayload::from_agent          276
 fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                      331
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::export_session              115
@@ -29,7 +28,6 @@ fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs SessionPool::wri
 fn    crates/assembly/src/session_pool/facade/resume.rs           SessionPool::resume_unchecked            147
 fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::set_provider                117
 fn    crates/assembly/src/session_pool/facade/turn.rs             SessionPool::run_turn                    345
-fn    crates/assembly/src/telemetry_otel.rs                start_otel                               104
 fn    crates/core/src/context/goal.rs                      GoalSlot::update                         110
 fn    crates/script-host/src/adapters/prompt_assembly.rs   PromptAssemblyScript::on_assemble_async  145
 fn    crates/core/src/settings/loaded.rs                   LoadedSettings::load_from                198

@@ -266,6 +266,72 @@ pub fn shutdown_process_exporter() {
 /// | Tool executions   | `agix.tool.executions` | Counter     | 1       |
 /// | API call latency  | `agix.api.latency`     | Histogram   | ms      |
 /// | Token usage       | `agix.token.usage`     | Histogram   | 1       |
+fn trace_exporter(
+    protocol: OtelProtocol,
+    endpoint: &str,
+    http_client: OtlpHttpClient,
+) -> Result<opentelemetry_otlp::SpanExporter, OtelError> {
+    match protocol {
+        OtelProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .with_timeout(Duration::from_secs(10))
+            .build(),
+        OtelProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_http_client(http_client)
+            .with_endpoint(http_signal_endpoint(endpoint, "traces"))
+            .with_timeout(Duration::from_secs(10))
+            .build(),
+    }
+    .map_err(|e| OtelError::InitFailed(e.to_string()))
+}
+
+fn metric_exporter(
+    protocol: OtelProtocol,
+    endpoint: &str,
+    http_client: OtlpHttpClient,
+) -> Result<opentelemetry_otlp::MetricExporter, OtelError> {
+    match protocol {
+        OtelProtocol::Grpc => opentelemetry_otlp::MetricExporter::builder()
+            .with_tonic()
+            .with_endpoint(endpoint)
+            .with_timeout(Duration::from_secs(10))
+            .build(),
+        OtelProtocol::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .with_http_client(http_client)
+            .with_endpoint(http_signal_endpoint(endpoint, "metrics"))
+            .with_timeout(Duration::from_secs(10))
+            .build(),
+    }
+    .map_err(|e| OtelError::InitFailed(e.to_string()))
+}
+
+fn register_instruments() {
+    let meter = opentelemetry::global::meter("agix");
+    let _turn_duration = meter
+        .f64_histogram("agix.turn.duration")
+        .with_description("Turn execution duration")
+        .with_unit("ms")
+        .build();
+    let _tool_executions = meter
+        .u64_counter("agix.tool.executions")
+        .with_description("Number of tool executions")
+        .with_unit("1")
+        .build();
+    let _api_latency = meter
+        .f64_histogram("agix.api.latency")
+        .with_description("API call latency")
+        .with_unit("ms")
+        .build();
+    let _token_usage = meter
+        .u64_histogram("agix.token.usage")
+        .with_description("Token usage distribution")
+        .with_unit("1")
+        .build();
+}
+
 pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
     if endpoint.is_empty() {
         return Err(OtelError::InvalidEndpoint("endpoint is empty".into()));
@@ -285,21 +351,7 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     let resource = opentelemetry_sdk::Resource::new(vec![KeyValue::new("service.name", "agix")]);
 
-    let trace_exporter = match protocol {
-        OtelProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .with_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| OtelError::InitFailed(e.to_string()))?,
-        OtelProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_http_client(http_client.clone())
-            .with_endpoint(http_signal_endpoint(endpoint, "traces"))
-            .with_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| OtelError::InitFailed(e.to_string()))?,
-    };
+    let trace_exporter = trace_exporter(protocol, endpoint, http_client.clone())?;
 
     let tracer_provider = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_batch_exporter(trace_exporter, opentelemetry_sdk::runtime::Tokio)
@@ -308,21 +360,7 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
-    let metric_exporter = match protocol {
-        OtelProtocol::Grpc => opentelemetry_otlp::MetricExporter::builder()
-            .with_tonic()
-            .with_endpoint(endpoint)
-            .with_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| OtelError::InitFailed(e.to_string()))?,
-        OtelProtocol::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
-            .with_http_client(http_client)
-            .with_endpoint(http_signal_endpoint(endpoint, "metrics"))
-            .with_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|e| OtelError::InitFailed(e.to_string()))?,
-    };
+    let metric_exporter = metric_exporter(protocol, endpoint, http_client)?;
 
     let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_reader(
@@ -338,32 +376,7 @@ pub fn start_otel(endpoint: &str) -> Result<OtelExporter, OtelError> {
 
     opentelemetry::global::set_meter_provider(meter_provider.clone());
 
-    // Pre-register standard instruments via the global meter.
-    let meter = opentelemetry::global::meter("agix");
-
-    let _turn_duration = meter
-        .f64_histogram("agix.turn.duration")
-        .with_description("Turn execution duration")
-        .with_unit("ms")
-        .build();
-
-    let _tool_executions = meter
-        .u64_counter("agix.tool.executions")
-        .with_description("Number of tool executions")
-        .with_unit("1")
-        .build();
-
-    let _api_latency = meter
-        .f64_histogram("agix.api.latency")
-        .with_description("API call latency")
-        .with_unit("ms")
-        .build();
-
-    let _token_usage = meter
-        .u64_histogram("agix.token.usage")
-        .with_description("Token usage distribution")
-        .with_unit("1")
-        .build();
+    register_instruments();
 
     Ok(OtelExporter {
         meter_provider: Some(meter_provider),
