@@ -142,7 +142,8 @@ pub struct ImportSource {
 pub enum EvictReason {
     Idle,
     Capacity,
-    /// The old engine of an in-place rebuild did not stop in time.
+    /// An in-place rebuild could not go through once it had stopped the old
+    /// engine, or the old engine did not stop in time.
     Rebuild,
     /// A turn ended without giving the session back — what ran it failed —
     /// and the engine it ran on could not be used again.

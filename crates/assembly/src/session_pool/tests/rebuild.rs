@@ -437,6 +437,38 @@ async fn a_rebuild_whose_log_does_not_load_leaves_the_session_running_as_it_was(
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebuild_whose_log_breaks_after_the_old_engine_stopped_says_the_session_left() {
+    let (builder, _dir, store) = builder_with_history().await;
+    let builds = Arc::new(AtomicUsize::new(0));
+    let root = store.path().to_path_buf();
+    let pool = builder
+        .session_customizer(Arc::new(move |builder, cx| {
+            if builds.fetch_add(1, Ordering::SeqCst) == 1 {
+                break_log(&transcript_of(&root, cx.session_id));
+            }
+            builder
+        }))
+        .build();
+    let sid = new_session(&pool).await;
+    let mut events = pool.subscribe_events();
+
+    assert!(matches!(
+        pool.rebuild_idle(&sid, None).await,
+        Err(Rebuild::Failed(_))
+    ));
+    assert!(!pool.live.contains(&sid).await);
+    let mut told = None;
+    while let Ok(event) = events.try_recv() {
+        if let api::DaemonEvent::SessionEvicted { session_id, reason } = event {
+            if session_id == sid {
+                told = Some(reason);
+            }
+        }
+    }
+    assert_eq!(told, Some(api::EvictReason::Rebuild));
+}
+
 /// The kinds of the task frames a watcher was handed, in order.
 #[derive(Default)]
 struct TaskFrames(std::sync::Mutex<Vec<&'static str>>);

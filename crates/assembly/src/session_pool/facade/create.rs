@@ -268,6 +268,10 @@ impl SessionPool {
             {
                 self.evict(sid, &live);
                 live.turn.idle.notify_waiters();
+                self.emit_event(api::DaemonEvent::SessionEvicted {
+                    session_id: sid.to_string(),
+                    reason: api::EvictReason::Rebuild,
+                });
             }
             return Err(e);
         }

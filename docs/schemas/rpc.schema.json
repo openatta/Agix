@@ -1433,7 +1433,7 @@
         },
         {
           "const": "rebuild",
-          "description": "The old engine of an in-place rebuild did not stop in time.",
+          "description": "An in-place rebuild could not go through once it had stopped the old\nengine, or the old engine did not stop in time.",
           "type": "string"
         },
         {
