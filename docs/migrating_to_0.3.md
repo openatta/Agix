@@ -2289,6 +2289,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   要改的:按 `data.retryable` / `retry_after_ms` 决定是否、何时重发,不再解析 message。
 - **`error` 帧的 `code` 不再是 `turn_error`**,改为同一组 `kind` 值,并多了 `retryable`、
   `retry_after_ms`。旁观的订阅者收到的 `error` 帧带同样的 `kind`、`retryable`、`retry_after_ms`(没有 `side_effects`)。
+- **`error` 帧的 `message` 与 `ENGINE_ERROR` 的相同**,都是 "<kind>: <描述>"(以前帧上只有描述),并多了
+  总是出现的 `persisted`,意思同 `turn_complete` 的;`session_closed`、`engine_stopped` 的帧上为 `false`。
 - **`kind` 多了 `persist_failed`**(`setPrompt`、换厂商的 `setModel` 重建前补写日志失败,可重试)与
   `internal`(回合驱动 panic)。
 - **处理请求时 panic 回 `INTERNAL_ERROR`(-32603)**,message 为 "internal error while serving

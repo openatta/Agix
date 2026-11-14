@@ -2729,7 +2729,7 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 | `user_message_refused` | `{message_id,content,message}` | 运行中送来的消息被 `UserPromptSubmit` 拒收,不在 transcript 里;`message` 是 hook 给的理由,可为 `null` |
 | `user_messages_returned` | `{messages:[{message_id,content}]}` | 运行中送来、但本轮结束前没读到的消息,不在 transcript 里,交还客户端 |
 | `turn_complete` | `{stop_reason,api_calls,tool_calls,seq,usage,last_call_usage,context?,structured_output?,message?,truncated?,persisted}` | 本轮结束,`persisted` 为 `true` 时 transcript 已落盘,`seq` 是此刻的消息数;最终响应随后到达 |
-| `error` | `{code,message,retryable,retry_after_ms}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知。`code`、`retryable`、`retry_after_ms` 与发起者收到的 `ENGINE_ERROR` 的 `data.kind`、`data.retryable`、`data.retry_after_ms` 相同(§9.1;字段叫 `code` 是因为帧里已经有 `kind:"error"`);会话在这一轮中途被关闭或删除时 `code` 为 `session_closed`,引擎在一轮中途退出时为 `engine_stopped` |
+| `error` | `{code,message,retryable,retry_after_ms,persisted}` | 本轮出错结束。只发给**发起这一轮之外**的订阅者 —— 发起者从 `run_turn` 的错误响应得知。`code`、`message`、`retryable`、`retry_after_ms` 与发起者收到的 `ENGINE_ERROR` 的 `data.kind`、`message`、`data.retryable`、`data.retry_after_ms` 相同(§9.1;字段叫 `code` 是因为帧里已经有 `kind:"error"`),`message` 同样是 "<kind>: <描述>";`persisted` 同 `turn_complete` 的(§7.2)。会话在这一轮中途被关闭或删除时 `code` 为 `session_closed`,引擎在一轮中途退出时为 `engine_stopped`,这两种 `persisted` 为 `false`(引擎没来得及报这一轮写到了哪里) |
 | `task_started` | `{task}` | 这个会话的一件任务开始了(`task` 同 `session.tasks` 的条目)。Shell 命令与监视器只在跑过 1 秒后才报,短命令不报;不属于任何一轮,`turn_id` 为 `null` |
 | `task_updated` | `{task}` | 一件报过开始、还没结束的任务变了:子 Agent 每调完一次模型(`task.usage`),有询问开始或结束等待(`task.status` 在 `waiting` 与 `running` 之间);`turn_id` 为 `null` |
 | `task_progress` | `{task_id,appended,skipped_bytes,from_byte,next_byte}` | 一件报过开始的 Shell 命令、监视器或 `RunCode` 程序新打出来的输出,`appended` 是偏移 `from_byte..next_byte` 那段(偏移同 `session.taskOutput`)。每件任务每秒至多一帧,结束时在 `task_finished` 之前补最后一帧;一帧至多 8 KiB,多出的只发结尾,`skipped_bytes` 是跳过的字节数,恒等于本帧 `from_byte` 减上一帧 `next_byte`;漏帧或跳过的用 `session.taskOutput {from_byte}` 补;`turn_id` 为 `null` |
@@ -2840,8 +2840,8 @@ settings.local.json)里声明过,否则 `INVALID_PARAMS` —— 用来换令牌�
 transcript、目标、计划模式与 todo 的落盘落在后面,内存里的会话是唯一完整的一份:daemon 不会
 因空闲或腾位置驱逐它,需要重建的调用(`session.setPrompt`、换厂商的 `session.setModel`)先让
 引擎补写,补写失败就拒绝,`ENGINE_ERROR`,`kind` 为 `persist_failed`,会话照旧。以 `error`
-结束的一轮写日志失败时也是这样,只是 `error` 帧上没有 `persisted`,要看 `daemon.doctor` 里会话的
-`log.behind`。下一轮开头会
+结束的一轮写日志失败时也是这样,旁观者收到的 `error` 帧报 `persisted: false`;发起者收到的
+`ENGINE_ERROR` 不带它,要看 `daemon.doctor` 里会话的 `log.behind`。下一轮开头会
 自动补写,之后某一轮报 `persisted: true` 就说明日志已经追上。`session.close` 照常关闭,引擎
 退出前再试一次补写。
 

@@ -6123,6 +6123,19 @@ async fn a_failed_turn_tells_every_watcher_it_is_over() {
     .await
     .expect("the watcher never learned the turn had ended");
     assert_eq!(ended["params"]["session_id"], sid.as_str());
+    let event = &ended["params"]["event"];
+    assert_eq!(
+        event["message"], resp["error"]["message"],
+        "the watcher reads what the caller reads: {event} / {resp}"
+    );
+    assert!(
+        event["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{}: ", event["code"].as_str().unwrap())),
+        "{event}"
+    );
+    assert_eq!(event["persisted"], true, "{event}");
 
     srv.stop().await;
 }

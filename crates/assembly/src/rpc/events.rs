@@ -158,6 +158,7 @@ pub enum SessionEventPayload {
         message: String,
         retryable: bool,
         retry_after_ms: Option<u64>,
+        persisted: bool,
     },
     TaskStarted {
         task: TaskInfo,
@@ -254,20 +255,13 @@ impl SessionEventPayload {
         "subscription_dropped",
     ];
 
-    fn error(failure: &TurnFailure) -> Self {
-        let TurnFailure {
-            kind,
-            retryable,
-            retry_after_ms,
-            side_effects: _,
-            message,
-            ..
-        } = failure;
+    fn error(failure: &TurnFailure, persisted: bool) -> Self {
         Self::Error {
-            code: *kind,
-            message: message.clone(),
-            retryable: *retryable,
-            retry_after_ms: *retry_after_ms,
+            code: failure.kind,
+            message: failure.to_string(),
+            retryable: failure.retryable,
+            retry_after_ms: failure.retry_after_ms,
+            persisted,
         }
     }
 
@@ -280,14 +274,20 @@ impl SessionEventPayload {
             SessionEvent::ExtensionEntry(entry) => Some(Self::ExtensionEntry {
                 entry: entry.clone(),
             }),
-            SessionEvent::EngineStopped => Some(Self::error(&TurnFailure::new(
-                FailureKind::EngineStopped,
-                "engine stopped before the turn completed",
-            ))),
-            SessionEvent::Closed => Some(Self::error(&TurnFailure::new(
-                FailureKind::SessionClosed,
-                "the session was closed before the turn completed",
-            ))),
+            SessionEvent::EngineStopped => Some(Self::error(
+                &TurnFailure::new(
+                    FailureKind::EngineStopped,
+                    "engine stopped before the turn completed",
+                ),
+                false,
+            )),
+            SessionEvent::Closed => Some(Self::error(
+                &TurnFailure::new(
+                    FailureKind::SessionClosed,
+                    "the session was closed before the turn completed",
+                ),
+                false,
+            )),
         }
     }
 
@@ -586,8 +586,8 @@ impl SessionEventPayload {
             AgentEvent::Error {
                 failure,
                 turn_id: _,
-                persisted: _,
-            } => Self::error(failure),
+                persisted,
+            } => Self::error(failure, *persisted),
         })
     }
 }

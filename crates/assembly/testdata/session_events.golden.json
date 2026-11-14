@@ -1272,7 +1272,8 @@
           "event": {
             "code": "rate_limited",
             "kind": "error",
-            "message": "try later",
+            "message": "rate_limited: try later",
+            "persisted": true,
             "retry_after_ms": 30000,
             "retryable": true
           },
@@ -1840,7 +1841,8 @@
           "event": {
             "code": "engine_stopped",
             "kind": "error",
-            "message": "engine stopped before the turn completed",
+            "message": "engine_stopped: engine stopped before the turn completed",
+            "persisted": false,
             "retry_after_ms": null,
             "retryable": true
           },
@@ -1858,7 +1860,8 @@
           "event": {
             "code": "session_closed",
             "kind": "error",
-            "message": "the session was closed before the turn completed",
+            "message": "session_closed: the session was closed before the turn completed",
+            "persisted": false,
             "retry_after_ms": null,
             "retryable": false
           },
