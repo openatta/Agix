@@ -2512,7 +2512,7 @@
         },
         {
           "const": "denied",
-          "description": "The MCP policy refuses it.",
+          "description": "The MCP policy refuses it, or the project declares it with something a\nproject's own server may not use (a daemon secret, a local key, the\nenterprise identity).",
           "type": "string"
         },
         {

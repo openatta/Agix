@@ -129,38 +129,38 @@ impl SessionPool {
             .collect();
         let mut admitted = AdmittedMcp::default();
         for (name, v) in &self.configured_mcp_servers(&settings.values) {
-            let parsed = serde_json::from_value::<mcp::config::McpServerConfig>(v.clone())
-                .map_err(|e| {
+            let refusal = match serde_json::from_value::<mcp::config::McpServerConfig>(v.clone()) {
+                Err(e) => {
                     tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
                     format!("invalid config: {e}")
-                })
-                .and_then(|cfg| {
-                    if projects_own.contains(name) {
+                }
+                Ok(cfg) => {
+                    let admitted_cfg = if projects_own.contains(name) {
                         cfg.confined_to_own_env().inspect_err(|reason| {
                             tracing::warn!(server = %name, %reason, "MCP server not connected");
                         })
                     } else {
-                        Ok(cfg)
+                        Ok(cfg.clone())
                     }
-                });
-            let refusal = match parsed {
-                Ok(cfg) => match self.admit_mcp(name, &cfg) {
-                    Ok(()) => {
-                        admitted
-                            .servers
-                            .insert(name.clone(), self.placed_mcp_server(settings, name, cfg));
-                        continue;
+                    .and_then(|confined| self.admit_mcp(name, &confined).map(|()| confined));
+                    match admitted_cfg {
+                        Ok(confined) => {
+                            admitted.servers.insert(
+                                name.clone(),
+                                self.placed_mcp_server(settings, name, confined),
+                            );
+                            continue;
+                        }
+                        Err(reason) => {
+                            admitted.denied.push(mcp::manager::DeniedServer {
+                                name: name.clone(),
+                                transport: cfg.transport_kind(),
+                                reason: reason.clone(),
+                            });
+                            reason
+                        }
                     }
-                    Err(reason) => {
-                        admitted.denied.push(mcp::manager::DeniedServer {
-                            name: name.clone(),
-                            transport: cfg.transport_kind(),
-                            reason: reason.clone(),
-                        });
-                        reason
-                    }
-                },
-                Err(reason) => reason,
+                }
             };
             self.emit_event(api::DaemonEvent::McpConnectFailed {
                 server: name.clone(),

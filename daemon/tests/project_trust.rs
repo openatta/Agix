@@ -738,6 +738,44 @@ async fn a_projects_own_mcp_servers_wait_for_trust() {
     );
 }
 
+/// A trusted project's own server that asks for something a project may not
+/// use is not started, and `mcp.status` says so instead of leaving it out.
+#[cfg(all(unix, feature = "mcp"))]
+#[tokio::test]
+async fn a_projects_server_refused_for_the_enterprise_identity_is_listed_as_denied() {
+    let daemon = Daemon::start(
+        json!({}),
+        json!({"mcp_servers": {"ema": {"type": "streamable_http", "url": "https://mcp.example/mcp",
+                                       "oauth": {"grant": "enterprise", "client_id": "c"}}}}),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let ema = loop {
+        let status = daemon.ok("mcp.status", json!({})).await;
+        let found = status["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "ema")
+            .cloned();
+        if let Some(ema) = found {
+            break ema;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "ema never listed: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(ema["state"], "denied", "{ema}");
+    assert_eq!(ema["transport"], "streamable_http", "{ema}");
+    assert_eq!(ema["tool_count"], 0, "{ema}");
+    assert!(
+        ema["error"].as_str().unwrap().contains("enterprise"),
+        "{ema}"
+    );
+}
+
 #[cfg(all(unix, feature = "mcp"))]
 #[tokio::test]
 async fn the_users_mcp_servers_find_nothing_inside_an_untrusted_project() {

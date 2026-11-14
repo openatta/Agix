@@ -15,7 +15,9 @@ pub enum McpServerState {
     /// The remote server wants an OAuth sign-in (`mcp.auth.start`).
     AuthRequired,
     Failed,
-    /// The MCP policy refuses it.
+    /// The MCP policy refuses it, or the project declares it with something a
+    /// project's own server may not use (a daemon secret, a local key, the
+    /// enterprise identity).
     Denied,
     /// A server the project declares, in a project that is not trusted.
     Untrusted,

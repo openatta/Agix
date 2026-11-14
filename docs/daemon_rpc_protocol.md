@@ -2290,7 +2290,7 @@ daemon 自己那一对,给路径 = 它服务的另一个项目,`null` → `INVAL
 | `connecting` | 还在连。会话创建最多等 10 秒,没连完的在后台接着连,连上后发 `mcp_connected`,这个项目的会话在下一轮之前换上它 |
 | `auth_required` | 远端 server 要求 OAuth 登录(回了 401),还没登录或令牌已失效;没有工具,`tool_count` 为 0。用 `mcp.auth.start` 登录 |
 | `failed` | 没连上(进程起不来、握手失败或超时),另带 `error` 说明原因 |
-| `denied` | MCP 策略(`ARCHITECTURE.md` §6.4)拒绝了它,`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则 |
+| `denied` | MCP 策略(`ARCHITECTURE.md` §6.4)拒绝了它,或者它是项目自己声明的、用了项目的 server 不能用的东西(daemon 环境里的密钥、本机的密钥文件、`"grant": "enterprise"` 的企业身份);`tool_count` 为 0,另带 `error` 说明是哪份策略、哪条规则 |
 | `untrusted` | 项目自己声明的 server,项目未被信任(§3.6),没有启动;`tool_count` 为 0,另带 `error`。`project.trust` 之后启动 |
 
 `auth` 每个元素都有,是这个 server 的授权状态(`mcp_auth.md` §2):`state` 为
