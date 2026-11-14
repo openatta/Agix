@@ -12,7 +12,7 @@ file  crates/history/src/store.rs                                 -             
 file  crates/mcp/src/connect.rs                                   -                                      1328
 file  crates/mcp/src/manager.rs                                   -                                      1273
 file  crates/mcp/src/oauth/mod.rs                                 -                                      1104
-file  crates/platform/src/sandbox.rs                              -                                      1498
+file  crates/platform/src/sandbox.rs                              -                                      1506
 file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      861
 file  crates/session/src/session.rs                               -                                      835
 file  crates/team/src/coordinator.rs                              -                                      981
