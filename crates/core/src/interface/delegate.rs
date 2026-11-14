@@ -143,6 +143,7 @@ pub struct TeamSeat {
 }
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct StartedAgent {
     pub task_id: String,
     /// The sidechain session the agent runs in.

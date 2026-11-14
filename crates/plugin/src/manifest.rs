@@ -55,6 +55,7 @@ pub struct PluginManifest {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct PluginMeta {
     pub name: String,
     pub version: String,
@@ -79,6 +80,7 @@ pub struct PluginMeta {
 /// process. Nothing here can widen what the script may do — that follows
 /// from the package the file arrived in, and is decided at bind time.
 #[derive(Debug, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct ScriptPayload {
     /// Extension point id, e.g. `tool.result`. Which ids accept a script is
     /// the carrier's list, not this crate's — a manifest layer that repeated
@@ -116,6 +118,7 @@ pub enum McpKind {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct McpPayload {
     pub name: String,
     pub kind: McpKind,
@@ -125,6 +128,7 @@ pub struct McpPayload {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+#[non_exhaustive]
 pub struct SceneSection {
     /// The scene this plugin owns, as a declarative scene directory
     /// (`scene.json` + `prompt.md`) relative to the plugin root. Its id must
@@ -134,6 +138,7 @@ pub struct SceneSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct SkillsSection {
     /// A directory of `<name>/SKILL.md` skills, relative to the plugin root.
     pub dir: PathBuf,
@@ -145,6 +150,7 @@ pub struct SkillsSection {
 /// becomes an engine agent type ([`crate::agents`]), so one bad value costs
 /// that field rather than the whole manifest.
 #[derive(Debug, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct AgentDef {
     pub name: String,
     pub description: String,

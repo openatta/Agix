@@ -221,6 +221,7 @@ pub mod call_purpose {
 
 /// Tool definition sent to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ToolDef {
     pub name: String,
     pub description: String,

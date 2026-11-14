@@ -9,7 +9,8 @@
 //! forwards to another and forgets a method. A4: the contracts keep no
 //! per-thread state. A5: every public enum of `base` and of
 //! `session_pool::api` is `#[non_exhaustive]`, or listed in `CLOSED_ENUMS`
-//! with the exhaustive match that must break when a variant is added. A7: the
+//! with the exhaustive match that must break when a variant is added. A6: the structs an embedder
+//! builds are `#[non_exhaustive]` (a ratcheted list). A7: the
 //! settings types a file is read into hold nothing a file cannot set — such a
 //! field is a load result, which `LoadedSettings` holds. A8: no production
 //! code is `#[deprecated]`; the owner's rule is to change the callers instead.
@@ -537,5 +538,88 @@ fn every_public_enum_is_non_exhaustive_or_closed_for_a_reason() {
         CLOSED_ENUMS,
         "mark the enum `#[non_exhaustive]`, or list it with who matches it exhaustively and why \
          that match must break when a variant is added (D5 §3.1)",
+    );
+}
+
+/// A6's list, as (struct, file). A ratchet: a struct an embedder builds goes on
+/// it when it gains `#[non_exhaustive]`, and nothing comes off except by the
+/// struct's removal.
+const NON_EXHAUSTIVE_STRUCTS: &[(&str, &str)] = &[
+    ("AgentDef", "crates/plugin/src/manifest.rs"),
+    ("CallTraits", "crates/core/src/interface/tool.rs"),
+    ("CompactionConfig", "crates/core/src/settings.rs"),
+    ("ExecutionParams", "crates/core/src/interface/scene.rs"),
+    ("ExecutionSettings", "crates/core/src/settings.rs"),
+    ("Grant", "crates/core/src/interface/permission.rs"),
+    ("LoadedRule", "crates/core/src/settings/loaded.rs"),
+    ("LoadedSettings", "crates/core/src/settings/loaded.rs"),
+    ("McpPayload", "crates/plugin/src/manifest.rs"),
+    ("ModelSettings", "crates/core/src/settings.rs"),
+    ("ModuleSurface", "crates/core/src/interface/scene.rs"),
+    ("PathSettings", "crates/core/src/settings.rs"),
+    (
+        "PermissionRequest",
+        "crates/core/src/interface/permission.rs",
+    ),
+    ("PluginMeta", "crates/plugin/src/manifest.rs"),
+    ("PluginsConfig", "crates/core/src/settings.rs"),
+    ("ProgressUpdate", "crates/core/src/interface/tool.rs"),
+    ("PromptContext", "crates/core/src/interface/tool.rs"),
+    ("ReminderContext", "crates/core/src/interface/scene.rs"),
+    ("SandboxConfig", "crates/core/src/settings.rs"),
+    ("SceneSection", "crates/plugin/src/manifest.rs"),
+    ("SceneSpec", "crates/core/src/interface/scene.rs"),
+    ("ScenePromptContext", "crates/core/src/interface/scene.rs"),
+    ("ScriptPayload", "crates/plugin/src/manifest.rs"),
+    ("Settings", "crates/core/src/settings.rs"),
+    ("SkillsSection", "crates/plugin/src/manifest.rs"),
+    ("StartedAgent", "crates/core/src/interface/delegate.rs"),
+    ("TokenBudget", "crates/core/src/interface/scene.rs"),
+    ("ToolContext", "crates/core/src/interface/tool.rs"),
+    ("ToolDef", "crates/core/src/interface/model.rs"),
+    ("ToolResult", "crates/core/src/interface/tool.rs"),
+    ("ToolSpec", "crates/core/src/interface/tool.rs"),
+    ("ToolSurface", "crates/core/src/interface/scene.rs"),
+];
+
+const NON_EXHAUSTIVE_STRUCTS_AT_LEAST: usize = 32;
+
+#[test]
+fn the_structs_an_embedder_builds_are_non_exhaustive() {
+    assert!(
+        NON_EXHAUSTIVE_STRUCTS.len() >= NON_EXHAUSTIVE_STRUCTS_AT_LEAST,
+        "[api_surface::A6] NON_EXHAUSTIVE_STRUCTS shrank to {}, below \
+         {NON_EXHAUSTIVE_STRUCTS_AT_LEAST}: the list only grows (D5 §3.3)",
+        NON_EXHAUSTIVE_STRUCTS.len()
+    );
+    let mut problems = Vec::new();
+    for (name, file) in NON_EXHAUSTIVE_STRUCTS {
+        let found = scan::structs(ws().file(file), View::Prod)
+            .into_iter()
+            .find(|s| s.name == *name && s.vis == "pub");
+        match found {
+            None => problems.push(format!(
+                "`{name}` is no longer a public struct of {file}: drop it from the list, and \
+                 lower NON_EXHAUSTIVE_STRUCTS_AT_LEAST only if the struct is gone"
+            )),
+            Some(s) => {
+                if !s
+                    .attrs
+                    .iter()
+                    .any(|a| a.replace(' ', "") == "#[non_exhaustive]")
+                {
+                    problems.push(format!(
+                        "{}\n      `{name}` lost `#[non_exhaustive]`: a field added to it would \
+                         break every embedder that builds one with a struct literal",
+                        s.hit
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "[api_surface::A6] (list in tests/guards/tests/api_surface.rs)\n  {}",
+        problems.join("\n  ")
     );
 }

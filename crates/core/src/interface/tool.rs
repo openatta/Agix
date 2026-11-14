@@ -33,6 +33,7 @@ pub use crate::context::config::PathStyle;
 use crate::interface::permission::{ModeStance, PermissionFacts};
 pub use crate::permission::PermissionMode;
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct PromptContext {
     pub cwd: PathBuf,
     pub model: String,
@@ -70,6 +71,7 @@ pub trait RunningTasksCallback: Send + Sync + std::fmt::Debug {
 /// One progress report of a running tool call. `progress` and `total` are in
 /// whatever unit the tool counts (lines, bytes, steps); either may be absent.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct ProgressUpdate {
     pub message: String,
     pub progress: Option<f64>,
@@ -159,6 +161,7 @@ impl ValidationResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[non_exhaustive]
 pub struct ToolResult {
     pub content: ToolResultContent,
     pub is_error: bool,
@@ -282,6 +285,7 @@ impl ToolResult {
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub session_id: String,
@@ -401,68 +405,26 @@ impl ToolContext {
     pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
         let mut config = crate::context::EngineConfig::defaults_for("test");
         config.dangerously_disable_sandbox = true;
-        Self {
-            cwd: cwd.clone(),
-            session_id: "test".into(),
-            turn_no: 0,
-            sandbox: Default::default(),
-            cancel: CancellationToken::new(),
-            additional_writable_dirs: vec![],
-            snapshot_file: None,
-            effects: None,
-            running_tasks: None,
-            max_file_read_bytes: 0,
-            permission_mode: PermissionMode::default(),
-            config: Arc::new(config),
-            session: Arc::new(crate::context::SessionState::for_tests(cwd)),
-            tool_use_id: String::new(),
-            agent: None,
-            parent_messages: None,
-            agent_depth: 0,
-            events_tx: None,
-            elicitation: None,
+        let session = Arc::new(crate::context::SessionState::for_tests(cwd.clone()));
+        let mut ctx = Self::new(
+            cwd,
+            CancellationToken::new(),
             exec,
-            dispatch: None,
-            from_code: false,
-            confinement: Default::default(),
-            attendance: crate::interface::permission::Attendance::Attended,
-            approval: None,
-            turn: Arc::default(),
-        }
+            Arc::new(config),
+            session,
+        );
+        ctx.session_id = "test".into();
+        ctx.max_file_read_bytes = 0;
+        ctx
     }
     pub fn from_engine_ctx_with(
         cwd: PathBuf,
         cancel: CancellationToken,
         exec: crate::interface::exec::ExecProviders,
     ) -> Self {
-        Self {
-            cwd: cwd.clone(),
-            session_id: String::new(),
-            turn_no: 0,
-            sandbox: SandboxSettings::default(),
-            cancel,
-            additional_writable_dirs: vec![],
-            snapshot_file: None,
-            effects: None,
-            running_tasks: None,
-            max_file_read_bytes: 10 * 1024 * 1024,
-            permission_mode: PermissionMode::default(),
-            config: Arc::new(crate::context::EngineConfig::defaults_for("unknown")),
-            session: Arc::new(crate::context::SessionState::for_tests(cwd)),
-            tool_use_id: String::new(),
-            agent: None,
-            parent_messages: None,
-            agent_depth: 0,
-            events_tx: None,
-            elicitation: None,
-            exec,
-            dispatch: None,
-            from_code: false,
-            confinement: Default::default(),
-            attendance: crate::interface::permission::Attendance::Attended,
-            approval: None,
-            turn: Arc::default(),
-        }
+        let config = Arc::new(crate::context::EngineConfig::defaults_for("unknown"));
+        let session = Arc::new(crate::context::SessionState::for_tests(cwd.clone()));
+        Self::new(cwd, cancel, exec, config, session)
     }
 }
 

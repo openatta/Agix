@@ -41,6 +41,7 @@ pub struct SettingsFile {
 /// What the settings tiers say once merged. Every field is one a settings
 /// file can set; what loading them produced besides is [`LoadedSettings`].
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub struct Settings {
     pub model: ModelSettings,
     #[serde(default)]
@@ -227,6 +228,7 @@ pub const DEFAULT_MAX_TOKENS: u32 = 32_000;
 
 /// LLM model configuration for a single provider.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub struct ModelSettings {
     pub api_type: ApiType,
     pub base_url: String,
@@ -246,6 +248,7 @@ pub struct ModelSettings {
 
 /// Path configuration for data directories.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub struct PathSettings {
     /// User-level, scene-specific override root (e.g. `~/.agix/scenes/<scope>/`).
     pub user_data_dir: PathBuf,
@@ -355,6 +358,7 @@ impl PathSettings {
 
 /// Execution constraints.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub struct ExecutionSettings {
     pub max_parallelism: usize,
     /// Ceiling on LLM round trips in one turn, before the turn ends with
@@ -484,6 +488,7 @@ impl Default for ExecutionSettings {
 /// Context compaction, over what the scene asks for. A field left out keeps
 /// the scene's own value (`SceneSpec::token_budget`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[non_exhaustive]
 pub struct CompactionConfig {
     /// Compact once a request's context passes this many tokens. `0` turns
     /// automatic compaction off.
@@ -517,6 +522,7 @@ pub struct CompactionConfig {
 /// case where the same binary serves several deployments.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct PluginsConfig {
     /// Load installed plugins at all.
     pub enabled: bool,
@@ -550,6 +556,7 @@ impl PluginsConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 /// Sandbox/security configuration.
+#[non_exhaustive]
 pub struct SandboxConfig {
     /// Directories outside the project that tools may read and write, as if
     /// they were part of it. The instance's own state directory (`~/.agix`

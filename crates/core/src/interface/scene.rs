@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 /// Context passed to [`ScenePrompt`].
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ScenePromptContext<'a> {
     pub cwd: Cow<'a, str>,
     pub os: Cow<'a, str>,
@@ -53,6 +54,7 @@ pub struct ScenePromptContext<'a> {
 
 /// Context for building the `<system-reminder>` block.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ReminderContext<'a> {
     pub cwd: Cow<'a, str>,
     pub git_status: Option<Cow<'a, str>>,
@@ -83,6 +85,7 @@ pub const NEEDS_A_USER: &[&str] = &["AskUserQuestion", "EnterPlanMode", "ExitPla
 
 /// Token budget configuration for a scene.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TokenBudget {
     /// Trigger auto-compact when input exceeds this threshold (0 = disabled).
     pub compact_threshold: usize,
@@ -108,6 +111,7 @@ impl TokenBudget {
 ///
 /// What is here is honoured — see `runtime::turn`'s `max_calls`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ExecutionParams {
     /// Ceiling on LLM round trips within a single turn for this scene.
     ///
@@ -188,6 +192,7 @@ pub enum Reminder {
 /// becomes the session's `EngineConfig::deferred_tools`, and covers MCP tools
 /// that arrive later in the session too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ToolSurface {
     pub allow: Option<Vec<ToolPattern>>,
     pub deny: Vec<ToolPattern>,
@@ -242,6 +247,7 @@ impl ToolSurface {
 /// host did not assemble adds nothing. The delegates a session spawns inherit
 /// the narrowed list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ModuleSurface {
     pub allow: Option<Vec<String>>,
     pub deny: Vec<String>,
