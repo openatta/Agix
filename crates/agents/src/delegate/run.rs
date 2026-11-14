@@ -218,6 +218,7 @@ impl Delegator {
         spec: Spec,
         prompt: String,
         stop: CancellationToken,
+        ask: Ask,
     ) -> Result<Delegated, DelegateError> {
         if self.limits.hook_agents.includes(judged_session) {
             return Err(DelegateError::NotJudged(
@@ -228,7 +229,7 @@ impl Delegator {
         let _running = self.limits.hook_agents.enter(spec.session_id.clone());
         let session_id = spec.session_id.clone();
         let shot = OneShot {
-            relay: self.relay(&spec.session_id, None, AskRoute::Host, Vec::new()),
+            relay: self.relay_for(&spec, None, &ask),
             spec,
             prompt,
             cancel: stop,

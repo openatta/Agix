@@ -157,7 +157,7 @@ impl base::interface::delegate::Delegator for Delegator {
                 self.message_member(seat, spec, prompt).await
             }
             DelegateMode::Hook { judged_session } => {
-                self.judge(&judged_session, spec, prompt, stop).await
+                self.judge(&judged_session, spec, prompt, stop, ask).await
             }
         }
     }

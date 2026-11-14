@@ -2130,6 +2130,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   agent hook 的裁判子 Agent 停下;`PreToolUse` 跑完时回合已取消的调用不再执行。hook agent 的子孙
   会话的工具调用不再触发 agent hook;`on_error: "block"` 的 agent hook 不再把自己的 hook agent 的
   工具调用判成失败而全部拦下。
+- **agent hook 的子 Agent 只有只读工具,也没人可问。** 它读的是模型写的 payload,自己的调用又不受
+  agent hook 判,以前拿父会话的全部工具、权限询问照常问宿主:被注入的裁判能替模型把被拦的命令跑掉。
+  现在只给 `Read`、`Grep`、`Glob`(外加 `ToolSearch`),要批准的调用直接拒,不问人;它也起不了
+  子 Agent。
 - **只通知的 hook 不再被取消掐掉。** 不回答引擎的事件(`PostToolUse`、`SubagentStop`、`SessionEnd`
   等)的 hook,在回合被中断、会话结束后照样跑到它自己的超时;`PostToolUse` 不再拿回合的取消令牌。
   代价:被中断的回合要等这些 hook 跑完才结束,最长到 hook 的超时。

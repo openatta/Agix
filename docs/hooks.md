@@ -154,9 +154,10 @@ JSON。子 Agent 的最终回答应当是 `{"ok": true|false, "reason": "…"}`:
 不是 JSON 的回答只当 `message`,不拦不改。写了 `model` 的,子 Agent 跑在这个模型上,provider
 按会话的路由选;不写用会话的模型。
 
-这个子 Agent 不占 `execution.max_concurrent_subagents`,模型把名额占满了照样起。它和它再
-委派出去的子孙,自己的事件(工具调用、`SubagentStart` 等)不再起 agent hook,按执行失败处理、
-走 `on_error`;command / prompt / http hook 对它们照旧跑。它一次性跑完就丢,不做记忆抽取。
+这个子 Agent 不占 `execution.max_concurrent_subagents`,模型把名额占满了照样起。它自己的事件
+(工具调用、`SubagentStart` 等)不再起 agent hook,按执行失败处理、走 `on_error`;command /
+prompt / http hook 对它照旧跑。它读的是模型写的 payload,所以只有 `Read`、`Grep`、`Glob`
+(外加 `ToolSearch`),要批准的调用直接拒、不问人。它一次性跑完就丢,不做记忆抽取。
 
 ---
 

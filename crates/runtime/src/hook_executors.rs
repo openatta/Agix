@@ -8,12 +8,13 @@
 //! the session's `model` and its `Delegator`.
 
 use base::interface::delegate::{
-    DelegateEnd, DelegateError, DelegateMode, DelegateRequest, Delegated, Delegator, StopsWith,
-    Workdir,
+    AskRoute, DelegateEnd, DelegateError, DelegateMode, DelegateRequest, Delegated, Delegator,
+    StopsWith, Workdir,
 };
 use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelEvent, ModelMessage, StreamParams,
 };
+use base::interface::tool_selector::{ToolPattern, ToolSelector};
 use base::prompt::PromptBlock;
 use base::settings::ThinkingMode;
 use hooks::payload::HookInput;
@@ -106,9 +107,22 @@ impl PromptHookExecutor for ModelPromptHookExecutor {
 /// session, stopping with the hook's `stop`. The `HookInput` payload is folded
 /// into the prompt; a hook's `model` runs the agent on that model, routed the
 /// way the session routes a model name.
+///
+/// The agent reads a payload the model wrote and its own calls are not judged
+/// by the hook, so it gets only the read-only tools and nobody to ask: what
+/// would need approval is refused.
 pub struct DelegatorHookExecutor {
     delegator: Arc<dyn Delegator>,
     cwd: std::path::PathBuf,
+}
+
+const HOOK_AGENT_TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+
+fn hook_agent_tools() -> ToolSelector {
+    ToolSelector::layer(
+        Some(HOOK_AGENT_TOOLS.map(|t| ToolPattern::Name(t.into())).into()),
+        Vec::new(),
+    )
 }
 
 impl DelegatorHookExecutor {
@@ -138,6 +152,8 @@ impl AgentHookExecutor for DelegatorHookExecutor {
         );
         req.model = model.map(str::to_string);
         req.workdir = Workdir::At(self.cwd.clone());
+        req.tools = hook_agent_tools();
+        req.asks = AskRoute::Refuse;
         match self.delegator.delegate(req).await {
             Ok(Delegated::Finished(outcome)) => match outcome.end {
                 DelegateEnd::Failed(e) => Err(AgentHookError::Failed(e)),
@@ -237,6 +253,13 @@ mod tests {
             assert!(
                 matches!(&req.mode, DelegateMode::Hook { judged_session } if judged_session == "test")
             );
+            let builtin = base::interface::tool::ToolOrigin::Builtin;
+            assert_eq!(req.asks, AskRoute::Refuse);
+            assert!(req.tools.admits("Read", &builtin));
+            assert!(!req.tools.admits("Bash", &builtin));
+            assert!(!req
+                .tools
+                .admits("mcp__s__t", &base::interface::tool::ToolOrigin::mcp("s")));
             let text = match (&req.model, &req.stops_with) {
                 (_, StopsWith::Call(stop)) if stop.is_cancelled() => "stopped".to_string(),
                 (Some(model), _) => format!("ran on {model}"),

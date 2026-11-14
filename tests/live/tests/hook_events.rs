@@ -1580,17 +1580,17 @@ async fn an_interrupt_stops_an_agent_hook_still_judging() -> anyhow::Result<()> 
     Ok(())
 }
 
-/// What an `"agent"` hook's sub-agent delegates in turn is part of the
-/// hook's own judging: its calls are not judged by the hook again.
+/// An `"agent"` hook's sub-agent reads a payload the model wrote, and its
+/// own calls are not judged by the hook; it gets the read-only tools and no
+/// one to ask, so a watcher that permits everything cannot run what it asks.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_hook_agents_own_sub_agent_does_not_fire_the_agent_hook() -> anyhow::Result<()> {
+async fn a_hook_agent_gets_read_only_tools_and_no_one_to_ask() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
-    let mut run = stubbed("agent-hook-lineage", &stub)
+    let outside = tempfile::tempdir()?;
+    let secret = outside.path().join("secret.txt");
+    std::fs::write(&secret, "OUTSIDE-SECRET-MARK")?;
+    let mut run = stubbed("agent-hook-read-only", &stub)
         .settings(json!({
-            "permission_rules": [
-                { "tool": "Agent", "action": "allow" },
-                { "tool": "Bash", "action": "allow" }
-            ],
             "hooks_config": {
                 "PreToolUse": [{
                     "type": "agent",
@@ -1602,22 +1602,13 @@ async fn a_hook_agents_own_sub_agent_does_not_fire_the_agent_hook() -> anyhow::R
         .start()
         .await?;
     let session = run.session().await?;
+    let _approve = run.watch(&session, true).await?;
     stub.script_when(
         "AGENT-JUDGE",
         [
-            Reply::calls(
-                "a1",
-                "Agent",
-                json!({ "prompt": "GRANDCHILD-MARK check it", "description": "check" }),
-            ),
-            Reply::text("{\"ok\": true}"),
-        ],
-    );
-    stub.script_when(
-        "GRANDCHILD-MARK",
-        [
-            Reply::calls("g1", "Bash", json!({ "command": "echo GRANDCHILD-CALL" })),
-            Reply::text("grandchild done"),
+            Reply::calls("j1", "Bash", json!({ "command": "echo x > judge-ran.txt" })),
+            Reply::calls("j2", "Read", json!({ "file_path": secret })),
+            Reply::text("{\"ok\": false, \"reason\": \"AGENT-SAYS-NO\"}"),
         ],
     );
     stub.script([
@@ -1625,15 +1616,20 @@ async fn a_hook_agents_own_sub_agent_does_not_fire_the_agent_hook() -> anyhow::R
         Reply::text("done"),
     ]);
     run.turn(&session, "go").await?;
-    let judged_again: Vec<String> = stub
+    let judge_calls: Vec<_> = stub
         .calls()
-        .iter()
-        .filter(|c| c.messages_contain("AGENT-JUDGE") && c.messages_contain("GRANDCHILD-CALL"))
-        .map(|c| c.messages_text())
+        .into_iter()
+        .filter(|c| c.messages_contain("AGENT-JUDGE"))
         .collect();
+    let mut offered = judge_calls.first().expect("the judge ran").tool_names();
+    offered.sort();
+    assert_eq!(offered, ["Glob", "Grep", "Read", "ToolSearch"]);
+    assert!(run.read_file("judge-ran.txt").is_none());
     assert!(
-        judged_again.is_empty(),
-        "the hook judged its own sub-agent's call: {judged_again:?}"
+        !judge_calls
+            .iter()
+            .any(|c| c.messages_contain("OUTSIDE-SECRET-MARK")),
+        "a read that needs approval is refused, not asked"
     );
     run.finish().await;
     Ok(())
