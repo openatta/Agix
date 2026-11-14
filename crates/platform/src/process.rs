@@ -212,7 +212,7 @@ impl Process for LocalProcess {
             #[cfg(unix)]
             group,
             #[cfg(unix)]
-            _cancel_watch: cancel_watch,
+            cancel_watch,
             kept: self.ledger.is_some(),
             output: Some(interleave(stdout, stderr)),
         }))
@@ -289,7 +289,7 @@ struct LocalHandle {
     #[cfg(unix)]
     group: Option<libc::pid_t>,
     #[cfg(unix)]
-    _cancel_watch: Option<tokio_util::sync::DropGuard>,
+    cancel_watch: Option<tokio_util::sync::DropGuard>,
     /// A ledger keeps the group past this handle and takes it off the
     /// process-wide list when it reaps it.
     kept: bool,
@@ -339,6 +339,10 @@ impl ProcessHandle for LocalHandle {
     fn wait(&mut self) -> BoxFuture<'_, Result<ExitStatus, ExecError>> {
         Box::pin(async move {
             let s = self.child.wait().await.map_err(ExecError::failed)?;
+            #[cfg(unix)]
+            if self.group.is_some_and(|group| !group_alive(group)) {
+                self.cancel_watch = None;
+            }
             Ok(ExitStatus {
                 code: s.code(),
                 success: s.success(),
@@ -594,5 +598,45 @@ mod tests {
         let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
         drop(h);
         assert!(gone_within(pid, std::time::Duration::from_secs(3)).await);
+    }
+
+    /// Once the group is gone its id can belong to someone else, so the
+    /// handle stops watching for cancellation.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_finished_group_is_no_longer_watched() {
+        let mut h = LocalProcess::default()
+            .spawn(sh("true"), CancellationToken::new())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        while out.next().await.is_some() {}
+        assert!(h.wait().await.unwrap().success);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        let alive = tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks();
+        assert_eq!(alive, 0, "the cancellation watcher outlived the group");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_group_that_outlives_its_leader_is_still_stopped_on_cancel() {
+        let cancel = CancellationToken::new();
+        let mut h = LocalProcess::default()
+            .spawn(sh("sleep 300 & echo $!"), cancel.clone())
+            .await
+            .unwrap();
+        let mut out = h.output().unwrap();
+        let pid: libc::pid_t = first_line(&mut out).await.parse().unwrap();
+        assert!(h.wait().await.unwrap().success);
+        cancel.cancel();
+        let stopped = gone_within(pid, std::time::Duration::from_secs(3)).await;
+        if !stopped {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(stopped, "the background sleep outlived the cancellation");
     }
 }
