@@ -672,15 +672,8 @@ async fn the_description_lists_call_shapes_and_the_guide_says_the_rest() {
         "the details belong to the guide"
     );
 
-    let ctx = base::tool::PromptContext {
-        cwd: "/tmp".into(),
-        model: String::new(),
-        session_id: String::new(),
-        is_interactive: false,
-        all_tool_names: vec![],
-        allowed_agent_types: vec![],
-        path_style: Default::default(),
-    };
+    let mut ctx = base::tool::PromptContext::default();
+    ctx.cwd = "/tmp".into();
     let guide = tool.guide(&ctx).await.expect("a guide");
     assert!(
         guide.contains("tools.Read({file_path, limit?}) → text — Read a file (text/image/PDF) with optional line range."),
