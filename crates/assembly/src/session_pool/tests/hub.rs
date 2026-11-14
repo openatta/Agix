@@ -13,8 +13,7 @@ fn kind(frame: &SessionFrame) -> &'static str {
 }
 
 /// Records what it is handed; on its first frame it publishes another into
-/// the same hub and asks the hub something, as a watcher calling back into
-/// the pool would.
+/// the same hub and asks the hub something.
 struct CallsBack {
     id: u64,
     hub: std::sync::Weak<SessionHub>,
@@ -76,4 +75,76 @@ fn a_watcher_calling_back_into_its_hub_does_not_deadlock_and_frames_stay_in_orde
             w.id
         );
     }
+}
+
+/// Takes frames unless `full`; records what it took.
+struct Fills {
+    id: u64,
+    full: bool,
+    seen: Mutex<Vec<&'static str>>,
+}
+
+impl SessionWatcher for Fills {
+    fn id(&self) -> WatcherId {
+        WatcherId(self.id)
+    }
+
+    fn deliver(&self, frame: &SessionFrame) -> bool {
+        if self.full {
+            return false;
+        }
+        self.seen.lock().unwrap().push(kind(frame));
+        true
+    }
+}
+
+/// On its first frame, subscribes `again` and publishes one more frame, as a
+/// client re-subscribing while the delivery that dropped it is still going.
+struct Resubscribes {
+    hub: std::sync::Weak<SessionHub>,
+    again: Arc<Fills>,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl SessionWatcher for Resubscribes {
+    fn id(&self) -> WatcherId {
+        WatcherId(99)
+    }
+
+    fn deliver(&self, _: &SessionFrame) -> bool {
+        if !self.done.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            if let Some(hub) = self.hub.upgrade() {
+                hub.subscribe(self.again.clone());
+                hub.publish(&frame_between_turns("s", SessionEvent::Closed));
+            }
+        }
+        true
+    }
+}
+
+#[test]
+fn a_watcher_dropped_and_subscribed_again_within_one_delivery_stays_subscribed() {
+    let hub = Arc::new(SessionHub::active_at(std::time::Instant::now()));
+    let fills = |full| {
+        Arc::new(Fills {
+            id: 1,
+            full,
+            seen: Mutex::new(Vec::new()),
+        })
+    };
+    let again = fills(false);
+    hub.subscribe(fills(true));
+    hub.subscribe(Arc::new(Resubscribes {
+        hub: Arc::downgrade(&hub),
+        again: again.clone(),
+        done: Default::default(),
+    }));
+
+    hub.publish(&frame_between_turns("s", SessionEvent::EngineStopped));
+
+    assert!(
+        hub.is_watched_by(WatcherId(1)),
+        "the new subscription was dropped"
+    );
+    assert_eq!(*again.seen.lock().unwrap(), ["closed"]);
 }

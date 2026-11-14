@@ -2741,7 +2741,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `Arc<dyn SessionWatcher>`、返回 `Subscribed`(待答提问是 `PendingAsk`);`unsubscribe_session` 收
   `WatcherId`;`PromptAnswer::prompt_type()` 改为 `kind() -> AskKind`。`SessionEvent::Task(TaskEvent)`、
   `GoalChanged(Option<GoalView>)` 带类型。没调 `start_scheduler` 的池也转发轮间、任务与目标事件。
-  `SessionWatcher::deliver` 不在会话的锁下调用:仍不能阻塞,但可以回调池(以前回调会卡死)。
+  `SessionWatcher::deliver` 不在会话 hub 的锁下调用,但仍不能阻塞,也不能等池:回合的终止帧
+  (`turn_complete`、`error`)是在池的锁下发出的。要调池的工作交给 `deliver` 另起的任务。
+  同一次投递还没结束时用同一个 `WatcherId` 重新订阅的,新订阅留着,不会被这次投递一并摘掉。
 - **`doctor::run_doctor` 多一个参数 `other_scenes: &[(String, PathBuf)]`**(在 `scene_id` 之后),
   `SettingsTiersCheck::new` 同样多它:启动场景之外各激活场景的 id 与场景层目录。
 - **池级通知是 `DaemonEvent`。** `SessionPool::emit_event(DaemonEvent)`、`subscribe_events() ->

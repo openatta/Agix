@@ -4,8 +4,9 @@
 //! 锁序里它是叶子：持着它不 `.await`、不去拿别的锁。帧在锁下定好收件人、排进
 //! 发件队列，放开锁再交给 `SessionWatcher::deliver`。投递由另一把锁串行：同一时刻
 //! 只有一个线程在投递，发帧的调用返回时它的帧已经交出去了，每个订阅者收到的帧仍是
-//! 发出的先后。订阅者在 `deliver` 里回调池或这个 hub 不会卡住：它在同一线程上再发
-//! 的帧排在队尾，由正在投递的这一层接着交出去。
+//! 发出的先后。`deliver` 里再往这个 hub 发帧不会卡住：同一线程上再发的帧排在队尾，
+//! 由正在投递的这一层接着交出去。回合的终止帧是在池的 `sessions` 锁下发出的，所以
+//! `deliver` 不能等池；要用池的工作交给它另起的任务。
 
 use crate::session_pool::api::{AskKind, PendingAsk, SessionFrame, SessionWatcher, WatcherId};
 use std::collections::{HashMap, VecDeque};
@@ -184,11 +185,16 @@ impl SessionHub {
         drop(inner);
         let _delivery = self.delivery.lock().unwrap_or_else(|e| e.into_inner());
         let _unwind = StillDelivering(self);
-        let mut dropped: Vec<WatcherId> = Vec::new();
+        // By the subscription, not its id: one that subscribes again under
+        // the same id while this delivery goes on is a new one, and stays.
+        let mut dropped: Vec<Arc<dyn SessionWatcher>> = Vec::new();
+        let is_dropped = |dropped: &[Arc<dyn SessionWatcher>], w: &Arc<dyn SessionWatcher>| {
+            dropped.iter().any(|d| Arc::ptr_eq(d, w))
+        };
         loop {
             let mut inner = self.lock();
             if !dropped.is_empty() {
-                inner.watchers.retain(|w| !dropped.contains(&w.id()));
+                inner.watchers.retain(|w| !is_dropped(&dropped, w));
             }
             let Some(Outgoing { frame, to }) = inner.outbox.pop_front() else {
                 inner.delivering_on = None;
@@ -197,9 +203,8 @@ impl SessionHub {
             inner.delivering_on = Some(this_thread);
             drop(inner);
             for watcher in to {
-                let id = watcher.id();
-                if !dropped.contains(&id) && !watcher.deliver(&frame) {
-                    dropped.push(id);
+                if !is_dropped(&dropped, &watcher) && !watcher.deliver(&frame) {
+                    dropped.push(watcher);
                 }
             }
         }
