@@ -65,6 +65,124 @@ struct ReturnedBlock {
     content: String,
 }
 
+#[derive(Default)]
+struct Pass {
+    refused: Vec<String>,
+    edits: usize,
+}
+
+impl PromptAssemblyScript {
+    /// Occurrences are paired in order, not matched by name alone. The
+    /// kernel gives every unnamed section of a scene the same name, so a
+    /// prompt normally holds several blocks called `scene.skeleton` — and
+    /// an edit addressed by name lands on the first of them. Comparing the
+    /// k-th returned block against the k-th existing one is what makes
+    /// handing the list back unchanged cost nothing; without it, an
+    /// identity pass rewrote the first section with the second's text.
+    fn apply_returned<'a>(
+        &self,
+        assembly: &mut base::interface::prompt_assembly::PromptAssembly,
+        returned: &'a [ReturnedBlock],
+        existing: &[(String, String)],
+        pass: &mut Pass,
+    ) -> std::collections::HashMap<&'a str, usize> {
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for block in returned {
+            let Some(name) = block.name.as_deref() else {
+                continue;
+            };
+            let occurrences: Vec<&String> = existing
+                .iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, c)| c)
+                .collect();
+            let nth = seen.entry(name).or_insert(0);
+            let index = *nth;
+            *nth += 1;
+
+            match occurrences.get(index) {
+                // Handing a block back unchanged is not an edit, and must not
+                // be charged as one: a script that returns the whole list to
+                // change one line would otherwise need `modify` for all of it.
+                Some(content) if **content == block.content => {}
+                // An edit to one of several blocks sharing a name cannot be
+                // expressed: the assembly addresses by name and would apply it
+                // to the first. Refused rather than misapplied — a script that
+                // silently edited the wrong section would be worse than one
+                // that was told it could not.
+                Some(_) if occurrences.len() > 1 => pass.refused.push(format!(
+                    "`{name}` names {} blocks, so an edit to one of them cannot be addressed",
+                    occurrences.len()
+                )),
+                Some(_) => match assembly.modify(name, block.content.clone()) {
+                    Ok(_) => pass.edits += 1,
+                    Err(e) => pass.refused.push(e.to_string()),
+                },
+                None => {
+                    assembly.push(
+                        base::prompt::PromptBlock::system(block.content.clone())
+                            .named(name)
+                            .from_origin(self.carrier.origin().clone()),
+                    );
+                    pass.edits += 1;
+                }
+            }
+        }
+        seen
+    }
+
+    fn record_pass(&self, pass: &Pass) {
+        for denial in &pass.refused {
+            self.carrier.record(
+                &self.entry,
+                ScriptOutcome::Refused {
+                    detail: denial.clone(),
+                },
+            );
+        }
+        self.carrier.record(
+            &self.entry,
+            if pass.edits > 0 {
+                ScriptOutcome::Applied
+            } else {
+                ScriptOutcome::NoChange { detail: None }
+            },
+        );
+    }
+}
+
+/// A name is removed when fewer blocks came back under it than went out.
+/// Which one of several would go is unanswerable for the same reason an edit
+/// to one of them is.
+fn apply_removals(
+    assembly: &mut base::interface::prompt_assembly::PromptAssembly,
+    existing: &[(String, String)],
+    seen: &std::collections::HashMap<&str, usize>,
+    pass: &mut Pass,
+) {
+    for name in existing
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        let went_out = existing.iter().filter(|(n, _)| n == name).count();
+        let came_back = seen.get(name).copied().unwrap_or(0);
+        if came_back >= went_out {
+            continue;
+        }
+        if went_out > 1 {
+            pass.refused.push(format!(
+                "`{name}` names {went_out} blocks, so removing one of them cannot be addressed"
+            ));
+            continue;
+        }
+        match assembly.remove(name) {
+            Ok(_) => pass.edits += 1,
+            Err(e) => pass.refused.push(e.to_string()),
+        }
+    }
+}
+
 #[async_trait]
 impl base::interface::prompt_assembly::AsyncAssemblyHook for PromptAssemblyScript {
     async fn on_assemble_async(
@@ -111,105 +229,15 @@ impl base::interface::prompt_assembly::AsyncAssemblyHook for PromptAssemblyScrip
         // asked for one thing it may not do still gets everything it may —
         // the alternative punishes an author for a single overreach by
         // silently dropping the rest of their pass.
-        let mut refused = Vec::new();
-        let mut edits = 0usize;
+        let mut pass = Pass::default();
+        let seen = self.apply_returned(assembly, &returned, &existing, &mut pass);
+        apply_removals(assembly, &existing, &seen, &mut pass);
+        self.record_pass(&pass);
 
-        // Occurrences are paired in order, not matched by name alone. The
-        // kernel gives every unnamed section of a scene the same name, so a
-        // prompt normally holds several blocks called `scene.skeleton` — and
-        // an edit addressed by name lands on the first of them. Comparing the
-        // k-th returned block against the k-th existing one is what makes
-        // handing the list back unchanged cost nothing; without it, an
-        // identity pass rewrote the first section with the second's text.
-        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        for block in &returned {
-            let Some(name) = block.name.as_deref() else {
-                continue;
-            };
-            let occurrences: Vec<&String> = existing
-                .iter()
-                .filter(|(n, _)| n == name)
-                .map(|(_, c)| c)
-                .collect();
-            let nth = seen.entry(name).or_insert(0);
-            let index = *nth;
-            *nth += 1;
-
-            match occurrences.get(index) {
-                // Handing a block back unchanged is not an edit, and must not
-                // be charged as one: a script that returns the whole list to
-                // change one line would otherwise need `modify` for all of it.
-                Some(content) if **content == block.content => {}
-                // An edit to one of several blocks sharing a name cannot be
-                // expressed: the assembly addresses by name and would apply it
-                // to the first. Refused rather than misapplied — a script that
-                // silently edited the wrong section would be worse than one
-                // that was told it could not.
-                Some(_) if occurrences.len() > 1 => refused.push(format!(
-                    "`{name}` names {} blocks, so an edit to one of them cannot be addressed",
-                    occurrences.len()
-                )),
-                Some(_) => match assembly.modify(name, block.content.clone()) {
-                    Ok(_) => edits += 1,
-                    Err(e) => refused.push(e.to_string()),
-                },
-                None => {
-                    assembly.push(
-                        base::prompt::PromptBlock::system(block.content.clone())
-                            .named(name)
-                            .from_origin(self.carrier.origin().clone()),
-                    );
-                    edits += 1;
-                }
-            }
-        }
-
-        // A name is removed when fewer blocks came back under it than went
-        // out. Which one of several would go is unanswerable for the same
-        // reason an edit to one of them is.
-        for name in existing
-            .iter()
-            .map(|(n, _)| n.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-        {
-            let went_out = existing.iter().filter(|(n, _)| n == name).count();
-            let came_back = seen.get(name).copied().unwrap_or(0);
-            if came_back >= went_out {
-                continue;
-            }
-            if went_out > 1 {
-                refused.push(format!(
-                    "`{name}` names {went_out} blocks, so removing one of them cannot be addressed"
-                ));
-                continue;
-            }
-            match assembly.remove(name) {
-                Ok(_) => edits += 1,
-                Err(e) => refused.push(e.to_string()),
-            }
-        }
-
-        for denial in &refused {
-            self.carrier.record(
-                &self.entry,
-                ScriptOutcome::Refused {
-                    detail: denial.clone(),
-                },
-            );
-        }
-        self.carrier.record(
-            &self.entry,
-            if edits > 0 {
-                ScriptOutcome::Applied
-            } else {
-                ScriptOutcome::NoChange { detail: None }
-            },
-        );
-
-        if refused.is_empty() {
+        if pass.refused.is_empty() {
             Ok(())
         } else {
-            Err(refused.join("; "))
+            Err(pass.refused.join("; "))
         }
     }
 }

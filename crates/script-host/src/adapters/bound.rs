@@ -80,6 +80,17 @@ impl std::fmt::Debug for BoundScripts {
 }
 
 impl BoundScripts {
+    pub(crate) fn absorb(&mut self, staged: BoundScripts) {
+        self.carriers.extend(staged.carriers);
+        self.assembly_hooks.extend(staged.assembly_hooks);
+        self.prompt_blocks.extend(staged.prompt_blocks);
+        self.prompt_variables.extend(staged.prompt_variables);
+        self.tool_middleware.extend(staged.tool_middleware);
+        self.tool_results.extend(staged.tool_results);
+        self.model_interceptors.extend(staged.model_interceptors);
+        self.retrieval_hooks.extend(staged.retrieval_hooks);
+    }
+
     pub fn is_empty(&self) -> bool {
         !self.registers_on_prompt_registry()
             && self.tool_results.is_empty()

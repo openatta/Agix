@@ -639,12 +639,8 @@ pub mod bindings {
                         crate::adapters::prompt_context_from_script(carrier, &binding.entry)
                     };
                     if let Some(block) = block {
-                        if out
-                            .prompt_blocks
-                            .iter()
-                            .chain(&staged.prompt_blocks)
-                            .any(|b| b.name == block.name)
-                        {
+                        let known = out.prompt_blocks.iter().chain(&staged.prompt_blocks);
+                        if known.into_iter().any(|b| b.name == block.name) {
                             return Err(taken("prompt block", &block.name));
                         }
                         staged.prompt_blocks.push(block);
@@ -703,14 +699,7 @@ pub mod bindings {
                 }
             }
         }
-        out.carriers.extend(staged.carriers);
-        out.assembly_hooks.extend(staged.assembly_hooks);
-        out.prompt_blocks.extend(staged.prompt_blocks);
-        out.prompt_variables.extend(staged.prompt_variables);
-        out.tool_middleware.extend(staged.tool_middleware);
-        out.tool_results.extend(staged.tool_results);
-        out.model_interceptors.extend(staged.model_interceptors);
-        out.retrieval_hooks.extend(staged.retrieval_hooks);
+        out.absorb(staged);
         Ok(())
     }
 }
