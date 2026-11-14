@@ -135,7 +135,7 @@ impl Agent {
                 budget_met,
                 "Token budget session complete"
             );
-            self.session_state.ledger().token_target = Default::default();
+            self.session_state.ledger().token_target.clear();
         }
         false
     }

@@ -300,6 +300,28 @@ fn what_a_session_spent_and_asked_for_outlives_its_engine() {
 }
 
 #[tokio::test]
+async fn clear_forgets_the_whole_token_target() {
+    let (mut agent, _rx, _tx) = probe_builder(vec![]).build().expect("build should succeed");
+    {
+        let mut ledger = agent.session_state.ledger();
+        ledger.token_target.aim(5_000);
+        ledger.token_target.continued(700);
+    }
+    agent.handle_clear_command().await;
+    let target = agent.session_state.ledger().token_target;
+    assert_eq!(
+        (
+            target.target,
+            target.unannounced,
+            target.accumulated,
+            target.continuations,
+            target.last_delta
+        ),
+        (None, false, 0, 0, 0)
+    );
+}
+
+#[tokio::test]
 async fn run_emits_session_end_on_exit() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
     let (mut agent, _event_rx, _input_tx) = Builder::new()

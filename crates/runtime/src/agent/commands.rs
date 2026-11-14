@@ -40,9 +40,7 @@ impl Agent {
         self.gate.reset_denials();
         let mut ledger = self.session_state.ledger();
         ledger.invoked_skills.clear();
-        ledger.token_target.target = None;
-        ledger.token_target.accumulated = 0;
-        ledger.token_target.continuations = 0;
+        ledger.token_target.clear();
     }
 
     /// `/cost` — report the tokens and calls this session has spent.

@@ -50,6 +50,11 @@ pub struct TokenTarget {
 }
 
 impl TokenTarget {
+    /// No target, nothing counted toward one.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
     /// Aim at `target` from nothing, for the model to be told of it.
     pub fn aim(&mut self, target: u64) {
         self.target = Some(target);
