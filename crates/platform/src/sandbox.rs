@@ -1432,7 +1432,15 @@ impl Sandbox for PlatformSandbox {
                     .or_else(|| std::env::var_os(name))
             };
             let home = var("HOME").map(PathBuf::from);
-            let unmet = read_scope::unmet(&policy.read, home.as_deref(), var("PATH").as_deref());
+            let xdg_config_home = var("XDG_CONFIG_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from);
+            let unmet = read_scope::unmet(
+                &policy.read,
+                home.as_deref(),
+                xdg_config_home.as_deref(),
+                var("PATH").as_deref(),
+            );
             if !unmet.is_empty() {
                 confined.unmet.extend(unmet);
                 confined.enforcement = Enforcement::Partial;
@@ -3428,6 +3436,50 @@ mod tests {
         assert_eq!(report.strict_unmet, confined.unmet);
         assert_eq!(report.session, Enforcement::Full);
         assert!(report.session_unmet.is_empty(), "{report:?}");
+    }
+
+    /// git reads `$XDG_CONFIG_HOME/git/config` in place of
+    /// `~/.config/git/config` when the variable is set, and the strict
+    /// profile reads neither that file nor what it includes from elsewhere:
+    /// both are reported unmet.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_strict_profile_looks_for_the_git_configuration_under_xdg_config_home() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let xdg = root.join("xdg");
+        write_file(
+            &xdg.join("git/config"),
+            "[include]\n\tpath = ../../dotfiles/gitconfig\n",
+        );
+        write_file(&root.join("dotfiles/gitconfig"), "");
+        let mut spec = ProcessSpec::new("bash", &root).args(["-c", "git"]);
+        spec.env.extend([
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("HOME".to_string(), home.display().to_string()),
+            ("XDG_CONFIG_HOME".to_string(), xdg.display().to_string()),
+        ]);
+
+        let confined =
+            PlatformSandbox.confine(spec, &SandboxPolicy::default().strict(Vec::new(), None));
+        assert_eq!(confined.enforcement, Enforcement::Partial, "{confined:?}");
+        for what in [xdg.join("git/config"), root.join("dotfiles/gitconfig")] {
+            assert!(
+                confined
+                    .unmet
+                    .iter()
+                    .any(|line| line.contains(&what.display().to_string())),
+                "{} is not reported: {:?}",
+                what.display(),
+                confined.unmet
+            );
+        }
     }
 
     /// `command` under the real backend, in `cwd`, with `env` added.

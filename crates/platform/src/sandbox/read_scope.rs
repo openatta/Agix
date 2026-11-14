@@ -4,7 +4,8 @@
 //! `file-read*` and allows it back under each root, metadata everywhere;
 //! Linux binds each root read-only in place of the whole filesystem. A git
 //! those roots leave out — a shim under the home directory, a configuration
-//! file included from elsewhere — is reported unmet (`unmet`).
+//! file included from elsewhere or under a `$XDG_CONFIG_HOME` outside them —
+//! is reported unmet (`unmet`).
 //!
 //! The tables were measured on macOS with `ls`, `cat`, git directly and
 //! through the xcrun shim; the Linux one is the design's, not yet measured.
@@ -88,9 +89,15 @@ fn scope_read_roots(scope: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
 
 /// What a command under `read` would expect of git and cannot have, one line
 /// each: the `git` first on `path` lies outside what it reads, or the user's
-/// git configuration includes a file from outside it, which git stops on.
-/// Empty for `Everything`.
-pub(super) fn unmet(read: &ReadScope, home: Option<&Path>, path: Option<&OsStr>) -> Vec<String> {
+/// git configuration — `~/.gitconfig`, and `git/config` under
+/// `xdg_config_home` or else `~/.config`, where git looks — is or includes a
+/// file from outside it, which git stops on. Empty for `Everything`.
+pub(super) fn unmet(
+    read: &ReadScope,
+    home: Option<&Path>,
+    xdg_config_home: Option<&Path>,
+    path: Option<&OsStr>,
+) -> Vec<String> {
     let ReadScope::Only(scope) = read else {
         return Vec::new();
     };
@@ -108,10 +115,23 @@ pub(super) fn unmet(read: &ReadScope, home: Option<&Path>, path: Option<&OsStr>)
         }
     }
     let mut seen = Vec::new();
+    let xdg_config = xdg_config_home
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|h| h.join(".config")))
+        .map(|dir| dir.join("git/config"));
     let configs = home
-        .iter()
-        .flat_map(|h| [h.join(".gitconfig"), h.join(".config/git/config")]);
+        .map(|h| h.join(".gitconfig"))
+        .into_iter()
+        .chain(xdg_config);
     for config in configs {
+        let real = resolve_path(&config);
+        if real.is_file() && !readable(&real) {
+            unmet.push(format!(
+                "git: the user's git configuration is {}, which a command under the strict \
+                 profile cannot read, so git stops there",
+                real.display()
+            ));
+        }
         for included in git_includes(&config, home, &mut seen) {
             if !readable(&included) {
                 unmet.push(format!(
