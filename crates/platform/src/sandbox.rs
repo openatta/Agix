@@ -329,11 +329,27 @@ pub fn wrap(opts: SandboxOptions<'_>) -> Confined {
     if opts.disable {
         return plain(inner, SandboxMode::Disabled);
     }
-    wrap_program(inner, opts.cwd, opts.additional_writable, &opts.policy, &[])
+    let env = CommandEnv {
+        set: &[],
+        scope: opts.policy.env,
+    };
+    wrap_program(inner, opts.cwd, opts.additional_writable, &opts.policy, env)
 }
 
-/// [`wrap`] for any program, not only a shell command; `env` is what the
-/// program's spec sets.
+/// The environment a confined program starts with, as far as the sandbox can
+/// tell: what its spec sets, over what `scope` lets it inherit from the
+/// daemon's.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(
+    not(all(feature = "sandbox", any(target_os = "macos", target_os = "linux"))),
+    allow(dead_code)
+)]
+struct CommandEnv<'a> {
+    set: &'a [(String, String)],
+    scope: EnvScope,
+}
+
+/// [`wrap`] for any program, not only a shell command.
 #[cfg_attr(
     not(all(feature = "sandbox", any(target_os = "macos", target_os = "linux"))),
     allow(unused_variables)
@@ -343,7 +359,7 @@ fn wrap_program(
     cwd: &Path,
     additional_writable: &[PathBuf],
     policy: &SandboxPolicy,
-    env: &[(String, String)],
+    env: CommandEnv<'_>,
 ) -> Confined {
     #[cfg(not(feature = "sandbox"))]
     {
@@ -654,7 +670,7 @@ fn mac_wrap(
     cwd: &Path,
     additional_writable: &[PathBuf],
     policy: &SandboxPolicy,
-    env: &[(String, String)],
+    env: CommandEnv<'_>,
 ) -> Confined {
     let profile = build_macos_profile(
         cwd,
@@ -1280,7 +1296,7 @@ fn linux_wrap(
     cwd: &Path,
     additional_writable: &[PathBuf],
     policy: &SandboxPolicy,
-    env: &[(String, String)],
+    env: CommandEnv<'_>,
 ) -> Confined {
     if !bwrap_available() {
         return plain(inner, SandboxMode::Unavailable);
@@ -1429,7 +1445,15 @@ impl Sandbox for PlatformSandbox {
             stdin,
         } = spec;
         let inner = ProcessSpec::new(program, Path::new(".")).args(args);
-        let mut confined = wrap_program(inner, &cwd, &policy.additional_writable, policy, &env);
+        let env_scope = match policy.env {
+            EnvScope::Minimal => EnvScope::Minimal,
+            EnvScope::Session => env_scope,
+        };
+        let seen = CommandEnv {
+            set: &env,
+            scope: env_scope,
+        };
+        let mut confined = wrap_program(inner, &cwd, &policy.additional_writable, policy, seen);
         #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
         if matches!(
             confined.mode,
@@ -1437,8 +1461,8 @@ impl Sandbox for PlatformSandbox {
         ) {
             let unmet = read_scope::unmet(
                 &policy.read,
-                &read_scope::UserDirs::of(&env),
-                read_scope::var(&env, "PATH").as_deref(),
+                &read_scope::UserDirs::of(seen),
+                read_scope::var(seen, "PATH").as_deref(),
             );
             if !unmet.is_empty() {
                 confined.unmet.extend(unmet);
@@ -1447,10 +1471,7 @@ impl Sandbox for PlatformSandbox {
         }
         confined.spec.cwd = cwd;
         confined.spec.env = env;
-        confined.spec.env_scope = match policy.env {
-            EnvScope::Minimal => EnvScope::Minimal,
-            EnvScope::Session => env_scope,
-        };
+        confined.spec.env_scope = env_scope;
         confined.spec.stdin = stdin;
         confined
     }
@@ -1553,6 +1574,12 @@ mod without_the_feature {
 #[cfg(all(test, feature = "sandbox"))]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+    const INHERITED: CommandEnv<'static> = CommandEnv {
+        set: &[],
+        scope: EnvScope::Session,
+    };
 
     fn opts<'a>(cmd: &'a str, cwd: &'a Path) -> SandboxOptions<'a> {
         SandboxOptions {
@@ -2307,7 +2334,7 @@ mod tests {
             Path::new("/work/project"),
             &[],
             &policy,
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
         );
         let writes = denied_patterns(&profile, "file-write*");
         for p in [
@@ -2346,7 +2373,7 @@ mod tests {
             Path::new("/work/project"),
             &[],
             &policy,
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
         );
         let writes = denied_patterns(&profile, "file-write*");
         for name in ["settings.json", "scene.json", "prompt.md"] {
@@ -2375,7 +2402,7 @@ mod tests {
             Path::new("/work/project"),
             &[],
             &Default::default(),
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
         );
         assert!(denies(
             &denied_patterns(&fallback, "file-write*"),
@@ -2390,7 +2417,7 @@ mod tests {
             Path::new("/work/project"),
             &[],
             &policy,
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
         );
         let writes = denied_patterns(&profile, "file-write*");
         assert!(denies(&writes, Path::new("/srv/agix-state/settings.json")));
@@ -2414,7 +2441,7 @@ mod tests {
             state_root: Some(root.clone()),
             ..Default::default()
         };
-        let profile = build_macos_profile(&cwd, &[], &policy, &read_scope::UserDirs::of(&[]));
+        let profile = build_macos_profile(&cwd, &[], &policy, &read_scope::UserDirs::of(INHERITED));
         let reads = denied_patterns(&profile, "file-read*");
         let examples = mask::credential_examples(&root, &cwd.join(".agix"));
         assert!(!examples.is_empty());
@@ -3069,7 +3096,7 @@ mod tests {
         .strict([s.project.clone()], Some(s.tmp.clone()));
         let unmet = read_scope::unmet(
             &policy.read,
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
             std::env::var_os("PATH").as_deref(),
         );
         if !unmet.is_empty() {
@@ -3315,7 +3342,7 @@ mod tests {
             Path::new("/work/project"),
             &[],
             &policy,
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
         );
         let _ = std::fs::remove_file(&socket);
 
@@ -3350,7 +3377,7 @@ mod tests {
             Path::new("/work/project"),
             &[],
             &policy,
-            &read_scope::UserDirs::of(&[]),
+            &read_scope::UserDirs::of(INHERITED),
         );
         let rule = format!(
             "(deny file-read* (literal \"{}\"))",
@@ -3678,6 +3705,77 @@ mod tests {
         assert!(
             !creds.status.success() && !String::from_utf8_lossy(&creds.stdout).contains("s3cret"),
             "{creds:?}"
+        );
+    }
+
+    /// The strict profile's minimal environment does not pass the daemon's
+    /// `XDG_CONFIG_HOME` on, so the command's git reads `~/.config/git` and
+    /// the probe looks there too, not at a configuration git never opens.
+    /// Run again in a child whose own environment sets the variable.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_strict_profile_ignores_a_daemon_xdg_config_home_its_command_does_not_inherit() {
+        const ROOT: &str = "AGIX_TEST_STRICT_XDG_ROOT";
+        if !a_backend_runs() {
+            return;
+        }
+        let Some(root) = std::env::var_os(ROOT).map(PathBuf::from) else {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().canonicalize().unwrap();
+            write_file(
+                &root.join("xdg/git/config"),
+                "[include]\n\tpath = ../../dotfiles/gitconfig\n",
+            );
+            write_file(&root.join("dotfiles/gitconfig"), "");
+            write_file(
+                &root.join("home/.config/git/config"),
+                "[user]\n\tname = FromDotConfig\n",
+            );
+            std::fs::create_dir_all(root.join("project")).unwrap();
+            let test = format!(
+                "{}::the_strict_profile_ignores_a_daemon_xdg_config_home_its_command_does_not_inherit",
+                module_path!().split_once("::").unwrap().1
+            );
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test.as_str(), "--exact", "--test-threads=1"])
+                .env(ROOT, &root)
+                .env("XDG_CONFIG_HOME", root.join("xdg"))
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        };
+        let home = root.join("home");
+        let project = root.join("project");
+        let mut spec =
+            ProcessSpec::new("bash", &project).args(["-c", "git config --global --get user.name"]);
+        spec.env.extend([
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+            ("HOME".to_string(), home.display().to_string()),
+        ]);
+
+        let confined = PlatformSandbox.confine(
+            spec,
+            &SandboxPolicy::default().strict([project.clone()], None),
+        );
+        assert_eq!(confined.enforcement, Enforcement::Full, "{confined:?}");
+        let ran = std::process::Command::new(&confined.spec.program)
+            .args(&confined.spec.args)
+            .env_clear()
+            .envs(confined.spec.env.iter().map(|(k, v)| (k, v)))
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&ran.stdout).trim(),
+            "FromDotConfig",
+            "{ran:?}"
         );
     }
 

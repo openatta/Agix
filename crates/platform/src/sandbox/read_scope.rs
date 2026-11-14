@@ -10,8 +10,8 @@
 //! The tables were measured on macOS with `ls`, `cat`, git directly and
 //! through the xcrun shim; the Linux one is the design's, not yet measured.
 
-use super::resolve_path;
-use base::interface::exec::ReadScope;
+use super::{resolve_path, CommandEnv};
+use base::interface::exec::{EnvScope, ReadScope};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
@@ -73,8 +73,8 @@ fn selected_developer_dir() -> Option<PathBuf> {
 }
 
 /// The directories a command's own git looks in for the user's
-/// configuration, from the command's environment, else the daemon's: the
-/// profile and the strict-profile probe both read them from here.
+/// configuration, as the command's environment has them: the profile and the
+/// strict-profile probe both read them from here.
 #[derive(Debug, Clone, Default)]
 pub(super) struct UserDirs {
     pub(super) home: Option<PathBuf>,
@@ -82,7 +82,7 @@ pub(super) struct UserDirs {
 }
 
 impl UserDirs {
-    pub(super) fn of(env: &[(String, String)]) -> Self {
+    pub(super) fn of(env: CommandEnv<'_>) -> Self {
         Self {
             home: var(env, "HOME").map(PathBuf::from),
             xdg_config_home: var(env, "XDG_CONFIG_HOME")
@@ -92,13 +92,19 @@ impl UserDirs {
     }
 }
 
-/// `name` as the command's `env` sets it, else as the daemon's environment.
-pub(super) fn var(env: &[(String, String)], name: &str) -> Option<OsString> {
-    env.iter()
+/// `name` as the command's spec sets it, else as the daemon's environment
+/// when the command inherits it from there.
+pub(super) fn var(env: CommandEnv<'_>, name: &str) -> Option<OsString> {
+    env.set
+        .iter()
         .rev()
         .find(|(k, _)| k == name)
         .map(|(_, v)| OsString::from(v))
-        .or_else(|| std::env::var_os(name))
+        .or_else(|| {
+            let inherited =
+                env.scope == EnvScope::Session || EnvScope::keeps_under_minimal(OsStr::new(name));
+            inherited.then(|| std::env::var_os(name)).flatten()
+        })
 }
 
 /// Everything `ReadScope::Only(scope)` lets a command read, resolved.
