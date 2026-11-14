@@ -1045,9 +1045,9 @@ async fn audit2_a_background_agent_stopped_by_an_interrupt_ends_stopped() -> any
     Ok(())
 }
 
-/// `session.setPrompt` rebuilds an idle session. When the old engine is slow
-/// to stop the rebuild fails, but the session left behind still serves the
-/// next turn rather than swallowing it.
+/// `session.setPrompt` rebuilds an idle session. A `SessionEnd` hook that takes
+/// its time runs on in the background rather than holding the old engine up:
+/// the rebuild goes through and the next turn is served.
 #[tokio::test(flavor = "multi_thread")]
 async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_next_turn(
 ) -> anyhow::Result<()> {
@@ -1096,14 +1096,7 @@ async fn audit2_a_rebuild_whose_old_engine_is_slow_to_stop_does_not_swallow_the_
         );
     };
     let events = events??;
-    assert_eq!(
-        set.error
-            .as_ref()
-            .and_then(|e| e.data.as_ref())
-            .map(|data| data["reason"].clone()),
-        Some(json!("previous_engine")),
-        "setPrompt answered {set_answer:?}"
-    );
+    assert!(set.error.is_none(), "setPrompt answered {set_answer:?}");
     let history = run
         .client
         .call(

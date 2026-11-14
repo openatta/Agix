@@ -667,11 +667,11 @@ async fn an_interrupt_ends_a_turn_whose_compaction_summary_has_not_come_back() -
     Ok(())
 }
 
-/// A closed session whose engine is still stuck in a `SessionStart` hook is
-/// not resumed on a second engine: the two would write one transcript. Once
-/// the hook lets go, the resume goes through.
+/// A `SessionStart` hook that has not returned does not hold the engine once
+/// the session is closed: the hook runs on in the background, the engine
+/// stops, and the session resumes on a new one straight away.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_session_whose_engine_has_not_stopped_is_not_resumed_on_another() -> anyhow::Result<()> {
+async fn a_closed_session_resumes_while_its_session_start_hook_still_runs() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
     let scratch = tempfile::tempdir()?;
     let (started, release) = (
@@ -709,25 +709,6 @@ async fn a_session_whose_engine_has_not_stopped_is_not_resumed_on_another() -> a
 
     let closed = run.client.session_close(&session).await?;
     anyhow::ensure!(closed.error.is_none(), "{closed:?}");
-    let refused = run
-        .client
-        .call("session.resume", json!({ "session_id": session }))
-        .await?;
-    let error = refused.error.as_ref().map(|e| (e.code, e.data.clone()));
-    assert_eq!(
-        error,
-        Some((
-            -32015,
-            Some(json!({
-                "session_id": session,
-                "reason": "previous_engine",
-                "current_turn_id": null
-            }))
-        )),
-        "{refused:?}"
-    );
-
-    std::fs::write(&release, "")?;
     let resumed = run
         .client
         .call("session.resume", json!({ "session_id": session }))
@@ -737,6 +718,7 @@ async fn a_session_whose_engine_has_not_stopped_is_not_resumed_on_another() -> a
         Some(json!("resumed")),
         "{resumed:?}"
     );
+    std::fs::write(&release, "")?;
     run.finish().await;
     Ok(())
 }
