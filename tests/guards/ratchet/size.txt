@@ -51,8 +51,7 @@ fn    crates/history/src/transcript.rs                            apply_entry_to
 fn    crates/hooks/src/catalog.rs                                 HookEvent::spec                        179
 fn    crates/hooks/src/runner/executor.rs                         HookRunner::exec_command               93
 fn    crates/hooks/src/runner/executor.rs                         project_supplied                       90
-fn    crates/hooks/src/runner/mod.rs                              HookRunner::check_rewakes              81
-fn    crates/hooks/src/runner/mod.rs                              HookRunner::run                        105
+fn    crates/hooks/src/runner/rewake.rs                           HookRunner::check_rewakes              81
 fn    crates/mcp/src/config.rs                                    McpServerConfig::confined_to_own_env   90
 fn    crates/mcp/src/manager.rs                                   McpManager::connect_all_within         105
 fn    crates/mcp/src/oauth/mod.rs                                 McpAuth::transport_manager             88
