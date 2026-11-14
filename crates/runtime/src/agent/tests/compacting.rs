@@ -268,6 +268,107 @@ async fn compacting_after_a_size_refusal_is_a_full_compaction() {
     assert_eq!(compact_frames(&mut rx), 1);
 }
 
+/// Refuses every call as rate-limited.
+struct RateLimited;
+
+#[async_trait::async_trait]
+impl Model for RateLimited {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        _messages: Vec<base::interface::model::ModelMessage>,
+        _params: base::interface::model::StreamParams,
+        _cancel: CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        Err(base::interface::model::ModelError::new(
+            base::interface::model::ModelErrorKind::RateLimited,
+            "slow down",
+        ))
+    }
+}
+
+/// When the summary a size refusal's compaction needs fails and the
+/// cascade cannot stand in for it, the turn fails as the summary did —
+/// here rate-limited, which a host may send again — and still says the
+/// request had been refused for size.
+#[tokio::test]
+async fn a_failed_summary_after_a_size_refusal_reports_its_own_kind() {
+    struct WantsASummary;
+
+    #[async_trait::async_trait]
+    impl compaction::compact::Compactor for WantsASummary {
+        async fn compact(
+            &self,
+            messages: Vec<base::interface::model::ModelMessage>,
+            _max_tokens: usize,
+            _keep_rounds: usize,
+        ) -> Result<
+            (
+                Vec<base::interface::model::ModelMessage>,
+                compaction::compact::CompactResult,
+            ),
+            compaction::compact::CompactError,
+        > {
+            let n = messages.len();
+            Ok((
+                messages,
+                compaction::compact::CompactResult {
+                    strategy: compaction::compact::CompactStrategy::NoOp,
+                    messages_before: n,
+                    messages_after: n,
+                    tokens_before: 0,
+                    tokens_after: 0,
+                    projection: None,
+                },
+            ))
+        }
+
+        fn wants_llm_summary(
+            &self,
+            _messages: &[base::interface::model::ModelMessage],
+            _max_tokens: usize,
+            _keep_rounds: usize,
+        ) -> bool {
+            true
+        }
+    }
+
+    let (mut agent, _rx, _tx) = Builder::new()
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
+        .model(Arc::new(RateLimited))
+        .compactor(Arc::new(WantsASummary))
+        .settings(Arc::new(test_settings()))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    push_rounds(&mut agent, 20);
+    let error = agent
+        .compact_for_retry(
+            &base::interface::model::ModelError::new(
+                base::interface::model::ModelErrorKind::ContextTooLong,
+                "prompt is too long",
+            ),
+            &CancellationToken::new(),
+        )
+        .await
+        .expect_err("nothing could be compacted");
+    let failure = error.failure();
+    assert_eq!(
+        failure.kind,
+        base::event::FailureKind::RateLimited,
+        "{failure}"
+    );
+    assert!(failure.retryable);
+    assert!(failure.message.contains("slow down"), "{failure}");
+    assert!(failure.message.contains("prompt is too long"), "{failure}");
+}
+
 /// Automatic compaction aims the conversation at what the threshold
 /// leaves beside the per-request overhead, so the request that follows
 /// is under the threshold rather than over it again by the overhead.

@@ -95,6 +95,9 @@ pub(crate) enum NotCompacted {
     NothingToDrop,
     /// The compactor failed.
     Failed(String),
+    /// The LLM summary failed and the compactor's cascade could not stand
+    /// in for it.
+    SummaryFailed(base::interface::model::ModelError),
     /// The turn was interrupted while the summary was being written.
     Cancelled,
 }
@@ -105,6 +108,7 @@ impl std::fmt::Display for NotCompacted {
             Self::Declined => f.write_str("was declined by a PreCompact hook"),
             Self::NothingToDrop => f.write_str("saved nothing"),
             Self::Failed(e) => write!(f, "failed: {e}"),
+            Self::SummaryFailed(e) => write!(f, "failed: summarization failed: {e}"),
             Self::Cancelled => f.write_str("was interrupted"),
         }
     }

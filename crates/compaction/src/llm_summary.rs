@@ -232,7 +232,7 @@ impl LlmSummarizer {
                 .model
                 .stream(vec![], vec![], request, params, call_cancel.clone())
                 .await
-                .map_err(|e| CompactError::Internal(format!("summarization call failed: {e}")))?;
+                .map_err(CompactError::Model)?;
             let mut out = String::new();
             while let Some(event) = stream.next().await {
                 match event {
@@ -240,11 +240,7 @@ impl LlmSummarizer {
                     // Thinking is not part of the summary; other events carry
                     // nothing we need here.
                     Ok(_) => {}
-                    Err(e) => {
-                        return Err(CompactError::Internal(format!(
-                            "summarization stream failed: {e}"
-                        )))
-                    }
+                    Err(e) => return Err(CompactError::Model(e)),
                 }
             }
             Ok(out)
@@ -255,10 +251,12 @@ impl LlmSummarizer {
                 Ok(result) => result?,
                 Err(_) => {
                     call_cancel.cancel();
-                    return Err(CompactError::Internal(format!(
-                        "summarization timed out after {:?}",
-                        self.timeout
-                    )));
+                    return Err(CompactError::Model(
+                        base::interface::model::ModelError::timeout(format!(
+                            "summarization timed out after {:?}",
+                            self.timeout
+                        )),
+                    ));
                 }
             },
             _ = cancel.cancelled() => return Err(CompactError::Cancelled),
@@ -743,7 +741,7 @@ mod tests {
         let err = full_compact(&summarizer, msgs.clone(), 500, 2, &CancellationToken::new())
             .await
             .expect_err("a failing model must not produce a compaction");
-        assert!(matches!(err, CompactError::Internal(_)), "got {err:?}");
+        assert!(matches!(err, CompactError::Model(_)), "got {err:?}");
 
         // And the caller's fallback still has the full conversation to work
         // with — `full_compact` took `messages` by value but the caller keeps
@@ -764,10 +762,11 @@ mod tests {
         let err = full_compact(&summarizer, msgs, 500, 2, &CancellationToken::new())
             .await
             .expect_err("must time out");
-        let CompactError::Internal(msg) = &err else {
-            panic!("expected Internal, got {err:?}");
+        let CompactError::Model(error) = &err else {
+            panic!("expected Model, got {err:?}");
         };
-        assert!(msg.contains("timed out"), "got {msg}");
+        assert_eq!(error.kind, base::interface::model::ModelErrorKind::Timeout);
+        assert!(error.message.contains("timed out"), "got {error}");
     }
 
     #[tokio::test]

@@ -87,6 +87,9 @@ pub enum CompactError {
     NotApplicable(String),
     #[error("{0}")]
     Internal(String),
+    /// The model asked for a summary failed, timed out included.
+    #[error("summarization failed: {0}")]
+    Model(base::interface::model::ModelError),
     /// The turn it ran for was interrupted; nothing was changed.
     #[error("cancelled")]
     Cancelled,

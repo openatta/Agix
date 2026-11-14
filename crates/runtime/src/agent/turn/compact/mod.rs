@@ -99,6 +99,14 @@ struct PendingReactive {
     took: std::time::Duration,
 }
 
+/// What asking for an LLM summary came to, short of an interrupt.
+enum SummaryAttempt {
+    Written(Vec<ModelMessage>, compaction::compact::CompactResult),
+    /// Not wanted, no summarizer, or nothing the summary could have told.
+    Skipped,
+    ModelFailed(base::interface::model::ModelError),
+}
+
 /// The transcript and the flags a compaction step changes, as they were
 /// before it.
 struct Checkpoint {
@@ -143,7 +151,9 @@ impl Agent {
         let reactive = self.reactive_compact(&compactor, &budget);
         let abandoned = match self.compact_to_budget(&compactor, &budget, cancel).await {
             Ok(()) => false,
-            Err(NotCompacted::Cancelled | NotCompacted::Failed(_)) => true,
+            Err(
+                NotCompacted::Cancelled | NotCompacted::Failed(_) | NotCompacted::SummaryFailed(_),
+            ) => true,
             Err(NotCompacted::Declined | NotCompacted::NothingToDrop) => cancel.is_cancelled(),
         };
         if abandoned {
@@ -414,15 +424,29 @@ impl Agent {
         let pre_compact = self.session.messages().to_vec();
 
         let compact_start = std::time::Instant::now();
-        let llm_outcome = self
+        let (mut compacted, result) = match self
             .try_llm_summary(&pre_compact, target, keep, trigger, cancel)
-            .await?;
-        let (mut compacted, result) = match llm_outcome {
-            Some(ok) => ok,
-            None => {
+            .await?
+        {
+            SummaryAttempt::Written(compacted, result) => (compacted, result),
+            SummaryAttempt::Skipped => {
                 self.cascade_compact(&pre_compact, target, keep, compact_start)
                     .await?
             }
+            // The cascade still gets its turn; when it cannot help either, the
+            // summary's failure is why nothing was compacted.
+            SummaryAttempt::ModelFailed(error) => match self
+                .cascade_compact(&pre_compact, target, keep, compact_start)
+                .await
+            {
+                Ok((_, result))
+                    if result.strategy == compaction::compact::CompactStrategy::NoOp =>
+                {
+                    return Err(NotCompacted::SummaryFailed(error))
+                }
+                Ok(ok) => ok,
+                Err(_) => return Err(NotCompacted::SummaryFailed(error)),
+            },
         };
         if result.strategy == compaction::compact::CompactStrategy::NoOp {
             return Err(NotCompacted::NothingToDrop);
@@ -476,7 +500,7 @@ impl Agent {
         keep: usize,
         trigger: CompactTrigger,
         cancel: &CancellationToken,
-    ) -> Result<Option<(Vec<ModelMessage>, compaction::compact::CompactResult)>, NotCompacted> {
+    ) -> Result<SummaryAttempt, NotCompacted> {
         // Layer 0: FullCompact — LLM summary, before anything is dropped.
         //
         // Placed ahead of the DefaultCompactor cascade because every layer
@@ -507,9 +531,9 @@ impl Agent {
                 )
                 .await
                 {
-                    Ok(ok) => {
+                    Ok((compacted, result)) => {
                         tracing::info!("compaction: LLM summary produced (FullCompact)");
-                        Some(ok)
+                        SummaryAttempt::Written(compacted, result)
                     }
                     // An interrupt can also surface as the summary request's
                     // own error, depending on where the stream was when it hit.
@@ -525,11 +549,16 @@ impl Agent {
                             error = %e,
                             "compaction: LLM summary unavailable — falling back to the non-LLM cascade"
                         );
-                        None
+                        match e {
+                            compaction::compact::CompactError::Model(error) => {
+                                SummaryAttempt::ModelFailed(error)
+                            }
+                            _ => SummaryAttempt::Skipped,
+                        }
                     }
                 }
             }
-            _ => None,
+            _ => SummaryAttempt::Skipped,
         })
     }
 
@@ -829,6 +858,15 @@ impl Agent {
             .await
         {
             Ok(_) | Err(NotCompacted::Cancelled) => Ok(()),
+            Err(NotCompacted::SummaryFailed(summary)) => {
+                let mut error = summary.clone();
+                error.message = format!(
+                    "compacting the conversation to retry failed, the summary did ({}); \
+                     the request had been refused for size: {refusal}",
+                    summary.message
+                );
+                Err(TurnError::Model(error, false))
+            }
             Err(why) => {
                 let mut error = refusal.clone();
                 error.message = match error.message.is_empty() {
