@@ -8,7 +8,8 @@ use crate::session_pool::*;
 /// What one attempt at the turn slot came to.
 enum Claim {
     Taken(TurnTicket, InputSender),
-    Busy(Busy, Arc<SessionCore>),
+    Busy(Busy),
+    Steered(Busy, Arc<SessionCore>),
     Skipped,
 }
 
@@ -180,7 +181,23 @@ impl SessionPool {
                         return Claim::Skipped;
                     }
                     if let Some(busy) = live.turn.busy(&sid) {
-                        return Claim::Busy(busy, live.core.clone());
+                        // Offered under the table lock, and only to an engine
+                        // not yet told to stop: a close takes the session out
+                        // under this lock and then stops its engine, and a
+                        // message offered past either is lost with the turn.
+                        let steer = matches!(on_busy, OnBusy::Steer)
+                            && !steer_tried
+                            && attachments.is_empty()
+                            && busy.current_turn_id.is_some()
+                            && !live.engine.cancel.is_cancelled();
+                        if steer {
+                            steer_tried = true;
+                            let offered = live.core.steer().offer(turn_id.clone(), message.clone());
+                            if offered == runtime::steering::SteerAck::Accepted {
+                                return Claim::Steered(busy, live.core.clone());
+                            }
+                        }
+                        return Claim::Busy(busy);
                     }
                     let input_tx = live.engine.input_tx.clone();
                     let running = RunningTurn::new(turn_id.clone(), initiator, initiator_id);
@@ -208,7 +225,7 @@ impl SessionPool {
                 })
                 .await
                 .ok_or_else(|| PoolError::session_not_found(&sid))?;
-            let (busy, core) = match claim {
+            let busy = match claim {
                 Claim::Taken(ticket, input_tx) => break (ticket, input_tx),
                 Claim::Skipped => {
                     return Ok(TurnOutcome::Skipped {
@@ -216,30 +233,20 @@ impl SessionPool {
                         turn_id,
                     })
                 }
-                Claim::Busy(busy, core) => (busy, core),
-            };
-            match on_busy {
-                OnBusy::Reject => return Err(PoolError::SessionBusy(busy)),
-                OnBusy::Steer
-                    if !steer_tried && attachments.is_empty() && busy.current_turn_id.is_some() =>
-                {
-                    steer_tried = true;
-                    let offered = core.steer().offer(turn_id.clone(), message.clone());
-                    if offered == runtime::steering::SteerAck::Accepted {
-                        if let Some(watcher) = &watcher {
-                            core.hub().subscribe(watcher.clone());
-                        }
-                        return Ok(TurnOutcome::Steered {
-                            session_id: sid,
-                            turn_id,
-                            into_turn_id: busy.current_turn_id,
-                        });
+                Claim::Steered(busy, core) => {
+                    if let Some(watcher) = &watcher {
+                        core.hub().subscribe(watcher.clone());
                     }
-                    // The running turn is already past its last step: this
-                    // message waits for the next turn instead.
-                    continue;
+                    return Ok(TurnOutcome::Steered {
+                        session_id: sid,
+                        turn_id,
+                        into_turn_id: busy.current_turn_id,
+                    });
                 }
-                OnBusy::Steer | OnBusy::Queue => {}
+                Claim::Busy(busy) => busy,
+            };
+            if matches!(on_busy, OnBusy::Reject) {
+                return Err(PoolError::SessionBusy(busy));
             }
             // The timeout covers a session that was replaced or dropped while
             // we waited: its `idle` is never notified again.
