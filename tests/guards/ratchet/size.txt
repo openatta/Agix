@@ -10,7 +10,7 @@ file  crates/core/src/memory.rs                                   -             
 file  crates/core/src/settings.rs                                 -                                      1166
 file  crates/history/src/store.rs                                 -                                      1995
 file  crates/mcp/src/connect.rs                                   -                                      1328
-file  crates/mcp/src/manager.rs                                   -                                      1273
+file  crates/mcp/src/manager.rs                                   -                                      1293
 file  crates/mcp/src/oauth/mod.rs                                 -                                      1104
 file  crates/platform/src/sandbox.rs                              -                                      1506
 file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      861
@@ -38,7 +38,7 @@ fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::s
 fn    crates/assembly/src/session_pool/facade/turn.rs             SessionPool::run_turn                  179
 fn    crates/assembly/src/session_pool/parts/factory/mod.rs       EngineFactory::build                   97
 fn    crates/assembly/src/session_pool/parts/factory/mod.rs       models                                 82
-fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs   SessionPool::write_mcp_server          113
+fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs   SessionPool::write_mcp_server          120
 fn    crates/assembly/src/session_pool/parts/mcp_hub/status.rs    mcp_status_entries                     86
 fn    crates/compaction/src/budget.rs                             enforce_tool_result_budget             81
 fn    crates/compaction/src/llm_summary.rs                        LlmSummarizer::summarize               95
@@ -53,7 +53,7 @@ fn    crates/hooks/src/runner/executor.rs                         HookRunner::ex
 fn    crates/hooks/src/runner/executor.rs                         project_supplied                       90
 fn    crates/hooks/src/runner/rewake.rs                           HookRunner::check_rewakes              81
 fn    crates/mcp/src/config.rs                                    McpServerConfig::confined_to_own_env   90
-fn    crates/mcp/src/manager.rs                                   McpManager::connect_all_within         105
+fn    crates/mcp/src/manager.rs                                   McpManager::connect_all_within         106
 fn    crates/mcp/src/oauth/mod.rs                                 McpAuth::transport_manager             88
 fn    crates/mcp/src/oauth/start.rs                               McpAuth::start                         91
 fn    crates/mcp/src/oauth/unattended.rs                          McpAuth::exchange_enterprise_identity  87

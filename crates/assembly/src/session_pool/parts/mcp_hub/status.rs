@@ -65,7 +65,8 @@ impl From<mcp::oauth::AuthStatus> for api::McpAuthStatus {
 }
 
 /// `mcp.status`'s entries: the connected servers, those waiting for a
-/// sign-in, then the denied ones. Each carries its authorization state.
+/// sign-in, those that failed or whose configuration does not parse, then
+/// the denied ones. Each carries its authorization state.
 pub(in crate::session_pool) fn mcp_status_entries(
     manager: &McpManager,
 ) -> Vec<api::McpServerStatus> {
@@ -115,7 +116,7 @@ pub(in crate::session_pool) fn mcp_status_entries(
             auth(&c.name),
         )
     });
-    let failed = manager.failed().iter().map(|f| {
+    let failed = manager.failed().iter().chain(manager.invalid()).map(|f| {
         entry(
             &f.name,
             f.transport.to_string(),

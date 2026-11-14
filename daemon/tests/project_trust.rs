@@ -776,6 +776,45 @@ async fn a_projects_server_refused_for_the_enterprise_identity_is_listed_as_deni
     );
 }
 
+/// A server whose configuration does not parse is not started, and
+/// `mcp.status` says why instead of leaving it out.
+#[cfg(all(unix, feature = "mcp"))]
+#[tokio::test]
+async fn a_server_with_an_invalid_config_is_listed_as_failed_with_the_reason() {
+    let daemon = Daemon::start(
+        json!({"mcp_servers": {"bad": {"type": "carrier_pigeon"}}}),
+        json!({}),
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let bad = loop {
+        let status = daemon.ok("mcp.status", json!({})).await;
+        let found = status["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "bad")
+            .cloned();
+        if let Some(bad) = found {
+            break bad;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "bad never listed: {status}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(bad["state"], "failed", "{bad}");
+    assert_eq!(bad["tool_count"], 0, "{bad}");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid config:"),
+        "{bad}"
+    );
+}
+
 #[cfg(all(unix, feature = "mcp"))]
 #[tokio::test]
 async fn the_users_mcp_servers_find_nothing_inside_an_untrusted_project() {

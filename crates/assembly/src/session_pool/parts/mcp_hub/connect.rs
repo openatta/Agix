@@ -132,7 +132,13 @@ impl SessionPool {
             let refusal = match serde_json::from_value::<mcp::config::McpServerConfig>(v.clone()) {
                 Err(e) => {
                     tracing::warn!(server = %name, error = %e, "invalid mcp_servers config, skipping");
-                    format!("invalid config: {e}")
+                    let error = format!("invalid config: {e}");
+                    admitted.invalid.push(mcp::manager::FailedServer {
+                        name: name.clone(),
+                        transport: "unknown",
+                        error: error.clone(),
+                    });
+                    error
                 }
                 Ok(cfg) => {
                     let admitted_cfg = if projects_own.contains(name) {
@@ -234,6 +240,7 @@ impl SessionPool {
         let AdmittedMcp {
             servers: admitted,
             denied,
+            invalid,
             ..
         } = self.admit_mcp_servers(settings);
         let pool = self.this.upgrade();
@@ -248,7 +255,7 @@ impl SessionPool {
         // A server may have announced a change while this manager was being
         // built, after its list was read.
         manager.refresh_if_changed().await;
-        let manager = Arc::new(manager.with_denied(denied));
+        let manager = Arc::new(manager.with_denied(denied).with_invalid(invalid));
         update.set(manager.clone());
         drop(update);
         if let (Some(pool), Some(late)) = (pool, late) {
@@ -329,6 +336,7 @@ impl SessionPool {
         let AdmittedMcp {
             servers: admitted,
             denied,
+            invalid,
             refused,
         } = self.admit_mcp_servers(settings);
         let requested: std::collections::HashSet<String> = admitted.keys().cloned().collect();
@@ -341,7 +349,7 @@ impl SessionPool {
             wait,
         )
         .await;
-        let manager = manager.with_denied(denied);
+        let manager = manager.with_denied(denied).with_invalid(invalid);
         let statuses = manager.server_statuses();
         let connected: Vec<String> = statuses.iter().map(|s| s.name.clone()).collect();
         let mut connecting: Vec<String> = manager
@@ -521,11 +529,18 @@ impl SessionPool {
                 .filter(|d| d.name != name)
                 .cloned()
                 .collect();
+            let still_invalid = current
+                .invalid()
+                .iter()
+                .filter(|f| f.name != name)
+                .cloned()
+                .collect();
             let mut updated = current
                 .share()
                 .with_subprocess_env(env.clone())
                 .with_auth(Some(self.mcp.auth.clone()))
-                .with_denied(still_denied);
+                .with_denied(still_denied)
+                .with_invalid(still_invalid);
             updated.refresh_tools().await;
             updated.add_server(name, cfg).await;
             let statuses = updated.server_statuses();

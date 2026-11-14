@@ -2370,6 +2370,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`mcp.status` 列出项目自己声明、因用了项目不能用的东西而没启动的 server**(`"grant": "enterprise"`、
   `client_secret_env`、`private_key_jwt` 的 `key_env` / `key_file`),`state` 为 `denied`,`error` 说明原因。
   以前这样的 server 在 `mcp.status` 里不出现。
+- **`mcp.status` 列出配置不合法、没有启动的 server**,`state` 为 `failed`,`transport` 为 `unknown`,
+  `error` 以 `invalid config:` 开头。以前它在 `mcp.status` 里不出现,只有 `mcp_connect_failed` 事件。
 
 ### 嵌入方
 

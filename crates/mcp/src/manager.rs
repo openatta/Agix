@@ -97,6 +97,8 @@ pub struct McpManager {
     configs: HashMap<String, McpServerConfig>,
     /// Configured servers the MCP policy kept from connecting.
     denied: Vec<DeniedServer>,
+    /// Configured servers whose configuration does not parse.
+    invalid: Vec<FailedServer>,
     /// Servers waiting for a person to sign in; they contribute no tools.
     pending: Vec<PendingServer>,
     /// Servers still connecting when this manager was handed out.
@@ -123,6 +125,7 @@ impl McpManager {
             auth: None,
             configs: HashMap::new(),
             denied: Vec::new(),
+            invalid: Vec::new(),
             pending: Vec::new(),
             connecting: Vec::new(),
             failed: Vec::new(),
@@ -235,6 +238,7 @@ impl McpManager {
             auth: auth.clone(),
             configs: servers.clone(),
             denied: Vec::new(),
+            invalid: Vec::new(),
             pending: Vec::new(),
             connecting,
             failed: sharing,
@@ -572,6 +576,7 @@ impl McpManager {
             auth: self.auth.clone(),
             configs: self.configs.clone(),
             denied: self.denied.clone(),
+            invalid: self.invalid.clone(),
             pending: self.pending.clone(),
             connecting: self.connecting.clone(),
             failed: self.failed.clone(),
@@ -625,6 +630,12 @@ impl McpManager {
                 .denied
                 .iter()
                 .filter(|d| keep(&d.name))
+                .cloned()
+                .collect(),
+            invalid: self
+                .invalid
+                .iter()
+                .filter(|f| keep(&f.name))
                 .cloned()
                 .collect(),
             pending: self
@@ -690,6 +701,15 @@ impl McpManager {
     pub fn with_denied(mut self, denied: Vec<DeniedServer>) -> Self {
         self.denied = denied;
         self
+    }
+
+    pub fn with_invalid(mut self, invalid: Vec<FailedServer>) -> Self {
+        self.invalid = invalid;
+        self
+    }
+
+    pub fn invalid(&self) -> &[FailedServer] {
+        &self.invalid
     }
 
     pub fn denied(&self) -> &[DeniedServer] {

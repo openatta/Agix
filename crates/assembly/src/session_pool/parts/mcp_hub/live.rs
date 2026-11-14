@@ -154,11 +154,13 @@ impl McpHub {
 /// What `SessionPool::admit_mcp_servers` lets through, and what it does not:
 /// `refused` names every entry not connected (invalid or denied), `denied`
 /// those that parse (the policy refuses them, or a project may not declare
-/// them as written), kept for `mcp.status`.
+/// them as written), `invalid` those that do not; the last two are kept for
+/// `mcp.status`.
 #[derive(Default)]
 pub(in crate::session_pool) struct AdmittedMcp {
     pub(in crate::session_pool) servers: HashMap<String, mcp::config::McpServerConfig>,
     pub(in crate::session_pool) denied: Vec<mcp::manager::DeniedServer>,
+    pub(in crate::session_pool) invalid: Vec<mcp::manager::FailedServer>,
     pub(in crate::session_pool) refused: Vec<String>,
 }
 
