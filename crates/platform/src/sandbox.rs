@@ -1,16 +1,40 @@
-//! The platform sandbox backends: macOS `sandbox-exec` and Linux `bubblewrap`.
+//! The platform sandbox backends: macOS `sandbox-exec` and Linux `bubblewrap`,
+//! behind `base::interface::exec::Sandbox`. A backend turns the command someone
+//! meant to run into the command that actually runs, for a [`SandboxPolicy`],
+//! and reports through `Enforcement` how much of the policy it could deliver;
+//! it never decides whether to confine (the permission policy and
+//! `sandbox.require_enforcement` do).
+//!
+//! The policy a command is confined by follows from why it was let through
+//! (`ExecProfile`, chosen in `tools::bash::sandbox`):
+//!
+//! - **Session**: the session's own policy. The working directory and the
+//!   policy's `additional_writable` are writable, everything else is
+//!   read-only, and everything is readable but the credentials; the network is
+//!   as `network_mode` says.
+//! - **Unattended**: the session's policy plus `deny_ipc_escapes`.
+//! - **Strict**: for a command let through on its own word
+//!   (`SandboxPolicy::strict`). Network denied; writable only `additional_writable`
+//!   (the session's `TMPDIR`, `only_additional_writable`); readable only the
+//!   policy's `read` roots plus a table of system directories and the user's git
+//!   configuration (`ReadScope::Only`, `read_scope`), anywhere else a command
+//!   sees names and metadata but no contents; the environment `EnvScope::Minimal`,
+//!   which the backend only marks on the confined spec and the process provider
+//!   applies.
 //!
 //! - **macOS**: `sandbox-exec -p <profile> <program> <args…>`. The profile is
 //!   TinyScheme denying writes outside the allowed subtrees; exec is not
-//!   restricted. Network defaults to open; `DenyAll` / `Allowlist` both use
+//!   restricted. Under `ReadScope::Only` it denies `file-read*` and allows it back
+//!   under each root. Network defaults to open; `DenyAll` / `Allowlist` both use
 //!   `(deny network*)`. A profile names a remote host only as `*` or
 //!   `localhost`, so the allowlist re-allows localhost when it names it and
 //!   no domain at all; the domains it names are reported unmet through
 //!   `Enforcement`, as on Linux. DNS goes through `mDNSResponder` IPC, which
 //!   `network*` does not cover, so name resolution keeps working under both
 //!   restricted modes.
-//! - **Linux**: `bwrap --ro-bind / / --bind <writable> <writable> … <program>`.
-//!   No bwrap on PATH means no constraint, reported as such. `DenyAll` uses
+//! - **Linux**: `bwrap --ro-bind / / --bind <writable> <writable> … <program>`;
+//!   under `ReadScope::Only` the whole-filesystem bind is replaced by one
+//!   read-only bind per root. No bwrap on PATH means no constraint, reported as such. `DenyAll` uses
 //!   `--unshare-net`; bwrap has no domain-level filter, so `Allowlist`
 //!   degrades to the same whole-network cut rather than silently opening up —
 //!   failure goes toward the safer side, and says so through `Enforcement`.

@@ -271,10 +271,12 @@ daemon 按**单轮**如实上报,不做跨轮/跨会话聚合。
 ### 3.6 项目信任
 
 一个项目自己的配置(`<项目>/.agix/` 下的设置、agent 类型、hook 脚本,`.agents/skills/`)
-是仓库内容。**没被信任的项目按插件级信任处理**:它的设置只能收紧,不能放宽;它的
-`hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 命令的 `PATH`;
+是仓库内容。**没被信任的项目按插件级信任处理**:它的设置只能收紧,不能放宽,而且是白名单——
+项目层里没有登记的设置键一律不生效,登记了的要么照常、要么只在不比下面几层更宽时保留、要么整个不生效;
+它的 `hooks_config`、`mcp_servers`、`scripts` 不生效,`.agix/hooks/` 不进 hook 命令的 `PATH`;
 决定对话、凭据、遥测送到哪里的键(`providers`、指向项目自己 provider 的 `default_provider` /
-`task_models`、`model.base_url`、`telemetry_url`、`recorder`)和 `instruction_file` 不生效;
+`task_models`、`model.base_url`、`model.api_type`、`telemetry_url`、`recorder`)、`instruction_file` 与
+整个替换系统提示词的 `prompt_override` 不生效,`telemetry_enabled: false`(关审计记录)也不生效;
 它的 agent 类型只能收紧、不替换同名类型;它的 skill 里的 `` !`cmd` `` 不执行,`allowed-tools`
 不授予任何东西。完整的表在 `ARCHITECTURE.md` §6.6。
 

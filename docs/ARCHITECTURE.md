@@ -590,15 +590,16 @@ release 构建记一条 error。
 场景的 `tools.allow` / `tools.deny`(也不问 `permits_tool`),`daemon/tests/wiring_coverage.rs`
 守着这一条。
 
-**Tool 接口是 11 个方法**:`name`、`description`、`spec`、`input_schema(style)`、`guide`、
-`call_traits(input)`、`permission_match_content`、`accept_edits_allows`、`check_permissions`、
-`validate_input`、`call`。与调用输入无关的事实写在 `spec()` 返回的 `ToolSpec` 里:`origin`
-(`Builtin` / `Mcp { server }` / `Plugin { name }`,来源不再靠 `source` 字符串的前缀)、
-`traits`(只读、并发安全、破坏性)、`permission`(匹配内容的种类、自判放行是否压过模式、是否退出
+**Tool 接口是 9 个方法**:`name`、`description`、`spec`、`input_schema(style)`、`guide`、
+`call_traits(input)`、`permission_facts`、`validate_input`、`call`。与调用输入无关的事实写在 `spec()`
+返回的 `ToolSpec` 里:`origin`(`Builtin` / `Mcp { server }` / `Plugin { name }`,来源不再靠 `source`
+字符串的前缀)、`traits`(只读、并发安全、破坏性)、`stance`(`ModeStance`:普通、协调类原语、退出
 plan 模式的那一次调用)、`short_description`、`callable_from_code`、`code_result`、`needs_dispatch`;
-看输入才知道的(`Bash` 与 `Monitor` 的只读)覆写 `call_traits`。权限闸、并发分批、`RunCode`、
-工具表、`ToolSearch`、遥测都读 `spec()` 与 `call_traits()`,没有第二套能力方法。`ToolSpec`、
-`CallTraits`、`ToolOrigin`、`ToolPermissionSpec` 是 `#[non_exhaustive]`,加字段不破坏实现方。
+看输入才知道的(`Bash` 与 `Monitor` 的只读)覆写 `call_traits`。**权限面只有 `permission_facts`**:
+工具陈述这次调用的匹配内容、够多远、是不是沙箱里的命令,缺省什么都不声称、于是要问(§6.1)。
+并发分批、`RunCode`、工具表、`ToolSearch`、遥测都读 `spec()` 与 `call_traits()`,权限层读
+`ToolFacts::gather` 汇集的那一份,没有第二套能力方法。`ToolSpec`、`CallTraits`、`ToolOrigin`、
+`PermissionFacts`、`ToolFacts` 是 `#[non_exhaustive]`,加字段不破坏实现方。
 工具没有"我是延迟的""我被谁包过"这样的属性,见下面第 3 条。
 
 三条硬约束:
@@ -811,10 +812,11 @@ Agent 的上下文,本来就该在一处。
    给它的就是这个值),继承来的环境里没有别的 server、provider 的密钥。一个 server 要用的密钥
    写进它自己的 `env`,不要靠继承。
 
-沙箱是**轻量写限制,不是安全隔离**。已知逃逸路径写在
-`crates/platform/src/sandbox.rs` 的模块头里,四条;第 3 条对引擎自己的
+沙箱是**轻量限制,不是安全隔离**。已知逃逸路径写在
+`crates/platform/src/sandbox.rs` 的模块头里,五条;第 3 条对引擎自己的
 git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git;第 4 条(让别的进程替命令
-在沙箱外做事)在无人值守会话里收口(见 §6.3)。它限住的写入范围见 §6.3。
+在沙箱外做事)在无人值守会话里收口;第 5 条(命令在项目里埋一个嵌套仓库)由命令结束后的检查
+隔离,后端本身挡不住(都见 §6.3)。它限住的写入与读取范围见 §6.3。
 
 ---
 
@@ -825,12 +827,100 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 权限分两半,会话以 `PermissionSet { policy, grants }` 持有:`PermissionPolicy::decide` 裁决一次调用,
 `PermissionGrants` 记下会话里给出的放行(`Turn` / `Session` / `Project` 三档;`Project` 写项目的
 `settings.local.json`)。内建的 `permissions::policy::Policy` 两个都实现,宿主只给策略时配
-`without_grants`。它按固定顺序走,分判定与应答两段:managed 层读不了即拒 → 未知工具要问 → 凭据
-(任何模式都拒)→ hook 拦截 → bypass(只看 managed 层)→ 工具自己拒绝 → 规则 → 免于 bypass 的
-路径 → 模式级硬拒绝 → 规则 ask → 自含的快速通道(写配置目录除外)→ 规则 allow → 模式分派;
-应答段再看无人值守时沙箱兜得住的命令、hook 的 approve、没人可问即拒。每个结论带它所在的
-`Stage` 或放行依据 `Basis`。判定段在 `crates/permissions/src/policy/judge.rs`,应答段在
-`policy/answer.rs`。
+`without_grants`(此时询问里不提供 `permit_always`)。**每次工具调用只在 `Policy` 里判一次**,
+没有第二套判断:工具自己不裁决,只陈述事实(下面"工具陈述事实"),`Policy` 拿事实、规则与模式
+得出结论;沙箱怎么关由结论带出的 profile 决定(§6.3),不由工具临时去探。
+
+**runtime 一侧只有一条流程**(`runtime/src/agent/turn/tool_exec.rs`、`tool_permission.rs`):
+`PreToolUse` hook(可改写输入)→ `validate_input`(只此一次)→ 用被判会话的上下文造出这次调用真正
+要用的 `ToolContext` → `ToolFacts::gather` → `Policy::decide` → 结论是 `Prompt` 就等回答(全仓
+只有这一个等待循环,子 Agent 也走这里)→ 记遥测(记的是最终结论)→ 把结论里的
+`approval { basis, profile }` 放进 `ctx.approval` 交给 `call` → `call` 返回后按 `obligations`
+收尾(§6.3 的嵌套仓库检查)→ 按 `Reach` 给外部内容加围栏(`Server`、`Host`、`Outside`)。
+
+**工具陈述事实。** `Tool` 的权限面只有 `permission_facts`,缺省 `PermissionFacts::unknown()`:
+什么都不声称,于是要问。事实有四项:`subject`(规则拿什么匹配:路径、命令行、URL 或不透明串)、
+`reach`(这次调用够多远)、`runs`(是不是一条在会话沙箱里跑的命令,前台还是后台)、`question`
+(要问人时的措辞)。`reach` 的取值:
+
+| `Reach` | 含义 | 谁这么说 |
+|---|---|---|
+| `SessionOnly` | 只动会话自己的状态:待办、任务、信箱、计划、目标 | `Sleep`、`Task*`、目标类工具、`ExitPlanMode`、`AskUserQuestion`、`ToolSearch` 等 |
+| `Delegates` | 起别的调用,每个子调用各自再判 | `Agent`、`Skill`、`RunCode` |
+| `Operator` | 只到运维配置的端点 | `WebSearch` |
+| `Inside` | 落在会话免询问的根之内(读按可读根,写按可写根) | 根内的 `Read` / `Grep` / `Glob` / `Write` / `Edit` / `NotebookEdit`;只读通道里的 `Bash`、根内只读的 `Monitor` |
+| `Outside` | 根之外的路径 | 根外的文件工具 |
+| `Host { listed }` | 模型选的主机;`listed` 表示 `sandbox.allowed_domains` 点了名 | `WebFetch`、`Ping` |
+| `Server` | MCP server 的工具;它对自己的说法(`readOnlyHint`)不算数 | MCP 适配器 |
+| `Persists(..)` | 留下一个之后会自己动作的东西 | durable `CronCreate` |
+| `Refused(..)` | 工具自己知道这个输入不该跑 | 文件工具的路径安全检查(§6.2) |
+| `Unknown` | 不知道 | 缺省;其余的 `Bash` / `Monitor` 命令 |
+
+`spec().stance`(`ModeStance`)是与输入无关的另一项:`Coordination` 是不碰文件、shell、网络的协调
+原语,自含的调用不受 `plan` 与 `dontAsk` 拦;`LeavesPlan` 是退出计划模式的那一次调用。
+
+**判定顺序。** `Policy::decide` 按下表走,分判定与应答两段:S0–S14 得出临时结论,S15–S18 只处理
+"要问"。S 的编号与 `policy/judge.rs`、`policy/answer.rs` 注释里的一致,表按执行顺序排,所以 S7
+排在 S4 / S5 之前。判定段在 `crates/permissions/src/policy/judge.rs`(入口 `decide` 在 `policy/mod.rs`),
+应答段在 `policy/answer.rs`,子 Agent 带来的规则在 `policy/delegated.rs`,宿主策略在 `policy/host.rs`。
+
+| 阶段 | 检查什么 | 结论 |
+|---|---|---|
+| S0 | managed 层读不了 | `Deny(ManagedUnreadable)`,所有调用,任何模式 |
+| S1 | 注册表里没有这个名字 | 先过 delegate 的类型级 deny 与宿主的 deny(命中即 `Deny`);否则 `Ask(UnknownTool)`,hook 的 approve 答得了;不再走 S2–S14 |
+| S2 | 凭据:调用里任何一个字符串(路径及其解析后的写法、shell 的词与赋值、`--flag=value` 的值)落在 `SensitivePaths` 里 | `Deny(Credentials)`,**任何模式**,bypass 也一样 |
+| S3 | `PreToolUse` hook 拦截 | `Deny(Hook)` |
+| S3b | delegate 的类型级 deny 规则命中(程序名读不出来的 shell 段同样拒) | `Deny(DelegateRule)`,任何模式 |
+| S7 | 命令(`runs`)在沙箱没关、`sandbox.require_enforcement` 打开时,会话沙箱兜不到 `Full` | `Deny(Confinement)`;**问人之前就拒**,bypass 也拦 |
+| S4 | 归一模式:读会话的实时模式;委派取 `PermissionMode::for_delegate`;managed 关了 bypass 就当 `default` | 不产出结论 |
+| S5 | `bypassPermissions`:只看 managed 层与宿主的 deny | managed deny → `Deny(ManagedRule)`;宿主 deny → `Deny`;managed 的 ask(或程序名读不出的 shell 段)→ `Ask(ManagedRule, PersonOnly)`;其余 `Permit(Bypass)`,跳到 S18 |
+| S6 | `reach` 是 `Refused` | `Deny(ToolRefusal)` |
+| S8 | 规则:各层(managed、用户、项目、local、会话授权)加宿主层,deny > ask > allow;程序名读不出的 shell 段按 ask;都没命中再查"永久允许"记下的原样内容 | 命中 deny → `Deny(Rule / ManagedRule)`;ask 记下待 S11(同一次调用 managed 也 ask 时标成 managed 的,`PersonOnly`);allow 记下待 S13 |
+| S9 | 免于 bypass 的路径(`/etc/passwd`、`rm -rf /` 一类) | `Deny(BypassImmune)` |
+| S10 | 模式硬拒:`plan` 拒非只读(`LeavesPlan` 除外);`dontAsk` 拒没有 allow 命中的;`Coordination` 且自含的调用两样都免 | `Deny(PlanMode / DontAsk)` |
+| S11 | S8 记下的 ask | `dontAsk` 下 `Deny`;否则 `Ask(Rule / ManagedRule)` |
+| S12 | 自含快速通道:`reach` 属于 `SessionOnly`、`Delegates`、`Operator`、`Inside`,且不是后台命令,不是"非只读并且指向引擎配置目录",也不是"strict profile 兜不住而宿主要求兜住"(`strict_unheld`) | `Permit(Contained)` |
+| S13 | S8 记下的 allow | `Permit(Rule)` |
+| S14 | 模式分派 | `acceptEdits` 且只读、非 `strict_unheld`、`reach` 属于 `SessionOnly`、`Inside`、`Host { listed: true }` → `Permit(AcceptEdits)`;`bubble` → `Ask`;其余 → `Ask(ModeDefault)`,写引擎配置的标 `Ask(Configuration)`,措辞取 `facts.question` |
+| S14b | delegate 自己的 `allow`(fork 的 skill 的 `allowed-tools`、它自己跑的 skill)盖住了 S14 的询问 | `Permit(Rule)`;只覆盖 `ModeDefault` / `Configuration` 的询问,deny、规则 ask、managed 的问都不受它影响 |
+| S15 | 无人值守的受限命令:`Ask(ModeDefault)`、无人值守、`runs`、`reach` 是 `Unknown` 或 `Inside`、会话沙箱 `Full`,并且(没开 `unattended_requires_network_policy` 或网络受限) | `Permit(UnattendedConfined)` |
+| S16 | hook 的 approve | 对 `HookOrPerson` 的询问 `Permit(HookApproved)`;managed 的问(`PersonOnly`)不吃它 |
+| S17 | 在场性 | 无人值守 → `Deny(Attendance)`,附"授权走设置"的提示;没有任何渠道能问人(`NoOneToAsk`:宿主没给权限也没接问人的通道、程序起的子 Agent、skill 的内联命令、`RunCode` 的子调用)→ `Deny(Attendance)`,附原因;有人值守 → `Prompt` |
+| S18 | 输出 | 每个 `Permit` 带 `basis`、`profile`、`obligations`(见下) |
+
+顺序上的几条理由,不能随手调换:
+
+- **hook 改写在先,权限判改写之后的输入。** hook 的 approve(S16)在在场性(S17)之前:它是预先给的回答,不需要有人在场。
+- **凭据在 bypass 之前**(S2 先于 S5);**沙箱兜不住的拒绝在 bypass 与问人之前**(S7),
+  免得人批准之后命令才被拒。
+- **自含快速通道在 deny、免于 bypass 的路径、模式硬拒、规则 ask 之后**(S12 在 S8–S11 之后),否则
+  这些检查碰不到 `Write` 和只读命令;写引擎配置的调用不走它,但挡不住用户自己写的 allow 规则(S13)。
+- **无人值守的沙箱放行只作用于 S14 产生的询问**(S15),所以规则 ask、配置目录确认、`dontAsk` 照样先起作用。
+- **managed 的询问只有人能答。** managed 层的 ask 标 `Answerable::PersonOnly`,S16 不放行它。
+
+每个结论带它所在的 `Stage`(拒绝与询问)或放行依据 `Basis`(`Rule`、`Contained`、`AcceptEdits`、
+`Bypass`、`HookApproved`、`UnattendedConfined`,以及人答了"允许"的 `Person`)。
+
+**放行带什么。** `Permit` 的 `profile`(`ExecProfile`)由依据、是不是命令、在不在场决定,只管命令
+怎么被关(§6.3),从不决定能不能跑:
+
+| 依据 | 有人值守 | 无人值守 |
+|---|---|---|
+| `Contained` / `AcceptEdits`,且是命令(只读通道里的 `Bash`、根内只读的 `Monitor`) | `Strict` | `Strict` |
+| `UnattendedConfined` | | `Unattended` |
+| `Rule` / `Person` / `HookApproved` / `Bypass`(以及不是命令的调用) | `Session` | `Unattended` |
+
+`obligations.scan_nested_repos` 在 `runs` 且 profile 不是 `Strict` 时为真(§6.3)。`ConfinementReport`
+(`ToolContext.confinement`:会话沙箱与 strict policy 各兜到什么程度、网络是否受限、
+`require_enforcement`、`unattended_requires_network_policy`)是会话建好时由执行层探一次的输入事实,
+`Policy` 只读它,从不自己探沙箱。
+
+**子 Agent 与宿主的策略。** 子 Agent 与团队成员的调用经 `DelegateRelay` 转给父会话的 `Policy`,请求里带
+`Delegate { session, mode, rules }`:`rules` 是类型级 deny 加委派自己的授权。问人由子会话自己的 runtime 发起
+(`ParentElicitation` 用父会话的事件通道),"永久允许"经 `ParentGrants` 记到父会话,`Turn` 档的授权留在
+委派本地、它的回合结束就清掉。宿主给的 `Assembly.host_policy` 是 S8 里的一层规则:它的 deny 在任何
+模式下都生效,它的 allow 只算一条 allow 规则,它的询问是一条 ask 规则。`Builder` 没给权限时用引擎自己的
+`Policy::from_settings`,模式取自设置,缺省 `default`;同时没有问人的渠道时按 S17 拒绝。
 
 **两份敏感路径名单。** 它们都登记在 `base::paths::sensitive`:凭据在 `CREDENTIALS` 表
 (`Scope` × `Secret`),引擎配置在 `ENGINE_CONFIG_*` 一组常量;`SensitivePaths` 按会话的状态目录
@@ -842,12 +932,12 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
   `mcp.local*.json`,明文的 `api_key` 与 MCP headers 在里面)和 `mcp/oauth/`,状态目录下
   daemon 的 `daemon/auth/`,项目 `.agix` 下的 `settings.local.json` / `mcp.local.json`,以及
   任何位置的 `.ssh` / `.aws` / `.gnupg`。调用里有一个字符串(路径工具的路径及其解析后的各种
-  写法,shell 命令的每个词与赋值,`--flag=value` 的值)落在这里,gate 就拒绝,不问,
+  写法,shell 命令的每个词与赋值,`--flag=value` 的值)落在这里,`Policy` 就拒绝(S2),不问,
   `bypassPermissions` 下也一样;`Grep` / `Glob` 搜它上层的目录时跳过它;沙箱里的命令读不到其中
   引擎自己的那部分(状态目录与各场景目录下的设置文件、`mcp/oauth/`、`daemon/auth/`、项目的
   `.agix/*.local.json`,§6.3),`sandbox.allow_read` 放不开;家目录下的 `.ssh` / `.aws` / `.gnupg`
   在 `deny_read` 的缺省名单里,沙箱挡,但可由 `allow_read` 放开;别处的这几个目录沙箱不挡,
-  只由 gate 挡住写出了路径的调用。没有一个回答能让"把 token 读进模型"成为好主意,所以不询问。
+  只由 `Policy` 挡住写出了路径的调用。没有一个回答能让"把 token 读进模型"成为好主意,所以不询问。
   引擎自己读进提示词或模型上下文的文件也一样:skill 的列表、正文与 `files:`,`AGENTS.md`
   及向上找到的各层,`instruction_file`,rules 的索引,agent 定义,output style,memory 的
   索引与条目,声明式 scene 的 `prompt.md`,`CLAUDE.md` 等的导入,host 传来的文件附件,都经
@@ -960,8 +1050,9 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 `rm -rf /` 一类)、配置目录的确认、工具自己的判定(含 §6.2 第 2 道的拒写名单)
 全部跳过,输入合法就放行——凭据除外,它在任何模式下都拒绝(本节开头)。仍然生效的是输入校验——读后再写的过期检查、大小上限、§6.2
 第 1 道的误读路径、`Bash` 的超时上限与长 `sleep` 拦截——和 OS 沙箱:`Bash` 照样被关在
-可写根之内(`dangerously_disable_sandbox` 除外),无人值守会话也一样。`agixd` 的
-`bypassPermissions` 会话同样走这道 gate,运行中进了计划模式也照样只读;宿主给的
+可写根之内(`dangerously_disable_sandbox` 除外),无人值守会话也一样;`sandbox.require_enforcement`
+打开而沙箱兜不住命令时,命令照样被拒(S7 在 bypass 之前)。`agixd` 的
+`bypassPermissions` 会话同样走 `Policy`,运行中进了计划模式也照样只读;宿主给的
 `Assembly.host_policy` 是规则里的一层,bypass 下只有它的 deny 还算数。要 deny 规则仍然算数,用 `acceptEdits`,
 或 `dontAsk` 加 allow 规则。
 
@@ -983,10 +1074,10 @@ bypass 是用户对自己规则的放弃。部署方——企业 IT、无人值�
 - **能写什么。** 只认 `permission_rules`(与其他层同一格式)和
   `disable_bypass_permissions_mode`(`true` / `false`),外加编辑器的 `$schema`。
 - **压过下层。** managed 的 deny / ask 与其他层的规则一起按第 1 条裁决,下层任何 allow
-  都推不翻;在 `bypassPermissions`(含 `auto` / `yolo`)下,gate 仍然只拿 managed 层的规则
+  都推不翻;在 `bypassPermissions`(含 `auto` / `yolo`)下,`Policy` 仍然只拿 managed 层的规则
   判一遍:命中 deny 拒绝,命中 ask(或程序名读不出来的 shell 段)询问,其余照 bypass 放行。
   询问在无人值守会话里就是拒绝。managed 层的询问只有人能答:`PreToolUse` hook 的 `approve` 答得了
-  别的询问,答不了它(`PermissionOutcome::Prompt.managed`;同一次调用下层也有 ask 命中时,报出的
+  别的询问,答不了它(`Answerable::PersonOnly`;同一次调用下层也有 ask 命中时,报出的
   仍是 managed 那条)。hook 的 approve 在无人值守转换之前生效——它是预先给的回答,不需要有人在场;
   managed 的询问不吃它,无人值守时照样拒绝。
 - **managed 的 allow 不比别层的 allow 多什么。** 它和用户层的 allow 一样参与裁决:推不翻
@@ -1007,9 +1098,9 @@ bypass 是用户对自己规则的放弃。部署方——企业 IT、无人值�
 managed 层管的是权限,不是沙箱:它挡得住模型发起的调用,挡不住能改 daemon 启动参数或
 换掉二进制的人。要防机器的使用者本人,启动方式与二进制也得由部署方控制。
 
-`acceptEdits` 只多放行只读调用:项目内的 `Edit` / `Write` 本来就由工具自己放行,项目外
-的、`.git` / `.agix` / `.agents/skills` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
-只读调用里够得比"读"更远的也不放行(`Tool::accept_edits_allows`):`WebFetch` / `Ping`
+`acceptEdits` 只多放行只读调用(S14):项目内的 `Edit` / `Write` 本来就陈述 `Inside`、由自含通道
+(S12)放行,项目外的、`.git` / `.agix` / `.agents/skills` 下要确认的,在 `acceptEdits` 下照样询问——无人值守的会话里就是拒绝。
+只读调用里够得比"读"更远的也不放行,要求 `reach` 是 `SessionOnly`、`Inside` 或 `Host { listed: true }`:`WebFetch` / `Ping`
 只放行 `sandbox.allowed_domains` 列出的主机(含子域),URL 本身就能把数据带到主机那里;
 MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server 对自己的说法,要免询问就写 allow
 规则(`mcp__<server>` 或具体工具名);
@@ -1018,12 +1109,12 @@ MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server �
 附加目录(`sandbox.additional_directories` 与实例状态目录)和 `sandbox.read_directories`,
 `sandbox.read_anywhere` 时不限。`Read` / `Glob` / `Grep` 按目标路径判,只读的 `Bash` /
 `Monitor` 命令按 `bash::paths` 对路径参数的判断(含 `cd` 之后的相对路径、glob 在磁盘上的
-匹配;`~`、`$VAR`、命令替换展开不了,一律当作项目外)。这些判断与工具自己在 `default` 下
-放行用的是同一个函数,所以这几个工具的读在 `acceptEdits` 下不比 `default` 多放行。
+匹配;`~`、`$VAR`、命令替换展开不了,一律当作项目外)。这些判断与工具在 `default` 下
+陈述 `Inside` 用的是同一个函数,所以这几个工具的读在 `acceptEdits` 下不比 `default` 多放行。
 
-`plan` 拒绝一切非只读工具,唯独离开计划模式的那一个(`ExitPlanMode`,
-`ToolPermissionSpec::leaves_plan_mode`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外
-与 `default` 相同:只读工具自己没放行的调用(读项目外的文件、`WebFetch`、只读的 MCP 工具)
+`plan` 拒绝一切非只读工具(S10),唯独离开计划模式的那一个(`ExitPlanMode`,
+`ModeStance::LeavesPlan`)照常走规则与询问:宿主批准才退出,回到进入前的模式。除此之外
+与 `default` 相同:只读但没有陈述自含的调用(读项目外的文件、`WebFetch`、只读的 MCP 工具)
 照样询问。
 
 `Monitor` 算不算只读看它要跑的命令,与 `Bash` 用同一套分类:`tail -f log` 是只读,
@@ -1040,7 +1131,7 @@ MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server �
 
 skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的权限策略(按一次
 `Bash` 调用判):deny 规则拒掉的不跑,要询问的也不跑——预处理没有人可问——只有规则
-放行的、或 `Bash` 自己静默放行的(项目内的只读命令)才执行,替换成一行写明原因的文字。
+放行的、或走自含通道放行的(项目内的只读命令)才执行,替换成一行写明原因的文字。
 判定和执行用的都是会话注册表里的 `Bash`;场景的工具白名单里没有 `Bash` 的会话,命令一条都不跑。
 skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开门。未信任项目自己的 skill
 (`.agents/skills/`)里的命令一条都不跑(§6.6)。
@@ -1096,7 +1187,7 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
    不是"拒写";沙箱里的命令没法逐次确认,所以对它们是拒写(§6.3)。两边用同一份名单
    (`base::paths::sensitive` 的 `ENGINE_CONFIG_{ROOTS,FILES,DIRS}`、`PROJECT_ENGINE_CONFIG_DIRS`,
    §6.1)。
-   另外,凭据名单(§6.1)上的路径在 gate 那一步就拒绝了,任何模式都到不了这里。
+   另外,凭据名单(§6.1)上的路径在 `Policy` 的 S2 就拒绝了,任何模式都到不了这里。
 
    **这个不对称是有意的。** 写工具改引擎配置目录是确认,沙箱里的 Bash 写同一处是硬拒,
    理由有两条:无人值守时确认本来就会变成拒绝,所以硬拒只是把这个结果提前;交互时用户
@@ -1121,11 +1212,11 @@ skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开�
 一句话给自己开权限,等于让注入的内容给自己开权限。
 
 `Bash` 不能事先知道一条命令会写哪里,所以无人值守时它靠 OS 沙箱:沙箱完整生效
-(`Enforcement::Full`)就放行,写入被限制在可写根之内;沙箱不可用(关掉了,或 Linux 上没有
+(`Enforcement::Full`)就放行(S15,依据 `UnattendedConfined`,profile 是 `Unattended`),写入被限制在可写根之内;沙箱不可用(关掉了,或 Linux 上没有
 bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,网络缺省是 `Unrestricted`,一条被关在
 项目目录里的命令照样能往外连;`sandbox.unattended_requires_network_policy: true` 时自动放行另外
 要求 `sandbox.network_mode` 是 `deny_all` / `allowlist`,否则回到 allow 规则。这个开关 0.3.x 缺省
-关(保持原来的行为),计划在后续 0.3.x 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。沙箱只限写,不限读——读的限制落在文件工具上,
+关(保持原来的行为),计划在后续 0.3.x 改为缺省开。沙箱在 `assembly` / `daemon` 缺省编译进来。会话的 profile 只限写,不限读——读的限制落在文件工具上(只读通道里的命令另按 strict profile 限读,见下),
 `Bash` 从环境变量里读得到什么由 §5 第 5 条决定,设置里点名的密钥都不在其中;读项目外的文件只受凭据黑名单约束:`sandbox.deny_read`(缺省是家目录下的凭据,
 `base::interface::exec::default_deny_read`)减去 `sandbox.allow_read`;另外不论怎么配,
 §6.1 凭据名单上引擎自己的那部分——状态目录与各场景目录下的设置文件(`settings*.json`、
@@ -1134,6 +1225,31 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 `allow_read` 也放不开。状态目录里别的东西(skills、memory、scratchpad、会话记录、`scene.json`、
 `daemon/instances.d/`)照常可读。`Monitor` 的脚本进同一个沙箱,
 `sandbox.require_enforcement` 对它同样生效,无人值守下的自动放行也走上面这同一条件。
+
+**三种 profile。** 同一个沙箱后端按结论带出的 `ExecProfile`(§6.1 末的表)收到三份不同的
+`SandboxPolicy`,由 `tools/src/bash/sandbox.rs` 的 `policy_for_profile` 选;没有 `approval` 的调用
+(没有谁判过它)按 `Session`:
+
+- **`Session`**:本节其余部分描述的就是它——可写根之内可写,读不限(凭据除外),网络按 `sandbox.network_mode`,
+  环境按 `sandbox.subprocess_env`。
+- **`Unattended`**:`Session` 再加 `deny_ipc_escapes`(下面"沙箱只管命令自己的进程树"一段)。
+- **`Strict`**:命令靠自己的话放行(`Contained` / `AcceptEdits`:`Bash` 与 `Monitor` 的只读通道)。这类命令
+  没有人看过,分类器一旦判错就没有别的兜底,所以跑在更紧的 policy 里(`SandboxPolicy::strict`):
+  网络 `DenyAll`;只有会话的 `TMPDIR` 可写(`only_additional_writable`,工作目录也不可写);
+  读 `ReadScope::Only`——可读根(`security::readable_roots`)、`sandbox.cache_directories` 与会话的
+  `TMPDIR`,加后端自己的一张表:系统目录(macOS 的 `/usr /bin /sbin /System /Library/Developer/CommandLineTools
+  /Applications/Xcode.app/Contents/Developer /private/etc /private/var/db/timezone /opt/homebrew /usr/local /dev`,Linux 的
+  `/usr /bin /sbin /lib* /etc /opt /nix/store`)与用户的 `~/.gitconfig`、`~/.config/git`,其余路径命令只看得到名字与元数据、
+  读不到内容,`deny_read` 与引擎的凭据在范围之内照样读不到;环境 `EnvScope::Minimal`,只留
+  `PATH HOME USER LOGNAME SHELL TERM LANG LC_* TZ TMPDIR`,`subprocess_env.allow` 加不进去,引擎的凭据照剔;
+  `deny_ipc_escapes`。macOS 写成 `(deny file-read*)` 加 `(allow file-read-metadata)` 再按根逐个放开;Linux 不再
+  `--ro-bind / /`,改成逐根 `--ro-bind-try`。仓库配置让只读通道里的 git 起 `diff.external` 一类程序时,
+  那个程序因此也断网、只写得了 `TMPDIR`、只读得了项目。
+
+strict policy 兑现不了时(没有后端,Windows,Linux 上没有 bubblewrap):`sandbox.require_enforcement` 关着,
+通道照常放行,命令尽力而为;打开时通道关闭(S12、S14 都不放行,`strict_unheld`),命令改为询问,批准后按
+`Session` 跑。**未信任项目**(§6.6)里 strict 不是 `Full` 时,会话自己仓库里的 `git` 也退出只读通道、改为询问:
+仓库配置是项目作者写的,没有 strict 沙箱兜着,它起的程序就跑在沙箱外。
 
 沙箱里的命令能写的:工作目录、`sandbox.additional_directories` 与会话授予的目录、
 `sandbox.cache_directories`(见下)、状态目录下的 `scratchpad` 与 `memory`、`/dev`,以及
@@ -1182,8 +1298,25 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
 用户之后在项目里跑 git(沙箱外)会进这个嵌套仓库、照它的配置执行,这一步不受沙箱约束。
 两个后端都挡不住:禁止新建名为 `.git` 的目录项会连 `git init`、`git clone`、包管理器拉
 git 依赖、测试里建临时仓库一起弄坏,而且在别处建好再挪进项目照样绕过。引擎自己跑的 git
-带 `-c core.fsmonitor=false` 等选项,不受影响。结构性的办法(命令结束后检测项目里新出现的
-嵌套 `.git`,告警或询问)留到后续版本。见 `sandbox.rs` 模块头已知逃逸。
+带 `-c core.fsmonitor=false` 等选项,不受影响。
+
+所以由命令结束之后的检查补上(`obligations.scan_nested_repos`,§6.1)。凡不是 `Strict` profile 的命令——
+人批准的、规则或 hook 放行的、无人值守放行的、bypass 下的——在 `call` 返回之后、`PostToolUse` 之前(后台命令
+在它的任务结束时)由 runtime 调 `tools::nested_repos::scan`:
+
+1. 用会话沙箱里的引擎 git 跑 `git ls-files -s -z`,取 mode 160000 的 gitlink;
+2. 没在 `.gitmodules` 里声明、git 目录又在工作树里(`sub/.git` 是目录)的,读它的 `config`,查会让 git
+   起程序的键:`core.fsmonitor`(非布尔值)、`core.hooksPath`、`core.sshCommand`、`core.pager`、`core.editor`、
+   `diff.external`、`sequence.editor`、`credential.helper`、`include.path`、`includeIf.*`、`gpg.program`、
+   `uploadpack.packObjectsHook`、`filter.*.{clean,smudge,process}`;
+3. 另外经 `exec.filesystem` 有界遍历工作树(深度 8、条目 5 万;`node_modules`、`target`、`.venv` 这类依赖、
+   构建与缓存目录不进),找新冒出来的 `.git`,只作提示。
+
+有危险键的:有人值守时问"保留还是移开",没答、超时都按移开;无人值守直接移开——把 `sub/.git` 改名为
+`sub/.git.agix-quarantine-<UTC 时间>`,由引擎在沙箱外执行,改回名字即还原。两种情况都在工具结果后面附一行
+说明并发 `Notification`。没有危险键的只附说明。同一个仓库每个会话只报一次,被保留的要配置变了才再报。
+`Strict` 下的命令除 `TMPDIR` 外什么都写不了,不扫。这道检查挡不住的是命令起了个比它活得久的进程、之后才埋仓库。
+见 `sandbox.rs` 模块头已知逃逸。
 
 引擎自己跑的 git(每轮的 `git status`、worktree 的创建与清理)经 `base::engine_exec::EngineExec` 起,走会话的
 `exec.process`:会话的命令进沙箱(没有
@@ -1191,7 +1324,9 @@ git 依赖、测试里建临时仓库一起弄坏,而且在别处建好再挪进
 跑的 filter driver 之类因此同样受约束。这时它只能写会话的 `TMPDIR`,创建 worktree 时再加
 git 目录与 `.agix/worktrees/`,工作目录本身不可写,网络不通。沙箱兑现不了时照
 `sandbox.require_enforcement` 办:要求就不跑,当作没有 git 信息(状态不显示,worktree 创建报错),
-不要求就和 `Bash` 一样在沙箱外跑。删除 worktree 时目录与 `.git/worktrees/` 下的那一项由
+不要求就和 `Bash` 一样在沙箱外跑——未信任项目(§6.6)除外:它的仓库配置是项目作者写的,在沙箱外跑
+就是让那些程序不受约束地起来,`admit_git` 对它拒绝,会话状态里的分支名改为直接读 `.git/HEAD`(`read_head`),
+不问 git。删除 worktree 时目录与 `.git/worktrees/` 下的那一项由
 引擎直接删,不交给 git——沙箱不许写已有 worktree 的 `.git` 链接与 `commondir`。沙箱的 git
 只给 git 目录就在项目根下 `.git` 的仓库建 worktree,别处的 git 目录沙箱护不住它的配置。
 不论进不进沙箱,这些 git 都带 `-c core.fsmonitor=false -c core.hooksPath=/dev/null`,都领一个
@@ -1441,7 +1576,15 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 `permission_mode: "bypassPermissions"`、一条 hook 或一个 MCP server,就绕过了它们。
 
 **未信任的项目层按插件级信任处理**——复用插件包已有的那条"网上来的东西只能新增、只能收紧"
-的规则(`plugin_packages.md` §信任),不另造一套权限体系:
+的规则(`plugin_packages.md` §信任),不另造一套权限体系。
+
+**这是白名单,不是扣一份名单。** `base::project_trust::PROJECT_TIER` 登记项目层设置文件里的每一个键,
+每条是三种之一:`Free`(照常)、`Tighten(次序)`(只在比下面几层合出来的值一样紧或更紧时保留,次序
+按键的类型:布尔取真或取假为紧、数值取小为紧、列表取子集或超集为紧、模式与网络模式按宽松度排……)、
+`Withheld`(整个扣下)。项目层的每个叶子路径取最长匹配的条目;**没有条目的键一律扣下**,并记入
+`requires_trust`;比它管的键还短的条目只能是 `Withheld`。新加一个设置字段忘了归类,
+`base` 里那条从 `settings_json_schema()` 枚举叶子路径的测试(`every_settings_key_has_an_entry`)就编不过——
+白名单因此由构造保证,而不是靠人记得。`permission_rules` 在表里是 `Free`,因为 `allow` 由加载器自己丢弃。
 
 | 项目层内容 | 未信任时 |
 |---|---|
@@ -1450,19 +1593,22 @@ daemon 管。设计与用法在 [`mcp_auth.md`](mcp_auth.md);这里只记它在�
 | `hooks_config`、`scripts` | 整段忽略;`.agix/hooks/` 也不放进 hook 命令的 `PATH`,继承的 `PATH` 里的相对条目去掉,用户层 hook 写的裸脚本名不会落到项目里的同名文件;用户层 command hook 以相对路径起的程序(`./scripts/check.sh`)、或命令里哪个相对路径的词正是项目里的文件或目录(`python3 scripts/check.py`、`node .`、`bash x.sh`、`< x.sh`)的,不跑,算 hook 失败——工作目录仍是项目,那个路径指的是仓库里的文件(`hooks.md`) |
 | `mcp_servers` | 不启动;`mcp.status` 里是 `"state": "untrusted"`;`mcp.addServer` / `mcp.updateServer` 以 `PROJECT_UNTRUSTED` 拒绝,什么都不写 |
 | `allow_client_permission_override: true`、`disable_skill_shell_execution: false` | 丢弃 |
-| `sandbox`:`dangerously_disable_sandbox` / `read_anywhere` 设为真,`require_enforcement` / `unattended_requires_network_policy` 设为假,`network_mode` 更松 | 丢弃 |
+| `sandbox`:`dangerously_disable_sandbox` / `read_anywhere` 设为真,`require_enforcement` / `unattended_requires_network_policy` / `reap_process_groups` 设为假,`network_mode` 更松 | 丢弃 |
 | `sandbox`:`additional_directories` / `read_directories` / `allow_read` / `allow_write` / `allowed_domains`,`cache_directories` 的某一组,`subprocess_env.allow` | 只要多出下面几层没有的条目就整项丢弃;只删不加的保留 |
 | `sandbox`:`deny_read` / `deny_write`、`subprocess_env.mode` | 少了下面几层有的条目(或从 `allowlist` 改回 `inherit`)就丢弃;`deny_read` 非空会替换内建的凭据清单,所以下面几层没写时项目也只能不写 |
 | `providers` | 整段不要:改一个已有 provider 的 `base_url`,用户全局层的 `api_key` 就会跟着发过去;新 provider 的 `api_key_env` 能把 daemon 的任意环境变量当 key 发出去 |
 | `default_provider`、`task_models.<任务>` | 指向项目自己的 provider(下面几层没有的)时丢弃;选下面几层已有的照常 |
-| `model.base_url`、`model.auth_token` | 丢弃 |
+| `model.base_url`、`model.auth_token`、`model.api_type` | 丢弃 |
+| `telemetry_enabled: false` | 丢弃:项目不能关掉审计记录 |
 | `telemetry_url`、`recorder` | 丢弃:一个把遥测送到项目指定的地址,一个把宿主请求的录像写到项目指定的目录 |
+| `prompt_override` | 丢弃:它整个替换系统提示词(追加用的 `prompt_append` 照常) |
+| `execution`:各项上限(`max_agent_depth`、`max_budget_tokens`、`max_parallelism`、`max_concurrent_subagents`……) | 只能比下面几层更小;`permission_prompt_timeout_secs` 只能更小且不能是 0(0 是不限);`team_enabled` 只能设为假 |
 | `instruction_file` | 丢弃:它按路径直接读进系统提示词,不过沙箱也不过 Read 的 `deny_read` |
-| `plugins` | `enabled: true`(下面几层是 `false`)丢弃;`allow` 放进下面几层没有的名字、或清空下面几层的清单,丢弃;只收窄的保留 |
+| `plugins` | `enabled: true`(下面几层是 `false`)、`enable_on_install: true` 丢弃;`allow` 放进下面几层没有的名字、或清空下面几层的清单,丢弃;只收窄的保留 |
 | `.agix/agents/*.md` | 来源是 `AgentTypeSource::Project { trusted: false }`:`permission_mode` / `max_turns` 只能收紧,与内建、插件、用户层同名的不替换它们 |
 | `.agents/skills/` 里的 `` !`cmd` `` | 不执行,换成一行说明(与 `disable_skill_shell_execution` 同一条路) |
 | `.agents/skills/` 里的 `allowed-tools` | 什么都不授予:模型调用这个 skill 之后,它列的工具照常询问 |
-| 其余(提示词、`rules`、记忆、在下面几层已有的 provider 与模型之间选择……) | 照常 |
+| 其余(`prompt_append`、`rules`、记忆、`language`、`compaction`、在下面几层已有的 provider 与模型之间选择……) | 照常 |
 
 文本到达模型本来就要靠人读(插件同一判断),所以提示词一类照常;决定对话、凭据、遥测送到哪里,
 或者把用户的哪个文件读进提示词的键,按上表扣下。全局层、场景层里写的脚本绑定若是相对路径,

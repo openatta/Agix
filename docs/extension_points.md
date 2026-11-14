@@ -103,39 +103,110 @@ let (agent, events, input) = Builder::new().tools(tools).model(model).build()?;
 
 #### 实现一个工具
 
-`Tool` 必须实现的是 `name`、`description`、`spec`、`input_schema`、`call` 五个方法。
-与这次调用的输入无关的东西——只读、并发安全、破坏性、能否被程序调用、权限匹配内容的
-种类、来源等——都在 `spec()` 里声明,返回 `base::tool::ToolSpec`,用 `ToolSpec::new()`
-加链式 setter 构造:
+`Tool` 一共九个方法,必须实现的是 `name`、`description`、`spec`、`input_schema`、`call` 五个,
+其余四个——`guide`、`call_traits`、`permission_facts`、`validate_input`——有缺省。与这次调用的输入
+无关的东西——只读、并发安全、破坏性、能否被程序调用、对权限模式的态度、来源等——都在 `spec()` 里声明,
+返回 `base::tool::ToolSpec`,用 `ToolSpec::new()` 加链式 setter 构造:
 
 ```rust
+use async_trait::async_trait;
+use base::error::ToolError;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
+use base::tool::{
+    PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
+};
+use serde_json::{json, Value};
+
+struct FileTicketTool;
+
+#[async_trait]
 impl Tool for FileTicketTool {
-    fn name(&self) -> &str { "FileTicket" }
-    fn description(&self) -> &str { "File a ticket in the tracker." }
+    fn name(&self) -> &str {
+        "FileTicket"
+    }
+
+    fn description(&self) -> &str {
+        "File a ticket in the tracker."
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec::new().concurrency_safe(true).callable_from_code(true)
     }
-    fn input_schema(&self, _style: PathStyle) -> Value { /* … */ }
-    // guide / call_traits / validate_input / check_permissions / call …
+
+    fn input_schema(&self, _style: PathStyle) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "title": { "type": "string" } },
+            "required": ["title"]
+        })
+    }
+
+    async fn permission_facts(&self, input: &Value, _ctx: &ToolContext) -> PermissionFacts {
+        let title = input["title"].as_str().unwrap_or_default();
+        PermissionFacts::new(Subject::Opaque(title.to_string()), Reach::Operator)
+            .with_question(format!("File the ticket \"{title}\"?"))
+    }
+
+    async fn validate_input(&self, input: &Value, _ctx: &ToolContext) -> ValidationResult {
+        match input["title"].as_str() {
+            Some(title) if !title.is_empty() => ValidationResult::Ok,
+            _ => ValidationResult::err("title must be a non-empty string", 1),
+        }
+    }
+
+    async fn call(
+        &self,
+        input: Value,
+        _ctx: ToolContext,
+        _progress: ProgressSender,
+    ) -> Result<ToolResult, ToolError> {
+        let id = file_ticket(input["title"].as_str().unwrap_or_default()).await?;
+        Ok(ToolResult::text(format!("filed #{id}"))
+            .with_structured(json!({ "id": id, "status": "open" })))
+    }
 }
 ```
 
-- `ToolSpec` 的字段按含义分组:`traits`(`CallTraits`:只读、并发安全、破坏性)、
-  `permission`(`ToolPermissionSpec`:匹配内容的种类、自判放行是否压过 plan/dontAsk 模式、
-  是不是退出 plan 模式的那一次调用)、`origin`(`ToolOrigin`:内建、MCP server、插件),
-  以及 `short_description`、`callable_from_code`、`code_result`、`needs_dispatch`。
-  这几个类型都带 `#[non_exhaustive]`,crate 外只能用 setter 构造,读字段不受影响。
+- `ToolSpec` 的 setter:`short_description`、`origin`(`ToolOrigin::mcp(server)` / `ToolOrigin::plugin(name)`,
+  缺省 `Builtin`)、`traits`、`read_only`、`concurrency_safe`、`destructive`(后三个改的是 `traits`)、
+  `callable_from_code`、`code_result`、`needs_dispatch`、`stance`。`ToolSpec`、`CallTraits`、`ToolOrigin`、
+  `PermissionFacts`、`ToolFacts` 都带 `#[non_exhaustive]`,crate 外只能用构造函数和 setter 构造,读字段不受影响。
 - **答案取决于输入的**(比如 `Bash` 按命令判断只读),覆写
   `call_traits(&self, input) -> CallTraits`,`spec()` 里写不看输入时的保守答案。缺省的
   `call_traits` 就是 `spec().traits`。
 - `input_schema` 收到会话的 `PathStyle`;参数说明里不提路径的工具忽略它。
-- **详细用法指南**写在 `guide()` 里,返回 `Some(..)`;比 `description()` 多不出什么的就
+- **详细用法指南**写在 `guide(&PromptContext)` 里,返回 `Some(..)`;比 `description()` 多不出什么的就
   不实现(缺省 `None`)。请求的工具表只带 `description()`,有指南的工具后面附一行
   `ToolSearch{"query":"select:<name>"}`,模型要看时再取。
+- `validate_input` 回答"输入合不合法",失败是给模型的输入错误,不是权限拒绝,bypass 下同样生效;
+  只返回 `ValidationResult::Ok` 或 `ValidationResult::err(消息, 代码)`。
 - 是否延迟(只发名字和描述、schema 经 `ToolSearch` 取)是会话的事,由场景的
   `tools.deferred` 决定,工具自己不声明。
-- `permission_match_content`、`accept_edits_allows`、`check_permissions` 是权限引擎看
-  这次调用的三个入口;`accept_edits_allows` 缺省读 `call_traits(input).read_only`。
+
+**权限面只有 `permission_facts`。** 工具不再自己裁决放行或拒绝,只陈述这次调用的事实,由引擎的
+`Policy` 拿规则与模式去判(`ARCHITECTURE.md` §6.1)。`PermissionFacts::new(subject, reach)` 加
+`.with_runs(Runs::foreground() | Runs::background())`(这是一条在会话沙箱里跑的命令)与
+`.with_question(..)`(要问人时的措辞):
+
+- `Subject` 是规则拿来匹配的内容:`None`、`Opaque(串)`(原样比较)、`ReadPath` / `WritePath`(路径,
+  `Read(...)` / `Edit(...)` 规则同样作用于它)、`Shell`(命令行,逐段匹配)、`Url`。
+- `Reach` 是这次调用够多远:`SessionOnly`、`Delegates`、`Operator`、`Inside`、`Outside`、
+  `Host { listed }`、`Server`、`Persists(..)`、`Refused(..)`、`Unknown`,含义见
+  `ARCHITECTURE.md` §6.1 的表。
+- **缺省是 `PermissionFacts::unknown()`**:什么都不声称,于是每次调用都要问人(无人值守则拒绝),
+  只读的工具也一样。不碰文件、网络、命令的工具老实写 `SessionOnly`;自己够到的东西只有运维配置的端点的写
+  `Operator`;够到文件的,用 `tools::security` 的判断得出 `Inside` / `Outside` / `Refused`。
+  不要用 `Inside` 或 `SessionOnly` 去"免问"一个其实会够到别处的调用——`Policy` 对它们走自含的快速通道,
+  不再问。
+- 对 `plan` / `dontAsk` 的态度是 `spec().stance`(`ModeStance`):`Normal`、不碰文件 shell 网络的协调原语
+  `Coordination`、退出计划模式的那一次调用 `LeavesPlan`。
+- 权限判的是 `PreToolUse` hook 改写之后的输入,`ctx` 是这次调用真正要用的那份,
+  所以 `permission_facts` 里读 `ctx.cwd`、`ctx.exec` 得到的就是 `call` 里会得到的。
+
+`ToolResult` 的构造:`ToolResult::text(..)`、`ToolResult::error_text(..)`(`is_error` 为真)、
+`ToolResult::blocks(Vec<ToolResultBlock>)`(`ToolResultBlock::text(..)` / `ToolResultBlock::image(media_type, base64)`),
+再链 `.with_structured(Value)`、`.with_error(bool)`、`.with_mcp_meta(McpMeta)`、`.with_new_messages(Vec<Value>)`。
+用这些构造函数,不写字面量:加字段不会破坏构造函数。
 
 #### 报进度:`call` 的 `progress`
 
@@ -197,7 +268,7 @@ impl Tool for FileTicketTool {
   不是的按提交顺序一个个跑。
 - 程序里的每次调用和直接调用走同一条派发路径:参数校验、`PreToolUse` / `PostToolUse`、
   中间件、遥测、权限。权限判定为"询问"时这次调用直接失败——程序跑到一半不弹询问。
-  所以工具自己的 `check_permissions` 不用为程序另写一套。
+  所以工具的 `permission_facts` 不用为程序另写一套。
 - `RunCode` 只注册在根会话上(子 Agent 已经是委派了一层),排在所有工具之后,所以它
   描述里列出的就是这个会话最终可调的那些。场景白名单里没有 `RunCode` 的、构建没开 `ptc`
   特性的,没有它;部署方要关也可以写一条 `{"tool": "RunCode", "action": "deny"}`。
@@ -286,22 +357,25 @@ let settings = LoadedSettings::load_from(&source, global, scene, project, "code"
 
 ```rust
 // 判定与授权是同一个值,授权改变它之后的判定:
-Builder::new().permission(PermissionSet::of(Arc::new(MyGate)));
+Builder::new().permission(PermissionSet::of(Arc::new(MyPermission)));
 // 只判定、不记放行:
 Builder::new().permission(PermissionSet::without_grants(Arc::new(MyPolicy)));
 ```
 
 `PermissionRequest` 带着判定要用的全部状态:分发用的那个 registry 里查到的工具(`tool`,
-查不到是 `None`——引擎自己的 `Policy` 对它询问而不放行)、策略所属会话的实时
-`SessionState`(`session`,会话中途的模式切换从这里看到),以及子 Agent、团队成员转来的调用的
-`SessionState`(`delegate`)。`without_grants` 的 `grants` 是 `None`:会话不记放行,询问时也就不提供
+查不到是 `None`——引擎自己的 `Policy` 对它询问而不放行)、工具陈述的这次调用的事实(`facts`:
+`ToolFacts`,由 `ToolFacts::gather` 用 `ctx` 收集一次)、这次调用真正要用的上下文(`ctx`)、策略所属会话的实时
+`SessionState`(`session`,会话中途的模式切换从这里看到)、子 Agent 与团队成员转来的调用的
+`Delegate { session, mode, rules }`(`delegate`)、`PreToolUse` hook 的回答(`hook`),以及问得了人还是问不了
+(`attendance`)。结论是 `Permit { basis, profile, obligations }`、`Deny { reason }` 或
+`Prompt { .., answerable }`;`Reason` 带所在的 `Stage`。`without_grants` 的 `grants` 是 `None`:会话不记放行,询问时也就不提供
 `permit_always`。`Session` / `Project` 的放行是 `GrantMatch::Exact`,只放行内容与当时那次调用逐字相同的
 调用;`Turn`(skill 的 `allowed-tools`)按规则模式匹配。
 
 `BypassPermissions` 下 `Policy` 不看用户各层的规则(deny、ask)、配置目录的确认与工具自己的
 判定;凭据照样拒绝,部署方 managed 层的 deny / ask 照样生效;输入校验("改文件前先读过"、
 大小上限、会被读错的路径)照样拒绝,直接调用和程序里的调用一样(`ARCHITECTURE.md` §6.1)。
-`agixd` 的会话池对每个会话都装这道 gate;宿主给的 `Assembly.host_policy` 是其中一层规则:它的
+`agixd` 的会话池对每个会话都装 `Policy`;宿主给的 `Assembly.host_policy` 是其中一层规则:它的
 deny 在任何模式下都生效,它的 allow 只算一条 allow 规则。没调 `.permission(..)` 的 `Builder` 用的也是
 `Policy`,规则与模式取自它的设置;同时也没给 `elicitation` 时没人可问,要问的调用一律拒绝,并提示用
 `permission_rules` 或 `permission_mode` 放行。要规则仍然算数又不想被询问,用 `acceptEdits` 或
@@ -617,16 +691,20 @@ provider——模型、OAuth、遥测和 registry 的 client 各造各的。所�
 (缺省关):打开后会话关闭、被逐出、daemon 收尾时都会收,故意留在后台的服务也一并停掉。
 自己拼 `ExecProviders` 的用 `platform::local_providers_with_ledger`。
 
-自己实现 `PermissionPolicy`、又要构造 `ToolContext` 去问工具 `check_permissions` 的,provider 取
+自己实现 `PermissionPolicy`、又要构造 `ToolContext` 去收集工具的事实(`ToolFacts::gather`)的,provider 取
 `SessionState::exec()`——`Builder::build()` 把会话执行用的那套绑在那里,子 Agent 的调用用
 子 Agent 的 `SessionState`。另起一套本机的,判的就不是命令要跑的那台机器。
 
 沙箱有一条不变量是引擎强制而不是请求的:**要求过约束的策略,绝不会悄悄变成一次不
 受约束的运行。** 后端报告 `Full`、`Partial` 或 `None`,并说清自己没能兑现什么;
 `sandbox.require_enforcement` 决定不到 `Full` 要不要拒。约束什么、要不要约束,始终
-是内核的事——provider 只回答*怎么*约束。无人值守会话的命令带着
+是内核的事——provider 只回答*怎么*约束。同一个后端收到的 `SandboxPolicy` 随放行的依据而不同
+(`ExecProfile`,`ARCHITECTURE.md` §6.3):无人值守会话的命令带着
 `SandboxPolicy::deny_ipc_escapes`:除了写,还要挡住命令请别的进程在沙箱外代办的路(本机后端
-在 macOS 上挡 Apple event、LaunchServices、偏好写入,在 Linux 上隔开 IPC 命名空间、遮住会话总线)。
+在 macOS 上挡 Apple event、LaunchServices、偏好写入,在 Linux 上隔开 IPC 命名空间、遮住会话总线);
+靠自己的话放行的只读命令走 `SandboxPolicy::strict`:断网、只写 `additional_writable`、只读 `ReadScope::Only`
+列出的根、环境 `EnvScope::Minimal`。自己写 `Sandbox` 的,`read` 与 `env` 两个字段也要兑现或在 `Enforcement`
+里报未兑现;`EnvScope` 是个范围标记,`Process` 按它起命令(`ProcessSpec::env_scope`),不是替换环境。
 
 ### 压缩 — `compaction`
 
