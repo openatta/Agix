@@ -33,19 +33,6 @@ pub trait Coordinator: Send + Sync {
     async fn cleanup_team(&self, _name: &str) -> Result<(), String> {
         Ok(())
     }
-    /// Resume a previously-interrupted coordinator workflow from its last
-    /// checkpoint. Default returns an error — override for teams that
-    /// persist checkpoint state (e.g. scratchpad files).
-    async fn resume_coordinator(
-        &self,
-        task_id: &str,
-        ctx: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let _ = (task_id, ctx);
-        Err(ToolError::Execution(anyhow::anyhow!(
-            "resume not supported by this coordinator"
-        )))
-    }
 }
 
 pub struct OrchestrateRequest {
@@ -727,71 +714,6 @@ impl Coordinator for DefaultCoordinator {
             }
         }
         Ok(())
-    }
-
-    /// Resume a DefaultCoordinator workflow from its scratchpad checkpoint.
-    ///
-    /// Reads the team's SCRATCHPAD.md from the `.agix/teams/<task_id>/`
-    /// directory, identifies the last completed stage, and returns a prompt
-    /// that can be fed to a sub-agent to continue coordination.
-    async fn resume_coordinator(
-        &self,
-        task_id: &str,
-        ctx: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
-        let start = std::time::Instant::now();
-
-        let team_dir = ctx.session.env().cwd.join(".agix/teams").join(task_id);
-        let sp_path = team_dir.join("SCRATCHPAD.md");
-
-        let scratchpad = match tokio::fs::read_to_string(&sp_path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(ToolError::Execution(anyhow::anyhow!(
-                    "team scratchpad not found for task_id: {task_id}"
-                )));
-            }
-            Err(e) => {
-                return Err(ToolError::Execution(anyhow::anyhow!(
-                    "read scratchpad: {e}"
-                )));
-            }
-        };
-
-        // Identify the last completed stage heading
-        let last_stage: &str = scratchpad
-            .lines()
-            .rfind(|l| l.starts_with("## "))
-            .map(|l| l.trim_start_matches("## ").trim())
-            .unwrap_or("(none)");
-
-        let resume_prompt = format!(
-            "Resuming team coordinator for task `{task_id}`.\n\
-             Last checkpoint: {last_stage}\n\n\
-             Scratchpad:\n{scratchpad}\n\n\
-             Continue coordinating the remaining stages."
-        );
-
-        let latency_ms = start.elapsed().as_millis() as u64;
-        if let Some(handle) = &self.telemetry {
-            let _ = handle.record(telemetry::TelemetryEvent::resume_action(
-                &ctx.session_id,
-                ctx.turn_no,
-                None,
-                telemetry::ResumeActionPayload {
-                    outcome: telemetry::ResumeOutcome::Succeeded,
-                    source: "team_scratchpad".into(),
-                    entry_count: 0,
-                    projected_message_count: 0,
-                    compact_boundary_count: 0,
-                    sidechain_entry_count: 0,
-                    warning_kind: None,
-                    latency_ms,
-                },
-            ));
-        }
-
-        Ok(ToolResult::text(resume_prompt))
     }
 }
 
@@ -1773,37 +1695,6 @@ mod tests {
             kinds.push(event.kind().to_string());
         }
         assert_eq!(kinds, ["team_stage_complete"]);
-    }
-
-    #[tokio::test]
-    async fn resume_coordinator_records_resume_action_on_the_leads_turn() {
-        let (dir, mut ctx) = make_ctx();
-        ctx.session_id = "lead-session".into();
-        ctx.turn_no = 7;
-        let team_dir = dir.path().join(".agix/teams/task-1");
-        tokio::fs::create_dir_all(&team_dir).await.unwrap();
-        tokio::fs::write(team_dir.join("SCRATCHPAD.md"), "## stage-one\n\nnotes\n")
-            .await
-            .unwrap();
-
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        let coordinator =
-            DefaultCoordinator::new().with_telemetry(telemetry::TelemetryHandle::new(tx));
-
-        let result = coordinator
-            .resume_coordinator("task-1", &ctx)
-            .await
-            .expect("resume should find the scratchpad");
-        assert!(!result.is_error);
-
-        let event = rx
-            .try_recv()
-            .expect("resume_action should have been recorded");
-        assert_eq!(event.kind(), "resume_action");
-        assert_eq!(
-            (event.session_id.as_str(), event.turn_no),
-            ("lead-session", 7)
-        );
     }
 
     /// A failing member is named in the stage's completion event, so the

@@ -2563,7 +2563,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `Builder::tool_selector(ToolSelector)`;子会话的工具由场景的工具面 ∧ 委派选择器 ∧ 插件放行一处决定。
   `base::interface::tool_selector::{ToolSelector, ToolPattern}` 是新的选择器类型。
 - **团队。** `MemberLifetime::Stage` 多一个 `stage: String`;`Coordinator` 去掉 `set_event_sender`、
-  `set_telemetry_handle`;`DefaultCoordinator::with_agent_spawner` 改为 `with_delegator(Arc<dyn Delegator>)`,
+  `set_telemetry_handle`、`resume_coordinator`(引擎里没有调用方;`DefaultCoordinator` 的实现与它记的
+  `source: "team_scratchpad"` 的 `resume_action` 遥测一并删除);`DefaultCoordinator::with_agent_spawner` 改为 `with_delegator(Arc<dyn Delegator>)`,
   新增 `with_events`、`with_telemetry`;`TeamCreateTool::new(model, config, Box<dyn Coordinator>)`,
   `with_spawner`、`set_event_sender`、`set_telemetry_handle` 删除;`OrchestrateRequest` 去掉
   `parent_tools`、`sub_tools`;`aggregate` 多一个 `&CancellationToken`;`persist::TeamEvent::MemberCompleted`
