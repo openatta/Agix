@@ -156,19 +156,15 @@ pub trait Compactor: Send + Sync {
     fn age(&self, messages: &mut [ModelMessage], input: &AgingInput<'_>) -> Aging {
         let mut out = Aging::default();
         if input.time_based.max_age.is_some() {
-            out.time_based = crate::time_based_mc::apply_time_based_mc_undoably(
+            out.time_based = crate::time_based_mc::apply_time_based_mc(
                 messages,
                 input.time_based,
                 input.message_ages,
-                &mut out.undo,
             );
         }
         if input.cached_due {
-            let (cleared, ids) = crate::cached::clear_stale_tool_results_undoably(
-                messages,
-                input.cached_keep_recent,
-                &mut out.undo,
-            );
+            let (cleared, ids) =
+                crate::cached::clear_stale_tool_results(messages, input.cached_keep_recent);
             out.cached_cleared = cleared;
             out.cache_edits = Some(ids);
         }
@@ -981,7 +977,6 @@ pub fn format_context_analysis(analysis: &ContextAnalysis) -> String {
 mod tests {
     use super::*;
     use crate::time_based_mc::TimeBasedMcConfig;
-    use std::time::Instant;
 
     fn text_user(s: &str) -> ModelMessage {
         ModelMessage {
@@ -1264,37 +1259,6 @@ mod tests {
             aging.cache_edits.as_deref(),
             Some(["t2", "t1", "t0"].map(String::from).as_slice()),
             "newest first, and only the ones that were blanked"
-        );
-    }
-
-    /// What both passes overwrote goes back as it was, the result a pass
-    /// blanked twice included.
-    #[test]
-    fn an_aging_pass_is_undone_exactly() {
-        let mut messages = read_rounds(4);
-        let untouched = messages.clone();
-        let ages: Vec<_> = (0..messages.len())
-            .map(|i| (i, Instant::now() - std::time::Duration::from_secs(3600)))
-            .collect();
-        let aging = DefaultCompactor.age(
-            &mut messages,
-            &AgingInput {
-                message_ages: &ages,
-                time_based: &TimeBasedMcConfig {
-                    max_age: Some(std::time::Duration::from_secs(60)),
-                    min_messages: 0,
-                },
-                cached_due: true,
-                cached_keep_recent: 1,
-            },
-        );
-        assert!(aging.time_based.cleared > 0 && aging.cached_cleared > 0);
-        assert_ne!(result_bodies(&messages), result_bodies(&untouched));
-
-        aging.undo.restore(&mut messages);
-        assert_eq!(
-            messages.iter().map(|m| &m.content).collect::<Vec<_>>(),
-            untouched.iter().map(|m| &m.content).collect::<Vec<_>>()
         );
     }
 

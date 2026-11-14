@@ -7,7 +7,6 @@
 //! Default: clear tool results older than 15 minutes, unless the session
 //! has fewer than 100 messages (skip to preserve context in short sessions).
 
-use crate::aging::AgingUndo;
 use base::interface::model::{ModelContentBlock, ModelMessage};
 use std::time::{Duration, Instant};
 
@@ -56,16 +55,6 @@ pub fn apply_time_based_mc(
     config: &TimeBasedMcConfig,
     message_ages: &[(usize, Instant)], // (message_index, created_at)
 ) -> TimeBasedMcResult {
-    apply_time_based_mc_undoably(messages, config, message_ages, &mut AgingUndo::default())
-}
-
-/// [`apply_time_based_mc`], noting in `undo` what each cleared result held.
-pub(crate) fn apply_time_based_mc_undoably(
-    messages: &mut [ModelMessage],
-    config: &TimeBasedMcConfig,
-    message_ages: &[(usize, Instant)],
-    undo: &mut AgingUndo,
-) -> TimeBasedMcResult {
     let Some(max_age) = config.max_age else {
         return TimeBasedMcResult::default();
     };
@@ -109,13 +98,8 @@ pub(crate) fn apply_time_based_mc_undoably(
         }
 
         // Clear eligible tool results
-        for (block_idx, block) in msg.content.iter_mut().enumerate() {
-            if let ModelContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } = block
-            {
+        for block in &mut msg.content {
+            if let ModelContentBlock::ToolResult { content, .. } = block {
                 let is_compactable = last_tool_name
                     .as_deref()
                     .map(|n| compactable.contains(&n))
@@ -124,7 +108,6 @@ pub(crate) fn apply_time_based_mc_undoably(
                     && content != "[Old tool result content cleared]"
                     && content != "[Old tool result content cleared by time-based MC]"
                 {
-                    undo.note(idx, block_idx, tool_use_id, content, *is_error);
                     *content = "[Old tool result content cleared by time-based MC]".to_string();
                     result.cleared += 1;
                 }

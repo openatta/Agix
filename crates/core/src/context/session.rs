@@ -33,8 +33,9 @@ pub struct SessionState {
     /// of it failed, so the next one writes it whatever it is.
     recorded_durable: std::sync::Mutex<Option<DurableState>>,
     /// 本会话已激活的 deferred 工具名集合。`EngineConfig::deferred_tools`
-    /// 里的工具默认仅暴露 name + description；模型用 `ToolSearch` 命中后
-    /// 会被加进这里，下一次 turn 的 build_request 把它升级到 full schema。
+    /// 里的工具在请求的工具表里只有 name + description；模型用 `ToolSearch`
+    /// 命中后 schema 留在转录里、名字记进这里，工具表不变（保住 prompt cache），
+    /// 压缩后的恢复提醒按这份名单让模型重新取 schema。
     activated_tools: std::sync::Mutex<HashSet<String>>,
     /// 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
     /// 任务塞进来；TaskOutput 工具按 id 查；TaskStop 触发 cancel。

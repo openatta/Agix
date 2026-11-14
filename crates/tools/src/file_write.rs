@@ -406,6 +406,9 @@ mod tests {
         async fn remove_dir_all(&self, path: &Path) -> Result<(), ExecError> {
             LocalFileSystem.remove_dir_all(path).await
         }
+        async fn rename(&self, from: &Path, to: &Path) -> Result<(), ExecError> {
+            LocalFileSystem.rename(from, to).await
+        }
         async fn metadata(&self, path: &Path) -> Result<Metadata, ExecError> {
             LocalFileSystem.metadata(path).await
         }
@@ -485,6 +488,9 @@ mod tests {
             }
             async fn remove_dir_all(&self, path: &Path) -> Result<(), ExecError> {
                 LocalFileSystem.remove_dir_all(path).await
+            }
+            async fn rename(&self, from: &Path, to: &Path) -> Result<(), ExecError> {
+                LocalFileSystem.rename(from, to).await
             }
             async fn metadata(&self, path: &Path) -> Result<Metadata, ExecError> {
                 LocalFileSystem.metadata(path).await

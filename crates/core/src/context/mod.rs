@@ -65,7 +65,7 @@ mod tests {
                 message: "?".into(),
                 options: vec![],
                 tool_input_summary: None,
-                permission_match_content: None,
+                permission_subject: None,
             })
             .await;
         assert!(matches!(r, Err(EffectError::NotInteractive)));

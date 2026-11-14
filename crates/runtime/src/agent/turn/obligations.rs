@@ -89,28 +89,23 @@ async fn settle(
     let mut lines = scan.notes;
     for repo in scan.dangerous {
         let shown = nested_repos::shown(&after.cwd, &repo.git_dir);
-        let keys = repo.keys.join(", ");
+        let found = format!(
+            "`{shown}` is a repository this command nested in the project, whose configuration \
+             names programs ({}) that a `git` run in the project runs outside the sandbox.",
+            repo.keys.join(", ")
+        );
         let line = if kept_by_a_person(ctx, name, after, &repo, &shown).await {
             repo.keep(after);
-            format!(
-                "[`{shown}` is a repository this command nested in the project, whose \
-                 configuration names programs ({keys}) that a `git` run in the project runs \
-                 outside the sandbox. Kept, as the user asked.]"
-            )
+            format!("[{found} Kept, as the user asked.]")
         } else {
             match nested_repos::quarantine(after, &repo.git_dir).await {
                 Ok(to) => format!(
-                    "[`{shown}` is a repository this command nested in the project, whose \
-                     configuration names programs ({keys}) that a `git` run in the project \
-                     runs outside the sandbox. Moved aside to `{}`; renaming it back restores \
-                     the repository.]",
+                    "[{found} Moved aside to `{}`; renaming it back restores the repository.]",
                     nested_repos::shown(&after.cwd, &to)
                 ),
                 Err(e) => format!(
-                    "[`{shown}` is a repository this command nested in the project, whose \
-                     configuration names programs ({keys}) that a `git` run in the project \
-                     runs outside the sandbox. It could not be moved aside ({e}): do not run \
-                     `git` in the project until it is removed.]"
+                    "[{found} It could not be moved aside ({e}): do not run `git` in the project \
+                     until it is removed.]"
                 ),
             }
         };

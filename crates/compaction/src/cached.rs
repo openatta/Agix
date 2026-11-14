@@ -4,7 +4,6 @@
 //! clears old tool result content on a time interval. This keeps the context
 //! window manageable between full compactions without burning API calls.
 
-use crate::aging::AgingUndo;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use std::time::{Duration, Instant};
 
@@ -132,16 +131,6 @@ pub fn clear_stale_tool_results(
     messages: &mut [ModelMessage],
     keep_recent: usize,
 ) -> (usize, Vec<String>) {
-    clear_stale_tool_results_undoably(messages, keep_recent, &mut AgingUndo::default())
-}
-
-/// [`clear_stale_tool_results`], noting in `undo` what each blanked result
-/// held.
-pub(crate) fn clear_stale_tool_results_undoably(
-    messages: &mut [ModelMessage],
-    keep_recent: usize,
-    undo: &mut AgingUndo,
-) -> (usize, Vec<String>) {
     let mut result_positions: Vec<(usize, usize)> = Vec::new();
     let mut cleared_ids: Vec<String> = Vec::new();
 
@@ -171,7 +160,6 @@ pub(crate) fn clear_stale_tool_results_undoably(
         if content == CLEARED {
             continue;
         }
-        undo.note(msg_idx, block_idx, tool_use_id, content, *is_error);
         *content = CLEARED.to_string();
         *is_error = Some(false);
         cleared += 1;

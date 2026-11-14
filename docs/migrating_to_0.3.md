@@ -2432,6 +2432,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 #### 权限
 
+- **`base::context::PromptRequest::permission_match_content` 改名 `permission_subject`**,内容仍是这次
+  调用 `PermissionFacts::subject` 的内容。
 - **`Permission` 拆成 `PermissionPolicy`(`decide(&PermissionRequest)`)与 `PermissionGrants`
   (`grant(Grant)`、`clear(GrantScope)`)。** `PermissionSet { policy, grants }` 打包两半,`grants` 是
   `Option<Arc<dyn PermissionGrants>>`:`PermissionSet::of(x)` 收同时实现两个 trait 的值,
@@ -2631,8 +2633,6 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `{ code: "turn_error", message }`;`AgentEvent::TurnComplete` 多 `persisted`(serde 缺省 `true`);
   新增 `AgentEvent::ModelRetry` 与 `AgentEvent::PromptResolved { prompt_id, resolution, reason }`
   (`base::event::PromptResolution`、`WithdrawalReason { TimedOut, Cancelled }`);`runtime::elicitation::OpenPrompt` 是登记待答提问的句柄。
-- **`compaction::aging::Aging` 多一个 `undo: AgingUndo` 字段**(它实现 `Default`),用结构体字面量构造
-  `Aging` 的要补上。引擎撤回压缩改用整步检查点,不再读它。
 - **`base::frozen::skill::expand_skill_vars_named` 多一个 `vars: Option<&InvocationVars>`**,
   `${AGIX_SKILL_DIR}`、`${AGIX_SESSION_ID}` 从它取,`None` 时原样保留。
 
