@@ -216,12 +216,12 @@ async fn webfetch_reports_error_statuses_and_hands_redirects_back() -> anyhow::R
     assert!(
         fetched
             .iter()
-            .any(|(_, t, failed)| *failed && t.starts_with("HTTP 404")),
+            .any(|(_, t, failed)| *failed && live::inside_fence(t).starts_with("HTTP 404")),
         "{fetched:?}"
     );
     assert!(
         fetched.iter().any(|(_, t, failed)| *failed
-            && t.starts_with("HTTP 500")
+            && live::inside_fence(t).starts_with("HTTP 500")
             && t.contains("upstream exploded")),
         "{fetched:?}"
     );

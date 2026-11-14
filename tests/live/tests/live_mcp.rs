@@ -272,8 +272,11 @@ async fn a_big_mcp_result_is_cut_to_the_result_budget_before_the_model_sees_it(
 
     let bigs = results_of(&events, "mcp__toy__big");
     assert!(
-        bigs.iter().any(|(_, t, _)| t.ends_with(&small_tail))
-            && bigs.iter().any(|(_, t, _)| t.ends_with(&big_tail)),
+        bigs.iter()
+            .any(|(_, t, _)| live::inside_fence(t).ends_with(&small_tail))
+            && bigs
+                .iter()
+                .any(|(_, t, _)| live::inside_fence(t).ends_with(&big_tail)),
         "the host is handed both results whole"
     );
     let requests = run.provider.calls();
@@ -292,7 +295,7 @@ async fn a_big_mcp_result_is_cut_to_the_result_budget_before_the_model_sees_it(
     assert!(
         requests
             .iter()
-            .any(|r| tool_results_sent(r).contains("[Tool result truncated: 60000 characters")),
+            .any(|r| tool_results_sent(r).contains("characters > 50000 max")),
         "the cut is marked"
     );
     run.finish().await;

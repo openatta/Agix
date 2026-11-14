@@ -537,10 +537,13 @@ async fn an_enterprise_identity_from_the_host_connects_the_server() -> anyhow::R
         &policy,
         world.enterprise_idp_policy("agix-at-idp").to_string(),
     )?;
+    let servers = json!({ "mcp_servers": { SERVER: world.config_with(json!({
+        "grant": "enterprise", "client_id": "ema-client", "scopes": ["mcp:read"]
+    })) } });
+    // A user's server, not the project's: a project's own servers may not
+    // spend the identity the host supplied.
     let mut run = LiveRun::builder("oauth-enterprise")
-        .settings(json!({ "mcp_servers": { SERVER: world.config_with(json!({
-            "grant": "enterprise", "client_id": "ema-client", "scopes": ["mcp:read"]
-        })) } }))
+        .before_start(move |world, _| world.write_global_settings(&servers))
         .options(move |o| o.mcp_policy(policy.clone()))
         .start()
         .await?;

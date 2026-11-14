@@ -432,16 +432,14 @@ impl DaemonRpcClient {
         format: Option<&str>,
         include: Option<&[&str]>,
     ) -> anyhow::Result<RpcResponse> {
-        self.call(
-            "session.export",
-            serde_json::json!({
-                "session_id": session_id,
-                "path": path,
-                "format": format,
-                "include": include,
-            }),
-        )
-        .await
+        let mut params = serde_json::json!({ "session_id": session_id, "path": path });
+        if let Some(format) = format {
+            params["format"] = format.into();
+        }
+        if let Some(include) = include {
+            params["include"] = serde_json::json!(include);
+        }
+        self.call("session.export", params).await
     }
 
     /// 给会话起名字；`None` 清除。

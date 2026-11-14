@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::interface::scene::SceneSpec;
 use base::tool::{PathStyle, ProgressSender, Tool, ToolContext, ToolResult};
 use live::{Host, LiveRun, Mode, Watcher};
@@ -478,6 +479,10 @@ impl Tool for ServiceStatus {
 
     fn description(&self) -> &str {
         "The current status of one production service, with its open incident if any."
+    }
+    async fn permission_facts(&self, input: &Value, _: &ToolContext) -> PermissionFacts {
+        let service = input["service"].as_str().unwrap_or_default();
+        PermissionFacts::new(Subject::Opaque(service.into()), Reach::Operator)
     }
     fn input_schema(&self, _: PathStyle) -> Value {
         json!({

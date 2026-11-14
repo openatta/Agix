@@ -520,6 +520,7 @@ async fn export_carries_the_sidechain_and_delete_takes_it_along() -> anyhow::Res
         .client
         .session_export(&session, &zip_path, None, None)
         .await?;
+    anyhow::ensure!(exported.error.is_none(), "{exported:?}");
     let exported = exported.result.unwrap_or_default();
     assert_eq!(exported["format"], "zip", "{exported}");
     let ids: Vec<&str> = exported["sessions"]
