@@ -24,15 +24,9 @@ use url::Url;
 /// Anthropic API base URL.
 pub const ANTHROPIC_API_BASE_URL: &str = "https://api.anthropic.com/";
 
-/// SSE 流两个事件之间允许的最大静默时间。响应头拿到之后（`send_with_retry` 已经
-/// 成功返回），流本身**没有任何超时保护**——如果底层连接在中途静默卡死（代理/
-/// 网络吞掉了后续字节但没有发 TCP RST/FIN，连接不报错也不结束），`events.next()`
-/// 会永远 pending，调用方（`crates/runtime/src/agent/turn/` 的主循环）没有任何手段
-/// 感知到这一点，整个 turn 就此挂死——不报错、不超时、CPU 占用 0%，几乎无法从
-/// 外部区分"模型在正常思考"和"连接已经死了"。这个常量把这种情况转成一个明确的
-/// 、可重试的 `AnthropicError::Timeout`，而不是无限等待。
-/// 90s 留了足够余量给正常的长 thinking 停顿（比如大 context/推理模型），比大多数
-/// LLM 单个 SSE chunk 间隔要长得多。
+/// SSE 流两个事件之间允许的最大静默时间。连接在流中途静默卡死（代理吞掉后续字节，
+/// 又不发 RST/FIN）时 `events.next()` 永远不返回，超过这个时长就按可重试的
+/// `AnthropicError::Timeout` 结束。90s 给长 thinking 的停顿留足了余量。
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// 从已解析的 SSE 事件流里读下一项，最多等 `idle_timeout`——超时说明连接静默

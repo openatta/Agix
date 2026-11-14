@@ -105,10 +105,10 @@ fn test_settings() -> base::settings::LoadedSettings {
 
 #[tokio::test]
 async fn build_registers_mcp_tool_adapters_into_the_executable_tool_registry() {
-    // `build_tool_defs()` (`turn/request.rs`) advertises every `mcp.tool_adapters()`
+    // `build_tool_defs()` (`agent/turn/request.rs`) advertises every `mcp.tool_adapters()`
     // entry to the model as a callable tool, so `Builder::build()` must
     // register each per-tool adapter, not just the 3 generic List/Read/Dispatch
-    // MCP tools — `turn/tool_exec.rs::execute_tool_inner` looks up `ctx.tools`, a clone
+    // MCP tools — `agent/turn/tool_exec.rs::execute_tool_inner` looks up `ctx.tools`, a clone
     // of this same registry, and would answer "Tool not found".
     let settings = Arc::new(test_settings());
     let model: Arc<dyn Model> = Arc::new(DummyModel);

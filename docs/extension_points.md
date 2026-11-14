@@ -541,6 +541,13 @@ Builder::new().event_sink(sink)
 每个 sink 有自己的队列和 task,所以慢的那个只丢自己的事件,不占别人的时间。它拖不
 慢一轮。
 
+`base::event::AgentEvent` 是封闭的枚举,没有 `#[non_exhaustive]`:daemon 把它投影成线上
+帧时按变体、按字段穷尽解构,引擎加一种事件或一个字段时那里编译不过,逼着决定它上不上线。
+代价落在 Rust 里直接 `match` 它的嵌入方身上:**minor 版本之间加变体、加字段都可能让这样的
+`match` 编译不过**,不作为破坏性变化单独预告(迁移指南照样列出)。要稳定的兼容面就消费线上
+投影(协议 §7,不认识的 `kind` 忽略);留在 Rust 里的,只解构用得到的字段(`{ a, .. }`)并写
+`_` 分支,能挡住大部分这类破坏。
+
 ### 判断上下文有多大 — `token.count`
 
 `base::interface::token_counter::TokenCounter`。默认是本地的字符类估算(不加载词表),
@@ -677,8 +684,10 @@ Builder::new().turn_policy(Arc::new(FirstOf(vec![engine_default, mine])))
 
 `base::interface::backoff::BackoffPolicy` 坐在模型契约之下、client 之内,回答更窄
 的那个问题:首字节之前失败的请求还发不发,发之前先等多久。两套线协议走的是同一个。
-`retry-after` 的解析留在 Anthropic client 里,因为那是协议特有的输入;拿它做什么
-则是策略的事。
+`retry-after`(整数秒、HTTP-date、`retry-after-ms`)由 Anthropic 与 OpenAI 兼容两个
+client 各自解析,作为 `FailedAttempt.server_hint` 交给策略;拿它做什么是策略的事。
+引擎自带的 `LadderBackoff` 把它当下限(再加至多 10% 的抖动),超过 60 秒就放弃、把失败
+交给调用方,而不是截到 60 秒;`DefaultRecovery` 对首字节之后的原样重发用同一个上限。
 
 ### 一轮能花多少 — `budget`
 

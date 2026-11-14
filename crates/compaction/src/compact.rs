@@ -628,7 +628,7 @@ const MAX_CHARS_PER_FILE: usize = 5_000;
 /// Per-skill and shared-total character budgets for reattached skill
 /// content — sized from a 5,000 / 25,000 *token* budget, converted with
 /// this codebase's existing ~4-chars-per-token heuristic (see
-/// `turn/prompt.rs::build_skills_text`'s listing budget, same conversion).
+/// `agent/turn/prompt.rs::build_skills_text`'s listing budget, same conversion).
 const MAX_CHARS_PER_SKILL: usize = 20_000;
 const MAX_CHARS_SKILLS_TOTAL: usize = 100_000;
 
