@@ -7,8 +7,10 @@
 //! confined any looser than the strict profile is checked for one once it has
 //! run (`Obligations::scan_nested_repos`).
 //!
-//! An undeclared gitlink whose git directory lies in the working tree and
-//! whose configuration names a program is dangerous; what to do about it is
+//! The user's `git status` enters a nested repository's own gitlinks too, so
+//! they are followed, nesting bounded. An undeclared gitlink whose git
+//! directory lies in the working tree and whose configuration names a program
+//! is dangerous; what to do about it is
 //! the caller's ([`quarantine`] is the remedy). An undeclared one without such
 //! configuration, and a `.git` found anywhere else in the tree, are only
 //! reported. Each is reported once per session, and a repository someone kept
@@ -22,6 +24,7 @@ use std::time::Duration;
 
 const MAX_DEPTH: usize = 8;
 const MAX_ENTRIES: usize = 50_000;
+const MAX_REPOS: usize = 256;
 const GIT_DEADLINE: Duration = Duration::from_secs(10);
 
 /// A nested repository whose configuration names a program.
@@ -57,49 +60,9 @@ pub async fn scan(ctx: &ToolContext) -> Scan {
     let mut scan = Scan::default();
     let top = top_level(ctx).await;
     let root = top.clone().unwrap_or_else(|| ctx.cwd.clone());
-    let gitlinks = match &top {
-        Some(top) => gitlinks(ctx, top).await,
-        None => Vec::new(),
-    };
-    let declared = match &top {
-        Some(top) => declared_submodules(ctx, top).await,
-        None => BTreeSet::new(),
-    };
-
     let mut known: BTreeSet<PathBuf> = BTreeSet::new();
-    for link in gitlinks {
-        let Some(top) = &top else { break };
-        let git_dir = top.join(&link).join(".git");
-        known.insert(git_dir.clone());
-        if declared.contains(&link) || !is_dir(ctx, &git_dir).await {
-            continue;
-        }
-        let config = ctx
-            .exec
-            .filesystem
-            .read_to_string(&git_dir.join("config"))
-            .await
-            .unwrap_or_default();
-        let digest = digest(&config);
-        let keys = dangerous_keys(&config);
-        if keys.is_empty() {
-            if first_report(ctx, &git_dir, digest) {
-                scan.notes.push(format!(
-                    "`{}` is a repository nested in the project and added to its index; its \
-                     configuration names no program.",
-                    shown(&root, &git_dir)
-                ));
-            }
-            continue;
-        }
-        let kept = ctx.session.ledger().nested_repos.get(&git_dir) == Some(&digest);
-        if !kept {
-            scan.dangerous.push(Dangerous {
-                git_dir,
-                keys,
-                digest,
-            });
-        }
+    if let Some(top) = &top {
+        examine_gitlinks(ctx, top, &mut known, &mut scan).await;
     }
 
     for git_dir in nested_git_entries(ctx, &root).await {
@@ -112,6 +75,68 @@ pub async fn scan(ctx: &ToolContext) -> Scan {
         ));
     }
     scan
+}
+
+/// Every gitlink the user's `git status` in `top` enters: the index's, and
+/// each nested repository's own, nesting and count bounded.
+async fn examine_gitlinks(
+    ctx: &ToolContext,
+    top: &Path,
+    known: &mut BTreeSet<PathBuf>,
+    scan: &mut Scan,
+) {
+    let mut level = vec![top.to_path_buf()];
+    for _ in 0..MAX_DEPTH {
+        let mut next = Vec::new();
+        for worktree in level {
+            let declared = declared_submodules(ctx, &worktree).await;
+            for link in gitlinks(ctx, &worktree).await {
+                if known.len() >= MAX_REPOS {
+                    return;
+                }
+                let nested = worktree.join(&link);
+                let git_dir = nested.join(".git");
+                if !known.insert(git_dir.clone())
+                    || declared.contains(&link)
+                    || !is_dir(ctx, &git_dir).await
+                {
+                    continue;
+                }
+                examine(ctx, top, git_dir, scan).await;
+                next.push(nested);
+            }
+        }
+        level = next;
+    }
+}
+
+async fn examine(ctx: &ToolContext, root: &Path, git_dir: PathBuf, scan: &mut Scan) {
+    let config = ctx
+        .exec
+        .filesystem
+        .read_to_string(&git_dir.join("config"))
+        .await
+        .unwrap_or_default();
+    let digest = digest(&config);
+    let keys = dangerous_keys(&config);
+    if keys.is_empty() {
+        if first_report(ctx, &git_dir, digest) {
+            scan.notes.push(format!(
+                "`{}` is a repository nested in the project and added to its index; its \
+                 configuration names no program.",
+                shown(root, &git_dir)
+            ));
+        }
+        return;
+    }
+    let kept = ctx.session.ledger().nested_repos.get(&git_dir) == Some(&digest);
+    if !kept {
+        scan.dangerous.push(Dangerous {
+            git_dir,
+            keys,
+            digest,
+        });
+    }
 }
 
 /// Move a nested repository's git directory aside, so no git enters it, under
@@ -210,12 +235,13 @@ async fn top_level(ctx: &ToolContext) -> Option<PathBuf> {
     None
 }
 
-/// The index's gitlinks, relative to `top`: what the engine's own git, in the
-/// session's sandbox, lists with mode 160000.
-async fn gitlinks(ctx: &ToolContext, top: &Path) -> Vec<PathBuf> {
+/// The gitlinks in the index of the repository at `worktree`, relative to
+/// it: what the engine's own git, in the session's sandbox, lists with mode
+/// 160000.
+async fn gitlinks(ctx: &ToolContext, worktree: &Path) -> Vec<PathBuf> {
     let listed = crate::bash::engine_exec(ctx)
         .git(
-            top,
+            worktree,
             base::engine_exec::GitAccess::ReadOnly,
             &["ls-files", "-s", "-z"],
             GIT_DEADLINE,
@@ -245,12 +271,12 @@ fn gitlinks_in(ls_files: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The paths `.gitmodules` declares, relative to `top`.
-async fn declared_submodules(ctx: &ToolContext, top: &Path) -> BTreeSet<PathBuf> {
+/// The paths `.gitmodules` declares, relative to `worktree`.
+async fn declared_submodules(ctx: &ToolContext, worktree: &Path) -> BTreeSet<PathBuf> {
     let text = ctx
         .exec
         .filesystem
-        .read_to_string(&top.join(".gitmodules"))
+        .read_to_string(&worktree.join(".gitmodules"))
         .await
         .unwrap_or_default();
     config_entries(&text)

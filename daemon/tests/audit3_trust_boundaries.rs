@@ -187,3 +187,133 @@ async fn audit3_a_skills_inline_command_does_not_run_in_a_scene_without_bash() {
         "a session without Bash ran the skill's shell command: {later}"
     );
 }
+
+fn host_git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap()
+}
+
+/// Runs one turn of a session in `work`, with every `Bash` call allowed by a
+/// rule and the sandbox on, answering any question by moving the repository
+/// aside.
+async fn bash_turn_in(dir: &std::path::Path, work: &std::path::Path, command: &str) {
+    let global = dir.join("agix");
+    std::fs::create_dir_all(&global).unwrap();
+    std::fs::write(
+        global.join("settings.json"),
+        json!({ "permission_rules": [{"tool": "Bash", "action": "allow"}] }).to_string(),
+    )
+    .unwrap();
+    let sock = dir.join("agix.sock");
+    let paths =
+        StaticDaemonPaths::with_project(global.clone(), work.to_path_buf()).with_global(global);
+    let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
+    config.settings.values.memory_enabled = false;
+    let model = Arc::new(MockAnthropicClient::new());
+    let pool = daemon::assemble::pool(
+        &config,
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
+        daemon::Assembly {
+            cwd: Some(work.to_path_buf()),
+            model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
+            transcripts: daemon::Transcripts::Nowhere,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the daemon assembles");
+    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+    let listener = DaemonServer::bind_unix(&sock).unwrap();
+    tokio::spawn(async move {
+        let _ = server.serve_unix_listener(listener).await;
+    });
+
+    model.push_turn(tool_round("plant", "Bash", json!({ "command": command })));
+    model.push_turn(text_round("done"));
+    let request = json!({"jsonrpc":"2.0","method":"session.run_turn",
+                         "params": {"message": "go"},"id":1});
+    let mut conn = UnixStream::connect(&sock).await.unwrap();
+    conn.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let (r, _w) = conn.split();
+    let mut reader = BufReader::new(r);
+    loop {
+        let mut line = String::new();
+        let n = tokio::time::timeout(Duration::from_secs(120), reader.read_line(&mut line))
+            .await
+            .expect("the turn ended")
+            .unwrap();
+        assert!(n > 0, "connection closed before the turn ended");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        if frame.get("id").is_some() {
+            assert!(frame.get("result").is_some(), "turn failed: {frame}");
+            break;
+        }
+        let event = &frame["params"]["event"];
+        if event["kind"] == "prompt" {
+            assert_eq!(event["prompt_type"], "question", "{event}");
+            let answer = json!({"jsonrpc":"2.0","method":"session.respondToPrompt","params":{
+                "session_id": frame["params"]["session_id"], "prompt_id": event["prompt_id"],
+                "prompt_type": "question", "answer": {"type": "answer", "text": "quarantine"}},
+                "id":2});
+            call(&sock, "session.respondToPrompt", answer["params"].clone()).await;
+        }
+    }
+    let result = later_requests(&model);
+    assert!(
+        result.contains("plant"),
+        "the command did not run: {result}"
+    );
+}
+
+/// A command let through by a rule nests a repository inside a nested
+/// repository; the inner one's configuration names a program. Once the turn
+/// is over, the user's own `git status` in the project — outside any sandbox,
+/// where it enters gitlinks of gitlinks — does not run it.
+#[tokio::test(flavor = "multi_thread")]
+async fn audit3_a_dangerous_repository_two_gitlinks_deep_is_moved_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = dir.path().canonicalize().unwrap();
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    assert!(host_git(&work, &["init", "-q"]).status.success());
+    std::fs::write(work.join("a"), "a").unwrap();
+    assert!(host_git(&work, &["add", "a"]).status.success());
+    assert!(host_git(&work, &["commit", "-qm", "a"]).status.success());
+    let pwned = dir.join("pwned");
+    let commit = "git -c user.email=t@example.com -c user.name=T commit -q";
+    let command = format!(
+        "mkdir sub && cd sub && git init -q && touch f && git add f && {commit} -m s && \
+         mkdir evil && cd evil && git init -q && touch g && git add g && {commit} -m e && \
+         git config core.fsmonitor \"touch '{}'; false\" && cd .. && git add evil && \
+         {commit} -m y && cd .. && git add sub",
+        pwned.display()
+    );
+
+    bash_turn_in(&dir, &work, &command).await;
+
+    let evil = work.join("sub/evil");
+    assert!(
+        std::fs::symlink_metadata(evil.join(".git")).is_err(),
+        "the second-level repository was left where `git` enters it"
+    );
+    assert!(
+        std::fs::read_dir(&evil).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".git.agix-quarantine-")),
+        "the second-level repository was not moved aside"
+    );
+    let status = host_git(&work, &["status"]);
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        !pwned.exists(),
+        "the user's `git status` ran a program the command named"
+    );
+}

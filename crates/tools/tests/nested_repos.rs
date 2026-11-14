@@ -44,10 +44,17 @@ async fn bash(ctx: &ToolContext, command: &str) {
 }
 
 fn plant(pwned: &Path) -> String {
+    plant_as("sub", pwned)
+}
+
+/// A repository at `path`, below the working directory, whose `git status`
+/// creates `pwned`, added to the index of the repository the command is in.
+fn plant_as(path: &str, pwned: &Path) -> String {
     format!(
-        "mkdir sub && cd sub && git init -q && touch f && git add f && \
+        "mkdir {path} && cd {path} && git init -q && touch f && git add f && \
          git -c user.email=t@example.com -c user.name=T commit -q -m s && \
-         git config core.fsmonitor \"touch '{}'; false\" && cd .. && git add sub",
+         git config core.fsmonitor \"touch '{}'; false\" && cd - >/dev/null && \
+         git add {path}",
         pwned.display()
     )
 }
@@ -201,4 +208,62 @@ async fn a_repository_is_moved_aside_on_the_filesystem_the_session_runs_against(
     let files = remote.snapshot();
     assert!(files.contains_key(&moved.join("config")), "{files:?}");
     assert!(!files.contains_key(&git_dir.join("config")), "{files:?}");
+}
+
+/// The user's `git status` enters a nested repository's own gitlinks too.
+#[tokio::test]
+async fn a_dangerous_repository_inside_a_clean_nested_repository_is_moved_aside() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let pwned = elsewhere.path().join("pwned");
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    bash(
+        &ctx,
+        &format!(
+            "mkdir sub && cd sub && git init -q && touch f && git add f && \
+             git -c user.email=t@example.com -c user.name=T commit -q -m s && \
+             {} && git -c user.email=t@example.com -c user.name=T commit -q -m y && \
+             cd .. && git add sub",
+            plant_as("evil", &pwned)
+        ),
+    )
+    .await;
+    assert_status_runs_it(project.path(), &pwned);
+
+    let scan = tools::nested_repos::scan(&ctx).await;
+    assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
+    assert!(
+        scan.dangerous[0].git_dir.ends_with("sub/evil/.git"),
+        "{scan:?}"
+    );
+    assert!(scan.notes.iter().all(|n| !n.contains("evil")), "{scan:?}");
+    quarantine_all(&ctx, &scan).await;
+    assert_status_no_longer_runs_it(project.path(), &pwned);
+}
+
+fn assert_status_runs_it(project: &Path, pwned: &Path) {
+    let status = git(project, &["status"]);
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        pwned.exists(),
+        "precondition: the user's `git status` runs the planted fsmonitor"
+    );
+    std::fs::remove_file(pwned).unwrap();
+}
+
+fn assert_status_no_longer_runs_it(project: &Path, pwned: &Path) {
+    let status = git(project, &["status"]);
+    assert!(status.status.success(), "{status:?}");
+    assert!(
+        !pwned.exists(),
+        "the user's `git status` ran a program the command named"
+    );
+}
+
+async fn quarantine_all(ctx: &ToolContext, scan: &tools::nested_repos::Scan) {
+    for repo in &scan.dangerous {
+        tools::nested_repos::quarantine(ctx, &repo.git_dir)
+            .await
+            .unwrap();
+    }
 }
