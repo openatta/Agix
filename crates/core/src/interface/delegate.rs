@@ -149,6 +149,15 @@ pub struct StartedAgent {
     pub agent_session_id: String,
 }
 
+impl StartedAgent {
+    pub fn new(task_id: impl Into<String>, agent_session_id: impl Into<String>) -> Self {
+        Self {
+            task_id: task_id.into(),
+            agent_session_id: agent_session_id.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DelegateOutcome {
     pub text: String,

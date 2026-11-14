@@ -234,6 +234,25 @@ pub struct ToolDef {
     pub source: Option<String>,
 }
 
+impl ToolDef {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+            source: None,
+        }
+    }
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
+        self
+    }
+}
+
 /// A message in the model's conversation history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMessage {

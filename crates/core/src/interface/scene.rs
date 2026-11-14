@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 /// Context passed to [`ScenePrompt`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScenePromptContext<'a> {
     pub cwd: Cow<'a, str>,
     pub os: Cow<'a, str>,
@@ -59,6 +59,24 @@ pub struct ReminderContext<'a> {
     pub memory_summary: Option<Cow<'a, str>>,
 }
 
+impl<'a> ReminderContext<'a> {
+    pub fn new(cwd: impl Into<Cow<'a, str>>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            git_status: None,
+            memory_summary: None,
+        }
+    }
+    pub fn git_status(mut self, status: impl Into<Cow<'a, str>>) -> Self {
+        self.git_status = Some(status.into());
+        self
+    }
+    pub fn memory_summary(mut self, summary: impl Into<Cow<'a, str>>) -> Self {
+        self.memory_summary = Some(summary.into());
+        self
+    }
+}
+
 /// Tools that only work when someone answers. A session whose scene is not
 /// [`SceneSpec::interactive`] does not register them.
 pub const NEEDS_A_USER: &[&str] = &["AskUserQuestion", "EnterPlanMode", "ExitPlanMode"];
@@ -70,6 +88,15 @@ pub struct TokenBudget {
     pub compact_threshold: usize,
     /// Number of recent messages to keep during compaction.
     pub compact_keep_recent: usize,
+}
+
+impl TokenBudget {
+    pub fn new(compact_threshold: usize, compact_keep_recent: usize) -> Self {
+        Self {
+            compact_threshold,
+            compact_keep_recent,
+        }
+    }
 }
 
 /// Execution limits a scene imposes on its own turns.
@@ -95,6 +122,14 @@ pub struct ExecutionParams {
     /// into a silent clamp: an operator raising the setting for a
     /// long-running task would get the scene's number back.
     pub max_api_calls_per_turn: u32,
+}
+
+impl ExecutionParams {
+    pub fn new(max_api_calls_per_turn: u32) -> Self {
+        Self {
+            max_api_calls_per_turn,
+        }
+    }
 }
 
 impl Default for ExecutionParams {
@@ -213,6 +248,10 @@ pub struct ModuleSurface {
 }
 
 impl ModuleSurface {
+    pub fn new(allow: Option<Vec<String>>, deny: Vec<String>) -> Self {
+        Self { allow, deny }
+    }
+
     pub fn permits(&self, id: &str) -> bool {
         self.allow
             .as_ref()
