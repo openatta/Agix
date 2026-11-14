@@ -83,6 +83,14 @@ impl ProgressUpdate {
             ..Self::default()
         }
     }
+    pub fn with_progress(mut self, progress: f64) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+    pub fn with_total(mut self, total: f64) -> Self {
+        self.total = Some(total);
+        self
+    }
 }
 
 /// What a tool call reports progress through. The engine hands every call
@@ -248,6 +256,28 @@ impl ToolResult {
             mcp_meta: None,
             new_messages: None,
         }
+    }
+    pub fn blocks(blocks: Vec<ToolResultBlock>) -> Self {
+        Self {
+            content: ToolResultContent::Blocks(blocks),
+            ..Self::default()
+        }
+    }
+    pub fn with_error(mut self, is_error: bool) -> Self {
+        self.is_error = is_error;
+        self
+    }
+    pub fn with_structured(mut self, v: Value) -> Self {
+        self.structured_content = Some(v);
+        self
+    }
+    pub fn with_mcp_meta(mut self, m: McpMeta) -> Self {
+        self.mcp_meta = Some(m);
+        self
+    }
+    pub fn with_new_messages(mut self, m: Vec<Value>) -> Self {
+        self.new_messages = Some(m);
+        self
     }
 }
 
