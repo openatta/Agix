@@ -164,6 +164,8 @@ impl SpecSetup {
 /// Extension points: what a caller plugs in around the session.
 pub(super) struct ExtSetup {
     pub(super) hooks: Option<Arc<HookRunner>>,
+    /// See [`Builder::background_hooks`].
+    pub(super) background_hooks: Option<hooks::BackgroundHooks>,
     pub(super) mcp_servers: Option<Box<dyn base::interface::mcp_servers::McpServers>>,
     pub(super) wake_rx: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
     /// Pre-built command registry shared across many sessions instead of
@@ -192,6 +194,7 @@ impl ExtSetup {
     pub(super) fn new() -> Self {
         Self {
             hooks: None,
+            background_hooks: None,
             mcp_servers: None,
             wake_rx: None,
             commands_override: None,

@@ -112,6 +112,13 @@ impl Agent {
         crate::steering::SteerHandle(self.channels.steering.clone())
     }
 
+    /// Where the host says why it stops this engine, for its `SessionEnd`
+    /// hooks. Take it before spawning [`Agent::run`], as with
+    /// [`Agent::commands`].
+    pub fn end_reason(&self) -> EndReasonSlot {
+        self.session_end.reason.clone()
+    }
+
     /// The session's own state — its todos, tasks, permission mode — shared
     /// with every tool call, for a host that shows or acts on it.
     pub fn session_state(&self) -> Arc<base::context::SessionState> {
@@ -365,8 +372,12 @@ impl Agent {
             .finish(crate::turn::MEMORY_EXTRACTION_GRACE)
             .await;
         // One exit point for shutdown, a closed channel and cancellation.
-        self.fire_lifecycle_hook(hooks::HookEvent::SessionEnd, |i| i)
-            .await;
+        let reason = self.session_end.reason.get();
+        self.fire_lifecycle_hook(hooks::HookEvent::SessionEnd, |i| match reason {
+            Some(reason) => i.with_reason(reason.as_str()),
+            None => i,
+        })
+        .await;
 
         let duration_ms = run_started.elapsed().as_millis() as i64;
         let spent = self.session_state.ledger().spent;

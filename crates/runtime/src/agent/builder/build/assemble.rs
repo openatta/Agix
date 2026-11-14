@@ -17,6 +17,7 @@ impl Builder {
             tools: w.resolved.tools.clone(),
             state: w.session_state.clone(),
             attachment: w.attachment,
+            reason: EndReasonSlot::default(),
         };
         let gate = self.gate(
             w.resolved.permission,

@@ -24,6 +24,7 @@ fn dummy_live_session(last_active: Instant) -> LiveSession {
             generation: Generations::default().next(),
             input_tx,
             cancel: CancellationToken::new(),
+            end_reason: Default::default(),
             exited: CancellationToken::new(),
             namer: SessionNamer::of(
                 "dummy",

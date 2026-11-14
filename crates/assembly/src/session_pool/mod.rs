@@ -13,7 +13,7 @@ use base::interface::scene::SceneSpec;
 use base::settings::{LoadedSettings, Settings};
 use base::settings::{RecorderConfig, RecorderMode};
 use model::client::AnthropicClient;
-use runtime::agent::{Builder, EngineCommand, EventReceiver, InputMessage, InputSender};
+use runtime::agent::{Builder, EndReason, EngineCommand, EventReceiver, InputMessage, InputSender};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

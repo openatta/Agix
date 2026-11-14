@@ -12,13 +12,15 @@ impl Builder {
         let delegator = crate::module::LateDelegator::default();
         let session_ended = CancellationToken::new();
         let own_runner = self.ext.hooks.is_none();
+        let background = self.ext.background_hooks.take().unwrap_or_default();
         let hooks = self.ext.hooks.take().unwrap_or_else(|| {
-            build_hook_runner(
+            let runner = build_hook_runner(
                 settings,
                 model.clone(),
                 Arc::new(delegator.clone()),
                 Some(session.session_id_str().to_string()),
-            )
+            );
+            Arc::new(runner.with_background(background))
         });
         // A runner handed in belongs to a session above this one, which wired
         // its wake channel already; taking it over would move every rewake of

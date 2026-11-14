@@ -509,6 +509,14 @@ impl Builder {
         self.ext.hooks = Some(h);
         self
     }
+    /// Run the hooks of events whose answer is ignored in `background`, which
+    /// the host drains on its way out ([`hooks::BackgroundHooks::drain`]).
+    /// For the runner this session builds; one handed to [`Builder::hooks`]
+    /// keeps its own.
+    pub fn background_hooks(mut self, background: hooks::BackgroundHooks) -> Self {
+        self.ext.background_hooks = Some(background);
+        self
+    }
     /// Inject a backing store for session transcript persistence. When set,
     /// the session's messages are incrementally appended to disk once per
     /// turn (see `session::session::SessionManager::persist`); `None` (the

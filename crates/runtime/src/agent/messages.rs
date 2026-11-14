@@ -241,6 +241,49 @@ pub enum EngineCommand {
     Shutdown,
 }
 
+/// Why the host is stopping an engine: what its `SessionEnd` hooks get as
+/// `reason`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndReason {
+    /// `session.close` or `session.delete`.
+    Close,
+    /// Idle, or pushed out of a full pool.
+    Evict,
+    /// Replaced by an engine built anew for the same session.
+    Rebuild,
+    /// The host itself is shutting down.
+    Shutdown,
+}
+
+impl EndReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Close => "close",
+            Self::Evict => "evict",
+            Self::Rebuild => "rebuild",
+            Self::Shutdown => "shutdown",
+        }
+    }
+}
+
+/// Where a host says why it stops an engine, before it cancels the token
+/// [`Agent::run`] was handed ([`Agent::end_reason`]). The first reason set
+/// stands. An engine stopped without one, or that ends on its own — its input
+/// channel closed, [`EngineCommand::Shutdown`] — fires `SessionEnd` with no
+/// `reason`.
+#[derive(Debug, Clone, Default)]
+pub struct EndReasonSlot(Arc<std::sync::OnceLock<EndReason>>);
+
+impl EndReasonSlot {
+    pub fn set(&self, reason: EndReason) {
+        let _ = self.0.set(reason);
+    }
+
+    pub fn get(&self) -> Option<EndReason> {
+        self.0.get().copied()
+    }
+}
+
 pub type InputSender = mpsc::UnboundedSender<InputMessage>;
 pub type InputReceiver = mpsc::UnboundedReceiver<InputMessage>;
 /// Where the engine emits. Every emission site in the runtime holds one of

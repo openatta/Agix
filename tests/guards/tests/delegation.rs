@@ -179,6 +179,10 @@ const NOT_FOR_DELEGATES: &[(&str, &str)] = &[
     ),
     ("process_groups", "already in the inherited exec providers"),
     (
+        "background_hooks",
+        "set on the root's own runner, which its delegates are handed",
+    ),
+    (
         "session_prompt",
         "the root's own prompt; a delegate keeps its type's",
     ),

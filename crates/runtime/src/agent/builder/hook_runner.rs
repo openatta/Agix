@@ -19,7 +19,7 @@ pub(in crate::agent) fn build_hook_runner(
     model: Arc<dyn Model>,
     delegator: Arc<dyn base::interface::delegate::Delegator>,
     session_id: Option<String>,
-) -> Arc<HookRunner> {
+) -> HookRunner {
     // Key by key, not whole-map. `HooksSettings` is keyed by `HookEvent`,
     // which has no serde fallback, so one unrecognized event name would
     // otherwise fail the entire map and silently turn off every hook.
@@ -86,13 +86,12 @@ pub(in crate::agent) fn build_hook_runner(
         delegator,
         settings.paths.working_dir().to_path_buf(),
     ));
-    let runner = HookRunner::new(parsed)
+    HookRunner::new(parsed)
         .with_hooks_search_dirs(hooks_search_dirs)
         .with_project_untrusted(project_untrusted)
         .with_subprocess_env(settings.values.sandbox.subprocess_env.clone())
         .with_prompt_executor(prompt_executor)
-        .with_agent_executor(agent_executor);
-    Arc::new(runner)
+        .with_agent_executor(agent_executor)
 }
 
 /// The session's id, cwd and permission mode, read each time a payload is

@@ -194,7 +194,8 @@ impl SessionPool {
             });
         }
         if let Some(replaced) = displaced.replaced {
-            self.live.stop_removed(&session_id, &replaced);
+            self.live
+                .stop_removed(&session_id, &replaced, EndReason::Rebuild);
             replaced.turn.idle.notify_waiters();
         }
         Self::forward_task_events(&core);
@@ -554,6 +555,7 @@ fn run_engine(
     } = built;
     let delegator = agent.delegator();
     let health = agent.health();
+    let end_reason = agent.end_reason();
     let cancel = CancellationToken::new();
     let exited = CancellationToken::new();
     let exited_on_drop = exited.clone().drop_guard();
@@ -569,6 +571,7 @@ fn run_engine(
             generation,
             input_tx,
             cancel,
+            end_reason,
             exited,
             namer,
             binding: binding.stamp.clone(),

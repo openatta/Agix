@@ -2144,6 +2144,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   的超时;回合结束、`session.close`、`setPrompt` 不再等它们。daemon 进程退出时还没跑完的被终止。重建或
   驱逐之后,新引擎的 `SessionStart` 可能比旧引擎的 `SessionEnd` 先跑完。回答能起作用的事件(`PreToolUse`、
   `Stop`、`UserPromptSubmit`、`PreCompact`)照旧随回合取消。
+- **`SessionEnd` 的 payload 带 `reason`,daemon 关停时等后台 hook。** `reason` 是 `close`、`evict`、
+  `rebuild`、`shutdown` 之一,引擎自己结束的不带。daemon 关停时在等引擎的同一个 5 秒宽限里等后台的
+  只通知 hook,到时还没跑完的 command hook 进程组先收 `SIGTERM`、半秒后 `SIGKILL`,每个留一行 warn;
+  要在关停时收尾的 hook 应当处理 `SIGTERM`。
 - **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
   `customize_session` 装的 tool / prompt middleware、结果变换、模型拦截、恢复策略、compactor、
   插件场景、记忆存储与召回(连同召回 hook)、任务路由。审计类 middleware 的计数会因此变多;子会话
@@ -2548,8 +2552,12 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `AgentHookExecutor::execute` 末尾多 `stop: &CancellationToken`,实现方应在它取消时尽快返回;
   `AgentHookExecutor::execute` 的错误类型由 `String` 改为 `hooks::runner::AgentHookError { NotJudged,
   Failed(String) }`。`HookOutcome` 新增 `Cancelled`。
-- **`HookRunner::run` 对不回答引擎的事件,`stop` 取消时立即返回**,hook 在后台跑到自己的超时;要掐掉
-  它们的宿主改用 hook 自己的 `timeout`。
+- **`HookRunner::run` 对不回答引擎的事件,`stop` 取消时立即返回**,hook 在后台跑到自己的超时。要在
+  退出时等它们的宿主建一个 `hooks::BackgroundHooks`,经 `HookRunner::with_background`(或
+  `Builder::background_hooks`,给引擎自己建的 runner)交进去,退出时 `drain(deadline)`:等到 `deadline`,
+  再叫停还在跑的。
+- **`SessionEnd` 的 `reason`**:停引擎之前在 `Agent::end_reason()`(spawn `run` 之前取)上 `set` 一个
+  `runtime::agent::EndReason`;不 set 的不带 `reason`。
 
 #### 场景
 

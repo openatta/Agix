@@ -57,6 +57,7 @@ struct SessionEnd {
     tools: Arc<InMemoryToolRegistry>,
     state: Arc<base::context::SessionState>,
     attachment: base::context::EngineAttachment,
+    reason: EndReasonSlot,
 }
 
 impl Drop for SessionEnd {

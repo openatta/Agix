@@ -110,7 +110,7 @@ impl HookEvent {
             HookEvent::SessionStart => ("会话开始运行,紧接在 `Setup` 之后", "—", Ignored),
             HookEvent::SessionEnd => (
                 "会话的主循环退出:收到关闭、输入通道关闭、被取消,三种都发",
-                "—",
+                "`reason`:宿主为什么停下这个引擎——`close`(`session.close` / `session.delete`)、`evict`(空闲回收或池满挤出)、`rebuild`(`setPrompt`、跨 provider 的 `setModel`、设置变了而换引擎)、`shutdown`(daemon 关停);引擎自己结束的(输入通道关闭、收到 `Shutdown` 命令)、嵌入方停下时没给原因的不带",
                 Ignored,
             ),
             HookEvent::Stop => (

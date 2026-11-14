@@ -639,6 +639,7 @@ async fn reap_previous_groups(groups_file: &std::path::Path) -> anyhow::Result<(
     .await?;
     if !reaped.is_empty() {
         tracing::warn!(
+            count = reaped.len(),
             groups = ?reaped,
             "stopped process groups a previous run of this instance left running"
         );

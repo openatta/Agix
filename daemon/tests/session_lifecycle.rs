@@ -5626,6 +5626,89 @@ async fn a_slow_session_end_hook_does_not_hold_up_a_rebuild() {
     srv.stop().await;
 }
 
+/// The `SessionEnd` input a hook wrote to `path`, once the whole of it is there.
+async fn session_end_input(path: &std::path::Path) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if let Ok(input) = serde_json::from_str::<serde_json::Value>(&text) {
+                return input;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the SessionEnd hook never wrote its input")
+}
+
+/// `session.close` tells the `SessionEnd` hook why the session ended.
+#[tokio::test]
+async fn a_closed_session_ends_with_reason_close() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let input = log_dir.path().join("input.json");
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("hi")],
+        hooked_settings(serde_json::json!({
+            "SessionEnd": [
+                { "type": "command", "command": format!("cat > '{}'", input.display()) }
+            ]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "hello").await;
+    rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.close","id":5,"params":{{"session_id":"{sid}"}}}}"#
+        ),
+    )
+    .await;
+
+    let ended = session_end_input(&input).await;
+    assert_eq!(ended["hook_event_name"], "SessionEnd", "{ended}");
+    assert_eq!(ended["reason"], "close", "{ended}");
+
+    srv.stop().await;
+}
+
+/// A `SessionEnd` hook still running when the daemon shuts down is waited
+/// for within the shutdown grace, then sent `SIGTERM`; it learns the session
+/// ended for a shutdown.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_session_end_hook_running_at_shutdown_gets_sigterm() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let input = log_dir.path().join("input.json");
+    let term = log_dir.path().join("term");
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("hi")],
+        hooked_settings(serde_json::json!({
+            "SessionEnd": [{
+                "type": "command",
+                "command": format!(
+                    "trap 'echo term > \"{}\"; exit 0' TERM; cat > '{}'; sleep 30 & wait",
+                    term.display(),
+                    input.display()
+                ),
+                "timeout": 60000
+            }]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+    run_turn(&srv.sock, None, "hello").await;
+
+    tokio::time::timeout(Duration::from_secs(10), srv.server.shutdown())
+        .await
+        .expect("the shutdown waited for the SessionEnd hook past its grace");
+
+    assert_eq!(session_end_input(&input).await["reason"], "shutdown");
+    assert!(term.exists(), "the SessionEnd hook was not sent SIGTERM");
+
+    srv.stop().await;
+}
+
 /// A turn stuck in a slow notify-only hook does not keep its session from
 /// closing: closed, it can be resumed at once.
 #[tokio::test]

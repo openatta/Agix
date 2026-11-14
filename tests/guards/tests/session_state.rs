@@ -160,6 +160,7 @@ const FIELDS: &[(&str, &str)] = &[
     ),
     ("EngineSlot::input_tx", "Engine: its input channel"),
     ("EngineSlot::cancel", "Engine: stops it"),
+    ("EngineSlot::end_reason", "Engine: why it was stopped"),
     (
         "EngineSlot::exited",
         "Engine: cancelled once it has stopped",

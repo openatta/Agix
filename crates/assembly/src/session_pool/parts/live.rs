@@ -16,7 +16,7 @@ use crate::session_pool::{CreateError, SessionNamer, AGENT_EXIT_GRACE, PROCESS_G
 use base::context::SessionState;
 use base::event::ContextUsage;
 use base::interface::scene::SceneSpec;
-use runtime::agent::InputSender;
+use runtime::agent::{EndReason, EndReasonSlot, InputSender};
 use runtime::steering::SteerHandle;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -182,6 +182,7 @@ pub(in crate::session_pool) struct EngineSlot {
     pub(in crate::session_pool) generation: Generation,
     pub(in crate::session_pool) input_tx: InputSender,
     pub(in crate::session_pool) cancel: CancellationToken,
+    pub(in crate::session_pool) end_reason: EndReasonSlot,
     /// Cancelled once the Agent's task has returned and dropped the Agent.
     pub(in crate::session_pool) exited: CancellationToken,
     pub(in crate::session_pool) namer: SessionNamer,
@@ -201,6 +202,13 @@ pub(in crate::session_pool) struct EngineSlot {
     pub(in crate::session_pool) scripts: Option<Arc<base::interface::script::ScriptLedger>>,
     /// The checks this engine's plugins registered, for `session.get`.
     pub(in crate::session_pool) health: Arc<base::interface::health::HealthChecks>,
+}
+
+impl EngineSlot {
+    pub(in crate::session_pool) fn stop(&self, reason: EndReason) {
+        self.end_reason.set(reason);
+        self.cancel.cancel();
+    }
 }
 
 pub(in crate::session_pool) struct LiveSession {
@@ -472,8 +480,13 @@ impl LiveSessions {
     /// waiting for it: whoever brings `sid` back waits instead
     /// ([`Self::wait_until_stopped`]). Nothing it still produces reaches its
     /// watchers.
-    pub(in crate::session_pool) fn stop_removed(&self, sid: &str, live: &LiveSession) {
-        live.engine.cancel.cancel();
+    pub(in crate::session_pool) fn stop_removed(
+        &self,
+        sid: &str,
+        live: &LiveSession,
+        reason: EndReason,
+    ) {
+        live.engine.stop(reason);
         live.core.hub.clear();
         let mut stopping = self
             .stopping

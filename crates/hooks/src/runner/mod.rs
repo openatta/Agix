@@ -1,16 +1,19 @@
 //! `HookRunner` —— 按事件触发已注册的 hook，执行子进程并解析响应。
 //!
 //! Submodules split the implementation:
+//! - `background` — the hooks of notify-only events, run apart from their caller
 //! - `contracts` — the prompt and agent executors a host injects
 //! - `executor` — command, prompt, and HTTP hook execution
 //! - `matcher` — hook `if` pattern matching utilities
 //! - `rewake` — `once` and async-rewake bookkeeping, and waking the rewake hooks
 
+mod background;
 mod contracts;
 pub mod executor;
 pub mod matcher;
 mod rewake;
 
+pub use background::BackgroundHooks;
 pub use contracts::{AgentHookError, AgentHookExecutor, PromptHookExecutor};
 
 use crate::config::{HookConfig, HookEvent, HooksSettings, OnError};
@@ -150,6 +153,7 @@ pub struct HookRunner {
     hooks_search_dirs: Vec<std::path::PathBuf>,
     project_untrusted: bool,
     process: platform::LocalProcess,
+    background: BackgroundHooks,
 }
 
 impl HookRunner {
@@ -168,7 +172,16 @@ impl HookRunner {
             hooks_search_dirs: Vec::new(),
             project_untrusted: false,
             process: Default::default(),
+            background: BackgroundHooks::new(),
         }
+    }
+
+    /// Builder: where the hooks of events whose answer is ignored run, for a
+    /// host that waits for them, and stops them, on its way out
+    /// ([`BackgroundHooks::drain`]). Without one, nothing waits for them.
+    pub fn with_background(mut self, background: BackgroundHooks) -> Self {
+        self.background = background;
+        self
     }
 
     /// Builder: the environment a `Command` hook starts from.
@@ -376,7 +389,7 @@ impl HookRunner {
     /// fired it going away is no reason to keep that from its hooks. Nor is it
     /// a reason to wait for them: once `stop` is cancelled this returns with
     /// no outcomes, and the hooks run on to their own timeout in the
-    /// background.
+    /// background, unless [`BackgroundHooks::drain`] stops them first.
     ///
     /// [`Answer::Ignored`]: crate::catalog::Answer::Ignored
     pub async fn run(
@@ -385,7 +398,7 @@ impl HookRunner {
         input: &HookInput,
         stop: &CancellationToken,
     ) -> HookRunResult {
-        if matches!(event.spec().answer, crate::catalog::Answer::Acts(_)) {
+        if !runs_in_background(event) {
             return self.run_now(event, input, stop).await;
         }
         if !self.settings.contains_key(&event) {
@@ -393,10 +406,9 @@ impl HookRunner {
         }
         let runner = self.sharing_state();
         let input = input.clone();
-        let mut ran = tokio::spawn(async move {
-            runner
-                .run_now(event, &input, &CancellationToken::new())
-                .await
+        let mut ran = self.background.spawn(async move {
+            let shutdown = runner.background.shutdown().clone();
+            runner.run_now(event, &input, &shutdown).await
         });
         tokio::select! {
             biased;
@@ -426,6 +438,7 @@ impl HookRunner {
             hooks_search_dirs: self.hooks_search_dirs.clone(),
             project_untrusted: self.project_untrusted,
             process: self.process.clone(),
+            background: self.background.clone(),
         }
     }
 
@@ -441,6 +454,7 @@ impl HookRunner {
         };
 
         let pending = self.pending_indices(event, configs);
+        let started = std::time::Instant::now();
 
         // Spawn each hook as an indexed future; collect into a Vec keyed by
         // registration index so the order in HookRunResult.outcomes is stable
@@ -459,8 +473,8 @@ impl HookRunner {
         indexed.sort_by_key(|(i, _)| *i);
 
         for (idx, outcome) in &indexed {
-            if let HookOutcome::Error(error) = outcome {
-                if configs[*idx].on_error() == OnError::Allow {
+            match outcome {
+                HookOutcome::Error(error) if configs[*idx].on_error() == OnError::Allow => {
                     tracing::warn!(
                         event = ?event,
                         hook = %configs[*idx].describe(),
@@ -468,6 +482,15 @@ impl HookRunner {
                         "hook failed; it neither blocks nor rewrites anything"
                     );
                 }
+                HookOutcome::Cancelled if runs_in_background(event) => {
+                    tracing::warn!(
+                        event = ?event,
+                        hook = %configs[*idx].describe(),
+                        ran_ms = started.elapsed().as_millis() as u64,
+                        "hook stopped before it finished: the host is shutting down"
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -645,6 +668,12 @@ impl HookRunner {
             }
         }
     }
+}
+
+/// Whether `event`'s hooks run apart from the call that fired them, stopped
+/// only by [`BackgroundHooks::drain`]: its answer is ignored.
+fn runs_in_background(event: HookEvent) -> bool {
+    !matches!(event.spec().answer, crate::catalog::Answer::Acts(_))
 }
 
 const NO_PROMPT_EXECUTOR: &str = "prompt-type hook needs a PromptHookExecutor injected";
@@ -1883,6 +1912,42 @@ mod tests {
         })
         .await;
         assert!(returned.is_ok(), "the stopped turn waited for its hook");
+    }
+
+    /// Draining waits for it until the deadline, then stops it with
+    /// `SIGTERM`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn draining_stops_an_observer_hook_still_running_at_the_deadline() {
+        let dir = tempfile_dir();
+        let started = dir.join("started");
+        let term = dir.join("term");
+        let mut slow = command(&format!(
+            "trap 'touch \"{}\"; exit 0' TERM; touch '{}'; sleep 30 & wait",
+            term.display(),
+            started.display()
+        ));
+        if let HookConfig::Command { timeout, .. } = &mut slow {
+            *timeout = Some(60_000);
+        }
+        let background = BackgroundHooks::new();
+        let r = HookRunner::new(HashMap::from([(HookEvent::SessionEnd, vec![slow])]))
+            .with_background(background.clone());
+        let stop = CancellationToken::new();
+        stop.cancel();
+        r.run(
+            HookEvent::SessionEnd,
+            &HookInput::lifecycle("SessionEnd", "s", ".", "default"),
+            &stop,
+        )
+        .await;
+        assert!(appears(&started).await, "the hook never started");
+
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        tokio::time::timeout(Duration::from_secs(10), background.drain(deadline))
+            .await
+            .expect("drain waited past its deadline");
+        assert!(term.exists(), "the hook was not sent SIGTERM");
     }
 
     fn blocking_on_error(mut hook: HookConfig) -> HookConfig {

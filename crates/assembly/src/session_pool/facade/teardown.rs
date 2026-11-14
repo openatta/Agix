@@ -6,7 +6,7 @@ impl SessionPool {
     /// Take `live` out of memory as [`Self::stop_removed`] does, for a
     /// session that may be brought back.
     pub(in crate::session_pool) fn evict(&self, sid: &str, live: &LiveSession) {
-        self.live.stop_removed(sid, live);
+        self.live.stop_removed(sid, live, EndReason::Evict);
         live.core.reap_process_groups_later();
         self.specs.release(sid);
     }
@@ -78,7 +78,7 @@ impl SessionPool {
                 .with_session_lock(&child_str, async {
                     if let Some(live) = self.live.remove(&child_str).await {
                         self.end_cut_off_turn(&child_str, &live, SessionEvent::Closed);
-                        self.live.stop_removed(&child_str, &live);
+                        self.live.stop_removed(&child_str, &live, EndReason::Close);
                         live.core.reap_process_groups_later();
                     }
                     match store.delete(child).await {
@@ -120,7 +120,7 @@ impl SessionPool {
     ) -> usize {
         if let Some(live) = self.live.remove(session_id).await {
             self.end_cut_off_turn(session_id, &live, SessionEvent::Closed);
-            self.live.stop_removed(session_id, &live);
+            self.live.stop_removed(session_id, &live, EndReason::Close);
             info!(%session_id, "session removed");
             self.emit_event(api::DaemonEvent::SessionClosed {
                 session_id: session_id.to_string(),
@@ -250,7 +250,7 @@ impl SessionPool {
                 self.live.with_session_lock(sid, async move {
                     let live = self.live.remove(sid).await?;
                     self.end_cut_off_turn(sid, &live, SessionEvent::Closed);
-                    live.engine.cancel.cancel();
+                    live.engine.stop(EndReason::Shutdown);
                     live.core.hub().clear();
                     info!(%sid, "session removed (shutdown)");
                     Some((live.engine.exited, live.core.process_groups().clone()))
@@ -260,10 +260,12 @@ impl SessionPool {
             .into_iter()
             .flatten()
             .unzip();
+        let deadline = tokio::time::Instant::now() + AGENT_EXIT_GRACE;
         let all = futures::future::join_all(exits.iter().map(|e| e.cancelled()));
-        if tokio::time::timeout(AGENT_EXIT_GRACE, all).await.is_err() {
+        if tokio::time::timeout_at(deadline, all).await.is_err() {
             warn!("some sessions did not stop within the grace period");
         }
+        self.factory.background_hooks().drain(deadline).await;
         futures::future::join_all(
             ledgers
                 .iter()
@@ -286,7 +288,7 @@ impl SessionPool {
         let Some((exited, core, generation)) = self
             .live
             .with_live(session_id, |live| {
-                live.engine.cancel.cancel();
+                live.engine.stop(EndReason::Rebuild);
                 (
                     live.engine.exited.clone(),
                     live.core.clone(),

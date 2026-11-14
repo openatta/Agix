@@ -46,6 +46,7 @@ pub(in crate::session_pool) struct EngineFactory {
     /// together. One per pool, so a pool filling it leaves the others in the
     /// process their own.
     run_slots: Arc<tokio::sync::Semaphore>,
+    background_hooks: hooks::BackgroundHooks,
 }
 
 /// What an engine takes over from the session it runs: the session's state
@@ -121,11 +122,17 @@ impl EngineFactory {
             permission_prompt_timeout,
             history_store,
             run_slots: runtime::agent::default_run_slots(),
+            background_hooks: hooks::BackgroundHooks::new(),
         }
     }
 
     pub(in crate::session_pool) fn run_slots(&self) -> &Arc<tokio::sync::Semaphore> {
         &self.run_slots
+    }
+
+    /// Where every session's notify-only hooks run, drained at shutdown.
+    pub(in crate::session_pool) fn background_hooks(&self) -> &hooks::BackgroundHooks {
+        &self.background_hooks
     }
 
     /// The prompt timeout, in seconds, of a session on `settings`.
@@ -170,6 +177,7 @@ impl EngineFactory {
             .commands_override(binding.commands.clone())
             .cron_store(req.cron_store)
             .run_slots(self.run_slots.clone())
+            .background_hooks(self.background_hooks.clone())
             .question_prompts(options.is_some_and(SessionOptions::answers_questions));
         if let Some(store) = &self.history_store {
             builder = builder.history_store(store.clone());

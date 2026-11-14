@@ -261,7 +261,10 @@ agent hook 的子 Agent 以 `cancelled` 停下;它按失败算,写了 `"on_error
 `PostToolUseFailure` 等),以及工具已经跑完的 `PostToolUse`——回合在工具跑的时候被打断也照发。
 不叫停也不等:回合被打断、会话关闭、被驱逐、为新的 prompt 或设置重建、daemon 关停时,"只通知"
 的 hook 留在后台跑到它自己的超时为止,回合照常结束,引擎照常停下。所以重建出来的引擎的
-`SessionStart` 可能比旧引擎的 `SessionEnd` 先跑完;daemon 进程退出时还没跑完的被杀掉。
+`SessionStart` 可能比旧引擎的 `SessionEnd` 先跑完。daemon 关停时等这些后台 hook,和等引擎停下
+共用同一个宽限(5 秒,从关停开始算);宽限用完还没跑完的被叫停——command hook 的进程组先收
+`SIGTERM`,半秒后还在的收 `SIGKILL`——每个在日志里留一行 warn(事件、哪个 hook、跑了多久)。
+进程被直接杀掉(`SIGKILL`、崩溃)时它们无从收尾;下次启动时清掉上次留下的进程组,并记一行日志。
 `PreToolUse` 跑完时回合已经被打断的,这次调用不执行。
 
 ```json
@@ -287,7 +290,7 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
 | `TurnStart` | 一轮开始,UserPromptSubmit 放行之后、第一次调模型之前 | `turn_id` | 只通知,回答被丢弃 |
 | `TurnComplete` | 一轮正常走完(模型不再要工具,Stop hook 也放行了) | `turn_id`、`stop_reason` | 只通知,回答被丢弃 |
 | `SessionStart` | 会话开始运行,紧接在 `Setup` 之后 | — | 只通知,回答被丢弃 |
-| `SessionEnd` | 会话的主循环退出:收到关闭、输入通道关闭、被取消,三种都发 | — | 只通知,回答被丢弃 |
+| `SessionEnd` | 会话的主循环退出:收到关闭、输入通道关闭、被取消,三种都发 | `reason`:宿主为什么停下这个引擎——`close`(`session.close` / `session.delete`)、`evict`(空闲回收或池满挤出)、`rebuild`(`setPrompt`、跨 provider 的 `setModel`、设置变了而换引擎)、`shutdown`(daemon 关停);引擎自己结束的(输入通道关闭、收到 `Shutdown` 命令)、嵌入方停下时没给原因的不带 | 只通知,回答被丢弃 |
 | `Stop` | 模型这一步不再要工具、这一轮要结束时;每次要结束都问一遍 | `stop_hook_active`(这一轮已经被 Stop hook 送回去过) | `continue: false`:结束这一轮(`stopped_by_hook`,随后发 `StopFailure`);`decision: "block"`(或 exit 2):不让结束,`message` 作为提醒交给模型接着做 |
 | `StopFailure` | 一轮被 Stop hook 的 `continue: false` 截停时 | `reason` | 只通知,回答被丢弃 |
 | `UserPromptSubmit` | 用户消息进转录之前:开一轮的那条,以及运行中 steer 进来的每一条 | `user_prompt`、`delivery`(`turn` / `steer`) | `decision: "block"`:这条消息不处理——开一轮的直接以 `stopped_by_hook` 结束、不调模型,steer 的不进转录;`updated_input`(JSON 字符串):换掉消息文本 |

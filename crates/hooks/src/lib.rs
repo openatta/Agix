@@ -13,4 +13,4 @@ pub use config::{
     UNWIRED_EVENTS,
 };
 pub use payload::{HookDecision, HookInput, HookResponse};
-pub use runner::HookRunner;
+pub use runner::{BackgroundHooks, HookRunner};
