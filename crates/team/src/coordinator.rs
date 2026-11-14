@@ -486,6 +486,9 @@ impl Coordinator for DefaultCoordinator {
                     };
                     async move {
                         let _permit = permits.acquire_owned().await.expect("semaphore closed");
+                        if ctx.cancel.is_cancelled() {
+                            return (label, String::new(), MemberEnd::Cancelled);
+                        }
                         let (text, end) = run_member(delegator.as_ref(), call, ctx).await;
                         (label, text, end)
                     }
@@ -1940,6 +1943,46 @@ mod tests {
             assert_eq!(last["kind"], "team_completed", "{end:?}: {log}");
             assert_eq!(last["status"], "cancelled", "{end:?}: {log}");
         }
+    }
+
+    /// A member still waiting for the stage's permit when the lead's call is
+    /// cancelled is not started once the permit comes.
+    #[tokio::test]
+    async fn a_member_waiting_for_a_permit_is_not_started_after_a_cancel() {
+        let (_dir, ctx) = make_ctx();
+        let delegator = Arc::new(CancelsTheLead {
+            lead: ctx.cancel.clone(),
+            end: DelegateEnd::Cancelled,
+            spawned: Default::default(),
+        });
+        let member = |label: &str| TeamAgentSpec {
+            label: label.into(),
+            prompt: label.into(),
+            agent_type: None,
+        };
+        let stage = TeamStage {
+            name: "one".into(),
+            agents: vec![member("first"), member("second")],
+            aggregate: None,
+        };
+        let mut config = EngineConfig::defaults_for("test");
+        config.team_stage_concurrency = 1;
+        let request = OrchestrateRequest {
+            config: Arc::new(config),
+            ..make_request(ctx, vec![stage])
+        };
+        let result = DefaultCoordinator::with_delegator(delegator.clone())
+            .orchestrate(request)
+            .await
+            .expect("orchestrate returns a result");
+
+        let spawned = delegator
+            .spawned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert_eq!(spawned, ["first"]);
+        assert!(result.is_error);
     }
 
     /// Hangs until `cancel` fires, as a judge cut off mid-answer would.
