@@ -98,7 +98,7 @@ impl HookEvent {
                 ),
             ),
             HookEvent::PostToolUseFailure => (
-                "工具调用以错误结束(工具返回错误或 panic)时,在 PostToolUse 之前;\
+                "工具调用以错误结束(工具返回错误或 panic,或同批的另一个调用出错时被中途放弃)时,在 PostToolUse 之前;\
                  工具自己报告失败的结果(如 Bash 非零退出)不算;skill 正文里的 `` !`cmd` `` \
                  按一次 `Bash` 调用算(`turn_id` 在 `/name` 展开时没有)",
                 "`tool_name`、`tool_input`、`reason`(错误文本)、`turn_id`",

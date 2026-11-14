@@ -124,6 +124,9 @@ where
 
 type ToolDone = (usize, String, base::interface::tool_middleware::ToolOutcome);
 
+/// The error a concurrent call stands on when a sibling's error abandons it.
+pub(crate) const ABANDONED_BY_SIBLING: &str = "cancelled by sibling error";
+
 struct StreamState<'a, F, G> {
     stream: ModelStream,
     event_tx: &'a EventSender,
@@ -384,7 +387,7 @@ where
         let abort = self.batch_abort.clone();
         self.batch.push(Box::pin(async move {
             let result = tokio::select! {
-                _ = abort.cancelled() => Err("cancelled by sibling error".to_string()),
+                _ = abort.cancelled() => Err(ABANDONED_BY_SIBLING.to_string()),
                 r = exec => r,
             };
             (idx, id, result)

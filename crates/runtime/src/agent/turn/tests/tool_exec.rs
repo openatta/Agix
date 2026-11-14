@@ -752,6 +752,154 @@ async fn post_tool_use_failure_runs_for_a_call_its_cancelled_turn_failed() {
     );
 }
 
+/// Says it started, then runs until it is dropped.
+struct RunsUntilDropped(Arc<tokio::sync::Notify>);
+#[async_trait::async_trait]
+impl base::tool::Tool for RunsUntilDropped {
+    fn name(&self) -> &str {
+        "RunsUntilDropped"
+    }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "runs until dropped (test tool)"
+    }
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: base::tool::ToolContext,
+        _progress: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        self.0.notify_one();
+        std::future::pending().await
+    }
+}
+
+/// Fails once its sibling has started.
+struct FailsAfterSiblingStarts(Arc<tokio::sync::Notify>);
+#[async_trait::async_trait]
+impl base::tool::Tool for FailsAfterSiblingStarts {
+    fn name(&self) -> &str {
+        "FailsAfterSiblingStarts"
+    }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "fails once its sibling started (test tool)"
+    }
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: base::tool::ToolContext,
+        _progress: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        self.0.notified().await;
+        Err(base::error::ToolError::exec("failed on purpose"))
+    }
+}
+
+/// A call its batch abandons because a sibling failed still ends for the
+/// hooks: `PostToolUseFailure` fires for it, with the error its tool_result
+/// carries.
+#[tokio::test]
+async fn post_tool_use_failure_runs_for_a_call_its_batch_abandoned() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("failures.jsonl");
+    let mut settings: hooks::config::HooksSettings = std::collections::HashMap::new();
+    settings.insert(
+        hooks::HookEvent::PostToolUseFailure,
+        vec![hooks::config::HookConfig::Command {
+            command: format!("cat >> {0}; echo >> {0}", log.display()),
+            shell: None,
+            timeout: None,
+            if_pattern: None,
+            only_on_error: None,
+            once: None,
+            async_rewake: None,
+            on_error: hooks::OnError::Allow,
+        }],
+    );
+    let started = Arc::new(tokio::sync::Notify::new());
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools.register(Arc::new(RunsUntilDropped(started.clone())));
+    tools.register(Arc::new(FailsAfterSiblingStarts(started)));
+    let template = test_exec_ctx(tools, Arc::new(hooks::HookRunner::new(settings)));
+    let events: Vec<
+        Result<base::interface::model::ModelEvent, base::interface::model::ModelError>,
+    > = vec![
+        Ok(base::interface::model::ModelEvent::ToolUse {
+            id: "abandoned".into(),
+            name: "RunsUntilDropped".into(),
+            input: serde_json::json!({}),
+        }),
+        Ok(base::interface::model::ModelEvent::ToolUse {
+            id: "fails".into(),
+            name: "FailsAfterSiblingStarts".into(),
+            input: serde_json::json!({}),
+        }),
+        Ok(base::interface::model::ModelEvent::EndTurn {
+            stop_reason: "tool_use".into(),
+            usage: Default::default(),
+        }),
+    ];
+    let mut session = session::session::SessionManager::in_memory(None);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let tx = crate::event_bus::EventBus::new(tx);
+
+    crate::streaming::execute_stream(
+        Box::new(futures::stream::iter(events)),
+        &mut session,
+        &tx,
+        "turn".into(),
+        move |tool_use_id, name, input| {
+            let ctx = ToolExecCtx {
+                tool_use_id,
+                ..template.clone()
+            };
+            async move { execute_tool_with_telemetry(&ctx, &name, input).await }
+        },
+        |_, _| true,
+        tokio_util::sync::CancellationToken::new(),
+        &[],
+        None,
+    )
+    .await
+    .unwrap();
+
+    let mut abandoned_result = None;
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::ToolResult { id, content, .. } = event {
+            if id == "abandoned" {
+                abandoned_result = Some(content);
+            }
+        }
+    }
+    let abandoned_result = abandoned_result.expect("the abandoned call has a tool_result");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let abandoned_failure = loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let found = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| v["tool_name"] == "RunsUntilDropped");
+        if found.is_some() || std::time::Instant::now() > deadline {
+            break found;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    let abandoned_failure =
+        abandoned_failure.expect("PostToolUseFailure did not run for the abandoned call");
+    assert_eq!(abandoned_failure["reason"], abandoned_result.as_str());
+}
+
 /// Builds a `ToolExecCtx` whose runner touches `marker` when `event` fires.
 fn ctx_with_marker_hook(
     event: hooks::HookEvent,

@@ -120,16 +120,73 @@ pub(super) async fn fire_ctx_lifecycle_hook(
     if !ctx.hooks.has_hooks_for(event) {
         return;
     }
-    let input = build(
-        hooks::HookInput::lifecycle(
-            format!("{event:?}"),
-            ctx.session_id.clone(),
-            ctx.cwd.display().to_string(),
-            hook_permission_mode(ctx.session_state.permission_mode()),
-        )
-        .with_turn_id(ctx.turn_id.clone()),
-    );
+    let input = build(lifecycle_input(ctx, event));
     let _ = ctx.hooks.run(event, &input, &ctx.cancel).await;
+}
+
+fn lifecycle_input(ctx: &ToolExecCtx, event: hooks::HookEvent) -> hooks::HookInput {
+    hooks::HookInput::lifecycle(
+        format!("{event:?}"),
+        ctx.session_id.clone(),
+        ctx.cwd.display().to_string(),
+        hook_permission_mode(ctx.session_state.permission_mode()),
+    )
+    .with_turn_id(ctx.turn_id.clone())
+}
+
+/// A call past its `PreToolUse` that is dropped before it ends — its batch
+/// abandons it when a sibling fails — still ends for the hooks: dropped
+/// armed, it fires `PostToolUseFailure` in the background with the error its
+/// tool_result carries.
+struct EndsForTheHooks {
+    hooks: Arc<hooks::HookRunner>,
+    turn: tokio_util::sync::CancellationToken,
+    input: Option<hooks::HookInput>,
+}
+
+impl EndsForTheHooks {
+    fn arm(ctx: &ToolExecCtx, name: &str, input: &serde_json::Value) -> Self {
+        let event = hooks::HookEvent::PostToolUseFailure;
+        Self {
+            hooks: Arc::clone(&ctx.hooks),
+            turn: ctx.cancel.clone(),
+            input: ctx
+                .hooks
+                .has_hooks_for(event)
+                .then(|| lifecycle_input(ctx, event).with_tool(name, input.clone())),
+        }
+    }
+
+    fn disarm(mut self) {
+        self.input = None;
+    }
+}
+
+impl Drop for EndsForTheHooks {
+    fn drop(&mut self) {
+        let Some(input) = self.input.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let reason = if self.turn.is_cancelled() {
+            "cancelled: the turn was stopped before the call finished"
+        } else {
+            crate::streaming::ABANDONED_BY_SIBLING
+        };
+        let input = input.with_reason(reason);
+        let hooks = Arc::clone(&self.hooks);
+        runtime.spawn(async move {
+            let _ = hooks
+                .run(
+                    hooks::HookEvent::PostToolUseFailure,
+                    &input,
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await;
+        });
+    }
 }
 
 /// A `PushNotification` reaches the host as a `notification` frame and the
@@ -258,17 +315,25 @@ pub(super) async fn execute_tool_inner(
 
     // The hook may rewrite the input, and permission judges what will run.
     let (input, hook) = pre_tool_use(ctx, name, input).await;
+    let ends = EndsForTheHooks::arm(ctx, name, &input);
     let mut tool_ctx = tool_context_for(ctx, &tool);
     if let base::tool::ValidationResult::Err(message, _) =
         tool.validate_input(&input, &tool_ctx).await
     {
+        ends.disarm();
         return Err(if deferred {
             with_schema(tool.as_ref(), &ctx.config, &message)
         } else {
             message
         });
     }
-    let authorized = authorize(ctx, name, &tool, &input, &tool_ctx, &hook).await?;
+    let authorized = match authorize(ctx, name, &tool, &input, &tool_ctx, &hook).await {
+        Ok(authorized) => authorized,
+        Err(refused) => {
+            ends.disarm();
+            return Err(refused);
+        }
+    };
     let user_approved = authorized.by_person;
     tool_ctx.approval = Some(authorized.approval);
     let owed = authorized
@@ -297,6 +362,7 @@ pub(super) async fn execute_tool_inner(
     let measured = (latency_ms, input_json_size, user_approved);
     record_execution(ctx, name, &outcome, measured);
 
+    ends.disarm();
     post_tool_use(ctx, name, &input_for_post_hook, &mut outcome).await;
     fire_tool_lifecycle(ctx, name, &input_for_post_hook, &outcome).await;
 

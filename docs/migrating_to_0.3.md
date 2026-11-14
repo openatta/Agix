@@ -2175,6 +2175,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   (工具返回错误,不是非零退出)时,和 `Bash` 一样先发 `PostToolUseFailure` hook。被 hook 拦下或被权限拒下时,
   和 `Bash` 一样触发 `PermissionDenied` hook(`tool_name` 为 `Bash`,`reason` 是拒绝的原因)。它跑完移开危险的嵌套仓库时,
   和 `Bash` 一样发 `Notification` hook 与 `notification` 帧(以前只写进正文)。
+- **同一批并发调用里一个出错、其余被中途放弃时,被放弃的那些也发 `PostToolUseFailure`**(已经过了
+  `PreToolUse` 的才发),`reason` 与它的 tool_result 一样是 `cancelled by sibling error`;以前这些调用
+  只有 `PreToolUse`,没有结束的 hook。
 - **hook 的 `timeout` 最多 10 分钟。** 写得更大的按 10 分钟算,加载时记一行 warn;`PostToolUse` 等
   回答能起作用的事件因此最多等一个 hook 10 分钟。
 - **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
