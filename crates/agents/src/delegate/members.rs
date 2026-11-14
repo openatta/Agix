@@ -347,7 +347,11 @@ impl Delegator {
                 .collect();
             idle.sort_by_key(|(_, seq)| *seq);
             let joining = protect.is_some_and(|k| !members.contains_key(k));
-            let keep = if joining { max_total - 1 } else { max_total };
+            let keep = if joining {
+                max_total.saturating_sub(1)
+            } else {
+                max_total
+            };
             let excess = members.len().saturating_sub(keep);
             idle.into_iter().take(excess).map(|(k, _)| k).collect()
         };
