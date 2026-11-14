@@ -258,7 +258,7 @@ async fn stop_team_member_makes_the_next_call_spawn_a_fresh_one() {
     );
 }
 
-/// Reclaim rule (a): a pool at the cap makes room for a newcomer by
+/// A pool at the cap makes room for a newcomer by
 /// evicting the oldest-idle member — just one, not everything.
 #[tokio::test]
 async fn reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap() {
@@ -310,69 +310,15 @@ async fn reclaim_evicts_oldest_idle_members_once_total_exceeds_the_cap() {
     }
 }
 
-/// Reclaim rule (b): idle-timeout is independent of the total-count
-/// rule — a single member past the timeout gets reclaimed even with a
-/// pool far under the cap.
+/// A member idle past `team_member_idle_timeout_secs` leaves the pool by
+/// itself, with no later spawn to sweep it.
 #[tokio::test]
-async fn reclaim_evicts_a_member_idle_past_the_timeout_regardless_of_total_count() {
-    let mut config = EngineConfig::defaults_for("test");
-    config.team_max_persistent_members = 100; // effectively disabled here
-    config.team_member_idle_timeout_secs = 0; // any idle time at all reclaims
-    let agent_tool = agent_tool_with_config(config);
-    let session = agent_tool.parent_state();
-
-    agent_tool
-        .spawn_or_message_team_member(
-            "team".into(),
-            "a".into(),
-            "hi".into(),
-            None,
-            std::path::PathBuf::from("/tmp"),
-            session.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-    wait_until_idle(&agent_tool, &team_key("team", "a")).await;
-
-    // Spawning a second member triggers a reclaim sweep at its start.
-    agent_tool
-        .spawn_or_message_team_member(
-            "team".into(),
-            "b".into(),
-            "hi".into(),
-            None,
-            std::path::PathBuf::from("/tmp"),
-            session.clone(),
-            None,
-        )
-        .await
-        .unwrap();
-
-    let members = agent_tool
-        .delegator
-        .members
-        .live
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    assert!(
-        !members.contains_key(&team_key("team", "a")),
-        "member idle past the timeout must be reclaimed regardless of total count"
-    );
-    assert!(members.contains_key(&team_key("team", "b")));
-}
-
-/// The reclaim sweep run just before looking up an existing member must
-/// not evict that exact member — here one idle past the timeout, which
-/// any other member would be reclaimed for — and spawn a fresh
-/// replacement instead of reaching the one the caller meant to message.
-#[tokio::test]
-async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_message() {
+async fn a_member_idle_past_the_timeout_leaves_the_pool_on_its_own() {
     let mut config = EngineConfig::defaults_for("test");
     config.team_member_idle_timeout_secs = 0;
     let agent_tool = agent_tool_with_config(config);
     let session = agent_tool.parent_state();
-    let key_a = team_key("team", "a");
+    let key = team_key("team", "a");
 
     agent_tool
         .spawn_or_message_team_member(
@@ -386,43 +332,22 @@ async fn spawn_or_message_team_member_never_reclaims_the_member_it_is_about_to_m
         )
         .await
         .unwrap();
-    wait_until_idle(&agent_tool, &key_a).await;
-    let id_a_before = agent_tool
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while agent_tool
         .delegator
         .members
         .live
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&key_a)
-        .expect("a is in the pool")
-        .id
-        .clone();
-
-    agent_tool
-        .spawn_or_message_team_member(
-            "team".into(),
-            "a".into(),
-            "second message".into(),
-            None,
-            std::path::PathBuf::from("/tmp"),
-            session.clone(),
-            None,
-        )
-        .await
-        .expect("messaging the existing, about-to-be-protected member should succeed");
-    wait_until_idle(&agent_tool, &key_a).await;
-
-    let members = agent_tool
-        .delegator
-        .members
-        .live
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    assert_eq!(
-        members.get(&key_a).map(|m| m.id.clone()),
-        Some(id_a_before),
-        "the call's own target member must survive its own reclaim sweep"
-    );
+        .contains_key(&key)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "an idle member past its timeout stayed in the pool"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 /// Two concurrent calls for the same never-before-seen

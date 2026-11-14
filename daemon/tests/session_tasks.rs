@@ -1470,6 +1470,41 @@ async fn a_session_with_an_idle_team_member_is_not_rebuilt_under_it() {
     );
 }
 
+#[tokio::test]
+async fn a_team_member_idle_past_its_bound_no_longer_holds_off_a_rebuild() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(ask_member("a1", "remember PELICAN"));
+    model.push_turn(text_round("noted"));
+    model.push_turn(text_round("asked"));
+    let daemon = Daemon::start_configured(model.clone(), |settings, _| {
+        settings.execution.team_enabled = true;
+        settings.execution.team_member_idle_timeout_secs = 1;
+    })
+    .await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "brief the scribe"}),
+        )
+        .await;
+    eventually!(
+        "the session take a new prompt once its member has idled past its bound",
+        {
+            let r = daemon
+                .call(
+                    "session.setPrompt",
+                    serde_json::json!({"session_id": session, "append": "Be brief."}),
+                )
+                .await;
+            r.get("result").is_some().then_some(())
+        }
+    );
+}
+
 fn asks_to_run(command: &str) -> Arc<MockAnthropicClient> {
     let model = Arc::new(MockAnthropicClient::new());
     model.push_turn(tool_round(

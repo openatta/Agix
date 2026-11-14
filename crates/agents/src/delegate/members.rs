@@ -136,8 +136,6 @@ impl Delegator {
         let me = self.me()?;
         let _spawning = self.members.spawn_lock.lock().await;
         let key = (seat.team.clone(), seat.member.clone());
-        // Never the member this call is about to look for: it would be
-        // reclaimed a moment before the lookup and replaced by a fresh one.
         self.reclaim_idle_members(Some(&key));
 
         let live = &self.members.live;
@@ -259,6 +257,8 @@ impl Delegator {
             idle_since,
             idle_seq,
             idle_seq_counter: self.members.idle_seq_counter.clone(),
+            idle_bound: std::time::Duration::from_secs(self.limits.member_idle_timeout_secs),
+            spawn_lock: self.members.spawn_lock.clone(),
             slots: self.limits.slots.clone(),
             hooks: me.env.hooks.clone(),
             session_ended: me.env.parent.ended.clone(),
@@ -306,45 +306,28 @@ impl Delegator {
         members
     }
 
-    /// Stops (a) every member idle longer than `team_member_idle_timeout_secs`
-    /// and (b) the oldest idle ones while there are more than
+    /// Stops the oldest idle members while there are more than
     /// `team_max_persistent_members`, counting the member `protect` is about
     /// to add. A running member is never stopped; `protect` itself never is.
-    /// Run before a member is spawned, not on a timer.
+    /// Run before a member is spawned; a member idle past
+    /// `team_member_idle_timeout_secs` leaves on its own.
     pub(crate) fn reclaim_idle_members(&self, protect: Option<&(String, String)>) {
         let max_total = self.limits.max_persistent_members;
-        let idle_timeout = self.limits.member_idle_timeout_secs;
-        let now = now_secs();
         let victims: Vec<(String, String)> = {
             let members = self.members.live.read().unwrap_or_else(|e| e.into_inner());
-            let mut idle: Vec<((String, String), i64, u64)> = members
+            let mut idle: Vec<((String, String), u64)> = members
                 .iter()
                 .filter(|(k, _)| protect != Some(*k))
                 .filter_map(|(k, m)| {
-                    let since = m.idle_since.load(Ordering::SeqCst);
-                    let seq = m.idle_seq.load(Ordering::SeqCst);
-                    (since != i64::MAX).then_some((k.clone(), since, seq))
+                    let idle = m.idle_since.load(Ordering::SeqCst) != i64::MAX;
+                    idle.then(|| (k.clone(), m.idle_seq.load(Ordering::SeqCst)))
                 })
                 .collect();
-            idle.sort_by_key(|(_, _, seq)| *seq);
-            let mut victims: Vec<(String, String)> = idle
-                .iter()
-                .filter(|(_, since, _)| now.saturating_sub(*since) as u64 >= idle_timeout)
-                .map(|(k, _, _)| k.clone())
-                .collect();
+            idle.sort_by_key(|(_, seq)| *seq);
             let joining = protect.is_some_and(|k| !members.contains_key(k));
             let keep = if joining { max_total - 1 } else { max_total };
-            let mut remaining = members.len();
-            for (k, _, _) in &idle {
-                if remaining <= keep {
-                    break;
-                }
-                remaining -= 1;
-                if !victims.contains(k) {
-                    victims.push(k.clone());
-                }
-            }
-            victims
+            let excess = members.len().saturating_sub(keep);
+            idle.into_iter().take(excess).map(|(k, _)| k).collect()
         };
         for (team, member) in victims {
             self.stop_persistent_member(&TeamSeat { team, member });
@@ -363,6 +346,8 @@ struct MemberLoop {
     idle_since: Arc<AtomicI64>,
     idle_seq: Arc<AtomicU64>,
     idle_seq_counter: Arc<AtomicU64>,
+    idle_bound: std::time::Duration,
+    spawn_lock: Arc<tokio::sync::Mutex<()>>,
     /// The spawning session's: a member runs each message on a slot, taken
     /// as that session may take one, and holds none while idle.
     slots: SlotRule,
@@ -387,6 +372,23 @@ impl MemberLoop {
             None => r.update_recorded_member_lifecycle(team, member, state, at),
         }
     }
+
+    /// Past its idle bound: leave the pool as a stop would, unless a message
+    /// came in meanwhile. Taken under the spawn lock, which every delivery
+    /// holds, so nothing is queued for this member once it has left.
+    async fn leave_unless_messaged(&mut self) -> Option<PersistentMessage> {
+        let _delivering = self.spawn_lock.lock().await;
+        if let Ok(queued) = self.messages.try_recv() {
+            return Some(queued);
+        }
+        let key = (self.seat.team.clone(), self.seat.member.clone());
+        let mut live = self.live.write().unwrap_or_else(|e| e.into_inner());
+        if live.get(&key).is_some_and(|m| m.id == self.id) {
+            tracing::debug!(team = %key.0, member = %key.1, id = %self.id, "reclaiming idle persistent team member");
+            live.remove(&key);
+        }
+        None
+    }
 }
 
 /// One member's life: its messages one turn at a time, on the same agent —
@@ -400,6 +402,7 @@ async fn member_loop(mut m: MemberLoop) {
             biased;
             _ = m.cancel.cancelled() => break,
             message = m.messages.recv() => message,
+            _ = tokio::time::sleep(m.idle_bound) => m.leave_unless_messaged().await,
         };
         let Some(PersistentMessage { prompt, lease }) = message else {
             break;

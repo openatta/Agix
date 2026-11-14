@@ -747,8 +747,8 @@ notice)` 说它怎么结束的。租约被丢弃而没有 `conclude`——工作
 4. 资源上限都在一处可配:委派深度 `execution.max_agent_depth`(§3.4);同时在跑的子 Agent
    `execution.max_concurrent_subagents`(默认 6,整棵会话树共用一份);`TeamCreate`
    每阶段 `team_stage_concurrency`;常驻成员 `team_max_persistent_members`(满了先回收最久
-   空闲的,全在忙就拒绝新成员)。常驻成员的取消令牌是父会话结束令牌的子令牌:会话结束时,
-   空闲的和正在跑一轮的成员都停下。
+   空闲的,全在忙就拒绝新成员),空闲超过 `team_member_idle_timeout_secs` 的成员自己停下。
+   常驻成员的取消令牌是父会话结束令牌的子令牌:会话结束时,空闲的和正在跑一轮的成员都停下。
 
 **名额只有一条规则:持名额者不等。** 规则是 `agents::delegate::SlotRule`:子 Agent 自己跑在
 一个名额上,它再为自己的子 Agent 申请名额时,拿不到就被拒绝(`DelegateError::Limit`),不排队——

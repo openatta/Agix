@@ -2255,7 +2255,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **活着的常驻团队成员算后台任务。** 会话里有常驻成员(空闲的也算)时,`session.setPrompt`、换厂商的
   `session.setModel` 报 `SESSION_BUSY`(`reason: "background_tasks"`,`running_task_ids` 里是 `member-…`),
   会话不被空闲回收或腾位驱逐;以前重建会悄悄停掉成员、丢掉它的上下文。`session.stopTask` 接受
-  `member-…` id,按 `TeamDelete` 的方式停掉它。
+  `member-…` id,按 `TeamDelete` 的方式停掉它。成员空闲超过 `execution.team_member_idle_timeout_secs`
+  (默认 1800)就自己停下,不再挡着;以前要等下一次起新成员时才回收。
 - **`turn_complete` 之后、回合槽归还之前到达的 `session.run_turn` 等槽**,不再按 `on_busy` 报忙或插话。
   `session.setPrompt`、`session.setModel`、`session.inspectContext` / `dropMessages` / `editMessage`
   同样等那一轮还槽,不再报 `SESSION_BUSY`(`reason: "turn_running"`)。
