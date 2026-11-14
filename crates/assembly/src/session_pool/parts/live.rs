@@ -590,6 +590,15 @@ impl LiveSessions {
     }
 
     #[cfg(test)]
+    pub(in crate::session_pool) async fn session_lock_is_held(&self, sid: &str) -> bool {
+        self.session_locks
+            .lock()
+            .await
+            .get(sid)
+            .is_some_and(|lock| lock.try_lock().is_err())
+    }
+
+    #[cfg(test)]
     pub(in crate::session_pool) async fn no_session_locks(&self) -> bool {
         self.session_locks.lock().await.is_empty()
     }

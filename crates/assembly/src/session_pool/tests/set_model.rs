@@ -106,6 +106,17 @@ async fn until_the_rebuild_is_on_its_way(pool: &SessionPool, sid: &str) {
     .expect("the rebuild reached the session");
 }
 
+/// Until a caller holds `sid`'s session lock.
+async fn until_the_session_lock_is_held(pool: &SessionPool, sid: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !pool.live.session_lock_is_held(sid).await {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the session lock was taken");
+}
+
 /// Choose a model for `sid` while a `setPrompt` rebuild is on its way:
 /// `setModel` passes its idle check, then waits on the bindings until the
 /// rebuild has reached the session.
@@ -219,9 +230,7 @@ async fn a_failed_rebuild_keeps_a_model_chosen_while_it_was_on_its_way() {
                 .map(|_| ())
         })
     };
-    for _ in 0..64 {
-        tokio::task::yield_now().await;
-    }
+    until_the_session_lock_is_held(&pool, &sid).await;
     let rebuilt = {
         let (pool, sid) = (pool.clone(), sid.clone());
         tokio::spawn(async move {
