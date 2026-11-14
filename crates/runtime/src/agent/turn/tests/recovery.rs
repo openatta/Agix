@@ -141,8 +141,18 @@ fn agent(
     policy: Option<Arc<dyn RecoveryPolicy>>,
     root: &std::path::Path,
 ) -> (Agent, crate::agent::EventReceiver) {
+    hooked_agent(model, policy, root, None)
+}
+
+fn hooked_agent(
+    model: Arc<Scripted>,
+    policy: Option<Arc<dyn RecoveryPolicy>>,
+    root: &std::path::Path,
+    hooks: Option<serde_json::Value>,
+) -> (Agent, crate::agent::EventReceiver) {
     let mut settings = recall_test_settings(root);
     settings.values.memory_enabled = false;
+    settings.values.hooks_config = hooks;
     let mut builder = crate::agent::Builder::new()
         .scene(Arc::new(scene::code::spec(
             scene::code::Interaction::Interactive,
@@ -321,6 +331,47 @@ async fn a_cancel_while_waiting_to_resend_ends_the_turn_cancelled() {
     assert_eq!(model.calls(), 1);
     drop(agent);
     assert!(watcher.await.unwrap(), "no model_retry was announced");
+}
+
+/// Cancels the turn as it answers, asking for a compaction and a retry.
+struct CancelsThenCompacts(CancellationToken);
+
+impl RecoveryPolicy for CancelsThenCompacts {
+    fn on_failure(&self, _failure: &ModelFailure<'_>, _so_far: &CallRecovery) -> Recovery {
+        self.0.cancel();
+        Recovery::CompactAndRetry
+    }
+
+    fn on_early_stop(&self, _reason: &str, _attempt: &RecoveryAttempt) -> StopRecovery {
+        StopRecovery::Accept
+    }
+}
+
+/// A compaction for a retry that does not go through while the turn is being
+/// cancelled — here a `PreCompact` hook that blocks when it fails, and a
+/// cancelled hook counts as failed — ends the turn cancelled, not failed.
+#[tokio::test]
+async fn a_cancel_during_the_compaction_for_a_retry_ends_the_turn_cancelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = Scripted::new(vec![Answer::Refused(ModelError::invalid_request(
+        "prompt is too long",
+    ))]);
+    let cancel = CancellationToken::new();
+    let policy = Arc::new(CancelsThenCompacts(cancel.clone()));
+    let (mut agent, _events) = hooked_agent(
+        model.clone(),
+        Some(policy),
+        tmp.path(),
+        Some(serde_json::json!({
+            "PreCompact": [{ "type": "command", "command": "true", "on_error": "block" }]
+        })),
+    );
+
+    let outcome = turn(&mut agent, cancel).await;
+
+    let outcome = outcome.expect("a cancelled turn is not a failure");
+    assert_eq!(outcome.stop_reason, "cancelled");
+    assert_eq!(model.calls(), 1);
 }
 
 /// A retry is the request that failed, sent again: the cache edits it
