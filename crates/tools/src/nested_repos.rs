@@ -8,12 +8,13 @@
 //! run (`Obligations::scan_nested_repos`).
 //!
 //! The user's `git status` enters a nested repository's own gitlinks too, so
-//! they are followed, nesting bounded. An undeclared gitlink whose git
-//! directory lies in the working tree and whose configuration names a program
-//! is dangerous; what to do about it is
-//! the caller's ([`quarantine`] is the remedy). An undeclared one without such
-//! configuration, and a `.git` found anywhere else in the tree, are only
-//! reported. Each is reported once per session, and a repository someone kept
+//! they are followed, nesting bounded. A gitlink's `.git` leads to its git
+//! directory as git finds it — the directory itself, a symlink to one, or a
+//! `gitdir:` file naming one, wherever it lies. An undeclared gitlink whose
+//! configuration names a program is dangerous; what to do about it is the
+//! caller's ([`quarantine`] is the remedy). An undeclared one without such
+//! configuration, and a `.git` directory found anywhere else in the tree, are
+//! only reported. Each is reported once per session, and a repository someone kept
 //! is reported again only once its configuration changes.
 
 use base::tool::ToolContext;
@@ -30,7 +31,8 @@ const GIT_DEADLINE: Duration = Duration::from_secs(10);
 /// A nested repository whose configuration names a program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dangerous {
-    /// Its git directory: `<worktree>/.git`.
+    /// Its `<worktree>/.git`: the git directory, or the symlink or `gitdir:`
+    /// file that leads to it.
     pub git_dir: PathBuf,
     /// The configuration keys that name a program, as `section.key`.
     pub keys: Vec<String>,
@@ -95,14 +97,14 @@ async fn examine_gitlinks(
                     return;
                 }
                 let nested = worktree.join(&link);
-                let git_dir = nested.join(".git");
-                if !known.insert(git_dir.clone())
-                    || declared.contains(&link)
-                    || !is_dir(ctx, &git_dir).await
-                {
+                let dot_git = nested.join(".git");
+                if !known.insert(dot_git.clone()) || declared.contains(&link) {
                     continue;
                 }
-                examine(ctx, top, git_dir, scan).await;
+                let Some(git_dir) = resolve_git_dir(ctx, &dot_git).await else {
+                    continue;
+                };
+                examine(ctx, top, dot_git, &git_dir, scan).await;
                 next.push(nested);
             }
         }
@@ -110,7 +112,13 @@ async fn examine_gitlinks(
     }
 }
 
-async fn examine(ctx: &ToolContext, root: &Path, git_dir: PathBuf, scan: &mut Scan) {
+async fn examine(
+    ctx: &ToolContext,
+    root: &Path,
+    dot_git: PathBuf,
+    git_dir: &Path,
+    scan: &mut Scan,
+) {
     let config = ctx
         .exec
         .filesystem
@@ -120,28 +128,45 @@ async fn examine(ctx: &ToolContext, root: &Path, git_dir: PathBuf, scan: &mut Sc
     let digest = digest(&config);
     let keys = dangerous_keys(&config);
     if keys.is_empty() {
-        if first_report(ctx, &git_dir, digest) {
+        if first_report(ctx, &dot_git, digest) {
             scan.notes.push(format!(
                 "`{}` is a repository nested in the project and added to its index; its \
                  configuration names no program.",
-                shown(root, &git_dir)
+                shown(root, &dot_git)
             ));
         }
         return;
     }
-    let kept = ctx.session.ledger().nested_repos.get(&git_dir) == Some(&digest);
+    let kept = ctx.session.ledger().nested_repos.get(&dot_git) == Some(&digest);
     if !kept {
         scan.dangerous.push(Dangerous {
-            git_dir,
+            git_dir: dot_git,
             keys,
             digest,
         });
     }
 }
 
-/// Move a nested repository's git directory aside, so no git enters it, under
-/// a name it can be moved back from: on the filesystem `ctx`'s commands run
-/// against, by the engine, outside any sandbox.
+/// The git directory a worktree's `.git` leads to, as git finds it.
+async fn resolve_git_dir(ctx: &ToolContext, dot_git: &Path) -> Option<PathBuf> {
+    let fs = &*ctx.exec.filesystem;
+    if fs.metadata_following_symlinks(dot_git).await.ok()?.is_dir {
+        return Some(dot_git.to_path_buf());
+    }
+    let text = fs.read_to_string(dot_git).await.ok()?;
+    let named = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+    let git_dir = dot_git.parent()?.join(named);
+    fs.metadata_following_symlinks(&git_dir)
+        .await
+        .ok()?
+        .is_dir
+        .then_some(git_dir)
+}
+
+/// Move a nested repository's `.git` aside, so no git enters it, under a name
+/// it can be moved back from: on the filesystem `ctx`'s commands run against,
+/// by the engine, outside any sandbox. A symlink or `gitdir:` file is moved,
+/// not what it leads to.
 pub async fn quarantine(
     ctx: &ToolContext,
     git_dir: &Path,
@@ -209,14 +234,6 @@ fn digest(config: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     config.hash(&mut hasher);
     hasher.finish()
-}
-
-async fn is_dir(ctx: &ToolContext, path: &Path) -> bool {
-    ctx.exec
-        .filesystem
-        .metadata(path)
-        .await
-        .is_ok_and(|m| m.is_dir && !m.is_symlink)
 }
 
 /// The working tree the session's directory is in.

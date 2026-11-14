@@ -241,6 +241,65 @@ async fn a_dangerous_repository_inside_a_clean_nested_repository_is_moved_aside(
     assert_status_no_longer_runs_it(project.path(), &pwned);
 }
 
+/// A submodule's usual shape: `.git` is a file naming the git directory.
+#[tokio::test]
+async fn a_dangerous_repository_behind_a_gitdir_file_is_moved_aside() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let pwned = elsewhere.path().join("pwned");
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    bash(
+        &ctx,
+        &format!(
+            "{} && git rm -qf --cached evil && mv evil/.git .evil-gitdir && \
+             echo 'gitdir: ../.evil-gitdir' > evil/.git && git add evil",
+            plant_as("evil", &pwned)
+        ),
+    )
+    .await;
+    assert_status_runs_it(project.path(), &pwned);
+
+    let scan = tools::nested_repos::scan(&ctx).await;
+    assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
+    assert!(scan.dangerous[0].git_dir.ends_with("evil/.git"), "{scan:?}");
+    assert_eq!(scan.dangerous[0].keys, ["core.fsmonitor"]);
+    quarantine_all(&ctx, &scan).await;
+    assert_status_no_longer_runs_it(project.path(), &pwned);
+    assert!(
+        project.path().join(".evil-gitdir/config").exists(),
+        "the git directory outside the worktree was touched"
+    );
+}
+
+/// `.git` a symlink to a git directory outside the project: its
+/// configuration is read where it is, and only the link is moved.
+#[tokio::test]
+async fn a_dangerous_repository_behind_a_symlinked_git_directory_is_moved_aside() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let elsewhere = elsewhere.path().canonicalize().unwrap();
+    let pwned = elsewhere.join("pwned");
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    bash(
+        &ctx,
+        &format!(
+            "{} && git rm -qf --cached evil && mv evil/.git '{gitdir}' && \
+             ln -s '{gitdir}' evil/.git && git add evil",
+            plant_as("evil", &pwned),
+            gitdir = elsewhere.join("gitdir").display()
+        ),
+    )
+    .await;
+    assert_status_runs_it(project.path(), &pwned);
+
+    let scan = tools::nested_repos::scan(&ctx).await;
+    assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
+    assert!(scan.dangerous[0].git_dir.ends_with("evil/.git"), "{scan:?}");
+    quarantine_all(&ctx, &scan).await;
+    assert_status_no_longer_runs_it(project.path(), &pwned);
+    assert!(elsewhere.join("gitdir/config").exists());
+}
+
 fn assert_status_runs_it(project: &Path, pwned: &Path) {
     let status = git(project, &["status"]);
     assert!(status.status.success(), "{status:?}");
