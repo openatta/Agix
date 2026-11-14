@@ -184,13 +184,7 @@ impl Delegator {
         };
         let sid = payload.session_id.clone();
         let agent_type = spec.agent_type.as_deref();
-        let prompt = match &def {
-            Some(d) if !d.skills.is_empty() => {
-                preload_skills_text(self.env.skills.as_ref(), &d.skills) + &typed_prompt(d, &prompt)
-            }
-            Some(d) => typed_prompt(d, &prompt),
-            None => prompt,
-        };
+        let prompt = self.opening_prompt(def.as_ref(), prompt);
         let called_from = spec.called_from.as_ref();
         let tag = SubagentTag::new(self, &sid, agent_type, called_from).for_task(task.as_ref());
 
@@ -244,6 +238,24 @@ impl Delegator {
         // it is rejected instead of silently continuing a "finished" sub-agent.
         mark_sidechain_terminal(history_store.as_ref(), &sid, &end).await;
         (text, end)
+    }
+}
+
+impl Delegator {
+    /// The first message a delegate of type `def` is given: the type's
+    /// preloaded skills, then its system prompt, then `prompt`.
+    pub(crate) fn opening_prompt(
+        &self,
+        def: Option<&AgentTypeDefinition>,
+        prompt: String,
+    ) -> String {
+        match def {
+            Some(d) if !d.skills.is_empty() => {
+                preload_skills_text(self.env.skills.as_ref(), &d.skills) + &typed_prompt(d, &prompt)
+            }
+            Some(d) => typed_prompt(d, &prompt),
+            None => prompt,
+        }
     }
 }
 

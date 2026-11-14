@@ -876,3 +876,48 @@ async fn a_typed_fork_and_stage_member_are_given_the_types_prompt() {
         assert!(seen.iter().any(|t| t.contains(&typed)), "{task}: {seen:?}");
     }
 }
+
+/// A persistent member of a type is told the type's prompt once, with the
+/// message it is created on; later messages reach it as sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_persistent_member_is_given_the_types_prompt_once() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent_tool = TestParent {
+        plugin_agent_types: vec![AgentTypeDefinition {
+            name: "typed".into(),
+            description: "typed".into(),
+            system_prompt: "TYPE-PROMPT".into(),
+            ..Default::default()
+        }],
+        ..TestParent::new(Arc::new(MessageTextModel { seen: seen.clone() }))
+    }
+    .with_team()
+    .agent_tool();
+    for task in ["FIRST-TASK", "SECOND-TASK"] {
+        let task_id = agent_tool
+            .spawn_or_message_team_member(
+                "crew".into(),
+                "member".into(),
+                task.into(),
+                Some("typed".into()),
+                std::env::temp_dir(),
+                agent_tool.parent_state(),
+                None,
+            )
+            .await
+            .expect("the message is queued");
+        if let Some(task) = agent_tool.parent_state().find_running_task(&task_id) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+                .await
+                .expect("the message's turn ends");
+        }
+    }
+    let seen = seen.lock().unwrap();
+    let last = seen
+        .iter()
+        .find(|t| t.ends_with("SECOND-TASK"))
+        .expect("the second message reached the member's model");
+    assert!(last.contains("SECOND-TASK"), "{seen:?}");
+    assert!(last.contains("TYPE-PROMPT\n\nTask: FIRST-TASK"), "{seen:?}");
+    assert_eq!(last.matches("TYPE-PROMPT").count(), 1, "{seen:?}");
+}

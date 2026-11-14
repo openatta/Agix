@@ -185,7 +185,8 @@ impl Delegator {
         self.spawn_member(me, key, seat, spec, prompt).await
     }
 
-    /// A new member at `key`, its loop started on `prompt`.
+    /// A new member at `key`, its loop started on `prompt` under its type's
+    /// prompt; later messages reach it as sent.
     async fn spawn_member(
         &self,
         me: Arc<Delegator>,
@@ -226,6 +227,7 @@ impl Delegator {
             None,
         );
 
+        let prompt = self.opening_prompt(delegate.def.as_ref(), prompt);
         let id = format!("member-{}", bg_task_id());
         tracing::debug!(team = %seat.team, member = %seat.member, %id, "spawning new persistent team member");
         let (inbox, messages) = MemberInbox::open();
