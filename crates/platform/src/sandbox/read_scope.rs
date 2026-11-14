@@ -12,7 +12,7 @@
 
 use super::resolve_path;
 use base::interface::exec::ReadScope;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
@@ -65,22 +65,52 @@ fn selected_developer_dir() -> Option<PathBuf> {
     None
 }
 
+/// The directories a command's own git looks in for the user's
+/// configuration, from the command's environment, else the daemon's: the
+/// profile and the strict-profile probe both read them from here.
+#[derive(Debug, Clone, Default)]
+pub(super) struct UserDirs {
+    pub(super) home: Option<PathBuf>,
+    pub(super) xdg_config_home: Option<PathBuf>,
+}
+
+impl UserDirs {
+    pub(super) fn of(env: &[(String, String)]) -> Self {
+        Self {
+            home: var(env, "HOME").map(PathBuf::from),
+            xdg_config_home: var(env, "XDG_CONFIG_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+        }
+    }
+}
+
+/// `name` as the command's `env` sets it, else as the daemon's environment.
+pub(super) fn var(env: &[(String, String)], name: &str) -> Option<OsString> {
+    env.iter()
+        .rev()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| OsString::from(v))
+        .or_else(|| std::env::var_os(name))
+}
+
 /// Everything `ReadScope::Only(scope)` lets a command read, resolved.
-pub(super) fn strict_read_roots(scope: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
+pub(super) fn strict_read_roots(scope: &[PathBuf], dirs: &UserDirs) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = SYSTEM_READ_ROOTS
         .iter()
         .map(|root| resolve_path(Path::new(root)))
         .chain(selected_developer_dir())
-        .chain(scope_read_roots(scope, home))
+        .chain(scope_read_roots(scope, dirs))
         .collect();
     roots.sort();
     roots.dedup();
     roots
 }
 
-/// `scope` and the user's git configuration under `home`, resolved.
-fn scope_read_roots(scope: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
-    home.iter()
+/// `scope` and the user's git configuration under `dirs`, resolved.
+fn scope_read_roots(scope: &[PathBuf], dirs: &UserDirs) -> Vec<PathBuf> {
+    dirs.home
+        .iter()
         .flat_map(|h| HOME_READ_ROOTS.iter().map(move |r| h.join(r)))
         .chain(scope.iter().cloned())
         .map(|p| resolve_path(&p))
@@ -92,16 +122,12 @@ fn scope_read_roots(scope: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
 /// git configuration — `~/.gitconfig`, and `git/config` under
 /// `xdg_config_home` or else `~/.config`, where git looks — is or includes a
 /// file from outside it, which git stops on. Empty for `Everything`.
-pub(super) fn unmet(
-    read: &ReadScope,
-    home: Option<&Path>,
-    xdg_config_home: Option<&Path>,
-    path: Option<&OsStr>,
-) -> Vec<String> {
+pub(super) fn unmet(read: &ReadScope, dirs: &UserDirs, path: Option<&OsStr>) -> Vec<String> {
     let ReadScope::Only(scope) = read else {
         return Vec::new();
     };
-    let roots = strict_read_roots(scope, home);
+    let home = dirs.home.as_deref();
+    let roots = strict_read_roots(scope, dirs);
     let readable = |p: &Path| roots.iter().any(|root| p.starts_with(root));
     let mut unmet = Vec::new();
     if let Some(git) = path.and_then(git_on_path) {
@@ -115,8 +141,9 @@ pub(super) fn unmet(
         }
     }
     let mut seen = Vec::new();
-    let xdg_config = xdg_config_home
-        .map(Path::to_path_buf)
+    let xdg_config = dirs
+        .xdg_config_home
+        .clone()
         .or_else(|| home.map(|h| h.join(".config")))
         .map(|dir| dir.join("git/config"));
     let configs = home
@@ -200,7 +227,7 @@ fn git_includes(config: &Path, home: Option<&Path>, seen: &mut Vec<PathBuf>) -> 
 /// The profile rules for `read`, to go before the deny list so that it stays
 /// in force inside the scope. Empty for `Everything`.
 #[cfg(target_os = "macos")]
-pub(super) fn macos_rules(read: &ReadScope, home: Option<&Path>) -> String {
+pub(super) fn macos_rules(read: &ReadScope, dirs: &UserDirs) -> String {
     let ReadScope::Only(scope) = read else {
         return String::new();
     };
@@ -209,7 +236,7 @@ pub(super) fn macos_rules(read: &ReadScope, home: Option<&Path>) -> String {
     let mut s = String::from(
         "(deny file-read*)\n(allow file-read-metadata)\n(allow file-read* (literal \"/\")",
     );
-    for p in strict_read_roots(scope, home)
+    for p in strict_read_roots(scope, dirs)
         .iter()
         .flat_map(|p| super::spellings(p))
     {
@@ -229,21 +256,21 @@ pub(super) fn macos_rules(read: &ReadScope, home: Option<&Path>) -> String {
 #[cfg(target_os = "linux")]
 pub(super) struct LinuxReadScope<'a> {
     scope: Option<&'a [PathBuf]>,
-    home: Option<PathBuf>,
+    dirs: UserDirs,
     readable: Option<Vec<PathBuf>>,
 }
 
 #[cfg(target_os = "linux")]
 impl<'a> LinuxReadScope<'a> {
-    pub(super) fn new(read: &'a ReadScope, home: Option<PathBuf>) -> Self {
+    pub(super) fn new(read: &'a ReadScope, dirs: UserDirs) -> Self {
         let scope = match read {
             ReadScope::Everything => None,
             ReadScope::Only(scope) => Some(scope.as_slice()),
         };
         Self {
             scope,
-            readable: scope.map(|scope| strict_read_roots(scope, home.as_deref())),
-            home,
+            readable: scope.map(|scope| strict_read_roots(scope, &dirs)),
+            dirs,
         }
     }
 
@@ -262,9 +289,7 @@ impl<'a> LinuxReadScope<'a> {
     /// The scope's own roots, after the `/tmp` tmpfs so that one under
     /// `/tmp` is not hidden by it.
     pub(super) fn scope_mounts(&self, args: &mut Vec<String>) {
-        let roots = self
-            .scope
-            .map(|scope| scope_read_roots(scope, self.home.as_deref()));
+        let roots = self.scope.map(|scope| scope_read_roots(scope, &self.dirs));
         for root in roots.iter().flatten() {
             super::bind(args, "--ro-bind-try", root);
         }
