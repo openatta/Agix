@@ -1,14 +1,14 @@
 //! 宿主在内存里改过的设置：宿主拿到守护进程自己那一对的设置之后、交给池之前改掉的值，
-//! 作为一层叠在池从盘上读入的每份设置上，和托管层在同一个位置；宿主加的权限规则和
-//! `max_tokens` 兜底只回到守护进程自己那一对上。
+//! 作为一层叠在池从盘上读入的每份设置上，和托管层在同一个位置；`max_tokens` 兜底
+//! （`--max-tokens`）给每一对；宿主加的权限规则只回到守护进程自己那一对上。
 
 use base::settings::{LoadedRule, LoadedSettings, Settings};
 use serde_json::Value;
 
 /// What the host's settings hold that the same pair read from disk does not:
 /// the values it set in memory, as a JSON layer, and the rules it added. And
-/// the `max_tokens` they hold, which the pair falls back to when no settings
-/// file sets one (`--max-tokens`).
+/// the `max_tokens` every pair falls back to when no settings file sets one
+/// (`--max-tokens`).
 #[derive(Debug, Default, Clone)]
 pub(in crate::session_pool) struct HostOverrides {
     values: Option<Value>,
@@ -20,7 +20,11 @@ impl HostOverrides {
     /// What `host` sets differently from `disk`. A key the host removed from a
     /// map, or a rule it removed, is not carried: a layer can only add or
     /// replace.
-    pub(in crate::session_pool) fn between(disk: &LoadedSettings, host: &LoadedSettings) -> Self {
+    pub(in crate::session_pool) fn between(
+        disk: &LoadedSettings,
+        host: &LoadedSettings,
+        max_tokens: u32,
+    ) -> Self {
         let values = match (
             serde_json::to_value(&disk.values),
             serde_json::to_value(&host.values),
@@ -38,12 +42,18 @@ impl HostOverrides {
         Self {
             values,
             rules,
-            max_tokens: Some(host.values.model.max_tokens),
+            max_tokens: Some(max_tokens),
         }
     }
 
-    /// `settings` with the values this layer holds merged over its own.
+    /// `settings` with the `max_tokens` fallback where no file set one, then
+    /// the values this layer holds merged over its own.
     pub(in crate::session_pool) fn apply(&self, mut settings: LoadedSettings) -> LoadedSettings {
+        if let Some(max_tokens) = self.max_tokens {
+            if settings.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
+                settings.values.model.max_tokens = max_tokens;
+            }
+        }
         let Some(layer) = &self.values else {
             return settings;
         };
@@ -58,18 +68,9 @@ impl HostOverrides {
         settings
     }
 
-    /// The host's `max_tokens` where no file set one, [`Self::apply`], and
-    /// the rules the host added after them: what the host made of this
-    /// daemon's own pair, on that pair read from disk.
-    pub(in crate::session_pool) fn apply_to_own(
-        &self,
-        mut settings: LoadedSettings,
-    ) -> LoadedSettings {
-        if let Some(max_tokens) = self.max_tokens {
-            if settings.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
-                settings.values.model.max_tokens = max_tokens;
-            }
-        }
+    /// [`Self::apply`], and the rules the host added after it: what the host
+    /// made of this daemon's own pair, on that pair read from disk.
+    pub(in crate::session_pool) fn apply_to_own(&self, settings: LoadedSettings) -> LoadedSettings {
         let mut settings = self.apply(settings);
         settings.rules.extend(self.rules.iter().cloned());
         settings
@@ -131,7 +132,7 @@ mod tests {
         let mut host = disk.clone();
         host.memory_enabled = false;
         host.model.max_tokens = 7;
-        let overrides = HostOverrides::between(&loaded(disk.clone()), &loaded(host));
+        let overrides = HostOverrides::between(&loaded(disk.clone()), &loaded(host), 9);
         assert_eq!(
             overrides.values,
             Some(serde_json::json!({"memory_enabled": false, "model": {"max_tokens": 7}}))
@@ -145,7 +146,7 @@ mod tests {
         assert_eq!(applied.values.model.model_name, "other-model");
         assert_eq!(applied.values.language.as_deref(), Some("fr"));
 
-        let same = HostOverrides::between(&loaded(disk.clone()), &loaded(disk));
+        let same = HostOverrides::between(&loaded(disk.clone()), &loaded(disk), 9);
         assert!(same.values.is_none());
     }
 
@@ -155,7 +156,7 @@ mod tests {
         disk.rules = vec![rule("Read")];
         let mut host = disk.clone();
         host.rules.push(rule("Bash(touch ruled.txt)"));
-        let overrides = HostOverrides::between(&disk, &host);
+        let overrides = HostOverrides::between(&disk, &host, 9);
 
         let tools = |settings: &LoadedSettings| -> Vec<String> {
             settings.rules.iter().map(|r| r.rule.tool.clone()).collect()

@@ -78,13 +78,20 @@ impl SessionPoolBuilder {
         self
     }
 
-    /// What `host` — the settings the host handed over, before the managed
-    /// layer — sets differently from `on_disk`, the same pair read from disk:
-    /// laid over every settings this pool loads from disk, so a value the
-    /// host set in memory reaches every project and survives a reload. The
-    /// rules the host added stay on this daemon's own pair.
-    pub(crate) fn host_changes(mut self, on_disk: &LoadedSettings, host: &LoadedSettings) -> Self {
-        self.host_overrides = HostOverrides::between(on_disk, host);
+    /// What `config.settings` — the settings the host handed over, before the
+    /// managed layer — sets differently from `on_disk`, the same pair read
+    /// from disk: laid over every settings this pool loads from disk, so a
+    /// value the host set in memory reaches every project and survives a
+    /// reload. The rules the host added stay on this daemon's own pair. The
+    /// config's `max_tokens_fallback` is every pair's when its settings files
+    /// leave `max_tokens` unset.
+    pub(crate) fn host_changes(
+        mut self,
+        on_disk: &LoadedSettings,
+        config: &crate::config::DaemonConfig,
+    ) -> Self {
+        self.host_overrides =
+            HostOverrides::between(on_disk, &config.settings, config.max_tokens_fallback);
         self
     }
 

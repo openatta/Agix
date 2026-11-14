@@ -2226,6 +2226,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `plugin_packages.md`。
 - **skill 变量 `${AGIX_SKILL_DIR}` 取 SKILL.md 所在目录、`${AGIX_SESSION_ID}` 取调用它的会话**;
   拿不到时原样保留,不再填 daemon 进程的工作目录与环境。
+- **`--max-tokens` 是每个项目与场景的兜底**:设置文件没写 `model.max_tokens` 的,用命令行给的值
+  (设置文件 > `--max-tokens` > 默认)。以前只有 daemon 自家那一对用它,别的项目与场景落回默认;daemon
+  自家的设置文件写了 `max_tokens` 时,以前别处兜底用的是那个文件值。
 
 ### RPC 客户端
 
@@ -2638,6 +2641,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `permissions::rule::rules_from_all_tiers` → `rules_from`;`ManagedPolicy::from_settings` →
   `ManagedLayer`;`runtime::agent::Builder::settings`、`Agent::settings()`、`SessionContext.settings`、
   `base::prompt::assemble_prompt`、agents / skills 的目录函数、`DaemonConfig.settings`。
+- **`DaemonConfig` 多一个 `max_tokens_fallback: u32`**,是 `load_daemon_config` 收到的 `cli_max_tokens`
+  原值(`settings` 里的 `max_tokens` 是文件值兜底之后的结果);池把它当作每一对的兜底。
 - **未信任项目层的归类表是 `base::project_trust::PROJECT_TIER`**,给 `Settings` 加字段而不归类,
   `every_settings_key_has_an_entry` 就过不了。
 

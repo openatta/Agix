@@ -184,6 +184,9 @@ pub struct DaemonConfig {
     /// platform's path (`base::managed_settings::managed_settings_path`). A
     /// file named here must exist.
     pub managed_settings_path: Option<PathBuf>,
+    /// `--max-tokens`: the `model.max_tokens` of every project and scene
+    /// whose settings files leave it unset.
+    pub max_tokens_fallback: u32,
     pub settings: LoadedSettings,
 }
 
@@ -236,6 +239,7 @@ impl DaemonConfig {
             session_idle_timeout_secs: 3600,
             mcp_policy_path: None,
             managed_settings_path: None,
+            max_tokens_fallback: base::settings::DEFAULT_MAX_TOKENS,
             settings: LoadedSettings::new(
                 Settings::defaults_for("claude-sonnet-4-6"),
                 PathSettings::default(),
@@ -292,6 +296,7 @@ pub fn load_daemon_config(
         session_idle_timeout_secs: 3600,
         mcp_policy_path: None,
         managed_settings_path: None,
+        max_tokens_fallback: cli_max_tokens,
         settings,
     }
 }
