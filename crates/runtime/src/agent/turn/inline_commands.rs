@@ -74,4 +74,28 @@ impl base::interface::inline_command::InlineCommandHooks for SessionInlineComman
             .run(hooks::HookEvent::PermissionDenied, &payload, cancel)
             .await;
     }
+
+    async fn post_tool_use(&self, input: &Value, output: &str, is_error: bool) -> Option<String> {
+        if !self.hooks.has_hooks_for(hooks::HookEvent::PostToolUse) {
+            return None;
+        }
+        let mut payload = self.payload("PostToolUse", input);
+        payload.tool_result = Some(Value::String(output.to_string()));
+        payload.is_error = Some(is_error);
+        payload.turn_id = self.turn_id.clone();
+        let result = self
+            .hooks
+            .run(
+                hooks::HookEvent::PostToolUse,
+                &payload,
+                &CancellationToken::new(),
+            )
+            .await;
+        result.blocked().map(|response| {
+            response
+                .message
+                .clone()
+                .unwrap_or_else(|| "no reason given".into())
+        })
+    }
 }

@@ -20,4 +20,9 @@ pub trait InlineCommandHooks: Send + Sync {
     /// Tell the host the command was refused, as a refused `Bash` call is
     /// told: the `PermissionDenied` hook, with `reason`.
     async fn denied(&self, input: &Value, reason: &str, cancel: &CancellationToken);
+
+    /// The session's `PostToolUse` hooks on what the command printed, as on a
+    /// `Bash` call's result: why one of them blocked it, if one did. Not
+    /// cancellable: the command has run, and the hooks are owed the news.
+    async fn post_tool_use(&self, input: &Value, output: &str, is_error: bool) -> Option<String>;
 }

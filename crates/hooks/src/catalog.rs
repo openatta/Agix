@@ -80,15 +80,19 @@ impl HookEvent {
                     "`decision: \"block\"`(或 exit 2):这次调用不执行,模型收到 \
                      `Blocked by PreToolUse hook: <message>`;`updated_input`:换掉入参,换过的照常校验、过权限;\
                      `decision: \"approve\"`:权限检查要询问时不再问人,直接放行(规则拒绝的照样拒绝,managed 层的 `ask` 照样问人;\
-                     `prompt` / `agent` hook 要写 `may_approve: true`)",
+                     `prompt` / `agent` hook 要写 `may_approve: true`);skill 的内联命令只认拦下,\
+                     批准不算替人答应,要询问的照样不跑,`updated_input` 换过的命令照样按这个规矩判)",
                 ),
             ),
             HookEvent::PostToolUse => (
-                "工具真正跑完之后(成功或失败);被 PreToolUse、权限拦下的调用不发",
+                "工具真正跑完之后(成功或失败);被 PreToolUse、权限拦下的调用不发;skill 正文里的 \
+                 `` !`cmd` `` 跑完也发,按一次 `Bash` 调用算(没有 `tool_use_id`)",
                 "`tool_name`、`tool_input`、`tool_use_id`、`tool_result`(结果文本)、`is_error`",
                 Acts(
                     "`decision: \"block\"`:结果换成 `Denied by PostToolUse hook: <message>`,同一批并发的\
-                     其他调用被取消;`continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`)",
+                     其他调用被取消(skill 的内联命令:正文里换成 \
+                     \"[`cmd` output withheld: Denied by PostToolUse hook: <message>]\");\
+                     `continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`;内联命令不认)",
                 ),
             ),
             HookEvent::PostToolUseFailure => (

@@ -502,6 +502,84 @@ async fn a_skills_inline_command_the_rules_refuse_fires_permission_denied() {
     );
 }
 
+/// A `PreToolUse` hook that approves `Bash` does not approve a skill's inline
+/// command on the user's behalf: one that needs their approval is still
+/// refused, and so is the command a hook rewrites it into.
+#[tokio::test]
+async fn a_pre_tool_use_hook_cannot_approve_a_skills_inline_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let outside = dir.path().join("outside.txt");
+    let rewritten = dir.path().join("rewritten.txt");
+    let approve = format!(
+        "echo '{}'",
+        json!({
+            "decision": "approve",
+            "updated_input": {"command": format!("echo W5 > '{}'", rewritten.display())},
+        })
+    );
+    let (sock, model) = serve_with_probe_skill(
+        dir.path(),
+        &work,
+        json!({
+            "sandbox": {"dangerously_disable_sandbox": true},
+            "hooks_config": {
+                "PreToolUse": [{"type": "command", "command": approve, "if": "Bash"}],
+            },
+        }),
+        &format!("Marker: !`echo W4 > '{}'`", outside.display()),
+    )
+    .await;
+
+    model.push_turn(tool_round("call-skill", "Skill", json!({"skill": "probe"})));
+    model.push_turn(text_round("done"));
+    turn_events(&sock, json!({"message": "use the probe skill"})).await;
+    let later = later_requests(&model);
+    assert!(
+        later.contains("not run"),
+        "the command was not refused: {later}"
+    );
+    assert!(!outside.exists(), "the skill's command ran");
+    assert!(!rewritten.exists(), "the hook's rewrite of it ran");
+}
+
+/// A `PostToolUse` hook that blocks `Bash` withholds a skill's inline
+/// command's output, as it withholds a `Bash` call's.
+#[tokio::test]
+async fn a_post_tool_use_hook_withholds_a_skills_inline_command_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let block = r#"echo '{"decision":"block","message":"no secrets"}'"#;
+    let (sock, model) = serve_with_probe_skill(
+        dir.path(),
+        &work,
+        json!({
+            "sandbox": {"dangerously_disable_sandbox": true},
+            "permission_rules": [{"tool": "Bash", "action": "allow"}],
+            "hooks_config": {
+                "PostToolUse": [{"type": "command", "command": block, "if": "Bash"}],
+            },
+        }),
+        "Marker: !`echo W6\"\"-SECRET`",
+    )
+    .await;
+
+    model.push_turn(tool_round("call-skill", "Skill", json!({"skill": "probe"})));
+    model.push_turn(text_round("done"));
+    turn_events(&sock, json!({"message": "use the probe skill"})).await;
+    let later = later_requests(&model);
+    assert!(
+        !later.contains("W6-SECRET"),
+        "the output reached the model: {later}"
+    );
+    assert!(
+        later.contains("Denied by PostToolUse hook: no secrets"),
+        "the expansion does not say why: {later}"
+    );
+}
+
 /// A skill's inline command nests a dangerous repository in the project; it
 /// is moved aside, and the host hears it as it would for a `Bash` call: a
 /// `notification` frame and the `Notification` hook.

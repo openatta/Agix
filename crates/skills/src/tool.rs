@@ -483,15 +483,19 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// (`ctx.inline_commands`) and permission policy decide first,
 /// then it runs through the session's own `Bash` with this invocation's
 /// `ToolContext` (same sandbox, cwd, cancellation). A session whose tools
-/// leave `Bash` out runs none. A deny rule refuses it;
-/// so does a call that would need the user's approval, because
-/// preprocessing has no one to ask — only what the rules allow, or what
-/// `Bash` itself lets through silently (a read-only command inside the
-/// project), runs. The skill's own `allowed-tools` are not applied yet at
-/// this point. With no permission wired nothing runs. What the permit owes
-/// once the command has run is settled as for a call nobody can be asked
-/// about: a dangerous repository it nested in the project is moved aside, and
-/// the host is told as for a `Bash` call.
+/// leave `Bash` out runs none. A deny rule refuses it, and so does a hook's
+/// block; a call that would need the user's approval is refused too, because
+/// preprocessing has no one to ask, and a hook's approval does not stand in
+/// for theirs — the command is the repository's text, put to the hook with no
+/// model in between. Only what the rules allow, or what `Bash` itself lets
+/// through silently (a read-only command inside the project), runs; a command
+/// a hook rewrites is judged the same way. The skill's own `allowed-tools`
+/// are not applied yet at this point. With no permission wired nothing runs.
+/// What the permit owes once the command has run is settled as for a call
+/// nobody can be asked about: a dangerous repository it nested in the project
+/// is moved aside, and the host is told as for a `Bash` call. Its output then
+/// goes past the `PostToolUse` hooks, and one that blocks it keeps it out of
+/// the expansion.
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
@@ -567,7 +571,7 @@ enum NotRun {
 /// What the policy lets a skill's inline command run on and what it owes
 /// once it has run, or why it will not let it run. Nobody can be asked about
 /// one, so its input is checked and it is judged as a call nobody can
-/// approve.
+/// approve; a hook may refuse it, not approve it.
 async fn inline_command_approval(
     permission: Option<&dyn base::interface::permission::PermissionPolicy>,
     bash: &Arc<dyn base::tool::Tool>,
@@ -581,7 +585,13 @@ async fn inline_command_approval(
     ),
     NotRun,
 > {
-    use base::interface::permission::{Approval, Attendance, PermissionOutcome, ToolFacts};
+    use base::interface::permission::{
+        Approval, Attendance, HookAnswer, PermissionOutcome, ToolFacts,
+    };
+    let hook = match hook {
+        HookAnswer::Approve { .. } => &HookAnswer::None,
+        refused_or_none => refused_or_none,
+    };
     let Some(permission) = permission else {
         return Err(NotRun::Denied(
             "no permission check is wired for this skill".to_string(),
@@ -656,7 +666,8 @@ async fn run_skill_shell_command(
         }
     };
     let after = obligations.scan_nested_repos.then(|| ctx.clone());
-    let mut out = match bash
+    let hooks = ctx.inline_commands.clone();
+    let (mut out, is_error) = match bash
         .call(input.clone(), ctx, ProgressSender::noop(""))
         .await
     {
@@ -666,10 +677,12 @@ async fn run_skill_shell_command(
         // follows it in the skill body, since `echo`-style commands always
         // end their output in `\n`.
         Ok(r) => match r.content {
-            ToolResultContent::Text(t) => t.strip_suffix('\n').unwrap_or(&t).to_string(),
-            ToolResultContent::Blocks(_) => String::new(),
+            ToolResultContent::Text(t) => {
+                (t.strip_suffix('\n').unwrap_or(&t).to_string(), r.is_error)
+            }
+            ToolResultContent::Blocks(_) => (String::new(), r.is_error),
         },
-        Err(e) => format!("[error running `{command}`: {e}]"),
+        Err(e) => (format!("[error running `{command}`: {e}]"), true),
     };
     if let Some(after) = after {
         for line in tools::nested_repos::settle_unasked(&after).await {
@@ -682,6 +695,12 @@ async fn run_skill_shell_command(
             }
             out.push_str("\n\n");
             out.push_str(&line);
+        }
+    }
+    if let Some(hooks) = &hooks {
+        if let Some(reason) = hooks.post_tool_use(&input, &out, is_error).await {
+            tracing::warn!(command = %command, reason = %reason, "skill inline command output withheld");
+            return format!("[`{command}` output withheld: Denied by PostToolUse hook: {reason}]");
         }
     }
     out
