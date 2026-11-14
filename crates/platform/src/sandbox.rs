@@ -3477,9 +3477,9 @@ mod tests {
     }
 
     /// git reads `$XDG_CONFIG_HOME/git/config` in place of
-    /// `~/.config/git/config` when the variable is set, and the strict
-    /// profile reads neither that file nor what it includes from elsewhere:
-    /// both are reported unmet.
+    /// `~/.config/git/config` when the variable is set; the strict profile
+    /// reads that file but not what it includes from elsewhere, which is
+    /// reported unmet.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[allow(clippy::unwrap_used)]
@@ -3507,17 +3507,18 @@ mod tests {
         let confined =
             PlatformSandbox.confine(spec, &SandboxPolicy::default().strict(Vec::new(), None));
         assert_eq!(confined.enforcement, Enforcement::Partial, "{confined:?}");
-        for what in [xdg.join("git/config"), root.join("dotfiles/gitconfig")] {
-            assert!(
-                confined
-                    .unmet
-                    .iter()
-                    .any(|line| line.contains(&what.display().to_string())),
-                "{} is not reported: {:?}",
-                what.display(),
-                confined.unmet
-            );
-        }
+        let says = |what: &Path| {
+            confined
+                .unmet
+                .iter()
+                .any(|line| line.contains(&what.display().to_string()))
+        };
+        assert!(
+            says(&root.join("dotfiles/gitconfig")),
+            "{:?}",
+            confined.unmet
+        );
+        assert!(!says(&xdg.join("git/config")), "{:?}", confined.unmet);
     }
 
     /// The command's own `HOME`, not the daemon's, is the home whose git
@@ -3558,6 +3559,67 @@ mod tests {
             String::from_utf8_lossy(&ran.stdout).trim(),
             "SpecHome",
             "{ran:?}"
+        );
+    }
+
+    /// A git configuration kept under `$XDG_CONFIG_HOME/git` is read under
+    /// the strict profile, file by file: the credentials beside it are not.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_strict_profile_reads_the_git_files_under_xdg_config_home_but_not_their_credentials() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let project = root.join("project");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let xdg = root.join("xdg");
+        write_file(&xdg.join("git/config"), "[user]\n\tname = FromXdg\n");
+        write_file(&xdg.join("git/ignore"), "ignored\n");
+        write_file(&xdg.join("git/attributes"), "*.bin binary\n");
+        write_file(
+            &xdg.join("git/credentials"),
+            "https://u:s3cret@example.com\n",
+        );
+        let run = |command: &str| {
+            let mut spec = ProcessSpec::new("bash", &project).args(["-c", command]);
+            spec.env.extend([
+                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+                ("HOME".to_string(), home.display().to_string()),
+                ("XDG_CONFIG_HOME".to_string(), xdg.display().to_string()),
+            ]);
+            let confined = PlatformSandbox.confine(
+                spec,
+                &SandboxPolicy::default().strict([project.clone()], None),
+            );
+            assert_eq!(confined.enforcement, Enforcement::Full, "{confined:?}");
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .env_clear()
+                .envs(confined.spec.env.iter().map(|(k, v)| (k, v)))
+                .current_dir(&project)
+                .output()
+                .unwrap()
+        };
+
+        let name = run("git config --global --get user.name");
+        assert_eq!(
+            String::from_utf8_lossy(&name.stdout).trim(),
+            "FromXdg",
+            "{name:?}"
+        );
+        for file in ["ignore", "attributes"] {
+            let out = run(&format!("cat \"$XDG_CONFIG_HOME/git/{file}\""));
+            assert!(out.status.success(), "{file}: {out:?}");
+        }
+        let creds = run("cat \"$XDG_CONFIG_HOME/git/credentials\"");
+        assert!(
+            !creds.status.success() && !String::from_utf8_lossy(&creds.stdout).contains("s3cret"),
+            "{creds:?}"
         );
     }
 

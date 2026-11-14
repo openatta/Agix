@@ -1,11 +1,11 @@
 //! What a command under `ReadScope::Only` may read: the roots the policy
 //! names, the system directories programs load from (`SYSTEM_READ_ROOTS`)
-//! and the user's git configuration (`HOME_READ_ROOTS`). macOS denies
-//! `file-read*` and allows it back under each root, metadata everywhere;
-//! Linux binds each root read-only in place of the whole filesystem. A git
-//! those roots leave out — a shim under the home directory, a configuration
-//! file included from elsewhere or under a `$XDG_CONFIG_HOME` outside them —
-//! is reported unmet (`unmet`).
+//! and the user's git configuration (`HOME_READ_ROOTS`,
+//! `XDG_CONFIG_READ_ROOTS`). macOS denies `file-read*` and allows it back
+//! under each root, metadata everywhere; Linux binds each root read-only in
+//! place of the whole filesystem. A git those roots leave out — a shim under
+//! the home directory, a configuration file included from elsewhere — is
+//! reported unmet (`unmet`).
 //!
 //! The tables were measured on macOS with `ls`, `cat`, git directly and
 //! through the xcrun shim; the Linux one is the design's, not yet measured.
@@ -53,6 +53,10 @@ const HOME_READ_ROOTS: &[&str] = &[
     #[cfg(target_os = "macos")]
     ".CFUserTextEncoding",
 ];
+
+/// Under `$XDG_CONFIG_HOME`, when it is set: git's own files there, one by
+/// one, so that `git/credentials` beside them stays unreadable.
+const XDG_CONFIG_READ_ROOTS: &[&str] = &["git/config", "git/ignore", "git/attributes"];
 
 /// Where `xcode-select` points, which need not be one of the table's.
 #[cfg(target_os = "macos")]
@@ -112,6 +116,11 @@ fn scope_read_roots(scope: &[PathBuf], dirs: &UserDirs) -> Vec<PathBuf> {
     dirs.home
         .iter()
         .flat_map(|h| HOME_READ_ROOTS.iter().map(move |r| h.join(r)))
+        .chain(
+            dirs.xdg_config_home
+                .iter()
+                .flat_map(|x| XDG_CONFIG_READ_ROOTS.iter().map(move |r| x.join(r))),
+        )
         .chain(scope.iter().cloned())
         .map(|p| resolve_path(&p))
         .collect()
