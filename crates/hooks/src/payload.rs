@@ -55,6 +55,9 @@ pub struct HookInput {
     /// reason a permission check denied a call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// `SessionStart`: why this engine starts — `new`, `resume`, `rebuild`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 
     /// `Stop`: this turn was already sent back once by a `Stop` hook — a hook
     /// that blocks unconditionally reads it to let the turn end the second time.
@@ -122,6 +125,11 @@ impl HookInput {
 
     pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = Some(reason.into());
+        self
+    }
+
+    pub fn with_source(mut self, source: impl Into<String>) -> Self {
+        self.source = Some(source.into());
         self
     }
 

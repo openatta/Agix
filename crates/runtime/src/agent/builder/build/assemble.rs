@@ -126,6 +126,7 @@ impl Builder {
             team_seat: self.spec.team_seat.take(),
             drive_goals: !self.spec.goal_rounds_from_owner,
             skip_warmup: self.spec.skip_warmup,
+            start_source: None,
         }
     }
 

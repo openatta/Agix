@@ -119,6 +119,12 @@ impl Agent {
         self.session_end.reason.clone()
     }
 
+    /// Why this engine starts, for its `SessionStart` hooks' `source`. Set it
+    /// before spawning [`Agent::run`]; unset, `source` is left out.
+    pub fn starts_as(&mut self, source: StartSource) {
+        self.identity.start_source = Some(source);
+    }
+
     /// The session's own state — its todos, tasks, permission mode — shared
     /// with every tool call, for a host that shows or acts on it.
     pub fn session_state(&self) -> Arc<base::context::SessionState> {
@@ -216,8 +222,12 @@ impl Agent {
             })
             .await;
         }
-        self.fire_lifecycle_hook(hooks::HookEvent::SessionStart, |i| i)
-            .await;
+        let source = self.identity.start_source;
+        self.fire_lifecycle_hook(hooks::HookEvent::SessionStart, |i| match source {
+            Some(source) => i.with_source(source.as_str()),
+            None => i,
+        })
+        .await;
 
         // Nothing relocates a live session's cwd, so one event at startup
         // reports where work will happen.

@@ -5769,6 +5769,63 @@ async fn a_closed_session_ends_with_reason_close() {
     srv.stop().await;
 }
 
+/// Each engine's `SessionStart` hook says why it started: a new session, a
+/// new engine for a new prompt, a session brought back from its log.
+#[tokio::test]
+async fn session_start_says_why_the_session_started() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("starts.log");
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("hi")],
+        hooked_settings(serde_json::json!({
+            "SessionStart": [
+                { "type": "command", "command": format!("cat >> '{0}'; echo >> '{0}'", log.display()) }
+            ]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+    let sources = |n: usize| {
+        let log = log.clone();
+        async move {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let text = std::fs::read_to_string(&log).unwrap_or_default();
+                    let inputs: Vec<serde_json::Value> = text
+                        .lines()
+                        .filter_map(|line| serde_json::from_str(line).ok())
+                        .collect();
+                    if inputs.len() >= n {
+                        return inputs
+                            .iter()
+                            .map(|i| i["source"].as_str().unwrap_or("-").to_string())
+                            .collect::<Vec<_>>();
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("a SessionStart hook never wrote its input")
+        }
+    };
+
+    let sid = run_turn(&srv.sock, None, "hello").await;
+    assert_eq!(sources(1).await, ["new"]);
+    let set = rpc(
+        &srv.sock,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"session.setPrompt","params":{{"session_id":"{sid}","append":"Answer briefly."}},"id":3}}"#
+        ),
+    )
+    .await;
+    assert!(set["result"].is_object(), "{set}");
+    assert_eq!(sources(2).await, ["new", "rebuild"]);
+    close_and_resume(&srv.sock, &sid).await;
+    assert_eq!(sources(3).await, ["new", "rebuild", "resume"]);
+
+    srv.stop().await;
+}
+
 /// A `SessionEnd` hook still running when the daemon shuts down is waited
 /// for within the shutdown grace, then sent `SIGTERM`; it learns the session
 /// ended for a shutdown.

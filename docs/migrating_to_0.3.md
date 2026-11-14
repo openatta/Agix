@@ -2153,6 +2153,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `rebuild`、`shutdown` 之一,引擎自己结束的不带。daemon 关停时在等引擎的同一个 5 秒宽限里等后台的
   只通知 hook,到时还没跑完的 command hook 进程组先收 `SIGTERM`、半秒后 `SIGKILL`,每个留一行 warn;
   要在关停时收尾的 hook 应当处理 `SIGTERM`。
+- **`SessionStart` 的 payload 带 `source`**:`new`、`resume`、`rebuild` 之一,与 `SessionEnd` 的
+  `reason` 对应。
 - **hook 的 `timeout` 最多 10 分钟。** 写得更大的按 10 分钟算,加载时记一行 warn;`PostToolUse` 等
   回答能起作用的事件因此最多等一个 hook 10 分钟。
 - **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
@@ -2576,6 +2578,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   再叫停还在跑的。
 - **`SessionEnd` 的 `reason`**:停引擎之前在 `Agent::end_reason()`(spawn `run` 之前取)上 `set` 一个
   `runtime::agent::EndReason`;不 set 的不带 `reason`。
+- **`SessionStart` 的 `source`**:spawn `run` 之前调 `Agent::starts_as(runtime::agent::StartSource)`;
+  不调的不带 `source`。`hooks::HookInput` 多了 `source: Option<String>`(结构体字面量要补,或用
+  `..Default::default()`),`with_source` 设它。
 - **`hooks::runner::MAX_HOOK_TIMEOUT_MS`(`600_000`)**:`HookRunner` 给每个 hook 的超时都不超过它,
   `HookRunner::new` 对写得更大的记一行 warn。
 

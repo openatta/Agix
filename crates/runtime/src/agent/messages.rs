@@ -266,6 +266,28 @@ impl EndReason {
     }
 }
 
+/// Why the host starts an engine: what its `SessionStart` hooks get as
+/// `source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartSource {
+    /// A session with nothing before it.
+    New,
+    /// A session brought back from its log, after a restart or an eviction.
+    Resume,
+    /// A new engine for a session whose engine was replaced.
+    Rebuild,
+}
+
+impl StartSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Resume => "resume",
+            Self::Rebuild => "rebuild",
+        }
+    }
+}
+
 /// Where a host says why it stops an engine, before it cancels the token
 /// [`Agent::run`] was handed ([`Agent::end_reason`]). The first reason set
 /// stands. An engine stopped without one, or that ends on its own — its input

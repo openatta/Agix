@@ -114,6 +114,7 @@ pub(crate) struct Identity {
     team_seat: Option<base::interface::delegate::TeamSeat>,
     drive_goals: bool,
     skip_warmup: bool,
+    start_source: Option<StartSource>,
 }
 
 impl Identity {

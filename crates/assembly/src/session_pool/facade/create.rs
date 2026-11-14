@@ -145,6 +145,11 @@ impl SessionPool {
             }
         }
 
+        built.agent.starts_as(if resume {
+            StartSource::Resume
+        } else {
+            StartSource::New
+        });
         built.agent.attach_session();
         // A log that does not load back is the caller's error: going on with
         // an empty context would carry the conversation on with none of what
@@ -261,6 +266,7 @@ impl SessionPool {
 
         self.live.refuse_while_shutting_down()?;
         self.stop_live_agent(sid).await?;
+        built.agent.starts_as(StartSource::Rebuild);
         built.agent.attach_session();
         if let Err(e) = self.load_log(&mut built.agent, sid, restore).await {
             self.drop_unrunnable(sid, &core, held).await;

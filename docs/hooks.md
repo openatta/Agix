@@ -214,6 +214,7 @@ hook 不能被换个写法绕过去,宁可多跑一次。其他工具的内容�
 | `stop_reason` | string | 一轮或一个子 Agent 怎么结束的 |
 | `agent_type` | string | 子 Agent 的类型,起它时选了才有 |
 | `reason` | string | 人读的说明:询问的文字、拒绝的理由、错误文本、通知正文…… |
+| `source` | string | `SessionStart`:这个引擎为什么启动(`new`、`resume`、`rebuild`) |
 | `stop_hook_active` | bool | `Stop`:这一轮已经被 Stop hook 送回去过一次 |
 | `team_name` / `teammate_name` | string | 团队成员的事件:团队名与成员名 |
 
@@ -289,7 +290,7 @@ hook 是策略的补充,不是唯一的门:要硬拦的东西写成权限规则�
 | `PostToolUseFailure` | 工具调用以错误结束(工具返回错误或 panic)时,在 PostToolUse 之前;工具自己报告失败的结果(如 Bash 非零退出)不算 | `tool_name`、`tool_input`、`reason`(错误文本)、`turn_id` | 只通知,回答被丢弃 |
 | `TurnStart` | 一轮开始,UserPromptSubmit 放行之后、第一次调模型之前 | `turn_id` | 只通知,回答被丢弃 |
 | `TurnComplete` | 一轮正常走完(模型不再要工具,Stop hook 也放行了) | `turn_id`、`stop_reason` | 只通知,回答被丢弃 |
-| `SessionStart` | 会话开始运行,紧接在 `Setup` 之后 | — | 只通知,回答被丢弃 |
+| `SessionStart` | 会话开始运行,紧接在 `Setup` 之后 | `source`:宿主为什么启动这个引擎——`new`(`session.create`、第一条消息建的会话)、`resume`(从日志接回来,包括重启或被驱逐之后再用)、`rebuild`(`setPrompt`、跨 provider 的 `setModel`、设置变了而给还在内存里的会话换引擎);嵌入方启动时没给原因的不带 | 只通知,回答被丢弃 |
 | `SessionEnd` | 会话的主循环退出:收到关闭、输入通道关闭、被取消,三种都发 | `reason`:宿主为什么停下这个引擎——`close`(`session.close` / `session.delete`)、`evict`(空闲回收或池满挤出)、`rebuild`(`setPrompt`、跨 provider 的 `setModel`、设置变了而换引擎)、`shutdown`(daemon 关停);引擎自己结束的(输入通道关闭、收到 `Shutdown` 命令)、嵌入方停下时没给原因的不带 | 只通知,回答被丢弃 |
 | `Stop` | 模型这一步不再要工具、这一轮要结束时;每次要结束都问一遍 | `stop_hook_active`(这一轮已经被 Stop hook 送回去过) | `continue: false`:结束这一轮(`stopped_by_hook`,随后发 `StopFailure`);`decision: "block"`(或 exit 2):不让结束,`message` 作为提醒交给模型接着做 |
 | `StopFailure` | 一轮被 Stop hook 的 `continue: false` 截停时 | `reason` | 只通知,回答被丢弃 |
