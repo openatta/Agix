@@ -43,4 +43,3 @@ fn    crates/script-host/src/lib.rs                        bindings::install    
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/team/src/coordinator.rs                       DefaultCoordinator::orchestrate          474
 fn    crates/tools/src/bash/paths.rs                       path_args_stay_within                    111
-fn    daemon/src/main.rs                                   serve                                    333
