@@ -2680,6 +2680,60 @@ mod tests {
         assert!(!s.state_root.join("mcp.json").exists());
     }
 
+    /// The filesystem here compares names without case, so a protected file
+    /// spelled in another case is the same file. Seatbelt matches the path as
+    /// the filesystem names it, not as the command spelled it, which is why
+    /// the profile's rules can be written in one case.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_protected_path_spelled_in_another_case_is_still_protected() {
+        let Some(s) = UnderSandboxExec::new() else {
+            return;
+        };
+        std::fs::write(s.state_root.join("settings.json"), "agix-test-secret").unwrap();
+        std::fs::write(s.elsewhere.join(".netrc"), "agix-test-secret").unwrap();
+        let state = s.state_root.display().to_string();
+        let elsewhere = s.elsewhere.display().to_string();
+        std::fs::write(s.state_root.join("notes.txt"), "fine").unwrap();
+        if !s.state_root.join("SETTINGS.JSON").exists() {
+            return;
+        }
+        assert!(s.runs(&format!(
+            "cat A '{}/NOTES.TXT' && echo b > A && echo x > .GIT/description",
+            s.state_root.display()
+        )));
+        let denied_netrc = SandboxPolicy {
+            deny_read: vec![s.elsewhere.join(".netrc")],
+            ..Default::default()
+        };
+        for policy in [SandboxPolicy::default(), denied_netrc.clone()] {
+            for command in [
+                format!("cat '{state}/SETTINGS.JSON'"),
+                format!("cat '{state}/Settings.json'"),
+            ] {
+                assert!(
+                    !s.run_under(&command, policy.clone()),
+                    "`{command}` read it"
+                );
+            }
+        }
+        assert!(!s.run_under(&format!("cat '{elsewhere}/.NETRC'"), denied_netrc));
+        for command in [
+            "printf '[x]\\n\\ty = z\\n' >> .GIT/config",
+            "printf '[x]\\n\\ty = z\\n' >> .git/CONFIG",
+            "echo 'touch pwned' > .GIT/hooks/post-commit",
+            "echo '{}' > .AGIX/settings.json",
+            "echo '{}' > .agix/SETTINGS.JSON",
+            "echo '{}' > .Claude/settings.json",
+        ] {
+            assert!(!s.runs(command), "`{command}` was allowed");
+            assert!(!s.runs_unattended(command), "`{command}` was allowed");
+        }
+        let config = std::fs::read_to_string(s.project.join(".git").join("config")).unwrap();
+        assert!(!config.contains("[x]"), "{config}");
+        assert!(!s.project.join(".agix").join("settings.json").exists());
+    }
+
     /// `.agents/skills/` is where the engine loads the project's skills
     /// from, so a sandboxed command may not plant one there, nor move the
     /// directories above it aside for others — whether they exist yet or
