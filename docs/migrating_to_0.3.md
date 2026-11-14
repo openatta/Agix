@@ -882,8 +882,9 @@ WebAssembly 载体整个移除。
   别的用户本来就连不上(没有写权限),放宽了 umask 的部署才受影响。
 - `daemon.lock` 在 daemon 运行期间持有 `flock`:两个 daemon 同时启动只有一个能起来,另一个报
   "another daemon is already running"。以前两个可能都起来,后起的删掉先起的那个的 socket。
-- 被驱逐的会话再用时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建;以前
-  旧的 `SessionEnd` hook 可能和重建出来的会话的 `SessionStart` 同时在跑。
+- 被驱逐的会话再用时,先等它旧的运行体停下(最多 5 秒)再重建;以前
+  旧的 `SessionEnd` hook 可能和重建出来的会话的 `SessionStart` 同时在跑(0.3.12 起只通知的 hook 改到后台跑,
+  又可能同时在跑,见 0.3.12 一节)。
 - `--listen` 绑定非回环地址时启动打一条 warn:TCP 不加密,token 明文传输。
 
 ### RPC 客户端

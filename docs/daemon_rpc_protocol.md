@@ -1572,7 +1572,7 @@ client,会话在原地按新的规格重建(它是空闲的,不会腰斩什么),
 团队成员、后台程序、Monitor)时同样 `SESSION_BUSY`,`reason` 为 `"background_tasks"`,`data` 多一个
 `running_task_ids` 列出它们 —— 重建会停掉它们;等它们结束,或先 `session.stopTask`。
 
-重建时旧引擎 5 秒内没停下(卡在不理会取消的 `SessionEnd` hook 里之类),也返回 `SESSION_BUSY`
+重建时旧引擎 5 秒内没停下(卡在不理会取消的工具调用里之类;只通知的 hook 在后台跑,不拖住它),也返回 `SESSION_BUSY`
 (`reason` 为 `"previous_engine"`、`current_turn_id` 为 `null`、没有 `running_task_ids`):这次的选择**没有生效,也不记进日志**;
 旧引擎已经取消,会话被移出内存(`daemon.event` `session_evicted`,`reason: "rebuild"`),下一次
 `run_turn` / `session.resume` 等旧引擎停下后按原来的选择从转录恢复。要换,稍后再调一次。
@@ -2902,7 +2902,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | `import_detected` | `{sources:[{source,description}]}` | 启动时探测到还没处理过的可导入配置 |
 | `session_created` | `{session_id, scene, project_root}` | 一个新会话进了内存 |
 | `session_resumed` | `{session_id, scene, project_root}` | 一个已有的会话被恢复进内存 |
-| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)、`rebuild`(原地重建时旧引擎 5 秒内没停下,见 `session.setModel`;或旧引擎停下之后新引擎没能读回日志,发起重建的调用失败)、`engine_fault`(daemon 里跑这一轮的部分出了故障,这一轮没能把会话交还;发起方的 `run_turn` 得到 `ENGINE_ERROR`、`data.kind` 为 `internal`,其余订阅者收到这一轮的 `error` 帧)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限。再用被驱逐的会话时,先等它旧的运行体停下(`SessionEnd` hook 跑完,最多 5 秒)再重建,两者不会同时在跑 |
+| `session_evicted` | `{session_id, reason}` | 会话被移出内存,transcript 还在,可以恢复。`reason`:`idle`(空闲超时)、`capacity`(池子满了,挤掉最久没动的)、`rebuild`(原地重建时旧引擎 5 秒内没停下,见 `session.setModel`;或旧引擎停下之后新引擎没能读回日志,发起重建的调用失败)、`engine_fault`(daemon 里跑这一轮的部分出了故障,这一轮没能把会话交还;发起方的 `run_turn` 得到 `ENGINE_ERROR`、`data.kind` 为 `internal`,其余订阅者收到这一轮的 `error` 帧)。正在跑一轮、或还有后台任务在跑的会话不会被驱逐;池子满了而个个都忙时,新会话照样建,池子暂时超出上限。再用被驱逐的会话时,先等它旧的运行体停下(最多 5 秒;它的 `SessionEnd` 等只通知的 hook 在后台跑,不算在内)再重建,两个引擎不会同时在跑 |
 | `session_closed` | `{session_id, reason}` | 会话被关闭。`reason`:`closed`(`session.close` / `session.delete`)、`engine_stopped`(引擎在一轮中途退出) |
 | `session_deleted` | `{session_id, parent_session_id?}` | 会话连同 transcript 被删除;级联删除的侧链带 `parent_session_id` |
 | `turn_started` | `{session_id, turn_id, initiator}` | 一轮开始。`initiator`:`client`(某条连接的 `run_turn`)、`schedule`(定时任务,§6.7)、`goal`(目标的自动轮) |
