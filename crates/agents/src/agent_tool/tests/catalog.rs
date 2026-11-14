@@ -34,25 +34,18 @@ fn merge_agent_types_with_no_dirs_returns_only_builtins() {
 
 #[test]
 fn load_agent_types_from_dir_parses_frontmatter() {
-    let dir = std::env::temp_dir().join(format!(
-        "agix-agent-types-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let tmp = agent_type_dir();
+    let dir = tmp.path();
     write_agent_md(
-        &dir,
+        dir,
         "security-auditor.md",
         "---\nname: security-auditor\ndescription: Finds security issues\nallowed_tools: [Read, Grep, Glob]\nmodel: claude-opus-4-8\n---\nYou are a security auditor.",
     );
     let types = load_agent_types_from_dir(
-        &dir,
+        dir,
         AgentTypeSource::User,
         &base::paths::PromptFiles::unscoped(),
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(types.len(), 1);
     let t = &types[0];
     assert_eq!(t.name, "security-auditor");

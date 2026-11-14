@@ -118,8 +118,8 @@ async fn until_the_session_lock_is_held(pool: &SessionPool, sid: &str) {
 }
 
 /// Choose a model for `sid` while a `setPrompt` rebuild is on its way:
-/// `setModel` passes its idle check, then waits on the bindings until the
-/// rebuild has reached the session.
+/// `setModel` passes its idle check and takes the session lock, then waits on
+/// the bindings until the rebuild has reached the session.
 async fn choose_a_model_while_a_rebuild_takes_the_session(pool: &Arc<SessionPool>, sid: &str) {
     let bindings = pool.bindings.hold().await;
     let chosen = {
@@ -130,9 +130,7 @@ async fn choose_a_model_while_a_rebuild_takes_the_session(pool: &Arc<SessionPool
                 .map(|_| ())
         })
     };
-    for _ in 0..64 {
-        tokio::task::yield_now().await;
-    }
+    until_the_session_lock_is_held(pool, sid).await;
     let rebuilt = {
         let (pool, sid) = (pool.clone(), sid.to_string());
         tokio::spawn(async move {
@@ -142,9 +140,6 @@ async fn choose_a_model_while_a_rebuild_takes_the_session(pool: &Arc<SessionPool
         })
     };
     until_the_rebuild_is_on_its_way(pool, sid).await;
-    for _ in 0..64 {
-        tokio::task::yield_now().await;
-    }
     drop(bindings);
     assert!(chosen.await.unwrap().is_ok(), "the choice was taken");
     assert!(rebuilt.await.unwrap().is_ok(), "the session was rebuilt");
