@@ -9,7 +9,7 @@
 
 use crate::client::{McpClientHandle, McpContent};
 use async_trait::async_trait;
-use base::interface::permission::{PermissionFacts, Reach, Subject};
+use base::interface::permission::{PermissionFacts, Reach, Relays, Subject};
 use base::{
     error::ToolError, tool::ProgressSender, tool::PromptContext, tool::Tool, tool::ToolContext,
     tool::ToolResult, tool::ToolSpec, tool::ValidationResult,
@@ -169,8 +169,11 @@ impl Tool for ReadMcpResourceTool {
         }
     }
 
-    async fn permission_facts(&self, _: &Value, _: &ToolContext) -> PermissionFacts {
-        PermissionFacts::new(Subject::None, Reach::Operator)
+    async fn permission_facts(&self, input: &Value, _: &ToolContext) -> PermissionFacts {
+        let server = serde_json::from_value::<ReadMcpResourceInput>(input.clone())
+            .ok()
+            .and_then(|i| i.server);
+        PermissionFacts::new(Subject::None, Reach::Operator).relaying(Relays::McpServer(server))
     }
     async fn call(
         &self,

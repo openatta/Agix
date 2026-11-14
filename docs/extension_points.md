@@ -185,8 +185,9 @@ impl Tool for FileTicketTool {
 
 **权限面只有 `permission_facts`。** 工具不再自己裁决放行或拒绝,只陈述这次调用的事实,由引擎的
 `Policy` 拿规则与模式去判(`ARCHITECTURE.md` §6.1)。`PermissionFacts::new(subject, reach)` 加
-`.with_runs(Runs::foreground() | Runs::background())`(这是一条在会话沙箱里跑的命令)与
-`.with_question(..)`(要问人时的措辞):
+`.with_runs(Runs::foreground() | Runs::background())`(这是一条在会话沙箱里跑的命令)、
+`.with_question(..)`(要问人时的措辞)与 `.relaying(Relays::Web | Relays::McpServer(..))`(请求只到
+运维配置的端点、交回的却是网页或 MCP server 的内容,runtime 据此加外部内容围栏):
 
 - `Subject` 是规则拿来匹配的内容:`None`、`Opaque(串)`(原样比较)、`ReadPath` / `WritePath`(路径,
   `Read(...)` / `Edit(...)` 规则同样作用于它)、`Shell`(命令行,逐段匹配)、`Url`。

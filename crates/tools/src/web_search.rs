@@ -8,7 +8,7 @@
 use crate::cancel::run_with_cancel;
 use async_trait::async_trait;
 use base::error::ToolError;
-use base::interface::permission::{PermissionFacts, Reach, Subject};
+use base::interface::permission::{PermissionFacts, Reach, Relays, Subject};
 use base::tool::{
     PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolSpec,
     ValidationResult,
@@ -129,7 +129,7 @@ impl Tool for WebSearchTool {
         let subject = self
             .subject_content(input)
             .map_or(Subject::None, Subject::Opaque);
-        PermissionFacts::new(subject, Reach::Operator)
+        PermissionFacts::new(subject, Reach::Operator).relaying(Relays::Web)
     }
 
     async fn call(

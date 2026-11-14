@@ -914,7 +914,8 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 要用的 `ToolContext` → `ToolFacts::gather` → `Policy::decide` → 结论是 `Prompt` 就等回答(全仓
 只有这一个等待循环,子 Agent 也走这里)→ 记遥测(记的是最终结论)→ 把结论里的
 `approval { basis, profile }` 放进 `ctx.approval` 交给 `call` → `call` 返回后按 `obligations`
-收尾(§6.3 的嵌套仓库检查)→ 按 `Reach` 给外部内容加围栏(`Server`、`Host`、`Outside`)。
+收尾(§6.3 的嵌套仓库检查)→ 按 `relays` 与 `Reach` 给外部内容加围栏(`relays` 有值的、`Server`、
+`Host`、`Outside`;不认识的 reach 也加)。
 
 **工具陈述事实。** `Tool` 的权限面只有 `permission_facts`,缺省 `PermissionFacts::unknown()`:
 什么都不声称,于是要问。事实有四项:`subject`(规则拿什么匹配:路径、命令行、URL 或不透明串)、
@@ -933,6 +934,10 @@ git 已经收口(见 §6.3),剩下的是用户事后在项目里自己跑的 git
 | `Persists(..)` | 留下一个之后会自己动作的东西 | durable `CronCreate` |
 | `Refused(..)` | 工具自己知道这个输入不该跑 | 文件工具的路径安全检查(§6.2) |
 | `Unknown` | 不知道 | 缺省;其余的 `Bash` / `Monitor` 命令 |
+
+`relays`(`Relays`)说的是结果里的内容从哪来,与 `reach` 无关:请求只到运维配置的端点、交回的却是
+别人写的东西时写它——`WebSearch` 是 `Web`,`ReadMcpResource` 是 `McpServer(..)`。它只决定围栏,
+不进权限判定。
 
 `spec().stance`(`ModeStance`)是与输入无关的另一项:`Coordination` 是不碰文件、shell、网络的协调
 原语,自含的调用不受 `plan` 与 `dontAsk` 拦;`LeavesPlan` 是退出计划模式的那一次调用。

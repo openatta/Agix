@@ -67,29 +67,51 @@ pub(super) fn render_tool_result_content(
 }
 
 /// Fence a result that came from outside the user's reach — a server's, a
-/// host's, a file's outside the project — so the model reads it as data. A
-/// server's error is its own words and is fenced too; any other failure is
-/// the engine's. A program reading a file outside the project gets its lines
-/// as they are.
+/// host's, a file's outside the project, what an operator's endpoint relays —
+/// so the model reads it as data. A server's error is its own words and is
+/// fenced too; any other failure is the engine's. A program reading a file
+/// outside the project gets its lines as they are. A reach or relay this
+/// does not know is fenced.
 pub(super) fn fence_external(
     name: &str,
     facts: &base::interface::permission::ToolFacts,
     from_code: bool,
     outcome: &mut base::interface::tool_middleware::ToolOutcome,
 ) {
-    use base::interface::permission::Reach;
+    use base::interface::permission::{Reach, Relays};
     let source = || facts.subject.content().unwrap_or(name).to_string();
-    let (source, from) = match &facts.reach {
-        Reach::Server => (
+    let (source, from) = match (&facts.relays, &facts.reach) {
+        (Some(Relays::Web), _) => (source(), "the web".to_string()),
+        (Some(Relays::McpServer(server)), _) => (
+            name.to_string(),
+            match server {
+                Some(server) => format!("the MCP server `{server}`"),
+                None => "an MCP server".to_string(),
+            },
+        ),
+        (None, Reach::Server) => (
             name.to_string(),
             match facts.origin.mcp_server() {
                 Some(server) => format!("the MCP server `{server}`"),
                 None => "a server".to_string(),
             },
         ),
-        Reach::Host { .. } => (source(), "the web".to_string()),
-        Reach::Outside if !from_code => (source(), "a file outside the project".to_string()),
-        _ => return,
+        (None, Reach::Host { .. }) => (source(), "the web".to_string()),
+        (None, Reach::Outside) if !from_code => {
+            (source(), "a file outside the project".to_string())
+        }
+        (
+            None,
+            Reach::Outside
+            | Reach::SessionOnly
+            | Reach::Delegates
+            | Reach::Operator
+            | Reach::Inside
+            | Reach::Persists(_)
+            | Reach::Refused(_)
+            | Reach::Unknown,
+        ) => return,
+        _ => (source(), "outside the user's reach".to_string()),
     };
     let text = match outcome {
         Ok(answer) => &mut answer.text,

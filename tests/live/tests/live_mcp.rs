@@ -343,12 +343,12 @@ async fn resources_reach_the_model_by_tool_and_by_reference() -> anyhow::Result<
     let read = results_of(&events, "ReadMcpResource");
     assert!(
         read.iter()
-            .any(|(_, t, failed)| !failed && t == TOY_UNICODE),
+            .any(|(_, t, failed)| !failed && live::inside_fence(t) == TOY_UNICODE),
         "the unicode resource came back changed: {read:?}"
     );
     assert!(
         read.iter()
-            .any(|(_, t, _)| t.ends_with("TOY-BIG-RESOURCE-END")),
+            .any(|(_, t, _)| live::inside_fence(t).ends_with("TOY-BIG-RESOURCE-END")),
         "the big resource came back whole to the host"
     );
     assert!(

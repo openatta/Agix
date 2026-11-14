@@ -104,6 +104,17 @@ impl Runs {
     }
 }
 
+/// Content others wrote that a call hands back through an endpoint its
+/// [`Reach`] does not show: an operator's endpoint relaying it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Relays {
+    /// What a search found on the web.
+    Web,
+    /// What an MCP server serves, by its configured name when the call names it.
+    McpServer(Option<String>),
+}
+
 /// What a tool says about one call for the permission policy to weigh:
 /// [`Tool::permission_facts`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +125,7 @@ pub struct PermissionFacts {
     pub runs: Option<Runs>,
     /// What to put to a person when the call is asked about.
     pub question: Option<String>,
+    pub relays: Option<Relays>,
 }
 
 impl PermissionFacts {
@@ -128,6 +140,7 @@ impl PermissionFacts {
             reach,
             runs: None,
             question: None,
+            relays: None,
         }
     }
 
@@ -138,6 +151,11 @@ impl PermissionFacts {
 
     pub fn with_question(mut self, question: impl Into<String>) -> Self {
         self.question = Some(question.into());
+        self
+    }
+
+    pub fn relaying(mut self, relays: Relays) -> Self {
+        self.relays = Some(relays);
         self
     }
 }
@@ -154,6 +172,7 @@ pub struct ToolFacts {
     pub reach: Reach,
     pub runs: Option<Runs>,
     pub question: Option<String>,
+    pub relays: Option<Relays>,
 }
 
 impl ToolFacts {
@@ -170,6 +189,7 @@ impl ToolFacts {
             reach: facts.reach,
             runs: facts.runs,
             question: facts.question,
+            relays: facts.relays,
         }
     }
 
@@ -183,6 +203,7 @@ impl ToolFacts {
             reach: Reach::Unknown,
             runs: None,
             question: None,
+            relays: None,
         }
     }
 }

@@ -2067,7 +2067,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   错误页与重定向说明,`[HTTP 200 | …]` 结果头现在在围栏里面)、写到或读到可读根之外的
   `Grep` / `Glob` / `Edit` / `Write` / `NotebookEdit`(以前只有 `Read`)都放进
   `<external-content>`;开了 `sandbox.read_anywhere` 的会话读项目外文件不再加围栏;`RunCode` 程序
-  发起的调用不加。
+  发起的调用不加。`ReadMcpResource` 读到的资源(按 MCP server 的内容)与 `WebSearch` 的结果(按网页)
+  也加,它们的请求只到运维配置的端点,内容却是别人写的。
 - **项目放在状态目录里、围栏被撤掉时,状态目录的配置对沙箱命令只读。** 以前这种部署只有状态目录的
   `settings.json` 和场景文件受保护,macOS 上状态目录的 `settings.local.json` 也可写。现在状态目录
   按配置根处理:`settings.json`、`settings.local.json`、`mcp.local.json`,以及 `skills`、`hooks`、
@@ -2393,7 +2394,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `ReminderContext::new`,`ScenePromptContext` 派生 `Default`。
 - **外部内容围栏由 runtime 加。** `Read` 去掉自己的围栏,`WebFetch` 不再自己加;不经 runtime 分发、
   直接调用工具的嵌入方拿到的 `Read`、`WebFetch` 结果不再带围栏,需要时自己调
-  `tools::external_content`。
+  `tools::external_content`。请求只到运维配置的端点(`Reach::Operator`)、交回的却是别人写的内容的
+  工具,用 `PermissionFacts::relaying(Relays::Web | Relays::McpServer(..))` 声明,结果才加围栏;
+  `ToolFacts` 多一个 `relays` 字段。runtime 遇到不认识的 `Reach` / `Relays` 变体一律加围栏。
 - **包装另一个 `Tool` 的包装器**只要转发上面 9 个方法;`DeferredTool` 已删除。工具的字段里不能再含
   `dyn Tool`(守卫 A3)。
 - **延迟是会话属性。** 名单是 `EngineConfig::deferred_tools`,`Builder::build` 按场景填写;要判断
