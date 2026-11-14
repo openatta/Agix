@@ -64,17 +64,19 @@ pub(super) fn sandbox_policy(ctx: &ToolContext) -> sandbox::SandboxPolicy {
 }
 
 /// The policy the call's approval says its command runs under. A call
-/// nothing judged runs under the session's.
+/// nothing judged runs under the session's; a profile this does not know,
+/// under the strictest.
 pub(super) fn policy_for_profile(ctx: &ToolContext) -> sandbox::SandboxPolicy {
     use base::interface::permission::ExecProfile;
     match ctx.approval.as_ref().map(|a| a.profile) {
-        Some(ExecProfile::Strict) => strict_sandbox_policy(ctx),
+        None | Some(ExecProfile::Session) => sandbox_policy(ctx),
         Some(ExecProfile::Unattended) => {
             let mut policy = sandbox_policy(ctx);
             policy.deny_ipc_escapes = true;
             policy
         }
-        _ => sandbox_policy(ctx),
+        Some(ExecProfile::Strict) => strict_sandbox_policy(ctx),
+        Some(_) => strict_sandbox_policy(ctx),
     }
 }
 
