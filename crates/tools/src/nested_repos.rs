@@ -247,11 +247,14 @@ async fn nested_git_entries(ctx: &ToolContext, root: &Path) -> Vec<PathBuf> {
                 if seen > MAX_ENTRIES {
                     return found;
                 }
-                if entry.path.file_name().is_some_and(|n| n == ".git") {
+                let Some(name) = entry.path.file_name() else {
+                    continue;
+                };
+                if name == ".git" {
                     if entry.is_dir && dir != root {
                         found.push(entry.path);
                     }
-                } else if entry.is_dir {
+                } else if entry.is_dir && !not_walked(name) {
                     next.push(entry.path);
                 }
             }
@@ -259,6 +262,26 @@ async fn nested_git_entries(ctx: &ToolContext, root: &Path) -> Vec<PathBuf> {
         level = next;
     }
     found
+}
+
+/// Dependency, build and cache directories, and git directories moved aside
+/// by [`quarantine`]: large, and a repository in one is still caught by its
+/// gitlink if it is indexed.
+fn not_walked(name: &std::ffi::OsStr) -> bool {
+    const DIRS: &[&str] = &[
+        "node_modules",
+        "bower_components",
+        "target",
+        ".venv",
+        "__pycache__",
+        ".tox",
+        ".gradle",
+        ".next",
+    ];
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    DIRS.contains(&name) || name.starts_with(".git.agix-quarantine-")
 }
 
 /// The keys of a git configuration that name a program git runs, in the

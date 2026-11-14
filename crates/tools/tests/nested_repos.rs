@@ -146,3 +146,31 @@ async fn a_declared_submodule_is_left_alone() {
     let scan = tools::nested_repos::scan(&ctx).await;
     assert!(scan.dangerous.is_empty(), "{scan:?}");
 }
+
+#[tokio::test]
+async fn dependency_and_build_directories_are_not_walked_but_their_gitlinks_are_still_caught() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    bash(
+        &ctx,
+        "mkdir -p node_modules/pkg target/debug/dep deep/er && \
+         (cd node_modules/pkg && git init -q) && (cd target/debug/dep && git init -q) && \
+         (cd deep/er && git init -q)",
+    )
+    .await;
+    bash(
+        &ctx,
+        &format!(
+            "cd node_modules && {}",
+            plant(&elsewhere.path().join("pwned"))
+        ),
+    )
+    .await;
+
+    let scan = tools::nested_repos::scan(&ctx).await;
+    assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
+    assert!(scan.dangerous[0].git_dir.ends_with("node_modules/sub/.git"));
+    assert_eq!(scan.notes.len(), 1, "{scan:?}");
+    assert!(scan.notes[0].contains("deep/er/.git"), "{scan:?}");
+}
