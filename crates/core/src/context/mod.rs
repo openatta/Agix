@@ -26,7 +26,6 @@ mod wire_golden;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::EffectError;
     use crate::message::{Message, SystemKind};
     use std::path::PathBuf;
 
@@ -54,21 +53,6 @@ mod tests {
         let ctx = ToolCtx::for_test(PathBuf::from("/tmp"));
         assert_eq!(ctx.session.env().cwd, PathBuf::from("/tmp"));
         assert_eq!(ctx.config.model, "claude-sonnet-4-6");
-    }
-
-    #[tokio::test]
-    async fn noop_effects_returns_not_interactive() {
-        let e = NoopEffects;
-        let r = e
-            .ask_user(PromptRequest {
-                source: "Test".into(),
-                message: "?".into(),
-                options: vec![],
-                tool_input_summary: None,
-                permission_subject: None,
-            })
-            .await;
-        assert!(matches!(r, Err(EffectError::NotInteractive)));
     }
 
     #[test]

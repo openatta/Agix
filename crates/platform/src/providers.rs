@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use base::interface::exec::{ExecProviders, SubprocessEnv};
 use base::tool::ToolContext;
-use tokio_util::sync::CancellationToken;
 
 use crate::{GroupLedger, LocalFileSystem, LocalProcess, PlatformSandbox};
 
@@ -38,10 +37,6 @@ pub fn local_providers_with_ledger(env: SubprocessEnv, ledger: Arc<GroupLedger>)
 
 pub fn tool_context_for_test(cwd: PathBuf) -> ToolContext {
     ToolContext::for_test_with(cwd, local_providers())
-}
-
-pub fn tool_context_from_engine_ctx(cwd: PathBuf, cancel: CancellationToken) -> ToolContext {
-    ToolContext::from_engine_ctx_with(cwd, cancel, local_providers())
 }
 
 /// The network of a `platform` built without `http`: every request is refused

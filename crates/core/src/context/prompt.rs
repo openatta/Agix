@@ -11,40 +11,6 @@ use super::config::EngineConfig;
 use super::session::{NoopEffects, SessionState, ToolEffects};
 use super::task::BackgroundAgentProgressData;
 
-/// 工具弹给用户看的问询请求。
-#[derive(Debug, Clone)]
-pub struct PromptRequest {
-    /// 来源工具或子系统名（"BashTool" / "FileEditTool" …）—— 仅 UI 用
-    pub source: String,
-    /// 主问题
-    pub message: String,
-    /// 备选答案；按 key 顺序展示
-    pub options: Vec<PromptOption>,
-    /// 工具入参的简短摘要（用于在对话框头部回显）
-    pub tool_input_summary: Option<String>,
-    /// The content of the call's `PermissionFacts::subject`, for "always
-    /// allow" / "always deny" shortcuts to build a rule like `<tool>(<content>)`
-    /// without re-parsing `tool_input_summary`. None when the call has no
-    /// subject — the UI falls back to single-shot allow/deny.
-    pub permission_subject: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct PromptOption {
-    /// 键（"y" / "n" / "A"）
-    pub key: String,
-    /// 给用户看的标签（"yes" / "no" / "always allow"）
-    pub label: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PromptResponse {
-    /// 用户选择的 key
-    pub choice: String,
-    /// 用户改写过的工具入参；None 表示不改
-    pub user_modified_input: Option<serde_json::Value>,
-}
-
 /// UI-only system message（对应 Message::System）。
 #[derive(Debug, Clone)]
 pub struct SystemMessage {

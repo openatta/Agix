@@ -2430,6 +2430,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 | `base::tool::{PermissionDecision, PermissionContentKind, ToolPermissionSpec}`、`base::permission::{PermissionDecision, DecisionReason, ValidationResult}` | 删除,见"Tool 实现方";`Tool` 用的是 `base::tool::ValidationResult` |
 | `SessionPool::drop_connection(ConnectionId)`(`assembly::server` 上的同名方法仍在) | `SessionPool::drop_watcher(WatcherId)` |
 | `tests/` 里的 `dependency_direction.rs`、`one_assembly.rs`、`carrier_invariants.rs`、`home_is_never_discovered.rs`、`hook_event_wiring.rs` | `tests/guards/tests/` 下的各守卫,见"测试与守卫" |
+| `base::context::{PromptRequest, PromptOption, PromptResponse}`、`ToolEffects::ask_user`、`base::error::EffectError` | 删除;`ask_user` 只有 `NoopEffects` 一份实现,引擎从不调用。向人提问走权限的 `Prompt` 决定或 `AskUserQuestion` 工具;`ToolEffects` 留下 `os_notify`、`append_system_message` |
+| `platform::tool_context_from_engine_ctx(cwd, cancel)`(0.3.11 一节表里给的写法) | 删除;`ToolContext::from_engine_ctx_with(cwd, cancel, platform::local_providers())` |
 
 #### Tool 实现方
 
@@ -2798,7 +2800,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 在 crate 外穷尽 `match` 下面这些的,要补 `_` 分支:
 
-- 错误:`ToolError`、`EffectError`、`HttpError`、`ValidationError`、`ExecError`、`EngineExecError`、
+- 错误:`ToolError`、`HttpError`、`ValidationError`、`ExecError`、`EngineExecError`、
   `ScriptError`、`GoalError`、`MemoryError`、`ImportError`、`IdError`、`SettingsFileError`、`DelegateError`;
 - 引擎交给宿主读的:`ElicitKind`、`HealthStatus`、`CallKind`、`TaskStatus`、`TaskType`、`TurnOrigin`、
   `BlockOrigin`、`Reminder`、catalog 的 `Kind` / `Frequency` / `Access` / `Wiring`;

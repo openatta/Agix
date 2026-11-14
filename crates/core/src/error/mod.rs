@@ -54,19 +54,6 @@ pub enum ToolError {
     Transport(#[source] anyhow::Error),
 }
 
-#[derive(thiserror::Error, Debug)]
-#[non_exhaustive]
-pub enum EffectError {
-    #[error("not interactive")]
-    NotInteractive,
-
-    #[error("user cancelled")]
-    Cancelled,
-
-    #[error("transport: {0}")]
-    Transport(#[source] anyhow::Error),
-}
-
 /// HTTP 响应状态码的语义枚举。
 ///
 /// 覆盖常见的 4xx（客户端错误）和 5xx（服务端错误）。

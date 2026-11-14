@@ -1,15 +1,13 @@
 //! 会话可变状态 + 副作用注入接口。
 
-use crate::error::EffectError;
 use crate::permission::PermissionMode;
-use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::goal::{GoalError, GoalView};
 use super::ledger::SessionLedger;
-use super::prompt::{PromptRequest, PromptResponse, SystemMessage};
+use super::prompt::SystemMessage;
 use super::task::{
     RunningStatus, RunningTask, TaskEvent, TaskInfo, TaskType, TodoItem, TodoStatus,
 };
@@ -965,14 +963,8 @@ impl SessionState {
     }
 }
 
-/// 副作用注入：工具想问用户、想发 OS 通知、想往 transcript 加 system message
-/// 时走这里。Engine / TUI / CLI / 测试各自实现一份。
-#[async_trait]
+/// 副作用注入：工具想发 OS 通知、想往 transcript 加 system message 时走这里。
 pub trait ToolEffects: Send + Sync {
-    /// 向用户问问题。headless / 非交互场景返回 `EffectError::NotInteractive`，
-    /// 由权限闸把它视为 deny。
-    async fn ask_user(&self, request: PromptRequest) -> Result<PromptResponse, EffectError>;
-
     /// OS 级通知（iTerm2 / Kitty / Ghostty / 终端 bell）；headless 阶段无操作。
     fn os_notify(&self, _message: &str, _kind: &str) {}
 
@@ -983,12 +975,7 @@ pub trait ToolEffects: Send + Sync {
 /// 啥都不干的 ToolEffects：测试 / 一次性 print 模式 / 启动时占位。
 pub struct NoopEffects;
 
-#[async_trait]
-impl ToolEffects for NoopEffects {
-    async fn ask_user(&self, _: PromptRequest) -> Result<PromptResponse, EffectError> {
-        Err(EffectError::NotInteractive)
-    }
-}
+impl ToolEffects for NoopEffects {}
 
 impl crate::interface::tool::RunningTasksCallback for SessionState {
     fn find(&self, tid: &str) -> Option<(String, Vec<String>, RunningStatus)> {

@@ -26,6 +26,5 @@ pub use network::{install_tls_provider, LocalNetwork};
 pub use process::{GroupLedger, LocalProcess};
 pub use providers::{
     local_providers, local_providers_with, local_providers_with_ledger, tool_context_for_test,
-    tool_context_from_engine_ctx,
 };
 pub use sandbox::PlatformSandbox;
