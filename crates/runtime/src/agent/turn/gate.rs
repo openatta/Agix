@@ -19,8 +19,6 @@ pub(crate) struct Gate {
     /// Atomic and shared because the input demultiplexer resolves permission
     /// responses off the turn's thread, with no `&mut self`.
     permission_denial_count: Arc<AtomicU32>,
-    orphaned_permission: Option<PermissionDecision>,
-    has_handled_orphaned_permission: bool,
     hooks: Arc<HookRunner>,
     turn_starts: Arc<Vec<crate::plugin::TurnStart>>,
     /// Set before the turn begins and taken once its prompt has been screened;
@@ -50,8 +48,6 @@ impl Gate {
             pending_permissions,
             pending_questions,
             permission_denial_count: Arc::new(AtomicU32::new(0)),
-            orphaned_permission: None,
-            has_handled_orphaned_permission: false,
             hooks,
             turn_starts: Arc::new(turn_starts),
             slash_skill_grants: Vec::new(),
@@ -102,15 +98,6 @@ impl Gate {
 
     pub(crate) fn reset_denials(&self) {
         self.permission_denial_count.store(0, Ordering::Relaxed);
-    }
-
-    /// The decision left pending by an interrupted session, the first time
-    /// only.
-    pub(crate) fn take_orphaned(&mut self) -> Option<PermissionDecision> {
-        let decision = self.orphaned_permission.take();
-        let first = !self.has_handled_orphaned_permission;
-        self.has_handled_orphaned_permission = true;
-        decision.filter(|_| first)
     }
 
     pub(crate) fn run_turn_starts(&self) {

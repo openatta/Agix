@@ -172,13 +172,13 @@ impl Agent {
     /// or the input channel closes. Does NOT consume self — the agent can be reused after stop.
     pub async fn run(&mut self, cancel: CancellationToken) {
         let run_started = std::time::Instant::now();
-        self.session_start(&cancel).await;
+        self.session_start().await;
         let (mut fwd_rx, own_input) = self.spawn_input_demux(&cancel);
         let exit_reason = self.run_loop(&cancel, &mut fwd_rx, &own_input).await;
         self.session_end(run_started, exit_reason).await;
     }
 
-    async fn session_start(&mut self, cancel: &CancellationToken) {
+    async fn session_start(&mut self) {
         tracing::info!(scene = %self.scene.id, "Engine started");
 
         // Emit SystemInit
@@ -227,24 +227,6 @@ impl Agent {
                 i.with_reason(format!("session working directory: {cwd}"))
             })
             .await;
-        }
-
-        // If the previous session was interrupted while a permission prompt was
-        // pending, re-inject the stored decision so the agent can continue.
-        if let Some(decision) = self.gate.take_orphaned() {
-            tracing::info!(
-                ?decision,
-                "Recovering orphaned permission from previous session"
-            );
-            let _ = self
-                .process_turn(
-                    InputMessage::PermissionResponse {
-                        prompt_id: "orphaned".into(),
-                        decision,
-                    },
-                    cancel.clone(),
-                )
-                .await;
         }
 
         if !self.identity.skip_warmup {
