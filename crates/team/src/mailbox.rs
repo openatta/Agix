@@ -16,8 +16,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent, ToolSpec,
-    ValidationResult,
+    PathStyle, ProgressSender, PromptContext, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -363,13 +362,7 @@ impl base::tool::Tool for SendMessageTool {
         if let Err(unknown) = sent {
             return Ok(ToolResult::error_text(unknown.to_string()));
         }
-        Ok(ToolResult {
-            content: ToolResultContent::Text(format!("Message sent to {}", input.peer)),
-            is_error: false,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(format!("Message sent to {}", input.peer)))
     }
 }
 
@@ -458,13 +451,7 @@ impl base::tool::Tool for ReadMailTool {
         let msgs = match msgs {
             Some(v) => v,
             None => {
-                return Ok(ToolResult {
-                    content: ToolResultContent::Text("(no new messages)".into()),
-                    is_error: false,
-                    structured_content: None,
-                    mcp_meta: None,
-                    new_messages: None,
-                });
+                return Ok(ToolResult::text("(no new messages)"));
             }
         };
         let mut result = String::new();
@@ -474,13 +461,8 @@ impl base::tool::Tool for ReadMailTool {
                 msg.from, msg.timestamp_ms, msg.content
             ));
         }
-        Ok(ToolResult {
-            content: ToolResultContent::Text(result),
-            is_error: false,
-            structured_content: Some(serde_json::to_value(&msgs).unwrap_or_default()),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(result)
+            .with_structured(serde_json::to_value(&msgs).unwrap_or_default()))
     }
 }
 
@@ -542,28 +524,17 @@ impl base::tool::Tool for ListPeersTool {
     ) -> Result<ToolResult, ToolError> {
         let peers = self.mailbox.peers();
         if peers.is_empty() {
-            return Ok(ToolResult {
-                content: ToolResultContent::Text("(no peers in current team)".into()),
-                is_error: false,
-                structured_content: None,
-                mcp_meta: None,
-                new_messages: None,
-            });
+            return Ok(ToolResult::text("(no peers in current team)"));
         }
         let result = peers.join("\n");
-        Ok(ToolResult {
-            content: ToolResultContent::Text(result),
-            is_error: false,
-            structured_content: Some(serde_json::json!({"peers": peers})),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(result).with_structured(serde_json::json!({"peers": peers})))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base::tool::ToolResultContent;
     use base::tool::{Tool, ToolContext};
     use std::path::PathBuf;
     use std::sync::Arc;

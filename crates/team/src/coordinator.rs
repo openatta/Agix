@@ -14,7 +14,6 @@ use base::prompt::{BlockRole, PromptBlock};
 use base::settings::ThinkingMode;
 use base::tool::ToolContext;
 use base::tool::ToolResult;
-use base::tool::ToolResultContent;
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -674,13 +673,7 @@ impl Coordinator for DefaultCoordinator {
                 "\n\nTeam `{name}` was cancelled: {started} of {stage_count} stages were started."
             ));
         }
-        Ok(ToolResult {
-            content: ToolResultContent::Text(text),
-            is_error: any_err || cancelled,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(text).with_error(any_err || cancelled))
     }
 
     /// Real cleanup: removes the team from the shared registry and deletes
@@ -796,13 +789,7 @@ impl Coordinator for DefaultCoordinator {
             ));
         }
 
-        Ok(ToolResult {
-            content: ToolResultContent::Text(resume_prompt),
-            is_error: false,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(resume_prompt))
     }
 }
 
@@ -999,6 +986,7 @@ mod tests {
     use base::interface::delegate::{DelegateError, DelegateOutcome};
     use base::interface::model::{ModelError, ModelStream};
     use base::provider::ApiType;
+    use base::tool::ToolResultContent;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
