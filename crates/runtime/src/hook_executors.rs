@@ -8,7 +8,8 @@
 //! the session's `model` and its `Delegator`.
 
 use base::interface::delegate::{
-    DelegateEnd, DelegateMode, DelegateRequest, Delegated, Delegator, StopsWith, Workdir,
+    DelegateEnd, DelegateError, DelegateMode, DelegateRequest, Delegated, Delegator, StopsWith,
+    Workdir,
 };
 use base::interface::model::{
     MessageRole, Model, ModelContentBlock, ModelEvent, ModelMessage, StreamParams,
@@ -16,7 +17,7 @@ use base::interface::model::{
 use base::prompt::PromptBlock;
 use base::settings::ThinkingMode;
 use hooks::payload::HookInput;
-use hooks::runner::{AgentHookExecutor, PromptHookExecutor};
+use hooks::runner::{AgentHookError, AgentHookExecutor, PromptHookExecutor};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -124,7 +125,7 @@ impl AgentHookExecutor for DelegatorHookExecutor {
         model: Option<&str>,
         payload: &HookInput,
         stop: &CancellationToken,
-    ) -> Result<String, String> {
+    ) -> Result<String, AgentHookError> {
         let payload_json = serde_json::to_string(payload).unwrap_or_default();
         let mode = DelegateMode::Hook {
             judged_session: payload.session_id.clone(),
@@ -139,13 +140,16 @@ impl AgentHookExecutor for DelegatorHookExecutor {
         req.workdir = Workdir::At(self.cwd.clone());
         match self.delegator.delegate(req).await {
             Ok(Delegated::Finished(outcome)) => match outcome.end {
-                DelegateEnd::Failed(e) => Err(e),
+                DelegateEnd::Failed(e) => Err(AgentHookError::Failed(e)),
                 DelegateEnd::Completed | DelegateEnd::Cancelled | DelegateEnd::CutShort(_) => {
                     Ok(outcome.text)
                 }
             },
-            Ok(Delegated::Started(_)) => Err("the hook's agent was started, not run".into()),
-            Err(e) => Err(e.to_string()),
+            Ok(Delegated::Started(_)) => Err(AgentHookError::Failed(
+                "the hook's agent was started, not run".into(),
+            )),
+            Err(DelegateError::NotJudged(_)) => Err(AgentHookError::NotJudged),
+            Err(e) => Err(AgentHookError::Failed(e.to_string())),
         }
     }
 }

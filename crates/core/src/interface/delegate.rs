@@ -181,6 +181,10 @@ pub enum DelegateError {
     Build(String),
     #[error("{0}")]
     Invalid(String),
+    /// A `Hook` delegate asked to judge an event of a hook agent or one of
+    /// its descendants: agent hooks do not judge those.
+    #[error("{0}")]
+    NotJudged(String),
 }
 
 #[async_trait]

@@ -223,7 +223,7 @@ impl Delegator {
         stop: CancellationToken,
     ) -> Result<Delegated, DelegateError> {
         if self.limits.hook_agents.includes(judged_session) {
-            return Err(DelegateError::Invalid(
+            return Err(DelegateError::NotJudged(
                 "an agent hook does not judge the agent running for another agent hook".into(),
             ));
         }

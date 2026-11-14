@@ -145,7 +145,15 @@ pub trait AgentHookExecutor: Send + Sync {
         model: Option<&str>,
         payload: &HookInput,
         stop: &CancellationToken,
-    ) -> Result<String, String>;
+    ) -> Result<String, AgentHookError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentHookError {
+    /// The event is a hook agent's own, or one of its descendants': agent
+    /// hooks do not judge those, so the hook does not apply rather than fail.
+    NotJudged,
+    Failed(String),
 }
 
 pub struct HookRunner {
@@ -655,7 +663,10 @@ impl HookRunner {
                     }
                 }
             }
-            Err(e) => HookOutcome::Error(format!("agent hook execution failed: {e}")),
+            Err(AgentHookError::NotJudged) => HookOutcome::Skipped(NOT_JUDGED),
+            Err(AgentHookError::Failed(e)) => {
+                HookOutcome::Error(format!("agent hook execution failed: {e}"))
+            }
         }
     }
 
@@ -756,6 +767,7 @@ impl HookRunner {
 const NO_PROMPT_EXECUTOR: &str = "prompt-type hook needs a PromptHookExecutor injected";
 const NO_AGENT_EXECUTOR: &str =
     "agent hook: no AgentHookExecutor configured — wire one at CLI/daemon startup";
+const NOT_JUDGED: &str = "agent hook: the event is a hook agent's own";
 
 /// A failed `on_error: "block"` hook, turned into the block it stands for.
 ///
@@ -1723,7 +1735,7 @@ mod tests {
             _: Option<&str>,
             _: &HookInput,
             _: &CancellationToken,
-        ) -> Result<String, String> {
+        ) -> Result<String, AgentHookError> {
             Ok(self.0.to_string())
         }
     }
@@ -1839,7 +1851,7 @@ mod tests {
             _: Option<&str>,
             _: &HookInput,
             _: &CancellationToken,
-        ) -> Result<String, String> {
+        ) -> Result<String, AgentHookError> {
             tokio::time::sleep(Duration::from_secs(30)).await;
             Ok(r#"{"ok":false}"#.into())
         }
@@ -1879,10 +1891,10 @@ mod tests {
             _: Option<&str>,
             _: &HookInput,
             stop: &CancellationToken,
-        ) -> Result<String, String> {
+        ) -> Result<String, AgentHookError> {
             self.0.notify_one();
             stop.cancelled().await;
-            Err("stopped".into())
+            Err(AgentHookError::Failed("stopped".into()))
         }
     }
 
@@ -2190,8 +2202,8 @@ mod tests {
             _: Option<&str>,
             _: &HookInput,
             _: &CancellationToken,
-        ) -> Result<String, String> {
-            Err("JUDGE-UNAVAILABLE".into())
+        ) -> Result<String, AgentHookError> {
+            Err(AgentHookError::Failed("JUDGE-UNAVAILABLE".into()))
         }
     }
 

@@ -332,6 +332,66 @@ async fn a_hook_agent_runs_with_every_slot_held_and_starts_no_hook_agent_of_its_
     );
 }
 
+/// The session's delegator, set once the delegator that holds the hook runner
+/// exists, as `Builder::build` sets its own.
+#[derive(Default)]
+struct LateDelegator(std::sync::OnceLock<Arc<dyn base::interface::delegate::Delegator>>);
+
+#[async_trait]
+impl base::interface::delegate::Delegator for LateDelegator {
+    async fn delegate(&self, req: DelegateRequest) -> Result<Delegated, DelegateError> {
+        self.0.get().expect("wired").delegate(req).await
+    }
+
+    async fn stop_member(&self, seat: &TeamSeat) {
+        self.0.get().expect("wired").stop_member(seat).await
+    }
+}
+
+/// A hook agent's own tool calls are not judged by the agent hook it runs
+/// for, so one that fails closed does not refuse them all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fail_closed_agent_hook_does_not_block_its_own_agents_tools() {
+    let (mut parent, _tools, runs, dir) = wired_parent("code");
+    if let Some(settings) = parent.settings.as_mut() {
+        settings.values.permission_mode = base::settings::PermissionMode::BypassPermissions;
+    }
+    let late = Arc::new(LateDelegator::default());
+    let guard: hooks::HookConfig = serde_json::from_value(serde_json::json!({
+        "type": "agent", "prompt": "judge", "on_error": "block"
+    }))
+    .unwrap();
+    let runner = Arc::new(
+        hooks::HookRunner::new(std::collections::HashMap::from([(
+            hooks::HookEvent::PreToolUse,
+            vec![guard],
+        )]))
+        .with_agent_executor(Arc::new(
+            runtime::hook_executors::DelegatorHookExecutor::new(late.clone(), dir.clone()),
+        )),
+    );
+    let agent_tool = TestParent {
+        hooks: Arc::downgrade(&runner),
+        permission: Some(PermissionSet::of(Arc::new(
+            permissions::policy::Policy::empty(),
+        ))),
+        ..parent
+    }
+    .agent_tool();
+    let delegator: Arc<dyn base::interface::delegate::Delegator> = agent_tool.delegator.clone();
+    let _ = late.0.set(delegator.clone());
+
+    finished_text(
+        delegator
+            .delegate(judge_request("parent-session".into()))
+            .await,
+    )
+    .expect("the hook agent finishes");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
 /// Counts the conversations it was asked to judge.
 #[derive(Default)]
 struct CountingCounter(std::sync::atomic::AtomicUsize);
