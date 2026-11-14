@@ -4,6 +4,8 @@ use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use base::memory::{DurableMemory, MemoryStore, MemoryType};
 use std::sync::Arc;
 
+const CAP: usize = base::memory::MAX_MEMORIES;
+
 /// How long a stopping session waits for its memory extractions. Under the
 /// daemon's grace for a stopping engine, so a session brought back right away
 /// is not refused for one.
@@ -55,7 +57,6 @@ pub(crate) async fn extract_memories_after_turn(
         return;
     }
 
-    const CAP: usize = base::memory::MAX_MEMORIES;
     let counting = store.clone();
     let held = tokio::task::spawn_blocking(move || counting.count())
         .await
@@ -69,9 +70,38 @@ pub(crate) async fn extract_memories_after_turn(
         return;
     }
 
-    // Build a lightweight prompt asking the model to extract memories
+    let messages_text = recent_text(messages);
+    if messages_text.is_empty() {
+        return;
+    }
+
+    let Some(full_text) =
+        ask_for_memories(model, model_name, prompt_intro, session_id, messages_text).await
+    else {
+        return;
+    };
+    let memories = parse_memories(&full_text, environment);
+    // A conversation that quoted a key is no reason to keep the key.
+    let memories: Vec<DurableMemory> = memories
+        .into_iter()
+        .filter(|memory| {
+            let found = base::memory::scan_for_secrets(memory);
+            if !found.is_empty() {
+                let kinds: Vec<&str> = found.iter().map(|f| f.kind).collect();
+                tracing::warn!(memory = %memory.name, ?kinds, "not saving an extracted memory that holds a secret");
+            }
+            found.is_empty()
+        })
+        .collect();
+    if memories.is_empty() {
+        return;
+    }
+    persist_memories(store, memories).await;
+}
+
+fn recent_text(messages: &[ModelMessage]) -> String {
     let recent: Vec<&ModelMessage> = messages.iter().rev().take(20).collect();
-    let messages_text: String = recent
+    recent
         .iter()
         .rev()
         .filter_map(|m| {
@@ -93,12 +123,16 @@ pub(crate) async fn extract_memories_after_turn(
             }
         })
         .collect::<Vec<_>>()
-        .join("\n---\n");
+        .join("\n---\n")
+}
 
-    if messages_text.is_empty() {
-        return;
-    }
-
+async fn ask_for_memories(
+    model: &dyn base::interface::model::Model,
+    model_name: &str,
+    prompt_intro: Option<&str>,
+    session_id: &str,
+    messages_text: String,
+) -> Option<String> {
     const DEFAULT_MEMORY_EXTRACTION_INTRO: &str = "\
 Extract any durable memories from this conversation excerpt. A durable \
 memory is a fact about the user, project, or workflow that should persist \
@@ -155,7 +189,7 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
         .await;
 
     let Ok(mut stream) = stream_result else {
-        return;
+        return None;
     };
 
     use futures::StreamExt;
@@ -164,62 +198,52 @@ Return only a JSON array of memories. If nothing is worth saving, return []."
             full_text.push_str(&text);
         }
     }
+    Some(full_text)
+}
 
-    // Parse extracted memories
-    let memories: Vec<DurableMemory> =
-        if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&full_text) {
-            parsed
-                .iter()
-                .filter_map(|mem| {
-                    let name = mem["name"].as_str()?.to_string();
-                    let description = mem["description"].as_str().unwrap_or("").to_string();
-                    let content = mem["content"].as_str().unwrap_or("").to_string();
-                    let memory_type = match mem["type"].as_str().unwrap_or("user") {
-                        "feedback" => MemoryType::Feedback,
-                        "project" => MemoryType::Project,
-                        "reference" => MemoryType::Reference,
-                        _ => MemoryType::User,
-                    };
-                    let confidence = mem["confidence"].as_f64().unwrap_or(0.8);
-                    if name.is_empty() || confidence < 0.3 {
-                        return None;
-                    }
-                    let timestamp = environment
-                        .now()
-                        .format(&time::format_description::well_known::Iso8601::DEFAULT)
-                        .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string());
-                    Some(DurableMemory {
-                        name,
-                        description,
-                        memory_type,
-                        content,
-                        source_session_id: String::new(),
-                        confidence,
-                        last_seen: timestamp,
-                        recall_count: 0,
-                    })
+fn parse_memories(
+    full_text: &str,
+    environment: &dyn base::interface::environment::Environment,
+) -> Vec<DurableMemory> {
+    if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&full_text) {
+        parsed
+            .iter()
+            .filter_map(|mem| {
+                let name = mem["name"].as_str()?.to_string();
+                let description = mem["description"].as_str().unwrap_or("").to_string();
+                let content = mem["content"].as_str().unwrap_or("").to_string();
+                let memory_type = match mem["type"].as_str().unwrap_or("user") {
+                    "feedback" => MemoryType::Feedback,
+                    "project" => MemoryType::Project,
+                    "reference" => MemoryType::Reference,
+                    _ => MemoryType::User,
+                };
+                let confidence = mem["confidence"].as_f64().unwrap_or(0.8);
+                if name.is_empty() || confidence < 0.3 {
+                    return None;
+                }
+                let timestamp = environment
+                    .now()
+                    .format(&time::format_description::well_known::Iso8601::DEFAULT)
+                    .unwrap_or_else(|_| "2026-01-01T00:00:00Z".to_string());
+                Some(DurableMemory {
+                    name,
+                    description,
+                    memory_type,
+                    content,
+                    source_session_id: String::new(),
+                    confidence,
+                    last_seen: timestamp,
+                    recall_count: 0,
                 })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-    // A conversation that quoted a key is no reason to keep the key.
-    let memories: Vec<DurableMemory> = memories
-        .into_iter()
-        .filter(|memory| {
-            let found = base::memory::scan_for_secrets(memory);
-            if !found.is_empty() {
-                let kinds: Vec<&str> = found.iter().map(|f| f.kind).collect();
-                tracing::warn!(memory = %memory.name, ?kinds, "not saving an extracted memory that holds a secret");
-            }
-            found.is_empty()
-        })
-        .collect();
-    if memories.is_empty() {
-        return;
+            })
+            .collect()
+    } else {
+        Vec::new()
     }
+}
 
+async fn persist_memories(store: Arc<MemoryStore>, memories: Vec<DurableMemory>) {
     // Route by the type the model was asked to classify each memory with.
     // `project` memories are about *this* working directory ("the merge
     // freeze starts Thursday", "the auth rewrite is compliance-driven") and

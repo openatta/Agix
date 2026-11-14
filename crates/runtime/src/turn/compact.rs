@@ -6,6 +6,7 @@ use crate::agent::Agent;
 use base::event::AgentEvent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
 use std::collections::HashSet;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// An aging pass already applied to the messages, not yet accounted for.
@@ -155,61 +156,10 @@ impl Agent {
         }
 
         let budget = self.context_budget();
-        let context_tokens = self.context_tokens();
-        let reactive_start = std::time::Instant::now();
-        let reactive_from = compaction::grouping::estimate_tokens(&self.session.messages);
-        match compactor.reactive(
-            &mut self.session.messages,
-            &compaction::compact::ReactiveInput {
-                context_tokens,
-                context_limit: budget.compact_threshold,
-                keep_recent: budget.compact_keep_recent,
-                enabled: self.settings.values.compaction.reactive,
-                circuit_open: self.compaction.compaction_state.circuit_open,
-            },
-        ) {
-            compaction::compact::ReactiveOutcome::Compacted => {
-                self.compaction.tool_results_ever_cleared = true;
-                self.compaction.compaction_state.record_success();
-                let messages = self.session.messages.len();
-                self.report_compaction(
-                    &CompactSummary {
-                        strategy: format!(
-                            "{:?}",
-                            compaction::compact::CompactStrategy::MicroCompact
-                        ),
-                        messages_before: messages,
-                        messages_after: messages,
-                        tokens_before: reactive_from,
-                        tokens_after: compaction::grouping::estimate_tokens(&self.session.messages),
-                    },
-                    None,
-                    reactive_start,
-                );
-                tracing::info!(context_tokens, "reactive micro-compact completed");
-            }
-            compaction::compact::ReactiveOutcome::NoEffect => {
-                self.compaction.compaction_state.record_failure();
-                tracing::warn!(
-                    failures = self.compaction.compaction_state.consecutive_failures,
-                    "reactive micro-compact had no effect"
-                );
-            }
-            compaction::compact::ReactiveOutcome::NotTriggered => {}
-        }
+        self.reactive_compact(&compactor, &budget);
 
         let threshold = budget.compact_threshold;
-        if let Some(reminder) = compactor.context_warning(&compaction::compact::BudgetState {
-            context_tokens: self.context_tokens(),
-            threshold,
-            warned_already: self.compaction.compact_warning_issued,
-        }) {
-            self.session.push_message(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text { text: reminder }],
-            });
-            self.compaction.compact_warning_issued = true;
-        }
+        self.warn_about_context(&compactor, threshold);
         // Asked again after the reminder, not before it: the reminder is
         // itself context, and a conversation one message short of the
         // threshold crosses it here rather than a turn later.
@@ -259,6 +209,73 @@ impl Agent {
         }
     }
 
+    fn reactive_compact(
+        &mut self,
+        compactor: &Arc<dyn compaction::compact::Compactor>,
+        budget: &base::interface::budget_policy::ContextBudget,
+    ) {
+        let context_tokens = self.context_tokens();
+        let reactive_start = std::time::Instant::now();
+        let reactive_from = compaction::grouping::estimate_tokens(&self.session.messages);
+        match compactor.reactive(
+            &mut self.session.messages,
+            &compaction::compact::ReactiveInput {
+                context_tokens,
+                context_limit: budget.compact_threshold,
+                keep_recent: budget.compact_keep_recent,
+                enabled: self.settings.values.compaction.reactive,
+                circuit_open: self.compaction.compaction_state.circuit_open,
+            },
+        ) {
+            compaction::compact::ReactiveOutcome::Compacted => {
+                self.compaction.tool_results_ever_cleared = true;
+                self.compaction.compaction_state.record_success();
+                let messages = self.session.messages.len();
+                self.report_compaction(
+                    &CompactSummary {
+                        strategy: format!(
+                            "{:?}",
+                            compaction::compact::CompactStrategy::MicroCompact
+                        ),
+                        messages_before: messages,
+                        messages_after: messages,
+                        tokens_before: reactive_from,
+                        tokens_after: compaction::grouping::estimate_tokens(&self.session.messages),
+                    },
+                    None,
+                    reactive_start,
+                );
+                tracing::info!(context_tokens, "reactive micro-compact completed");
+            }
+            compaction::compact::ReactiveOutcome::NoEffect => {
+                self.compaction.compaction_state.record_failure();
+                tracing::warn!(
+                    failures = self.compaction.compaction_state.consecutive_failures,
+                    "reactive micro-compact had no effect"
+                );
+            }
+            compaction::compact::ReactiveOutcome::NotTriggered => {}
+        }
+    }
+
+    fn warn_about_context(
+        &mut self,
+        compactor: &Arc<dyn compaction::compact::Compactor>,
+        threshold: usize,
+    ) {
+        if let Some(reminder) = compactor.context_warning(&compaction::compact::BudgetState {
+            context_tokens: self.context_tokens(),
+            threshold,
+            warned_already: self.compaction.compact_warning_issued,
+        }) {
+            self.session.push_message(ModelMessage {
+                role: MessageRole::User,
+                content: vec![ModelContentBlock::Text { text: reminder }],
+            });
+            self.compaction.compact_warning_issued = true;
+        }
+    }
+
     /// One compaction, start to finish: the `PreCompact` hook, an LLM summary
     /// when one is wanted, the compactor's own cascade otherwise, recovery of
     /// what the summary cannot carry, the transcript marker, the event and
@@ -278,93 +295,21 @@ impl Agent {
         if !self.pre_compact_hooks_allow(target, trigger, cancel).await {
             return Err(NotCompacted::Declined);
         }
-        let compactor = self.compaction.compactor.clone();
         let messages_before = self.session.messages.len();
         // The summarizer must see what is about to be destroyed, and recovery
         // re-attaches files from reads that are about to be dropped.
         let pre_compact = self.session.messages().to_vec();
 
-        // Layer 0: FullCompact — LLM summary, before anything is dropped.
-        //
-        // Placed ahead of the DefaultCompactor cascade because every layer
-        // in that cascade destroys information: Snip drops whole rounds,
-        // MicroCompact blanks tool results, CollapseContext truncates each
-        // text block to 200 bytes. A summary written after any of them
-        // could only describe the wreckage. Summarize, then drop.
-        //
-        // Not unconditional: `should_summarize` requires that compaction is
-        // genuinely about to discard a meaningful amount of history, so a
-        // marginal compaction doesn't buy an API round-trip of latency on
-        // the user's turn. Every failure mode (no summarizer configured,
-        // strategy declines, model errors, timeout, empty response) falls
-        // through to the non-LLM cascade below, so this can never fail a
-        // turn — it can only fail to help.
         let compact_start = std::time::Instant::now();
-        let llm_outcome = match self.compaction_summarizer() {
-            Some(summarizer)
-                if trigger == CompactTrigger::Manual
-                    || compactor.wants_llm_summary(&pre_compact, target, keep) =>
-            {
-                match compaction::llm_summary::full_compact(
-                    &summarizer,
-                    pre_compact.clone(),
-                    target,
-                    keep,
-                    cancel,
-                )
-                .await
-                {
-                    Ok(ok) => {
-                        tracing::info!("compaction: LLM summary produced (FullCompact)");
-                        Some(ok)
-                    }
-                    // An interrupt can also surface as the summary request's
-                    // own error, depending on where the stream was when it hit.
-                    Err(e)
-                        if cancel.is_cancelled()
-                            || matches!(e, compaction::compact::CompactError::Cancelled) =>
-                    {
-                        tracing::info!("compaction: interrupted while summarizing; left as it was");
-                        return Err(NotCompacted::Cancelled);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "compaction: LLM summary unavailable — falling back to the non-LLM cascade"
-                        );
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
-
+        let llm_outcome = self
+            .try_llm_summary(&pre_compact, target, keep, trigger, cancel)
+            .await?;
         let (mut compacted, result) = match llm_outcome {
             Some(ok) => ok,
-            None => match compactor.compact(pre_compact.clone(), target, keep).await {
-                Ok(ok) => ok,
-                Err(e) => {
-                    tracing::warn!(error = %e, "failed to compact messages, continuing with full context");
-                    let tokens = self.context_tokens() as u64;
-                    let _ = self.telemetry.telemetry_handle.record(
-                        telemetry::TelemetryEvent::compact_action(
-                            &self.session.session_id,
-                            self.session.turn_count,
-                            Some(self.current_turn_id.clone()),
-                            telemetry::CompactActionPayload {
-                                strategy: "error".into(),
-                                before_tokens: tokens,
-                                after_tokens: tokens,
-                                before_message_count: messages_before,
-                                after_message_count: messages_before,
-                                success: false,
-                                latency_ms: compact_start.elapsed().as_millis() as u64,
-                            },
-                        ),
-                    );
-                    return Err(NotCompacted::Failed(e.to_string()));
-                }
-            },
+            None => {
+                self.cascade_compact(&pre_compact, target, keep, compact_start)
+                    .await?
+            }
         };
         if result.strategy == compaction::compact::CompactStrategy::NoOp {
             return Err(NotCompacted::NothingToDrop);
@@ -406,6 +351,127 @@ impl Agent {
             tokens_after,
         };
         self.report_compaction(&summary, result.projection.as_ref(), compact_start);
+        self.reset_after_compaction(&summary, result.strategy, trigger);
+        self.fire_post_compact_hook(&summary, cancel).await;
+        Ok(summary)
+    }
+
+    async fn try_llm_summary(
+        &self,
+        pre_compact: &[ModelMessage],
+        target: usize,
+        keep: usize,
+        trigger: CompactTrigger,
+        cancel: &CancellationToken,
+    ) -> Result<Option<(Vec<ModelMessage>, compaction::compact::CompactResult)>, NotCompacted> {
+        // Layer 0: FullCompact — LLM summary, before anything is dropped.
+        //
+        // Placed ahead of the DefaultCompactor cascade because every layer
+        // in that cascade destroys information: Snip drops whole rounds,
+        // MicroCompact blanks tool results, CollapseContext truncates each
+        // text block to 200 bytes. A summary written after any of them
+        // could only describe the wreckage. Summarize, then drop.
+        //
+        // Not unconditional: `should_summarize` requires that compaction is
+        // genuinely about to discard a meaningful amount of history, so a
+        // marginal compaction doesn't buy an API round-trip of latency on
+        // the user's turn. Every failure mode (no summarizer configured,
+        // strategy declines, model errors, timeout, empty response) falls
+        // through to the non-LLM cascade below, so this can never fail a
+        // turn — it can only fail to help.
+        let compactor = self.compaction.compactor.clone();
+        Ok(match self.compaction_summarizer() {
+            Some(summarizer)
+                if trigger == CompactTrigger::Manual
+                    || compactor.wants_llm_summary(pre_compact, target, keep) =>
+            {
+                match compaction::llm_summary::full_compact(
+                    &summarizer,
+                    pre_compact.to_vec(),
+                    target,
+                    keep,
+                    cancel,
+                )
+                .await
+                {
+                    Ok(ok) => {
+                        tracing::info!("compaction: LLM summary produced (FullCompact)");
+                        Some(ok)
+                    }
+                    // An interrupt can also surface as the summary request's
+                    // own error, depending on where the stream was when it hit.
+                    Err(e)
+                        if cancel.is_cancelled()
+                            || matches!(e, compaction::compact::CompactError::Cancelled) =>
+                    {
+                        tracing::info!("compaction: interrupted while summarizing; left as it was");
+                        return Err(NotCompacted::Cancelled);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "compaction: LLM summary unavailable — falling back to the non-LLM cascade"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        })
+    }
+
+    async fn cascade_compact(
+        &self,
+        pre_compact: &[ModelMessage],
+        target: usize,
+        keep: usize,
+        compact_start: std::time::Instant,
+    ) -> Result<(Vec<ModelMessage>, compaction::compact::CompactResult), NotCompacted> {
+        let messages_before = self.session.messages.len();
+        match self
+            .compaction
+            .compactor
+            .compact(pre_compact.to_vec(), target, keep)
+            .await
+        {
+            Ok(ok) => Ok(ok),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to compact messages, continuing with full context");
+                let tokens = self.context_tokens() as u64;
+                let _ = self.telemetry.telemetry_handle.record(
+                    telemetry::TelemetryEvent::compact_action(
+                        &self.session.session_id,
+                        self.session.turn_count,
+                        Some(self.current_turn_id.clone()),
+                        telemetry::CompactActionPayload {
+                            strategy: "error".into(),
+                            before_tokens: tokens,
+                            after_tokens: tokens,
+                            before_message_count: messages_before,
+                            after_message_count: messages_before,
+                            success: false,
+                            latency_ms: compact_start.elapsed().as_millis() as u64,
+                        },
+                    ),
+                );
+                Err(NotCompacted::Failed(e.to_string()))
+            }
+        }
+    }
+
+    fn reset_after_compaction(
+        &mut self,
+        summary: &CompactSummary,
+        strategy: compaction::compact::CompactStrategy,
+        trigger: CompactTrigger,
+    ) {
+        let CompactSummary {
+            messages_before,
+            messages_after,
+            tokens_before,
+            tokens_after,
+            ..
+        } = *summary;
         // The warning can fire again once the budget fills up again.
         self.compaction.compact_warning_issued = false;
         self.compaction.auto_backoff = AutoCompactBackoff::default();
@@ -425,7 +491,7 @@ impl Agent {
         }
 
         tracing::info!(
-            strategy = ?result.strategy,
+            strategy = ?strategy,
             messages_before,
             messages_after,
             tokens_before,
@@ -439,7 +505,16 @@ impl Agent {
                 &self.session.messages
             ))
         );
+    }
 
+    async fn fire_post_compact_hook(&self, summary: &CompactSummary, cancel: &CancellationToken) {
+        let CompactSummary {
+            messages_before,
+            messages_after,
+            tokens_before,
+            tokens_after,
+            ..
+        } = *summary;
         if self
             .gate
             .hooks
@@ -468,7 +543,6 @@ impl Agent {
                 )
                 .await;
         }
-        Ok(summary)
     }
 
     /// Whether the `PreCompact` hooks let a compaction aimed at `target` run.
