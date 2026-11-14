@@ -98,7 +98,7 @@ async fn settle(
                  outside the sandbox. Kept, as the user asked.]"
             )
         } else {
-            match nested_repos::quarantine(&repo.git_dir).await {
+            match nested_repos::quarantine(after, &repo.git_dir).await {
                 Ok(to) => format!(
                     "[`{shown}` is a repository this command nested in the project, whose \
                      configuration names programs ({keys}) that a `git` run in the project \

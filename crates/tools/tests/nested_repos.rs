@@ -72,7 +72,7 @@ async fn a_planted_repository_is_moved_aside_before_the_users_git_enters_it() {
     assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
     let found = &scan.dangerous[0];
     assert_eq!(found.keys, ["core.fsmonitor"]);
-    let moved = tools::nested_repos::quarantine(&found.git_dir)
+    let moved = tools::nested_repos::quarantine(&ctx, &found.git_dir)
         .await
         .unwrap();
     assert!(moved
@@ -173,4 +173,32 @@ async fn dependency_and_build_directories_are_not_walked_but_their_gitlinks_are_
     assert!(scan.dangerous[0].git_dir.ends_with("node_modules/sub/.git"));
     assert_eq!(scan.notes.len(), 1, "{scan:?}");
     assert!(scan.notes[0].contains("deep/er/.git"), "{scan:?}");
+}
+
+/// Commands run against the session's filesystem, which need not be this
+/// machine's: the repository is moved aside there, and a directory of the
+/// same name on the local disk is left where it is.
+#[tokio::test]
+async fn a_repository_is_moved_aside_on_the_filesystem_the_session_runs_against() {
+    let local = tempfile::tempdir().unwrap();
+    let cwd = local.path().canonicalize().unwrap();
+    let git_dir = cwd.join("sub/.git");
+    std::fs::create_dir_all(&git_dir).unwrap();
+    std::fs::write(git_dir.join("config"), "[core]\n").unwrap();
+    let remote = base::interface::exec::in_process::InMemoryFileSystem::new()
+        .with_file(git_dir.join("config"), "[core]\n\tfsmonitor = x\n");
+    let mut ctx = platform::tool_context_for_test(cwd.clone());
+    ctx.exec.filesystem = std::sync::Arc::new(remote.clone());
+
+    let moved = tools::nested_repos::quarantine(&ctx, &git_dir)
+        .await
+        .unwrap();
+
+    assert!(
+        git_dir.join("config").exists(),
+        "the local disk was renamed"
+    );
+    let files = remote.snapshot();
+    assert!(files.contains_key(&moved.join("config")), "{files:?}");
+    assert!(!files.contains_key(&git_dir.join("config")), "{files:?}");
 }

@@ -115,8 +115,12 @@ pub async fn scan(ctx: &ToolContext) -> Scan {
 }
 
 /// Move a nested repository's git directory aside, so no git enters it, under
-/// a name it can be moved back from. Run by the engine, outside any sandbox.
-pub async fn quarantine(git_dir: &Path) -> std::io::Result<PathBuf> {
+/// a name it can be moved back from: on the filesystem `ctx`'s commands run
+/// against, by the engine, outside any sandbox.
+pub async fn quarantine(
+    ctx: &ToolContext,
+    git_dir: &Path,
+) -> Result<PathBuf, base::interface::exec::ExecError> {
     let stamp = time::OffsetDateTime::now_utc();
     let name = format!(
         ".git.agix-quarantine-{:04}{:02}{:02}T{:02}{:02}{:02}Z",
@@ -128,7 +132,7 @@ pub async fn quarantine(git_dir: &Path) -> std::io::Result<PathBuf> {
         stamp.second()
     );
     let to = git_dir.with_file_name(name);
-    tokio::fs::rename(git_dir, &to).await?;
+    ctx.exec.filesystem.rename(git_dir, &to).await?;
     Ok(to)
 }
 

@@ -76,6 +76,12 @@ impl FileSystem for LocalFileSystem {
         })
     }
 
+    async fn rename(&self, from: &Path, to: &Path) -> Result<(), ExecError> {
+        tokio::fs::rename(from, to)
+            .await
+            .map_err(|e| failed(from, e))
+    }
+
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf, ExecError> {
         tokio::fs::canonicalize(path)
             .await

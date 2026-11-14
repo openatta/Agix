@@ -198,6 +198,48 @@ impl FileSystem for InMemoryFileSystem {
         Err(missing(path))
     }
 
+    async fn rename(&self, from: &Path, to: &Path) -> Result<(), ExecError> {
+        let (from_n, to_n) = (normalize(from), normalize(to));
+        let moved = |p: &PathBuf| match p.strip_prefix(&from_n) {
+            Ok(rest) if rest.as_os_str().is_empty() => Some(to_n.clone()),
+            Ok(rest) => Some(to_n.join(rest)),
+            Err(_) => None,
+        };
+        let mut files = self
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut dirs = self
+            .dirs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !files.contains_key(&from_n) && !dirs.contains_key(&from_n) {
+            return Err(missing(from));
+        }
+        let files_moved: Vec<PathBuf> = files
+            .keys()
+            .filter(|k| moved(k).is_some())
+            .cloned()
+            .collect();
+        for old in files_moved {
+            if let (Some(new), Some(bytes)) = (moved(&old), files.remove(&old)) {
+                files.insert(new, bytes);
+            }
+        }
+        let dirs_moved: Vec<PathBuf> = dirs
+            .keys()
+            .filter(|k| moved(k).is_some())
+            .cloned()
+            .collect();
+        for old in dirs_moved {
+            dirs.remove(&old);
+            if let Some(new) = moved(&old) {
+                dirs.insert(new, ());
+            }
+        }
+        Ok(())
+    }
+
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf, ExecError> {
         let p = normalize(path);
         if self

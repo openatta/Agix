@@ -47,6 +47,15 @@ pub trait FileSystem: Send + Sync {
     async fn metadata(&self, path: &Path) -> Result<Metadata, ExecError>;
     async fn canonicalize(&self, path: &Path) -> Result<PathBuf, ExecError>;
 
+    /// Move `from` to `to` on this filesystem. Provided, for a provider
+    /// that cannot: it fails and moves nothing.
+    async fn rename(&self, from: &Path, _to: &Path) -> Result<(), ExecError> {
+        Err(ExecError::failed(format!(
+            "{}: this filesystem does not rename",
+            from.display()
+        )))
+    }
+
     /// What most callers actually want. Provided, so an implementor writes
     /// `read` and gets this.
     async fn read_to_string(&self, path: &Path) -> Result<String, ExecError> {
