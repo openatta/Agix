@@ -93,6 +93,21 @@ struct PendingAging {
     took: std::time::Duration,
 }
 
+/// A predictive pass already applied to the messages, not yet accounted for.
+struct PendingReactive {
+    summary: CompactSummary,
+    took: std::time::Duration,
+}
+
+/// The transcript and the flags a compaction step changes, as they were
+/// before it.
+struct Checkpoint {
+    messages: Vec<ModelMessage>,
+    pushed: usize,
+    ever_cleared: bool,
+    warned: bool,
+}
+
 impl Agent {
     /// Build the summarizer used by compaction's FullCompact layer.
     ///
@@ -113,26 +128,55 @@ impl Agent {
 
     /// Compact session messages if token budget is exceeded.
     ///
-    /// The aging passes and the compaction the budget forces are one
-    /// transaction: aging is applied first, because the budget is judged on
-    /// what it leaves, but it is accounted for — reported, and the cached
-    /// pass's clock restarted — only once the rest went through. A compaction
-    /// that was interrupted or failed puts the aged tool results back.
+    /// The whole step is one transaction on the transcript: aging, the tool
+    /// result budget, the predictive pass, the warning and the compaction the
+    /// budget forces. Each is applied in turn, because each is judged on what
+    /// the one before left, but none is accounted for — reported, its clock
+    /// restarted — until the rest went through. A compaction that was
+    /// interrupted or failed puts the transcript back as it was.
     pub(crate) async fn compact_if_needed(&mut self, cancel: &CancellationToken) {
+        let checkpoint = self.transcript_checkpoint();
+        let compactor = self.compaction.compactor.clone();
         let aged = self.age_messages();
-        let abandoned = match self.compact_to_budget(cancel).await {
+        self.trim_tool_results(&compactor);
+        let budget = self.context_budget();
+        let reactive = self.reactive_compact(&compactor, &budget);
+        let abandoned = match self.compact_to_budget(&compactor, &budget, cancel).await {
             Ok(()) => false,
             Err(NotCompacted::Cancelled | NotCompacted::Failed(_)) => true,
             Err(NotCompacted::Declined | NotCompacted::NothingToDrop) => cancel.is_cancelled(),
         };
         if abandoned {
-            if !aged.aging.undo.is_empty() {
-                tracing::info!("compaction did not go through; aged tool results put back");
-            }
-            aged.aging.undo.restore(&mut self.session.messages);
-        } else {
-            self.commit_aging(aged);
+            tracing::info!("compaction did not go through; the transcript is put back");
+            self.restore_transcript(checkpoint);
+            return;
         }
+        if let Some(reactive) = reactive {
+            self.commit_reactive(reactive);
+        }
+        self.commit_aging(aged);
+    }
+
+    fn transcript_checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            messages: self.session.messages.clone(),
+            pushed: self.session.message_timestamps.len(),
+            ever_cleared: self.compaction.tool_results_ever_cleared,
+            warned: self.compaction.compact_warning_issued,
+        }
+    }
+
+    fn restore_transcript(&mut self, checkpoint: Checkpoint) {
+        let Checkpoint {
+            messages,
+            pushed,
+            ever_cleared,
+            warned,
+        } = checkpoint;
+        self.session.messages = messages;
+        self.session.message_timestamps.truncate(pushed);
+        self.compaction.tool_results_ever_cleared = ever_cleared;
+        self.compaction.compact_warning_issued = warned;
     }
 
     fn age_messages(&mut self) -> PendingAging {
@@ -202,27 +246,24 @@ impl Agent {
         }
     }
 
-    /// Everything after aging: the tool result budget, the predictive pass,
-    /// the warning, and the compaction the budget forces. `Ok` when no
-    /// compaction was due or one went through.
-    async fn compact_to_budget(&mut self, cancel: &CancellationToken) -> Result<(), NotCompacted> {
-        // Every judgement below belongs to the compactor: what has gone stale,
-        // whether to compact early, when to warn, and when the budget forces
-        // it. The order they are asked in is the loop's.
-        let compactor = self.compaction.compactor.clone();
-
-        // Enforce per-message tool result budget BEFORE compaction.
-        let budget_modified = compactor.trim_tool_results(&mut self.session.messages);
-        if budget_modified > 0 {
+    fn trim_tool_results(&mut self, compactor: &Arc<dyn compaction::compact::Compactor>) {
+        let modified = compactor.trim_tool_results(&mut self.session.messages);
+        if modified > 0 {
             self.compaction.tool_results_ever_cleared = true;
-            tracing::debug!(modified = budget_modified, "tool result budget enforced");
+            tracing::debug!(modified, "tool result budget enforced");
         }
+    }
 
-        let budget = self.context_budget();
-        self.reactive_compact(&compactor, &budget);
-
+    /// The warning and the compaction the budget forces. `Ok` when no
+    /// compaction was due or one went through.
+    async fn compact_to_budget(
+        &mut self,
+        compactor: &Arc<dyn compaction::compact::Compactor>,
+        budget: &base::interface::budget_policy::ContextBudget,
+        cancel: &CancellationToken,
+    ) -> Result<(), NotCompacted> {
         let threshold = budget.compact_threshold;
-        self.warn_about_context(&compactor, threshold);
+        self.warn_about_context(compactor, threshold);
         // Asked again after the reminder, not before it: the reminder is
         // itself context, and a conversation one message short of the
         // threshold crosses it here rather than a turn later.
@@ -276,7 +317,7 @@ impl Agent {
         &mut self,
         compactor: &Arc<dyn compaction::compact::Compactor>,
         budget: &base::interface::budget_policy::ContextBudget,
-    ) {
+    ) -> Option<PendingReactive> {
         let context_tokens = self.context_tokens();
         let reactive_start = std::time::Instant::now();
         let reactive_from = compaction::grouping::estimate_tokens(&self.session.messages);
@@ -291,11 +332,10 @@ impl Agent {
             },
         ) {
             compaction::compact::ReactiveOutcome::Compacted => {
-                self.compaction.tool_results_ever_cleared = true;
-                self.compaction.compaction_state.record_success();
                 let messages = self.session.messages.len();
-                self.report_compaction(
-                    &CompactSummary {
+                tracing::info!(context_tokens, "reactive micro-compact completed");
+                Some(PendingReactive {
+                    summary: CompactSummary {
                         strategy: format!(
                             "{:?}",
                             compaction::compact::CompactStrategy::MicroCompact
@@ -305,10 +345,8 @@ impl Agent {
                         tokens_before: reactive_from,
                         tokens_after: compaction::grouping::estimate_tokens(&self.session.messages),
                     },
-                    None,
-                    reactive_start,
-                );
-                tracing::info!(context_tokens, "reactive micro-compact completed");
+                    took: reactive_start.elapsed(),
+                })
             }
             compaction::compact::ReactiveOutcome::NoEffect => {
                 self.compaction.compaction_state.record_failure();
@@ -316,9 +354,21 @@ impl Agent {
                     failures = self.compaction.compaction_state.consecutive_failures,
                     "reactive micro-compact had no effect"
                 );
+                None
             }
-            compaction::compact::ReactiveOutcome::NotTriggered => {}
+            compaction::compact::ReactiveOutcome::NotTriggered => None,
         }
+    }
+
+    fn commit_reactive(&mut self, reactive: PendingReactive) {
+        self.compaction.tool_results_ever_cleared = true;
+        self.compaction.compaction_state.record_success();
+        let now = std::time::Instant::now();
+        self.report_compaction(
+            &reactive.summary,
+            None,
+            now.checked_sub(reactive.took).unwrap_or(now),
+        );
     }
 
     fn warn_about_context(

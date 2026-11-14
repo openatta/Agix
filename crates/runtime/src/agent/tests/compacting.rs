@@ -581,3 +581,119 @@ async fn an_interrupted_compaction_leaves_the_aged_tool_results_as_they_were() {
     assert_eq!(blocks(&agent), before);
     assert_eq!(compact_frames(&mut rx), 0);
 }
+
+/// Rewrites the first tool result in the budget pass and the first text in
+/// the predictive one, then fails the compaction itself.
+struct RewritesThenFails;
+
+#[async_trait::async_trait]
+impl compaction::compact::Compactor for RewritesThenFails {
+    async fn compact(
+        &self,
+        _messages: Vec<base::interface::model::ModelMessage>,
+        _max_tokens: usize,
+        _keep_rounds: usize,
+    ) -> Result<
+        (
+            Vec<base::interface::model::ModelMessage>,
+            compaction::compact::CompactResult,
+        ),
+        compaction::compact::CompactError,
+    > {
+        Err(compaction::compact::CompactError::Internal(
+            "compactor down".into(),
+        ))
+    }
+
+    fn trim_tool_results(&self, messages: &mut [base::interface::model::ModelMessage]) -> usize {
+        for block in messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
+            if let base::interface::model::ModelContentBlock::ToolResult { content, .. } = block {
+                *content = "[trimmed]".into();
+                return 1;
+            }
+        }
+        0
+    }
+
+    fn reactive(
+        &self,
+        messages: &mut Vec<base::interface::model::ModelMessage>,
+        _input: &compaction::compact::ReactiveInput,
+    ) -> compaction::compact::ReactiveOutcome {
+        for block in messages.iter_mut().flat_map(|m| m.content.iter_mut()) {
+            if let base::interface::model::ModelContentBlock::Text { text } = block {
+                *text = "[cleared]".into();
+                break;
+            }
+        }
+        compaction::compact::ReactiveOutcome::Compacted
+    }
+
+    fn wants_llm_summary(
+        &self,
+        _messages: &[base::interface::model::ModelMessage],
+        _max_tokens: usize,
+        _keep_rounds: usize,
+    ) -> bool {
+        false
+    }
+}
+
+/// The whole step is one transaction: when the compaction the budget forces
+/// fails, what the tool result budget and the predictive pass had already
+/// rewritten is put back, and nothing reports a compaction.
+#[tokio::test]
+async fn a_failed_compaction_puts_back_what_the_passes_before_it_rewrote() {
+    use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
+    let (mut agent, mut rx, _tx) = Builder::new()
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
+        .model(Arc::new(DummyModel))
+        .compactor(Arc::new(RewritesThenFails))
+        .settings(Arc::new({
+            let mut s = test_settings();
+            s.values.compaction.threshold_tokens = Some(2_000);
+            s.values.compaction.keep_recent = Some(4);
+            s
+        }))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    for i in 0..20 {
+        agent.session.push_message(text_message(
+            MessageRole::User,
+            &format!("question {i}: {}", "words ".repeat(60)),
+        ));
+        let id = format!("toolu_{i}");
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![ModelContentBlock::ToolUse {
+                id: id.clone(),
+                name: "Bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            }],
+        });
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::ToolResult {
+                tool_use_id: id,
+                content: format!("output {i}: {}", "listing ".repeat(75)),
+                is_error: Some(false),
+            }],
+        });
+    }
+    let blocks = |agent: &Agent| format!("{:?}", agent.session.messages());
+    let before = blocks(&agent);
+    let pushed = agent.session.message_timestamps.len();
+    assert!(agent.context_tokens() > 2_000);
+
+    agent
+        .compact_if_needed(&tokio_util::sync::CancellationToken::new())
+        .await;
+
+    assert_eq!(blocks(&agent), before);
+    assert_eq!(agent.session.message_timestamps.len(), pushed);
+    assert!(!agent.compaction.ever_cleared());
+    assert_eq!(compact_frames(&mut rx), 0);
+}
