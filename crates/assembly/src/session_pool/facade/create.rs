@@ -256,6 +256,7 @@ impl SessionPool {
             .build_engine(&core, scene, &binding, &spec, restore, generation)
             .await?;
 
+        self.live.refuse_while_shutting_down()?;
         self.stop_live_agent(sid).await?;
         built.agent.attach_session();
         if let Err(e) = self.load_log(&mut built.agent, sid, restore).await {

@@ -367,8 +367,9 @@ impl LiveSessions {
     }
 
     /// Put `live` in the table under `sid`, making room for it. Refused once
-    /// the pool is shutting down — checked under the lock `shutdown_all`
-    /// drains the table with, so nothing inserted outlives the shutdown — and
+    /// the pool is shutting down — checked under the table lock, which
+    /// `shutdown_all` lists the sessions under once it has marked the
+    /// shutdown, so nothing inserted outlives the shutdown — and
     /// when `served` says its scene no longer is, checked under the lock
     /// [`Self::retire_scene`] deactivates under.
     pub(in crate::session_pool) async fn insert_evicting(
@@ -428,19 +429,6 @@ impl LiveSessions {
             deactivate();
         }
         in_scene
-    }
-
-    /// Take every session out, each handed to `f` under the same lock.
-    pub(in crate::session_pool) async fn drain<T>(
-        &self,
-        mut f: impl FnMut(String, LiveSession) -> T,
-    ) -> Vec<T> {
-        self.sessions
-            .lock()
-            .await
-            .drain()
-            .map(|(sid, live)| f(sid, live))
-            .collect()
     }
 
     /// Take out the sessions idle for longer than `idle_timeout` at `now`,

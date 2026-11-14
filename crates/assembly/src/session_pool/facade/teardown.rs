@@ -235,22 +235,30 @@ impl SessionPool {
     /// 关闭所有 session，等每个 Agent 把手上的一轮收尾落盘再返回。From the
     /// moment this starts no session is created; a second call waits for the
     /// first to finish.
+    ///
+    /// Each session is taken out under its session lock, as `session.close`
+    /// takes it: a rebuild or resume in flight finishes first, or, past the
+    /// point it sees the shutdown, gives up without starting an engine.
     pub async fn shutdown_all(&self) {
         let Some(_done) = self.live.begin_shutdown() else {
             self.live.shut_down().await;
             return;
         };
-        let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) = self
-            .live
-            .drain(|sid, live| {
-                self.end_cut_off_turn(&sid, &live, SessionEvent::Closed);
-                live.engine.cancel.cancel();
-                live.core.hub().clear();
-                info!(%sid, "session removed (shutdown)");
-                (live.engine.exited, live.core.process_groups().clone())
-            })
+        let ids = self.live.ids().await;
+        let (exits, ledgers): (Vec<CancellationToken>, Vec<_>) =
+            futures::future::join_all(ids.iter().map(|sid| {
+                self.live.with_session_lock(sid, async move {
+                    let live = self.live.remove(sid).await?;
+                    self.end_cut_off_turn(sid, &live, SessionEvent::Closed);
+                    live.engine.cancel.cancel();
+                    live.core.hub().clear();
+                    info!(%sid, "session removed (shutdown)");
+                    Some((live.engine.exited, live.core.process_groups().clone()))
+                })
+            }))
             .await
             .into_iter()
+            .flatten()
             .unzip();
         let all = futures::future::join_all(exits.iter().map(|e| e.cancelled()));
         if tokio::time::timeout(AGENT_EXIT_GRACE, all).await.is_err() {

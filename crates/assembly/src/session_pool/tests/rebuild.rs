@@ -759,3 +759,55 @@ async fn a_session_being_rebuilt_reads_as_rebuilding() {
         api::TurnState::Idle
     );
 }
+
+/// A shutdown that starts while a rebuild is building its engine takes the
+/// session as it is: the rebuild does not put the new engine on the
+/// session's state while the old one may still be stopping, and starts no
+/// engine nobody waits for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shutdown_during_a_rebuild_keeps_the_new_engine_off_the_session() {
+    let (builder, _dir, _store) = builder_with_history().await;
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let builds = Arc::new(AtomicUsize::new(0));
+    let (entered, go) = (
+        std::sync::Mutex::new(entered_tx),
+        std::sync::Mutex::new(go_rx),
+    );
+    let pool = builder
+        .session_customizer(Arc::new(move |builder, _| {
+            if builds.fetch_add(1, Ordering::SeqCst) == 1 {
+                let _ = entered.lock().unwrap().send(());
+                let _ = go.lock().unwrap().recv();
+            }
+            builder
+        }))
+        .build();
+    let sid = new_session(&pool).await;
+    let (_, state) = slot_and_state(&pool, &sid).await;
+    let env = state.env();
+
+    let rebuild = {
+        let (pool, sid) = (pool.clone(), sid.clone());
+        tokio::spawn(async move { pool.set_session_prompt(&sid, append).await.is_ok() })
+    };
+    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
+        .await
+        .unwrap();
+    let shutdown = {
+        let pool = pool.clone();
+        tokio::spawn(async move { pool.shutdown_all().await })
+    };
+    while pool.live.refuse_while_shutting_down().is_ok() {
+        tokio::task::yield_now().await;
+    }
+
+    go_tx.send(()).unwrap();
+    assert!(!rebuild.await.unwrap(), "rebuilt during the shutdown");
+    shutdown.await.unwrap();
+    assert!(
+        Arc::ptr_eq(&state.env(), &env),
+        "the rebuild put its engine on the session's state"
+    );
+    assert_eq!(pool.live.len().await, 0);
+}
