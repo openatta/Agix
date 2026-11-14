@@ -490,7 +490,8 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// project), runs. The skill's own `allowed-tools` are not applied yet at
 /// this point. With no permission wired nothing runs. What the permit owes
 /// once the command has run is settled as for a call nobody can be asked
-/// about: a dangerous repository it nested in the project is moved aside.
+/// about: a dangerous repository it nested in the project is moved aside, and
+/// the host is told as for a `Bash` call.
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
@@ -639,7 +640,10 @@ async fn run_skill_shell_command(
         }
     };
     let after = obligations.scan_nested_repos.then(|| ctx.clone());
-    let mut out = match bash.call(input, ctx, ProgressSender::noop("")).await {
+    let mut out = match bash
+        .call(input.clone(), ctx, ProgressSender::noop(""))
+        .await
+    {
         // Trim exactly one trailing newline, matching shell `$(...)` command
         // substitution semantics — without this, every inline placeholder
         // splice leaves a stray blank line/line-break before whatever
@@ -653,6 +657,13 @@ async fn run_skill_shell_command(
     };
     if let Some(after) = after {
         for line in tools::nested_repos::settle_unasked(&after).await {
+            // Only a repository it moved aside, or could not, is reported in
+            // brackets; one only worth mentioning is not the host's business.
+            if line.starts_with('[') {
+                if let Some(hooks) = &after.inline_commands {
+                    hooks.notify(&input, &line, &after.cancel).await;
+                }
+            }
             out.push_str("\n\n");
             out.push_str(&line);
         }

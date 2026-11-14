@@ -2157,7 +2157,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `reason` 对应。
 - **skill 的内联命令(`` !`cmd` ``)也过 `PreToolUse` hook。** 按一次 `Bash` 调用(`tool_name` 是
   `Bash`,`tool_input` 是 `{"command": …}`):hook 拦下的不跑,正文里换成 "[`cmd` not run: Blocked by
-  PreToolUse hook: …]";`updated_input` 换掉命令;hook 批准的算替人答应。
+  PreToolUse hook: …]";`updated_input` 换掉命令;hook 批准的算替人答应。它跑完移开危险的嵌套仓库时,
+  和 `Bash` 一样发 `Notification` hook 与 `notification` 帧(以前只写进正文)。
 - **hook 的 `timeout` 最多 10 分钟。** 写得更大的按 10 分钟算,加载时记一行 warn;`PostToolUse` 等
   回答能起作用的事件因此最多等一个 hook 10 分钟。
 - **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
@@ -2583,7 +2584,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `runtime::agent::EndReason`;不 set 的不带 `reason`。
 - **`base::tool::ToolContext` 多了 `inline_commands: Option<Arc<dyn
   base::interface::inline_command::InlineCommandHooks>>`**:引擎给每次工具调用与 `/name` 展开填上,
-  skill 的内联命令经它过 `PreToolUse`;自己构造 `ToolContext` 的不填就没有这一步。
+  skill 的内联命令经它过 `PreToolUse`、报告移开的嵌套仓库;自己构造 `ToolContext` 的不填就没有这两步。
 - **`SessionStart` 的 `source`**:spawn `run` 之前调 `Agent::starts_as(runtime::agent::StartSource)`;
   不调的不带 `source`。`hooks::HookInput` 多了 `source: Option<String>`(结构体字面量要补,或用
   `..Default::default()`),`with_source` 设它。
