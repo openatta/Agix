@@ -24,6 +24,89 @@ fn hand_to_turn_loop(
     fwd_tx.send((msg, turn_cancel)).is_ok()
 }
 
+struct InputDemux {
+    raw_rx: InputReceiver,
+    fwd_tx: mpsc::UnboundedSender<Forwarded>,
+    pending: PendingPermissions,
+    questions: crate::elicitation::PendingQuestions,
+    denials: Arc<std::sync::atomic::AtomicU32>,
+    turn_cancel: Arc<std::sync::Mutex<TurnCancel>>,
+    session_cancel: CancellationToken,
+    steering: crate::steering::SharedSteerQueue,
+}
+
+impl InputDemux {
+    async fn run(mut self) {
+        while let Some(msg) = self.raw_rx.recv().await {
+            match msg {
+                InputMessage::Steer {
+                    content,
+                    message_id,
+                } => {
+                    let offered = crate::steering::lock(&self.steering).offer(
+                        base::event::QueuedUserMessage {
+                            message_id,
+                            content,
+                        },
+                    );
+                    if let Err(m) = offered {
+                        let turn = InputMessage::User {
+                            content: m.content,
+                            attachments: vec![],
+                            turn_id: m.message_id,
+                        };
+                        if !hand_to_turn_loop(
+                            &self.fwd_tx,
+                            &self.turn_cancel,
+                            &self.session_cancel,
+                            turn,
+                        ) {
+                            break;
+                        }
+                    }
+                }
+                InputMessage::PermissionResponse {
+                    prompt_id,
+                    decision,
+                } => {
+                    crate::turn::resolve_permission_response(
+                        &self.pending,
+                        &self.denials,
+                        prompt_id,
+                        decision,
+                    );
+                }
+                InputMessage::QuestionResponse { prompt_id, answer } => {
+                    crate::elicitation::resolve_question_response(
+                        &self.questions,
+                        &prompt_id,
+                        answer,
+                    );
+                }
+                InputMessage::System {
+                    kind: EngineCommand::CancelTurn { turn_id },
+                    ..
+                } => {
+                    tracing::info!(?turn_id, "Cancelling in-flight turn");
+                    lock_turn_cancel(&self.turn_cancel).cancel(turn_id.as_deref());
+                }
+                // Receiver gone means the engine loop has exited;
+                // nothing left to forward to.
+                other => {
+                    if !hand_to_turn_loop(
+                        &self.fwd_tx,
+                        &self.turn_cancel,
+                        &self.session_cancel,
+                        other,
+                    ) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl Agent {
     pub fn steer_handle(&self) -> crate::steering::SteerHandle {
         crate::steering::SteerHandle(self.channels.steering.clone())
@@ -88,6 +171,14 @@ impl Agent {
     /// Start the agent event loop. Runs until cancelled (caller calls `.cancel()` on the token)
     /// or the input channel closes. Does NOT consume self — the agent can be reused after stop.
     pub async fn run(&mut self, cancel: CancellationToken) {
+        let run_started = std::time::Instant::now();
+        self.session_start(&cancel).await;
+        let (mut fwd_rx, own_input) = self.spawn_input_demux(&cancel);
+        let exit_reason = self.run_loop(&cancel, &mut fwd_rx, &own_input).await;
+        self.session_end(run_started, exit_reason).await;
+    }
+
+    async fn session_start(&mut self, cancel: &CancellationToken) {
         tracing::info!(scene = %self.scene.id, "Engine started");
 
         // Emit SystemInit
@@ -163,7 +254,15 @@ impl Agent {
         if !self.identity.skip_warmup {
             self.warmup().await;
         }
+    }
 
+    fn spawn_input_demux(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> (
+        mpsc::UnboundedReceiver<Forwarded>,
+        mpsc::WeakUnboundedSender<Forwarded>,
+    ) {
         // The loop below `await`s `process_turn` inline, so while a turn is
         // running it is not reading input. Some messages only mean something
         // *during* a turn and would deadlock or arrive too late there: a
@@ -172,7 +271,7 @@ impl Agent {
         // step. This task owns the real receiver and handles those through
         // `Arc`-shared state; everything else is forwarded to the loop
         // untouched.
-        let (fwd_tx, mut fwd_rx) = mpsc::unbounded_channel();
+        let (fwd_tx, fwd_rx) = mpsc::unbounded_channel();
         // Weak, so a goal round can be queued without keeping the loop alive
         // after the real input channel closes.
         let own_input = fwd_tx.downgrade();
@@ -181,71 +280,36 @@ impl Agent {
             // holding a receiver whose sender is dropped immediately, so any
             // stray read of it yields `None` rather than blocking forever.
             let (_closed_tx, closed_rx) = mpsc::unbounded_channel();
-            let mut raw_rx = std::mem::replace(&mut self.channels.input_rx, closed_rx);
+            let raw_rx = std::mem::replace(&mut self.channels.input_rx, closed_rx);
             let pending = self.gate.pending_permissions.clone();
             let questions = self.gate.pending_questions.clone();
             let denials = self.gate.permission_denial_count.clone();
             let turn_cancel = self.channels.current_turn_cancel.clone();
             let session_cancel = cancel.clone();
             let steering = self.channels.steering.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = raw_rx.recv().await {
-                    match msg {
-                        InputMessage::Steer {
-                            content,
-                            message_id,
-                        } => {
-                            let offered = crate::steering::lock(&steering).offer(
-                                base::event::QueuedUserMessage {
-                                    message_id,
-                                    content,
-                                },
-                            );
-                            if let Err(m) = offered {
-                                let turn = InputMessage::User {
-                                    content: m.content,
-                                    attachments: vec![],
-                                    turn_id: m.message_id,
-                                };
-                                if !hand_to_turn_loop(&fwd_tx, &turn_cancel, &session_cancel, turn)
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                        InputMessage::PermissionResponse {
-                            prompt_id,
-                            decision,
-                        } => {
-                            crate::turn::resolve_permission_response(
-                                &pending, &denials, prompt_id, decision,
-                            );
-                        }
-                        InputMessage::QuestionResponse { prompt_id, answer } => {
-                            crate::elicitation::resolve_question_response(
-                                &questions, &prompt_id, answer,
-                            );
-                        }
-                        InputMessage::System {
-                            kind: EngineCommand::CancelTurn { turn_id },
-                            ..
-                        } => {
-                            tracing::info!(?turn_id, "Cancelling in-flight turn");
-                            lock_turn_cancel(&turn_cancel).cancel(turn_id.as_deref());
-                        }
-                        // Receiver gone means the engine loop has exited;
-                        // nothing left to forward to.
-                        other => {
-                            if !hand_to_turn_loop(&fwd_tx, &turn_cancel, &session_cancel, other) {
-                                break;
-                            }
-                        }
-                    }
+            tokio::spawn(
+                InputDemux {
+                    raw_rx,
+                    fwd_tx,
+                    pending,
+                    questions,
+                    denials,
+                    turn_cancel,
+                    session_cancel,
+                    steering,
                 }
-            });
+                .run(),
+            );
         }
+        (fwd_rx, own_input)
+    }
 
-        let run_started = std::time::Instant::now();
+    async fn run_loop(
+        &mut self,
+        cancel: &CancellationToken,
+        fwd_rx: &mut mpsc::UnboundedReceiver<Forwarded>,
+        own_input: &mpsc::WeakUnboundedSender<Forwarded>,
+    ) -> &'static str {
         let exit_reason: &'static str;
         loop {
             self.gate
@@ -317,6 +381,10 @@ impl Agent {
                 }
             }
         }
+        exit_reason
+    }
+
+    async fn session_end(&mut self, run_started: std::time::Instant, exit_reason: &'static str) {
         // What a failed write left for the next step, and goal changes made
         // since the last one, would otherwise never reach the log.
         let _ = self.flush_log().await;

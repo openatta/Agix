@@ -123,160 +123,8 @@ impl Agent {
                 attachments,
                 turn_id,
             } => {
-                self.adopt_model_choice();
-                self.current_turn_id = turn_id;
-                self.session.set_turn_id(Some(self.current_turn_id.clone()));
-                let _ = self.channels.event_tx.send(AgentEvent::TurnStart {
-                    turn_id: self.current_turn_id.clone(),
-                });
-                if let Some(sc) = crate::commands::parse_slash_command(&content) {
-                    self.record_slash_command(&sc);
-                    // `/mcp__<server>__<prompt>` → `prompts/get` on the owning
-                    // server; the returned messages become this turn's
-                    // content.
-                    //
-                    // Resolved off the registry when the prompt was registered
-                    // there (the normal path — `Builder::build`), otherwise
-                    // straight off the live `McpManager`. The fallback is what
-                    // keeps this working for a registry built once and shared
-                    // across sessions (`Builder::commands_override`, the
-                    // daemon's path): that catalog predates this session's MCP
-                    // connections, and it also lets prompts picked up by a
-                    // later `refresh_prompts` be invocable immediately.
-                    let mcp_command: Option<String> = match self.tooling.commands.resolve(&sc.name)
-                    {
-                        Some(crate::commands::Command::McpPrompt { command, .. }) => Some(command),
-                        Some(_) => None,
-                        None => self
-                            .tooling
-                            .mcp
-                            .has_prompt_command(&sc.name)
-                            .then(|| sc.name.clone()),
-                    };
-                    if let Some(command) = mcp_command {
-                        // Argument mapping + validation and every failure mode
-                        // (unreachable server, prompt handler error, bad
-                        // arguments) are handled inside
-                        // `invoke_prompt_command`, which always yields text —
-                        // a broken MCP server must not fail the user's turn,
-                        // it must produce something the model can read and
-                        // explain to the user.
-                        let invocation = self
-                            .tooling
-                            .mcp
-                            .invoke_prompt_command(&command, &sc.args)
-                            .await;
-                        if invocation.is_error {
-                            tracing::warn!(
-                                command = %command,
-                                "MCP prompt command failed; injecting the failure as text"
-                            );
-                        }
-                        return self
-                            .run_user_turn(
-                                invocation.text,
-                                attachments,
-                                cancel,
-                                history::entry::MessageOrigin::Command,
-                            )
-                            .await;
-                    }
-
-                    if let Some(cmd) = self.tooling.commands.resolve(&sc.name) {
-                        match cmd {
-                            crate::commands::Command::Prompt { entry } => {
-                                let ctx = self.skill_invocation_context(cancel.clone());
-                                let expansion = self
-                                    .tooling
-                                    .commands
-                                    .run_prompt_command(
-                                        &entry,
-                                        &sc,
-                                        &ctx,
-                                        self.gate.permission.policy.as_ref(),
-                                    )
-                                    .await;
-                                self.slash_skill_grants = expansion.grants;
-                                return self
-                                    .run_user_turn(
-                                        expansion.text,
-                                        attachments,
-                                        cancel,
-                                        history::entry::MessageOrigin::Command,
-                                    )
-                                    .await;
-                            }
-                            crate::commands::Command::McpPrompt { .. } => {
-                                unreachable!("MCP prompt commands are dispatched above")
-                            }
-                            crate::commands::Command::Local { .. } => {
-                                let result_text = match sc.name.as_str() {
-                                    "help" => self.handle_help_command(),
-                                    "skills" => self.handle_skills_command(),
-                                    "clear" => {
-                                        self.handle_clear_command().await;
-                                        "Session cleared. All messages removed.".into()
-                                    }
-                                    "compact" => match self.compact_now(&cancel).await {
-                                        Some(c) => format!(
-                                            "Compacted ({}): {} → {} messages, ~{} → ~{} tokens.",
-                                            c.strategy,
-                                            c.messages_before,
-                                            c.messages_after,
-                                            c.tokens_before,
-                                            c.tokens_after
-                                        ),
-                                        None if cancel.is_cancelled() => {
-                                            "Compaction interrupted; nothing changed.".into()
-                                        }
-                                        None => "Nothing to compact.".into(),
-                                    },
-                                    "cost" => self.handle_cost_command(),
-                                    _ => format!("Unknown local command: {}", sc.name),
-                                };
-                                let _ = self.channels.event_tx.send(AgentEvent::TextDelta {
-                                    text: result_text,
-                                    turn_id: self.current_turn_id.clone(),
-                                });
-                                self.last_had_tool_uses = false;
-                                let stop_reason = if cancel.is_cancelled() {
-                                    "cancelled"
-                                } else {
-                                    "command_executed"
-                                };
-                                return self
-                                    .finish_turn(Ok(TurnOutcome::stopped(stop_reason)))
-                                    .await;
-                            }
-                        }
-                    }
-                    // Unknown slash command — pass through to LLM as-is
-                }
-
-                let typed_by_a_person = crate::commands::parse_slash_command(&content).is_none()
-                    && !matches!(
-                        base::context::goal::TurnOrigin::from_turn_id(&self.current_turn_id),
-                        base::context::goal::TurnOrigin::GoalRound { .. }
-                    );
-                let directive = typed_by_a_person
-                    .then(|| find_token_budget_directive(&content))
-                    .flatten();
-                let processed_content = if let Some((target, range)) = directive {
-                    self.session_state.ledger().token_target.aim(target);
-                    tracing::info!(target, "Token budget directive parsed — set output target");
-                    strip_token_budget_directive(&content, range)
-                } else {
-                    content
-                };
-
-                // Not a slash command → normal flow
-                self.run_user_turn(
-                    processed_content,
-                    attachments,
-                    cancel,
-                    history::entry::MessageOrigin::User,
-                )
-                .await
+                self.process_user_message(content, attachments, turn_id, cancel)
+                    .await
             }
             InputMessage::ToolResult {
                 tool_use_id,
@@ -323,38 +171,227 @@ impl Agent {
                 Ok(TurnOutcome::default())
             }
             InputMessage::System { kind, content } => {
-                match kind {
-                    EngineCommand::Shutdown => Err(TurnError::Shutdown),
-                    EngineCommand::CompactNow => {
-                        self.compact_now(&cancel).await;
-                        Ok(TurnOutcome::default())
-                    }
-                    EngineCommand::SetSessionId => {
-                        self.session.set_session_id(content);
-                        let _ = self.channels.event_tx.send(AgentEvent::SessionChanged {
-                            session_id: self.session.session_id.clone(),
-                        });
-                        Ok(TurnOutcome::default())
-                    }
-                    // `content` is the model name. Each turn re-reads
-                    // `settings.model.model_name` into its `effective_model`,
-                    // so swapping it here is what makes a host's `/model`
-                    // change the model the next turn calls.
-                    EngineCommand::RefreshMcp => {
-                        self.tooling.mcp.refresh_tools().await;
-                        sync_mcp_adapters(
-                            self.tooling.tools.as_ref(),
-                            self.tooling.mcp.as_ref(),
-                            |t| self.tooling.tool_policy.permits(t),
-                        );
-                        Ok(TurnOutcome::default())
-                    }
-                    // `CancelTurn` is handled by the input demultiplexer, not
-                    // here — see its doc comment on `EngineCommand`.
-                    EngineCommand::CancelTurn { .. } => Ok(TurnOutcome::default()),
+                self.process_system_command(kind, content, &cancel).await
+            }
+        }
+    }
+
+    async fn process_system_command(
+        &mut self,
+        kind: EngineCommand,
+        content: String,
+        cancel: &CancellationToken,
+    ) -> Result<TurnOutcome, TurnError> {
+        match kind {
+            EngineCommand::Shutdown => Err(TurnError::Shutdown),
+            EngineCommand::CompactNow => {
+                self.compact_now(cancel).await;
+                Ok(TurnOutcome::default())
+            }
+            EngineCommand::SetSessionId => {
+                self.session.set_session_id(content);
+                let _ = self.channels.event_tx.send(AgentEvent::SessionChanged {
+                    session_id: self.session.session_id.clone(),
+                });
+                Ok(TurnOutcome::default())
+            }
+            // `content` is the model name. Each turn re-reads
+            // `settings.model.model_name` into its `effective_model`,
+            // so swapping it here is what makes a host's `/model`
+            // change the model the next turn calls.
+            EngineCommand::RefreshMcp => {
+                self.tooling.mcp.refresh_tools().await;
+                sync_mcp_adapters(
+                    self.tooling.tools.as_ref(),
+                    self.tooling.mcp.as_ref(),
+                    |t| self.tooling.tool_policy.permits(t),
+                );
+                Ok(TurnOutcome::default())
+            }
+            // `CancelTurn` is handled by the input demultiplexer, not
+            // here — see its doc comment on `EngineCommand`.
+            EngineCommand::CancelTurn { .. } => Ok(TurnOutcome::default()),
+        }
+    }
+
+    async fn process_user_message(
+        &mut self,
+        content: String,
+        mut attachments: Vec<crate::agent::Attachment>,
+        turn_id: String,
+        cancel: CancellationToken,
+    ) -> Result<TurnOutcome, TurnError> {
+        self.adopt_model_choice();
+        self.current_turn_id = turn_id;
+        self.session.set_turn_id(Some(self.current_turn_id.clone()));
+        let _ = self.channels.event_tx.send(AgentEvent::TurnStart {
+            turn_id: self.current_turn_id.clone(),
+        });
+        if let Some(sc) = crate::commands::parse_slash_command(&content) {
+            if let Some(outcome) = self.run_slash_command(&sc, &mut attachments, &cancel).await {
+                return outcome;
+            }
+        }
+
+        let typed_by_a_person = crate::commands::parse_slash_command(&content).is_none()
+            && !matches!(
+                base::context::goal::TurnOrigin::from_turn_id(&self.current_turn_id),
+                base::context::goal::TurnOrigin::GoalRound { .. }
+            );
+        let directive = typed_by_a_person
+            .then(|| find_token_budget_directive(&content))
+            .flatten();
+        let processed_content = if let Some((target, range)) = directive {
+            self.session_state.ledger().token_target.aim(target);
+            tracing::info!(target, "Token budget directive parsed — set output target");
+            strip_token_budget_directive(&content, range)
+        } else {
+            content
+        };
+
+        // Not a slash command → normal flow
+        self.run_user_turn(
+            processed_content,
+            attachments,
+            cancel,
+            history::entry::MessageOrigin::User,
+        )
+        .await
+    }
+
+    async fn run_slash_command(
+        &mut self,
+        sc: &crate::commands::SlashCommand,
+        attachments: &mut Vec<crate::agent::Attachment>,
+        cancel: &CancellationToken,
+    ) -> Option<Result<TurnOutcome, TurnError>> {
+        self.record_slash_command(sc);
+        if let Some(text) = self.mcp_prompt_text(sc).await {
+            return Some(
+                self.run_user_turn(
+                    text,
+                    std::mem::take(attachments),
+                    cancel.clone(),
+                    history::entry::MessageOrigin::Command,
+                )
+                .await,
+            );
+        }
+
+        if let Some(cmd) = self.tooling.commands.resolve(&sc.name) {
+            match cmd {
+                crate::commands::Command::Prompt { entry } => {
+                    let ctx = self.skill_invocation_context(cancel.clone());
+                    let expansion = self
+                        .tooling
+                        .commands
+                        .run_prompt_command(&entry, sc, &ctx, self.gate.permission.policy.as_ref())
+                        .await;
+                    self.slash_skill_grants = expansion.grants;
+                    return Some(
+                        self.run_user_turn(
+                            expansion.text,
+                            std::mem::take(attachments),
+                            cancel.clone(),
+                            history::entry::MessageOrigin::Command,
+                        )
+                        .await,
+                    );
+                }
+                crate::commands::Command::McpPrompt { .. } => {
+                    unreachable!("MCP prompt commands are dispatched above")
+                }
+                crate::commands::Command::Local { .. } => {
+                    return Some(self.run_local_command(&sc.name, cancel).await);
                 }
             }
         }
+        None
+    }
+
+    async fn mcp_prompt_text(&self, sc: &crate::commands::SlashCommand) -> Option<String> {
+        // `/mcp__<server>__<prompt>` → `prompts/get` on the owning
+        // server; the returned messages become this turn's
+        // content.
+        //
+        // Resolved off the registry when the prompt was registered
+        // there (the normal path — `Builder::build`), otherwise
+        // straight off the live `McpManager`. The fallback is what
+        // keeps this working for a registry built once and shared
+        // across sessions (`Builder::commands_override`, the
+        // daemon's path): that catalog predates this session's MCP
+        // connections, and it also lets prompts picked up by a
+        // later `refresh_prompts` be invocable immediately.
+        let mcp_command: Option<String> = match self.tooling.commands.resolve(&sc.name) {
+            Some(crate::commands::Command::McpPrompt { command, .. }) => Some(command),
+            Some(_) => None,
+            None => self
+                .tooling
+                .mcp
+                .has_prompt_command(&sc.name)
+                .then(|| sc.name.clone()),
+        };
+        let command = mcp_command?;
+        // Argument mapping + validation and every failure mode
+        // (unreachable server, prompt handler error, bad
+        // arguments) are handled inside
+        // `invoke_prompt_command`, which always yields text —
+        // a broken MCP server must not fail the user's turn,
+        // it must produce something the model can read and
+        // explain to the user.
+        let invocation = self
+            .tooling
+            .mcp
+            .invoke_prompt_command(&command, &sc.args)
+            .await;
+        if invocation.is_error {
+            tracing::warn!(
+                command = %command,
+                "MCP prompt command failed; injecting the failure as text"
+            );
+        }
+        Some(invocation.text)
+    }
+
+    async fn run_local_command(
+        &mut self,
+        name: &str,
+        cancel: &CancellationToken,
+    ) -> Result<TurnOutcome, TurnError> {
+        let result_text = match name {
+            "help" => self.handle_help_command(),
+            "skills" => self.handle_skills_command(),
+            "clear" => {
+                self.handle_clear_command().await;
+                "Session cleared. All messages removed.".into()
+            }
+            "compact" => match self.compact_now(cancel).await {
+                Some(c) => format!(
+                    "Compacted ({}): {} → {} messages, ~{} → ~{} tokens.",
+                    c.strategy,
+                    c.messages_before,
+                    c.messages_after,
+                    c.tokens_before,
+                    c.tokens_after
+                ),
+                None if cancel.is_cancelled() => "Compaction interrupted; nothing changed.".into(),
+                None => "Nothing to compact.".into(),
+            },
+            "cost" => self.handle_cost_command(),
+            _ => format!("Unknown local command: {name}"),
+        };
+        let _ = self.channels.event_tx.send(AgentEvent::TextDelta {
+            text: result_text,
+            turn_id: self.current_turn_id.clone(),
+        });
+        self.last_had_tool_uses = false;
+        let stop_reason = if cancel.is_cancelled() {
+            "cancelled"
+        } else {
+            "command_executed"
+        };
+        self.finish_turn(Ok(TurnOutcome::stopped(stop_reason)))
+            .await
     }
 
     /// Fire a notification-only lifecycle hook, if any are configured.
