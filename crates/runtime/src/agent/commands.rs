@@ -5,7 +5,7 @@ use super::*;
 impl Agent {
     /// `/help` — list all available slash commands.
     pub(crate) fn handle_help_command(&self) -> String {
-        let commands = self.tooling.commands.list();
+        let commands = self.tooling.commands().list();
         if commands.is_empty() {
             return "No commands registered.".into();
         }
@@ -19,7 +19,7 @@ impl Agent {
 
     /// `/skills` — list all available skills.
     pub(crate) fn handle_skills_command(&self) -> String {
-        let skills = self.tooling.skills.list();
+        let skills = self.tooling.skills().list();
         if skills.is_empty() {
             return "No skills loaded.".into();
         }

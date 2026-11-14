@@ -4,9 +4,44 @@ use super::prompt::open_conversation_with_user_blocks;
 use crate::agent::Agent;
 use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage, ModelStream, ToolDef};
 use base::prompt::PromptBlock;
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
+
+/// The model this session calls and what stands around each call.
+pub(crate) struct ModelRoute {
+    model: Arc<dyn base::interface::model::Model>,
+    /// Kept here, not only forwarded to `AgentTool`, so the turn's own
+    /// background calls (memory extraction, web tasks) route the same way.
+    task_router: Option<Arc<base::provider::TaskRouter>>,
+    recovery_policy: Arc<dyn base::interface::recovery_policy::RecoveryPolicy>,
+    model_interceptors: Arc<Vec<Arc<dyn base::interface::model_interceptor::ModelInterceptor>>>,
+}
+
+impl ModelRoute {
+    pub(crate) fn new(
+        model: Arc<dyn base::interface::model::Model>,
+        task_router: Option<Arc<base::provider::TaskRouter>>,
+        recovery_policy: Arc<dyn base::interface::recovery_policy::RecoveryPolicy>,
+        model_interceptors: Vec<Arc<dyn base::interface::model_interceptor::ModelInterceptor>>,
+    ) -> Self {
+        Self {
+            model,
+            task_router,
+            recovery_policy,
+            model_interceptors: Arc::new(model_interceptors),
+        }
+    }
+
+    pub(crate) fn model(&self) -> &Arc<dyn base::interface::model::Model> {
+        &self.model
+    }
+
+    pub(crate) fn interceptors(
+        &self,
+    ) -> &[Arc<dyn base::interface::model_interceptor::ModelInterceptor>] {
+        &self.model_interceptors
+    }
+}
 
 pub(super) fn estimate_request_overhead(
     counter: &dyn base::interface::token_counter::TokenCounter,
@@ -190,51 +225,6 @@ pub(super) fn push_unless_empty(out: &mut Vec<ModelMessage>, message: ModelMessa
     }
 }
 
-/// Make the dispatch registry's MCP entries match `mcp`'s current adapter
-/// list: new tools are added, re-listed ones take the fresh instance, and ones
-/// a server stopped listing are withdrawn so they can no longer be called.
-/// Adapters the session's tool policy does not permit are never registered
-/// — see `tool_policy`.
-pub(super) fn sync_mcp_adapters(
-    tools: &dyn base::tool::ToolRegistry,
-    mcp: &dyn base::interface::mcp_servers::McpServers,
-    permits: impl Fn(&dyn base::tool::Tool) -> bool,
-) {
-    let is_mcp = |t: &Arc<dyn base::tool::Tool>| t.spec().origin.is_mcp();
-    let current: Vec<_> = mcp
-        .tools()
-        .into_iter()
-        .filter(|a| permits(a.as_ref()))
-        .collect();
-    let live: HashSet<&str> = current.iter().map(|a| a.name()).collect();
-    let registered = tools.list();
-    let builtin_names: HashSet<&str> = registered
-        .iter()
-        .filter(|t| !is_mcp(t))
-        .map(|t| t.name())
-        .collect();
-    for stale in registered
-        .iter()
-        .filter(|t| is_mcp(t) && !live.contains(t.name()))
-    {
-        // `remove` withdraws every registration under the name, a builtin's too.
-        if !builtin_names.contains(stale.name()) {
-            tools.remove(stale.name());
-        }
-    }
-    for adapter in &current {
-        if builtin_names.contains(adapter.name()) {
-            continue;
-        }
-        match tools.get(adapter.name()) {
-            Some(existing) if Arc::ptr_eq(&existing, adapter) => {}
-            _ => {
-                tools.replace(adapter.clone());
-            }
-        }
-    }
-}
-
 impl Agent {
     pub(super) async fn build_tool_defs(&mut self) -> Vec<base::interface::model::ToolDef> {
         use std::collections::BTreeMap;
@@ -243,17 +233,17 @@ impl Agent {
         /// advertise a guide when the scene has filtered the fetcher out.
         const TOOL_SEARCH_NAME: &str = "ToolSearch";
         let mut pool: BTreeMap<String, Arc<dyn base::tool::Tool>> = BTreeMap::new();
-        for t in self.tooling.mcp.tools() {
+        for t in self.tooling.mcp().tools() {
             pool.insert(t.name().to_string(), t);
         }
         // MCP adapters also sit in `self.tools`, because dispatch looks them up
         // there; only a non-MCP entry can shadow one. Built-ins win.
-        for t in self.tooling.tools.list() {
+        for t in self.tooling.tools().list() {
             if t.spec().origin.is_mcp() {
                 continue;
             }
             let name = t.name().to_string();
-            if pool.contains_key(&name) && self.tooling.mcp_shadow_warned.insert(name.clone()) {
+            if pool.contains_key(&name) && self.tooling.first_shadowing(&name) {
                 tracing::warn!(
                     tool = %name,
                     "built-in tool shadows an MCP tool of the same name; the MCP tool is not exposed to the model"
@@ -263,7 +253,7 @@ impl Agent {
         }
         let selected: Vec<Arc<dyn base::tool::Tool>> = pool
             .into_values()
-            .filter(|t| self.tooling.tool_policy.permits(t.as_ref()))
+            .filter(|t| self.tooling.tool_policy().permits(t.as_ref()))
             .collect();
 
         // A guide is only worth pointing at if the model has a way to fetch
@@ -312,6 +302,27 @@ impl Agent {
         defs
     }
 
+    /// The model a background `task` is routed to, and its name; the
+    /// conversation's own without a router.
+    pub(super) fn model_for_task(
+        &self,
+        task: &str,
+    ) -> (Arc<dyn base::interface::model::Model>, String) {
+        match &self.llm.task_router {
+            Some(router) => (
+                self.accounted(router.model_for(task)),
+                router
+                    .model_name_for(task)
+                    .unwrap_or(&self.settings.values.model.model_name)
+                    .to_string(),
+            ),
+            None => (
+                self.llm.model.clone(),
+                self.settings.values.model.model_name.clone(),
+            ),
+        }
+    }
+
     /// A model this session did not build, made to account for itself.
     ///
     /// `Builder::build` wraps the session's own model once, so everything
@@ -356,7 +367,7 @@ impl Agent {
                 thinking_mode: self.settings.values.model.thinking_mode.clone(),
                 effort: self.settings.values.model.effort,
                 fallback_model: self.settings.values.model.fallback_model.clone(),
-                cache_edits: self.compaction.cached_mc.lend_pending_edits(),
+                cache_edits: self.compaction.lend_cache_edits(),
                 origin,
                 input_map,
                 provider_search: None,
@@ -438,7 +449,7 @@ impl Agent {
                 cancel,
             )
             .await?;
-        self.compaction.cached_mc.confirm_sent(&lent);
+        self.compaction.consume_cache_edits(&lent);
         Ok(stream)
     }
 
@@ -458,14 +469,14 @@ impl Agent {
     /// Zero on the very first turn, before any prompt has been assembled —
     /// which is fine, a session's first turn is never near its budget.
     pub(crate) fn context_tokens(&self) -> usize {
-        self.session.token_count() + self.compaction.request_overhead_tokens
+        self.session.token_count() + self.compaction.overhead()
     }
 
     /// What the scene asked for, after the deployment's budget policy has had
     /// its say.
     pub(crate) fn context_budget(&self) -> base::interface::budget_policy::ContextBudget {
         self.policies
-            .budget_policy
+            .budget_policy()
             .context_budget(&self.scene.token_budget)
     }
 

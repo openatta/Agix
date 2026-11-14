@@ -115,13 +115,13 @@ impl Agent {
         // by whoever watches the skill directories, so the diff is against
         // what this session was last shown, not against the catalog as it
         // stood a moment ago.
-        let changed = self.tooling.skills.reload_changed();
+        let changed = self.tooling.skills().reload_changed();
         if changed > 0 {
             tracing::debug!(count = changed, "Skills reloaded from file changes");
         }
         let skills_now: std::collections::HashSet<String> = self
             .tooling
-            .skills
+            .skills()
             .list()
             .iter()
             .map(|s| s.name.clone())
@@ -192,7 +192,7 @@ impl Agent {
             self.prompt.set_frozen(
                 crate::turn::collect_frozen(
                     &self.settings.paths,
-                    &*self.policies.environment,
+                    self.policies.environment().as_ref(),
                     &engine_git,
                 )
                 .await,
@@ -251,7 +251,7 @@ impl Agent {
         // background task. Discovery runs while the model streams and tools
         // execute; the result is consumed post-tool-execution alongside the
         // memory prefetch.
-        let skills = self.tooling.skills.clone();
+        let skills = self.tooling.skills().clone();
         let local_dir = self.settings.paths.local_data_dir.clone();
         let invoked_skills: Vec<String> = self.session_state.ledger().invoked_skills.clone();
         // Only scan when the previous turn produced tool calls that may
@@ -304,7 +304,7 @@ impl Agent {
             block: 0,
             range: Some((0, content.len())),
         }];
-        if let Some(resources) = self.tooling.mcp.resolve_resource_refs(&content).await {
+        if let Some(resources) = self.tooling.mcp().resolve_resource_refs(&content).await {
             let from = content.len();
             content.push_str(&resources);
             spans.push(base::interface::model::InputSpan {

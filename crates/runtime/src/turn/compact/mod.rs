@@ -9,6 +9,81 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+mod backoff;
+use backoff::AutoCompactBackoff;
+
+/// Compaction and micro-compaction, and what they remember between turns.
+pub(crate) struct Compaction {
+    compactor: Arc<dyn compaction::compact::Compactor>,
+    compaction_state: compaction::reactive::CompactionState,
+    /// Reset after compaction so the warning can fire again.
+    compact_warning_issued: bool,
+    /// Gates the `function_result_clearing` prompt section, so the model is
+    /// not told results were cleared when none were.
+    tool_results_ever_cleared: bool,
+    time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig,
+    cached_mc: compaction::cached::CachedMicroCompact,
+    /// The system prompt and tool definitions of the last request, added to
+    /// the message total by `context_tokens()`: without it the threshold check
+    /// sees only message content and under-counts by a large constant.
+    request_overhead_tokens: usize,
+    auto_backoff: AutoCompactBackoff,
+}
+
+impl Compaction {
+    pub(crate) fn new(
+        compactor: Arc<dyn compaction::compact::Compactor>,
+        cached_mc_enabled: bool,
+    ) -> Self {
+        Self {
+            compactor,
+            compaction_state: compaction::reactive::CompactionState::default(),
+            compact_warning_issued: false,
+            tool_results_ever_cleared: false,
+            time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig::default(),
+            cached_mc: compaction::cached::CachedMicroCompact::new(
+                compaction::cached::CachedMcConfig {
+                    enabled: cached_mc_enabled,
+                    ..Default::default()
+                },
+            ),
+            request_overhead_tokens: 0,
+            auto_backoff: Default::default(),
+        }
+    }
+
+    pub(crate) fn overhead(&self) -> usize {
+        self.request_overhead_tokens
+    }
+
+    pub(crate) fn set_overhead(&mut self, tokens: usize) {
+        self.request_overhead_tokens = tokens;
+    }
+
+    pub(crate) fn ever_cleared(&self) -> bool {
+        self.tool_results_ever_cleared
+    }
+
+    /// The cache edits pending, lent to a request until it is accepted.
+    pub(crate) fn lend_cache_edits(&self) -> Vec<String> {
+        self.cached_mc.lend_pending_edits()
+    }
+
+    pub(crate) fn consume_cache_edits(&mut self, sent: &[String]) {
+        self.cached_mc.confirm_sent(sent);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_time_based(&mut self, config: compaction::time_based_mc::TimeBasedMcConfig) {
+        self.time_based_mc_config = config;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backoff_misses(&self) -> u32 {
+        self.auto_backoff.misses()
+    }
+}
+
 /// An aging pass already applied to the messages, not yet accounted for.
 struct PendingAging {
     aging: compaction::aging::Aging,
@@ -26,19 +101,7 @@ impl Agent {
     /// cheaper/faster model than the conversation. With no router configured
     /// it uses the conversation's own model and model name.
     pub(super) fn compaction_summarizer(&self) -> Option<compaction::llm_summary::LlmSummarizer> {
-        let (model, model_name) = match &self.llm.task_router {
-            Some(router) => (
-                self.accounted(router.model_for("compact")),
-                router
-                    .model_name_for("compact")
-                    .unwrap_or(&self.settings.values.model.model_name)
-                    .to_string(),
-            ),
-            None => (
-                self.llm.model.clone(),
-                self.settings.values.model.model_name.clone(),
-            ),
-        };
+        let (model, model_name) = self.model_for_task("compact");
         if model_name.is_empty() {
             return None;
         }
@@ -621,8 +684,8 @@ impl Agent {
             .clone()
             .into_iter()
             .map(|name| compaction::compact::InvokedSkillRecord {
-                content: self.tooling.skills.body(&name),
-                last_seq: self.tooling.skills.last_invoked_seq(&name),
+                content: self.tooling.skills().body(&name),
+                last_seq: self.tooling.skills().last_invoked_seq(&name),
                 name,
             })
             .collect();
@@ -728,41 +791,5 @@ impl Agent {
                 Err(TurnError::Model(error, false))
             }
         }
-    }
-}
-
-/// Automatic compactions in a row that left the conversation as it was. Each
-/// one makes the next wait twice as many due checks as the last, up to
-/// [`MAX_WAIT`](Self::MAX_WAIT), unless the context grows by a tenth of the
-/// threshold first: more conversation may be something to drop.
-#[derive(Debug, Default)]
-pub(crate) struct AutoCompactBackoff {
-    misses: u32,
-    checks_left: u32,
-    resume_above: usize,
-}
-
-impl AutoCompactBackoff {
-    const FIRST_WAIT: u32 = 2;
-    const MAX_WAIT: u32 = 32;
-
-    pub(crate) fn misses(&self) -> u32 {
-        self.misses
-    }
-
-    /// Whether this due check is skipped.
-    pub(crate) fn holds(&mut self, context_tokens: usize) -> bool {
-        if self.checks_left == 0 || context_tokens > self.resume_above {
-            self.checks_left = 0;
-            return false;
-        }
-        self.checks_left -= 1;
-        true
-    }
-
-    pub(crate) fn missed(&mut self, context_tokens: usize, threshold: usize) {
-        self.misses = self.misses.saturating_add(1);
-        self.checks_left = (Self::FIRST_WAIT << (self.misses - 1).min(16)).min(Self::MAX_WAIT);
-        self.resume_above = context_tokens.saturating_add(threshold / 10);
     }
 }

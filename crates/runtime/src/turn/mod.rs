@@ -24,12 +24,13 @@ mod user_turn;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use compact::AutoCompactBackoff;
+pub(crate) use compact::Compaction;
 pub(crate) use gate::{DemuxHandles, Gate};
 pub(crate) use memory_extraction::MEMORY_EXTRACTION_GRACE;
 pub(crate) use process::hook_permission_mode;
 pub(crate) use prompt::PromptContext;
 pub(crate) use recall::Memory;
+pub(crate) use request::ModelRoute;
 pub(crate) use tool_env::{collect_frozen, engine_exec_from, exec_providers_from};
 pub(crate) use tool_exec::resolve_permission_response;
 

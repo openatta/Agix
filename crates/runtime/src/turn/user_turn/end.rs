@@ -113,25 +113,13 @@ impl Agent {
             // for the "subagent" task type (see
             // `agents::delegate::Delegator::model_for_subagent`). No override
             // configured → falls back to the main model.
-            let (model, model_name) = match &self.llm.task_router {
-                Some(router) => (
-                    self.accounted(router.model_for("memory")),
-                    router
-                        .model_name_for("memory")
-                        .unwrap_or(&self.settings.values.model.model_name)
-                        .to_string(),
-                ),
-                None => (
-                    self.llm.model.clone(),
-                    self.settings.values.model.model_name.clone(),
-                ),
-            };
+            let (model, model_name) = self.model_for_task("memory");
             self.memory.spawn_extraction(Extraction {
                 messages,
                 model,
                 model_name,
                 prompt_intro: self.scene.memory_extraction_intro.clone(),
-                environment: self.policies.environment.clone(),
+                environment: self.policies.environment().clone(),
                 session_id: self.session.session_id.clone(),
             });
         }

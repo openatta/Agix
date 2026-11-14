@@ -117,7 +117,7 @@ impl Agent {
             let progress =
                 (self.session_state.ledger().token_target).add_output(target, this_delta);
             if let base::interface::budget_policy::OutputTarget::KeepGoing { nudge } =
-                self.policies.budget_policy.on_output_target(&progress)
+                self.policies.budget_policy().on_output_target(&progress)
             {
                 let continuation = self
                     .session_state

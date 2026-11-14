@@ -490,7 +490,7 @@ async fn a_skill_swapped_into_a_shared_catalog_is_announced() {
         .build()
         .expect("build should succeed");
     let catalog = Arc::new(Swappable(std::sync::Mutex::new(vec!["early", "gone"])));
-    agent.tooling.skills = catalog.clone();
+    agent.tooling.set_skills(catalog.clone());
 
     let turn = |id: &str| InputMessage::User {
         content: "hello".into(),
@@ -615,9 +615,9 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
         .build()
         .expect("build should succeed");
     let catalog: Arc<dyn base::interface::skill_catalog::SkillCatalog> = Arc::new(Expanding);
-    agent.tooling.skills = catalog.clone();
-    agent.tooling.commands = Arc::new(crate::commands::CommandRegistry::from_skill_catalog(
-        catalog,
+    agent.tooling.set_skills(catalog.clone());
+    agent.tooling.set_commands(Arc::new(
+        crate::commands::CommandRegistry::from_skill_catalog(catalog),
     ));
     let grants = Arc::new(Grants::default());
     agent.gate.permission_mut().grants = Some(grants.clone());

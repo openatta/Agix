@@ -55,7 +55,7 @@ pub(super) fn search_spy(
 pub(super) async fn search_once(agent: &Agent) -> String {
     let result = agent
         .tooling
-        .tools
+        .tools()
         .get("WebSearch")
         .expect("WebSearch is registered")
         .call(
@@ -201,7 +201,7 @@ pub(super) async fn fetch_once(agent: &Agent, url: &str) -> String {
     ));
     let result = agent
         .tooling
-        .tools
+        .tools()
         .get("WebFetch")
         .expect("WebFetch is registered")
         .call(
@@ -250,7 +250,7 @@ async fn task_models_web_fetch_extracts_pages_on_the_routed_model() {
     assert_eq!(
         agent
             .tooling
-            .tools
+            .tools()
             .names()
             .iter()
             .filter(|n| *n == "WebFetch")

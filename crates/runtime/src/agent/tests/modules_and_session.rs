@@ -493,7 +493,7 @@ async fn a_session_is_judged_by_the_counter_it_was_built_with() {
         .expect("the turn runs");
     let size = agent.session.token_count();
     assert!(size > 0 && size % 1_000 == 0, "{size}");
-    let overhead = agent.compaction.request_overhead_tokens;
+    let overhead = agent.compaction.overhead();
     assert!(overhead > 0 && overhead % 1_000 == 0, "{overhead}");
 }
 

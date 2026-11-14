@@ -1,7 +1,7 @@
 //! 提示词装配、工具定义与 MCP 适配器同步。
 
+use crate::agent::sync_mcp_adapters;
 use crate::agent::Agent;
-use crate::turn::request::sync_mcp_adapters;
 use base::interface::model::ModelMessage;
 use base::interface::model::ToolDef;
 use base::prompt::PromptBlock;
@@ -335,7 +335,7 @@ async fn an_mcp_adapter_is_advertised_once_and_not_reported_as_shadowed() {
     assert_eq!(matching.len(), 1);
     assert_eq!(matching[0].source.as_deref(), Some("mcp:test-server"));
     assert!(
-        agent.tooling.mcp_shadow_warned.is_empty(),
+        agent.tooling.shadow_warned().is_empty(),
         "the dispatch copy of an MCP adapter is not a builtin shadowing it"
     );
 }
@@ -358,11 +358,11 @@ async fn an_mcp_tool_that_arrives_mid_session_is_deferred_by_the_scene() {
         .skip_warmup(true)
         .build()
         .unwrap();
-    assert!(agent.tooling.tools.get("mcp__desk__late").is_none());
+    assert!(agent.tooling.tools().get("mcp__desk__late").is_none());
 
     let arrived = FakeMcp(vec![mcp_tool("desk", "early"), mcp_tool("desk", "late")]);
-    sync_mcp_adapters(agent.tooling.tools.as_ref(), &arrived, |_| true);
-    agent.tooling.mcp = Box::new(arrived);
+    sync_mcp_adapters(agent.tooling.tools().as_ref(), &arrived, |_| true);
+    agent.tooling.set_mcp(Box::new(arrived));
 
     let defs = agent.build_tool_defs().await;
     let schema_of = |name: &str| {
@@ -509,12 +509,14 @@ async fn rebuilt_prompt_still_carries_skills_and_scene_skeleton() {
             0
         }
     }
-    agent.tooling.skills = Arc::new(OneSkill(base::frozen::SkillEntry {
-        name: "release-checklist".into(),
-        description: "Runs the pre-release checklist".into(),
-        user_invocable: true,
-        ..Default::default()
-    }));
+    agent
+        .tooling
+        .set_skills(Arc::new(OneSkill(base::frozen::SkillEntry {
+            name: "release-checklist".into(),
+            description: "Runs the pre-release checklist".into(),
+            user_invocable: true,
+            ..Default::default()
+        })));
 
     let joined = agent
         .build_prompt_blocks("test")

@@ -624,7 +624,7 @@ pub(super) async fn run_code_result(
     }
     let (mut agent, mut event_rx, _input_tx) = builder.build().expect("build should succeed");
     assert!(
-        agent.tooling.tools.get("RunCode").is_some(),
+        agent.tooling.tools().get("RunCode").is_some(),
         "the code scene offers RunCode"
     );
     agent

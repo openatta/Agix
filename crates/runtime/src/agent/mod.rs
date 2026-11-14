@@ -7,7 +7,6 @@ use base::interface::scene::SceneSpec;
 use base::memory::MemoryStore;
 use base::settings::LoadedSettings;
 use base::tool::InMemoryToolRegistry;
-use compaction::cached::CachedMicroCompact;
 use compaction::compact::{Compactor, DefaultCompactor};
 use hooks::{HookEvent, HookRunner};
 use session::session::SessionManager;
@@ -25,10 +24,14 @@ mod commands;
 mod instruments;
 mod messages;
 mod run;
-use crate::turn::{Gate, Memory, PromptContext};
+mod tooling;
+use crate::turn::{Compaction, Gate, Memory, ModelRoute, PromptContext};
 pub use builder::{default_run_slots, Builder, HostContracts, HostLayers};
 use instruments::Telemetry;
 pub use messages::*;
+#[cfg(test)]
+pub(crate) use tooling::sync_mcp_adapters;
+use tooling::Tooling;
 
 /// The `task_models` key that routes `WebSearch` to a provider of its own.
 const WEB_SEARCH_TASK: &str = "web_search";
@@ -101,64 +104,47 @@ pub struct Agent {
 
 /// Who this session is among others: its place in delegation and teams.
 pub(crate) struct Identity {
-    pub(crate) agent_depth: u32,
-    pub(crate) agent_type: Option<String>,
-    pub(crate) team_seat: Option<base::interface::delegate::TeamSeat>,
+    agent_depth: u32,
+    agent_type: Option<String>,
+    team_seat: Option<base::interface::delegate::TeamSeat>,
     drive_goals: bool,
-    pub(crate) skip_warmup: bool,
+    skip_warmup: bool,
 }
 
-/// The model this session calls and what stands around each call.
-pub(crate) struct ModelRoute {
-    pub(crate) model: Arc<dyn Model>,
-    /// Kept here, not only forwarded to `AgentTool`, so the turn's own
-    /// background calls (memory extraction, web tasks) route the same way.
-    pub(crate) task_router: Option<Arc<base::provider::TaskRouter>>,
-    pub(crate) recovery_policy: Arc<dyn base::interface::recovery_policy::RecoveryPolicy>,
-    pub(crate) model_interceptors:
-        Arc<Vec<Arc<dyn base::interface::model_interceptor::ModelInterceptor>>>,
-}
+impl Identity {
+    pub(crate) fn agent_depth(&self) -> u32 {
+        self.agent_depth
+    }
 
-/// What the model can call, and what wraps a call.
-pub(crate) struct Tooling {
-    pub(crate) tools: Arc<dyn base::tool::ToolRegistry>,
-    pub(crate) skills: Arc<dyn base::interface::skill_catalog::SkillCatalog>,
-    pub(crate) commands: std::sync::Arc<crate::commands::CommandRegistry>,
-    pub(crate) mcp: Box<dyn base::interface::mcp_servers::McpServers>,
-    delegator: Arc<dyn base::interface::delegate::Delegator>,
-    pub(crate) tool_middleware: Arc<Vec<Arc<dyn base::interface::tool_middleware::ToolMiddleware>>>,
-    pub(crate) result_transformers:
-        Arc<Vec<Arc<dyn base::interface::tool_result::ToolResultTransformer>>>,
-    /// Built-in/MCP name collisions already logged, so a persistent one does
-    /// not warn on every request.
-    pub(crate) mcp_shadow_warned: std::collections::HashSet<String>,
-    pub(crate) tool_policy: Arc<crate::tool_policy::ToolPolicy>,
+    pub(crate) fn agent_type(&self) -> Option<&str> {
+        self.agent_type.as_deref()
+    }
+
+    pub(crate) fn team_seat(&self) -> Option<&base::interface::delegate::TeamSeat> {
+        self.team_seat.as_ref()
+    }
 }
 
 /// Pluggable answers to "how long", "how much" and "is it healthy".
 pub(crate) struct Policies {
-    pub(crate) turn_policy: Arc<dyn base::interface::turn_policy::TurnPolicy>,
-    pub(crate) budget_policy: Arc<dyn base::interface::budget_policy::BudgetPolicy>,
-    pub(crate) health: Arc<base::interface::health::HealthChecks>,
-    pub(crate) environment: Arc<dyn base::interface::environment::Environment>,
+    turn_policy: Arc<dyn base::interface::turn_policy::TurnPolicy>,
+    budget_policy: Arc<dyn base::interface::budget_policy::BudgetPolicy>,
+    health: Arc<base::interface::health::HealthChecks>,
+    environment: Arc<dyn base::interface::environment::Environment>,
 }
 
-/// Compaction and micro-compaction, and what they remember between turns.
-pub(crate) struct Compaction {
-    pub(crate) compactor: Arc<dyn Compactor>,
-    pub(crate) compaction_state: compaction::reactive::CompactionState,
-    /// Reset after compaction so the warning can fire again.
-    pub(crate) compact_warning_issued: bool,
-    /// Gates the `function_result_clearing` prompt section, so the model is
-    /// not told results were cleared when none were.
-    pub(crate) tool_results_ever_cleared: bool,
-    pub(crate) time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig,
-    pub(crate) cached_mc: CachedMicroCompact,
-    /// The system prompt and tool definitions of the last request, added to
-    /// the message total by `context_tokens()`: without it the threshold check
-    /// sees only message content and under-counts by a large constant.
-    pub(crate) request_overhead_tokens: usize,
-    pub(crate) auto_backoff: crate::turn::AutoCompactBackoff,
+impl Policies {
+    pub(crate) fn turn_policy(&self) -> &dyn base::interface::turn_policy::TurnPolicy {
+        self.turn_policy.as_ref()
+    }
+
+    pub(crate) fn budget_policy(&self) -> &dyn base::interface::budget_policy::BudgetPolicy {
+        self.budget_policy.as_ref()
+    }
+
+    pub(crate) fn environment(&self) -> &Arc<dyn base::interface::environment::Environment> {
+        &self.environment
+    }
 }
 
 /// How input reaches this session and events leave it.

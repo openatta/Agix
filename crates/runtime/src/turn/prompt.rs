@@ -330,7 +330,7 @@ impl Agent {
     /// Per-server and total length are already bounded by
     /// `McpManager::server_instructions()` — see that method's doc comment.
     pub(super) fn build_mcp_instructions(&self) -> String {
-        let instructions = self.tooling.mcp.instructions();
+        let instructions = self.tooling.mcp().instructions();
         if instructions.is_empty() {
             return String::new();
         }
@@ -356,7 +356,7 @@ impl Agent {
     /// a single heavily-used skill degraded exactly as much as one never
     /// invoked.
     pub(super) fn build_skills_text(&self) -> String {
-        let skills = self.tooling.skills.list();
+        let skills = self.tooling.skills().list();
         // Filter out skills with disable_model_invocation: true
         let llm_skills: Vec<_> = skills
             .iter()
@@ -388,7 +388,7 @@ impl Agent {
         let names: Vec<&str> = llm_skills.iter().map(|s| s.name.as_str()).collect();
         let counts: Vec<u32> = names
             .iter()
-            .map(|n| self.tooling.skills.invocation_count(n))
+            .map(|n| self.tooling.skills().invocation_count(n))
             .collect();
         let entry_lens: Vec<usize> = combined.iter().map(|c| c.len()).collect();
         let keeps_description = select_skills_keeping_description(
@@ -494,13 +494,13 @@ impl Agent {
                 None,
                 None,
                 &model,
-                self.compaction.tool_results_ever_cleared,
-                &*self.policies.environment,
+                self.compaction.ever_cleared(),
+                self.policies.environment().as_ref(),
             );
             self.scene.session_context(&ctx)
         };
         let instructions = self.build_instruction_context();
-        let today = chrono_now(&*self.policies.environment);
+        let today = chrono_now(self.policies.environment().as_ref());
 
         let mut text = String::from(SESSION_CONTEXT_OPENING);
         if !facts.is_empty() {
@@ -530,7 +530,7 @@ impl Agent {
             })
             .await;
         }
-        if self.identity.agent_depth == 0 {
+        if self.identity.agent_depth() == 0 {
             let loaded: Vec<std::path::PathBuf> = self
                 .prompt
                 .frozen
@@ -566,13 +566,13 @@ impl Agent {
         let mut seen_names = HashSet::new();
         let tool_names: String = self
             .tooling
-            .tools
+            .tools()
             .list()
             .iter()
             .map(|t| t.name().to_string())
             .chain(
                 self.tooling
-                    .mcp
+                    .mcp()
                     .tools()
                     .into_iter()
                     .map(|t| t.name().to_string()),
@@ -591,8 +591,8 @@ impl Agent {
             mcp_ref,
             skills_ref,
             effective_model,
-            self.compaction.tool_results_ever_cleared,
-            &*self.policies.environment,
+            self.compaction.ever_cleared(),
+            self.policies.environment().as_ref(),
         );
         ctx.available_tools = tools_ref;
         let rules = self.prompt.rules.rules();
@@ -641,8 +641,11 @@ impl Agent {
         // Remember what this request costs *before* any conversation content,
         // so the next turn's compaction check can include it — see
         // `request_overhead_tokens` and `context_tokens`.
-        self.compaction.request_overhead_tokens =
-            estimate_request_overhead(&**self.session.token_counter(), &prompt_blocks, &tool_defs);
+        self.compaction.set_overhead(estimate_request_overhead(
+            &**self.session.token_counter(),
+            &prompt_blocks,
+            &tool_defs,
+        ));
         let messages = pair_dangling_tool_uses(self.session.messages().to_vec());
         (prompt_blocks, tool_defs, messages)
     }
@@ -706,7 +709,7 @@ impl Agent {
             }
         };
         let at_ms =
-            u64::try_from(self.policies.environment.now().unix_timestamp_nanos() / 1_000_000)
+            u64::try_from(self.policies.environment().now().unix_timestamp_nanos() / 1_000_000)
                 .unwrap_or(0);
         for (event, mut payload) in edits {
             payload["at_ms"] = serde_json::json!(at_ms);

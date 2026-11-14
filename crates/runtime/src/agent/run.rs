@@ -135,7 +135,7 @@ impl Agent {
     /// How this session delegates, for a host that starts a sub-agent itself
     /// (`DelegateMode::Host`). Refuses when no module provided one.
     pub fn delegator(&self) -> Arc<dyn base::interface::delegate::Delegator> {
-        self.tooling.delegator.clone()
+        self.tooling.delegator().clone()
     }
 
     /// The slash commands this session will actually resolve.
@@ -151,7 +151,7 @@ impl Agent {
     /// life of the session, so a host that has spawned the engine has no
     /// `&Agent` left to ask. Take this before spawning and keep it.
     pub fn commands(&self) -> Arc<crate::commands::CommandRegistry> {
-        Arc::clone(&self.tooling.commands)
+        Arc::clone(self.tooling.commands())
     }
 
     /// The diagnostics registered for this session, for a host that wants to
@@ -184,7 +184,7 @@ impl Agent {
         // Emit SystemInit
         let tools: Vec<_> = self
             .tooling
-            .tools
+            .tools()
             .list()
             .iter()
             .map(|t| base::event::ToolInfo {
@@ -557,7 +557,7 @@ impl Agent {
 
     /// Access the tool registry (read-only).
     pub fn tools(&self) -> &dyn base::tool::ToolRegistry {
-        self.tooling.tools.as_ref()
+        self.tooling.tools().as_ref()
     }
 
     /// The tools this session advertises by name only — see
@@ -596,7 +596,7 @@ impl Agent {
     }
 
     pub fn skills(&self) -> &dyn base::interface::skill_catalog::SkillCatalog {
-        self.tooling.skills.as_ref()
+        self.tooling.skills().as_ref()
     }
 
     /// Access the hooks runner (read-only).
@@ -606,7 +606,7 @@ impl Agent {
 
     /// Access the MCP manager (read-only).
     pub fn mcp(&self) -> &dyn base::interface::mcp_servers::McpServers {
-        self.tooling.mcp.as_ref()
+        self.tooling.mcp()
     }
 
     /// Compact the conversation now, whatever the budget says — the same

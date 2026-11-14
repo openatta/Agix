@@ -329,7 +329,7 @@ async fn automatic_compaction_leaves_room_for_the_request_overhead() {
             &format!("answer {i}: {}", "words ".repeat(50)),
         ));
     }
-    agent.compaction.request_overhead_tokens = 2_000;
+    agent.compaction.set_overhead(2_000);
     assert!(agent.context_tokens() > 6_000);
     agent
         .compact_if_needed(&tokio_util::sync::CancellationToken::new())
@@ -414,7 +414,7 @@ fn over_the_threshold(fails: bool) -> (Agent, Arc<std::sync::atomic::AtomicUsize
         .build()
         .expect("build should succeed");
     push_rounds(&mut agent, 40);
-    agent.compaction.request_overhead_tokens = 2_000;
+    agent.compaction.set_overhead(2_000);
     assert!(agent.context_tokens() > 6_000);
     (agent, asked)
 }
@@ -475,7 +475,7 @@ async fn a_failed_automatic_compaction_backs_off_too() {
     let (mut agent, asked) = over_the_threshold(true);
     checks(&mut agent, 3).await;
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert_eq!(agent.compaction.auto_backoff.misses(), 1);
+    assert_eq!(agent.compaction.backoff_misses(), 1);
 }
 
 /// Opens a stream that never yields, and says when it was asked.
@@ -550,10 +550,12 @@ async fn an_interrupted_compaction_leaves_the_aged_tool_results_as_they_were() {
             }],
         });
     }
-    agent.compaction.time_based_mc_config = compaction::time_based_mc::TimeBasedMcConfig {
-        max_age: Some(std::time::Duration::ZERO),
-        min_messages: 100,
-    };
+    agent
+        .compaction
+        .set_time_based(compaction::time_based_mc::TimeBasedMcConfig {
+            max_age: Some(std::time::Duration::ZERO),
+            min_messages: 100,
+        });
     let blocks = |agent: &Agent| -> Vec<Vec<ModelContentBlock>> {
         agent
             .session

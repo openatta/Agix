@@ -34,23 +34,22 @@ impl Builder {
             current_turn_id: String::new(),
             session_end,
             identity: self.identity(w.agent_depth),
-            llm: ModelRoute {
-                model: w.resolved.model,
-                task_router: self.host.task_router.take(),
+            llm: ModelRoute::new(
+                w.resolved.model,
+                self.host.task_router.take(),
                 recovery_policy,
-                model_interceptors: Arc::new(chains.model_interceptors),
-            },
-            tooling: Tooling {
-                tools: w.resolved.tools,
-                skills: Arc::new(w.skill_catalog),
-                commands: w.command_registry,
-                mcp: w.mcp,
-                delegator: Arc::new(w.hooks.delegator),
-                tool_middleware: Arc::new(chains.tool_middleware),
-                result_transformers: Arc::new(chains.result_transformers),
-                mcp_shadow_warned: std::collections::HashSet::new(),
-                tool_policy: w.tool_policy,
-            },
+                chains.model_interceptors,
+            ),
+            tooling: Tooling::new(
+                w.resolved.tools,
+                Arc::new(w.skill_catalog),
+                w.command_registry,
+                w.mcp,
+                Arc::new(w.hooks.delegator),
+                chains.tool_middleware,
+                chains.result_transformers,
+                w.tool_policy,
+            ),
             gate,
             prompt: self.prompt_context(
                 chains.prompt_registry,
@@ -67,7 +66,7 @@ impl Builder {
                 environment: w.resolved.environment,
             },
             memory: self.memory(w.resolved.memory_store, chains.retrieval_hooks),
-            compaction: compaction_state(
+            compaction: Compaction::new(
                 w.compactor,
                 settings.values.compaction.cached_microcompact,
             ),
@@ -192,24 +191,5 @@ impl Builder {
             retrieval_hooks,
             self.spec.memory_extraction,
         )
-    }
-}
-
-pub(super) fn compaction_state(
-    compactor: Arc<dyn Compactor>,
-    cached_mc_enabled: bool,
-) -> Compaction {
-    Compaction {
-        compactor,
-        compaction_state: compaction::reactive::CompactionState::default(),
-        compact_warning_issued: false,
-        tool_results_ever_cleared: false,
-        time_based_mc_config: compaction::time_based_mc::TimeBasedMcConfig::default(),
-        cached_mc: CachedMicroCompact::new(compaction::cached::CachedMcConfig {
-            enabled: cached_mc_enabled,
-            ..Default::default()
-        }),
-        request_overhead_tokens: 0,
-        auto_backoff: Default::default(),
     }
 }

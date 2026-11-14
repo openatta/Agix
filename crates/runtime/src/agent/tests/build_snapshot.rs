@@ -136,7 +136,7 @@ fn builder_for(scene: SceneSpec, template: Arc<InMemoryToolRegistry>) -> Builder
 
 fn describe(agent: &Agent, seen: &Mutex<Vec<String>>) -> String {
     let mut out = String::new();
-    writeln!(out, "tools: {:?}", agent.tooling.tools.names()).unwrap();
+    writeln!(out, "tools: {:?}", agent.tooling.tools().names()).unwrap();
     writeln!(out, "path_style: {:?}", agent.config.path_style).unwrap();
     let mut deferred: Vec<&String> = agent.config.deferred_tools.iter().collect();
     deferred.sort();

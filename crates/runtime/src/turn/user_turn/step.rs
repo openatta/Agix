@@ -3,7 +3,6 @@
 use super::end::StopReason;
 use super::TurnLoopState;
 use crate::agent::Agent;
-use crate::turn::request::sync_mcp_adapters;
 use crate::turn::request::ModelRequest;
 use crate::turn::round::count_structured_output_calls;
 use crate::turn::tool_env::engine_exec_from;
@@ -43,7 +42,7 @@ impl Agent {
         }
         if let base::interface::turn_policy::TurnStep::Stop { reason } = self
             .policies
-            .turn_policy
+            .turn_policy()
             .before_model_call(&state.progress(""))
         {
             return Ok(ControlFlow::Break(StopReason::Policy(reason)));
@@ -84,7 +83,7 @@ impl Agent {
             .map_or(0, count_structured_output_calls);
         if let base::interface::turn_policy::TurnStep::Stop { reason } = self
             .policies
-            .turn_policy
+            .turn_policy()
             .after_model_call(&state.progress(&call.result.stop_reason))
         {
             tracing::warn!(
@@ -148,7 +147,7 @@ impl Agent {
             )
             .with_lineage(
                 self.session.parent_session_id().map(str::to_string),
-                self.identity.agent_type.clone(),
+                self.identity.agent_type().map(str::to_string),
             ),
         );
         let request = self
@@ -267,8 +266,8 @@ impl Agent {
             execute_tool,
             is_concurrency_safe,
             cancel.clone(),
-            &self.llm.model_interceptors,
-            self.llm.model.provenance(),
+            self.llm.interceptors(),
+            self.llm.model().provenance(),
         )
         .await
         .map_err(|failure| (failure, true))
@@ -282,11 +281,11 @@ impl Agent {
     ) -> ToolExecCtx {
         ToolExecCtx {
             tool_use_id: String::new(),
-            tools: Arc::clone(&self.tooling.tools),
+            tools: Arc::clone(self.tooling.tools()),
             cwd: self.settings.paths.working_dir().to_path_buf(),
             session_id: self.session.session_id.clone(),
             turn_no: self.session.turn_count,
-            agent_depth: self.identity.agent_depth,
+            agent_depth: self.identity.agent_depth(),
             telemetry_handle: self.telemetry.handle().clone(),
             turn_id: self.current_turn_id.clone(),
             cancel: cancel.clone(),
@@ -296,8 +295,8 @@ impl Agent {
             permission: self.gate.permission().clone(),
             session_state: Arc::clone(&self.session_state),
             elicitation: Arc::clone(self.gate.elicitation()),
-            tool_middleware: Arc::clone(&self.tooling.tool_middleware),
-            result_transformers: Arc::clone(&self.tooling.result_transformers),
+            tool_middleware: Arc::clone(self.tooling.tool_middleware()),
+            result_transformers: Arc::clone(self.tooling.result_transformers()),
             discontinued: Arc::clone(discontinued),
             images: Arc::clone(images),
             from_code: false,
@@ -421,7 +420,7 @@ impl Agent {
         // telemetry below records the reading the engine's own policy uses.
         let spend = base::interface::budget_policy::Spend::from(state.spent);
         let total_tokens_used = spend.total_tokens();
-        match self.policies.budget_policy.on_usage(&spend) {
+        match self.policies.budget_policy().on_usage(&spend) {
             base::interface::budget_policy::Spending::WithinBudget => {}
             base::interface::budget_policy::Spending::Warn { reminder, limit } => {
                 tracing::warn!(
@@ -493,7 +492,7 @@ impl Agent {
         {
             let file_paths = Self::extract_tool_file_paths(self.messages_this_turn());
             if !file_paths.is_empty() {
-                let activated = self.tooling.skills.activate_for_paths(&file_paths);
+                let activated = self.tooling.skills().activate_for_paths(&file_paths);
                 if !activated.is_empty() {
                     let names: Vec<&str> = activated.iter().map(|s| s.name.as_str()).collect();
                     let skills_text = format!(
@@ -513,12 +512,7 @@ impl Agent {
             }
         }
 
-        self.tooling.mcp.refresh_if_changed().await;
-        sync_mcp_adapters(
-            self.tooling.tools.as_ref(),
-            self.tooling.mcp.as_ref(),
-            |t| self.tooling.tool_policy.permits(t),
-        );
+        self.tooling.refresh_mcp_if_changed().await;
         if !cancel.is_cancelled() {
             self.deliver_queued_user_messages(false, cancel).await;
         }

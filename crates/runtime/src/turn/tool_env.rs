@@ -303,7 +303,7 @@ impl Agent {
             tool_use_id: String::new(),
             agent: None,
             parent_messages: None,
-            agent_depth: self.identity.agent_depth,
+            agent_depth: self.identity.agent_depth(),
             events_tx: None,
             elicitation: Some(Arc::clone(self.gate.elicitation())),
             exec: self.exec.clone(),

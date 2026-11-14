@@ -100,10 +100,12 @@ async fn clearing_old_tool_results_by_age_is_reported_as_a_compaction() {
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
-    agent.compaction.time_based_mc_config = compaction::time_based_mc::TimeBasedMcConfig {
-        max_age: Some(std::time::Duration::from_millis(1)),
-        min_messages: 0,
-    };
+    agent
+        .compaction
+        .set_time_based(compaction::time_based_mc::TimeBasedMcConfig {
+            max_age: Some(std::time::Duration::from_millis(1)),
+            min_messages: 0,
+        });
     agent.session.push_message(ModelMessage {
         role: MessageRole::Assistant,
         content: vec![ModelContentBlock::ToolUse {

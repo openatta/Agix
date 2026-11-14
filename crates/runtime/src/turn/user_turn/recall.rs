@@ -25,11 +25,11 @@ impl Agent {
                 let ask = RecallQuery {
                     query: query.to_string(),
                     already_surfaced: self.prompt.surfaced().cloned().unwrap_or_default(),
-                    recent_tools: self.tooling.tools.names(),
+                    recent_tools: self.tooling.tools().names(),
                     model_name: self.settings.values.model.model_name.clone(),
                     session_id: self.session.session_id.clone(),
                 };
-                Some(self.memory.start_recall(self.llm.model.clone(), ask))
+                Some(self.memory.start_recall(self.llm.model().clone(), ask))
             };
         let started_at = std::time::Instant::now();
         handle.map(|handle| PendingRecall { handle, started_at })

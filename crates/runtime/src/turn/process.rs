@@ -1,7 +1,6 @@
 //! 一次回合的入口与收尾：目标变化落盘、输入分发、用户提示拦截与钩子、排队消息投递、回合结束。
 
 use super::attachments::describe_attachments;
-use super::request::sync_mcp_adapters;
 use super::token_budget::{find_token_budget_directive, strip_token_budget_directive};
 use super::{TurnError, TurnOutcome, ENDS_A_GOAL_ROUND_NORMALLY};
 use crate::agent::{Agent, EngineCommand, InputMessage};
@@ -190,12 +189,7 @@ impl Agent {
             // so swapping it here is what makes a host's `/model`
             // change the model the next turn calls.
             EngineCommand::RefreshMcp => {
-                self.tooling.mcp.refresh_tools().await;
-                sync_mcp_adapters(
-                    self.tooling.tools.as_ref(),
-                    self.tooling.mcp.as_ref(),
-                    |t| self.tooling.tool_policy.permits(t),
-                );
+                self.tooling.refresh_mcp().await;
                 Ok(TurnOutcome::default())
             }
             // `CancelTurn` is handled by the input demultiplexer, not
@@ -268,13 +262,13 @@ impl Agent {
             );
         }
 
-        if let Some(cmd) = self.tooling.commands.resolve(&sc.name) {
+        if let Some(cmd) = self.tooling.commands().resolve(&sc.name) {
             match cmd {
                 crate::commands::Command::Prompt { entry } => {
                     let ctx = self.skill_invocation_context(cancel.clone());
                     let expansion = self
                         .tooling
-                        .commands
+                        .commands()
                         .run_prompt_command(
                             &entry,
                             sc,
@@ -317,12 +311,12 @@ impl Agent {
         // daemon's path): that catalog predates this session's MCP
         // connections, and it also lets prompts picked up by a
         // later `refresh_prompts` be invocable immediately.
-        let mcp_command: Option<String> = match self.tooling.commands.resolve(&sc.name) {
+        let mcp_command: Option<String> = match self.tooling.commands().resolve(&sc.name) {
             Some(crate::commands::Command::McpPrompt { command, .. }) => Some(command),
             Some(_) => None,
             None => self
                 .tooling
-                .mcp
+                .mcp()
                 .has_prompt_command(&sc.name)
                 .then(|| sc.name.clone()),
         };
@@ -336,7 +330,7 @@ impl Agent {
         // explain to the user.
         let invocation = self
             .tooling
-            .mcp
+            .mcp()
             .invoke_prompt_command(&command, &sc.args)
             .await;
         if invocation.is_error {
@@ -654,7 +648,7 @@ impl Agent {
             self.session_state.goal_disarm();
         }
         let persisted = self.flush_log().await.is_ok();
-        if let Some(seat) = self.identity.team_seat.clone() {
+        if let Some(seat) = self.identity.team_seat().cloned() {
             let stop_reason = match &outcome {
                 Ok(o) => o.stop_reason.clone(),
                 Err(_) => "error".into(),

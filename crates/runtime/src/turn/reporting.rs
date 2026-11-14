@@ -133,11 +133,11 @@ impl Agent {
 
     pub(super) fn record_slash_command(&self, command: &crate::commands::SlashCommand) {
         use crate::commands::Command;
-        let kind = match self.tooling.commands.resolve(&command.name) {
+        let kind = match self.tooling.commands().resolve(&command.name) {
             Some(Command::Local { .. }) => "local",
             Some(Command::Prompt { .. }) => "prompt",
             Some(Command::McpPrompt { .. }) => "mcp_prompt",
-            None if self.tooling.mcp.has_prompt_command(&command.name) => "mcp_prompt",
+            None if self.tooling.mcp().has_prompt_command(&command.name) => "mcp_prompt",
             None => "unknown",
         };
         self.telemetry
