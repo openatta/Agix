@@ -2,7 +2,7 @@
 # Production functions above FN_MAX lines and files above FILE_MAX lines, at the size
 # they had when the guard was introduced. A ceiling only goes down:
 # AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration size::
-file  crates/compaction/src/compact.rs                            -                                      1116
+file  crates/compaction/src/compact.rs                            -                                      979
 file  crates/core/src/context/session.rs                          -                                      1136
 file  crates/core/src/interface/catalog.rs                        -                                      831
 file  crates/core/src/interface/tool.rs                           -                                      1033
@@ -40,7 +40,7 @@ fn    crates/assembly/src/session_pool/parts/factory/mod.rs       EngineFactory:
 fn    crates/assembly/src/session_pool/parts/factory/mod.rs       models                                 82
 fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs   SessionPool::write_mcp_server          113
 fn    crates/assembly/src/session_pool/parts/mcp_hub/status.rs    mcp_status_entries                     86
-fn    crates/compaction/src/compact.rs                            enforce_tool_result_budget             85
+fn    crates/compaction/src/budget.rs                             enforce_tool_result_budget             81
 fn    crates/compaction/src/llm_summary.rs                        LlmSummarizer::summarize               95
 fn    crates/core/src/frozen/frontmatter.rs                       parse_skill_file                       85
 fn    crates/core/src/frozen/memory.rs                            maybe_migrate_claude_to_agix           85
