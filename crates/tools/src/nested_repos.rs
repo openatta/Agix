@@ -11,12 +11,13 @@
 //! they are followed, nesting bounded. A gitlink's `.git` leads to its git
 //! directory as git finds it — the directory itself, a symlink to one, or a
 //! `gitdir:` file naming one, wherever it lies. A gitlink whose configuration
-//! names a program is dangerous, declared in `.gitmodules` or not — the
-//! command can write that file too; what to do about it is the caller's
-//! ([`quarantine`] is the remedy). An undeclared one without such
-//! configuration, and a `.git` directory found anywhere else in the tree, are
-//! only reported. Each is reported once per session, and a repository someone kept
-//! is reported again only once its configuration changes.
+//! (`config` or `config.worktree`) names a program, or whose `hooks/` holds
+//! one, is dangerous, declared in `.gitmodules` or not — the command can write
+//! that file too; what to do about it is the caller's ([`quarantine`] is the
+//! remedy). An undeclared one without such configuration, and a `.git`
+//! directory found anywhere else in the tree, are only reported. Each is
+//! reported once per session, and a repository someone kept is reported again
+//! only once its configuration changes.
 
 use base::tool::ToolContext;
 use std::collections::BTreeSet;
@@ -122,14 +123,19 @@ async fn examine(
     declared: bool,
     scan: &mut Scan,
 ) {
-    let config = ctx
-        .exec
-        .filesystem
-        .read_to_string(&git_dir.join("config"))
-        .await
-        .unwrap_or_default();
-    let digest = digest(&config);
-    let keys = dangerous_keys(&config);
+    let config = read_lossy(ctx, &git_dir.join("config")).await;
+    let worktree_config = read_lossy(ctx, &git_dir.join("config.worktree")).await;
+    let hooks = hooks(ctx, git_dir).await;
+    let mut parts = vec![config.as_str(), worktree_config.as_str()];
+    parts.extend(hooks.iter().flat_map(|(name, body)| [name.as_str(), body]));
+    let digest = digest(&parts);
+    let mut keys = dangerous_keys(&config);
+    for key in dangerous_keys(&worktree_config) {
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys.extend(hooks.into_iter().map(|(name, _)| format!("hooks/{name}")));
     if keys.is_empty() {
         if first_report(ctx, &dot_git, digest) && !declared {
             scan.notes.push(format!(
@@ -148,6 +154,35 @@ async fn examine(
             digest,
         });
     }
+}
+
+/// Git reads a configuration as bytes: one that is not valid UTF-8 is still
+/// read, and has to be here too.
+async fn read_lossy(ctx: &ToolContext, path: &Path) -> String {
+    let bytes = ctx.exec.filesystem.read(path).await.unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// The hooks in a git directory's `hooks/`, by name, with what each says.
+/// `git init` puts only `*.sample` files there, which git never runs; the
+/// filesystem says nothing of modes, so a hook git would skip as not
+/// executable is counted too.
+async fn hooks(ctx: &ToolContext, git_dir: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = ctx.exec.filesystem.read_dir(&git_dir.join("hooks")).await else {
+        return Vec::new();
+    };
+    let mut hooks = Vec::new();
+    for entry in entries.into_iter().filter(|entry| !entry.is_dir) {
+        let Some(name) = entry.path.file_name() else {
+            continue;
+        };
+        let name = name.to_string_lossy().into_owned();
+        if !name.ends_with(".sample") {
+            hooks.push((name, read_lossy(ctx, &entry.path).await));
+        }
+    }
+    hooks.sort();
+    hooks
 }
 
 /// The git directory a worktree's `.git` leads to, as git finds it.
@@ -233,9 +268,9 @@ fn first_report(ctx: &ToolContext, git_dir: &Path, digest: u64) -> bool {
     true
 }
 
-fn digest(config: &str) -> u64 {
+fn digest(parts: &[&str]) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    config.hash(&mut hasher);
+    parts.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -368,7 +403,17 @@ pub fn dangerous_keys(config: &str) -> Vec<String> {
         let name = format!("{section}.{key}");
         let runs_a_program = match (section.as_str(), key.as_str()) {
             ("core", "fsmonitor") => value.is_some_and(|v| !is_boolean(v)),
-            ("core", "hookspath" | "sshcommand" | "pager" | "editor")
+            ("pager", _) => value.is_some_and(|v| !is_boolean(v)),
+            (
+                "core",
+                "hookspath"
+                | "sshcommand"
+                | "pager"
+                | "editor"
+                | "askpass"
+                | "gitproxy"
+                | "alternaterefscommand",
+            )
             | ("diff", "external")
             | ("sequence", "editor")
             | ("credential", "helper")
@@ -376,6 +421,9 @@ pub fn dangerous_keys(config: &str) -> Vec<String> {
             | ("gpg", "program")
             | ("uploadpack", "packobjectshook") => true,
             (s, "clean" | "smudge" | "process") if s.starts_with("filter.") => true,
+            (s, "command" | "textconv") if s.starts_with("diff.") => true,
+            (s, "driver") if s.starts_with("merge.") => true,
+            (s, "uploadpack" | "receivepack") if s.starts_with("remote.") => true,
             (s, "helper") if s.starts_with("credential.") => true,
             (s, "program") if s.starts_with("gpg.") => true,
             (s, _) if s.starts_with("includeif.") => true,
@@ -399,6 +447,7 @@ fn is_boolean(value: &str) -> bool {
 /// the section and key lowercased, a subsection kept as written after a dot.
 fn config_entries(text: &str) -> impl Iterator<Item = (String, String, Option<&str>)> {
     let mut section = String::new();
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines().filter_map(move |line| {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
@@ -471,6 +520,50 @@ mod tests {
             ]
         );
         assert!(dangerous_keys("[core]\n\tfsmonitor = false\n\tbare = false\n").is_empty());
+    }
+
+    #[test]
+    fn a_leading_byte_order_mark_does_not_hide_the_configuration() {
+        assert_eq!(
+            dangerous_keys("\u{feff}[core]\n\tfsmonitor = x\n"),
+            ["core.fsmonitor"]
+        );
+    }
+
+    #[test]
+    fn drivers_pagers_and_remote_programs_name_a_program() {
+        let config = "\
+[diff \"pdf\"]
+\ttextconv = pdftotext
+\tcommand = ./d.sh
+[merge \"ours\"]
+\tdriver = ./m.sh %O %A %B
+[pager]
+\tlog = ./p.sh
+\tstatus = false
+[core]
+\taskPass = ./a.sh
+\tgitProxy = ./g.sh
+\talternateRefsCommand = ./r.sh
+[remote \"origin\"]
+\turl = https://example.com/x
+\tuploadpack = ./u.sh
+\treceivepack = ./r.sh
+";
+        assert_eq!(
+            dangerous_keys(config),
+            [
+                "diff.pdf.textconv",
+                "diff.pdf.command",
+                "merge.ours.driver",
+                "pager.log",
+                "core.askpass",
+                "core.gitproxy",
+                "core.alternaterefscommand",
+                "remote.origin.uploadpack",
+                "remote.origin.receivepack",
+            ]
+        );
     }
 
     #[test]

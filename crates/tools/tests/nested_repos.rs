@@ -367,6 +367,48 @@ fn assert_status_no_longer_runs_it(project: &Path, pwned: &Path) {
     );
 }
 
+/// What a nested repository runs is not only in its `config`: a hook, the
+/// per-worktree configuration, and a `config` git still reads although it
+/// is not valid UTF-8.
+#[tokio::test]
+async fn hooks_worktree_configuration_and_a_non_utf8_config_are_checked() {
+    let project = project();
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    let repo = |path: &str| {
+        format!(
+            "mkdir {path} && cd {path} && git init -q && touch f && git add f && \
+             git -c user.email=t@example.com -c user.name=T commit -q -m s && cd .. && \
+             git add {path}"
+        )
+    };
+    bash(
+        &ctx,
+        &format!(
+            "{} && printf '#!/bin/sh\\n' > hooked/.git/hooks/post-checkout && \
+             {} && git -C worktreed config extensions.worktreeConfig true && \
+             printf '[core]\\n\\tfsmonitor = ./x.sh\\n' > worktreed/.git/config.worktree && \
+             {} && printf '# \\377\\n[core]\\n\\tfsmonitor = ./x.sh\\n' >> latin/.git/config",
+            repo("hooked"),
+            repo("worktreed"),
+            repo("latin")
+        ),
+    )
+    .await;
+
+    let scan = tools::nested_repos::scan(&ctx).await;
+    let found = |name: &str| {
+        scan.dangerous
+            .iter()
+            .find(|d| d.git_dir.ends_with(format!("{name}/.git")))
+            .map(|d| d.keys.clone())
+            .unwrap_or_else(|| panic!("{name} was not found dangerous: {scan:?}"))
+    };
+    assert_eq!(found("hooked"), ["hooks/post-checkout"]);
+    assert_eq!(found("worktreed"), ["core.fsmonitor"]);
+    assert_eq!(found("latin"), ["core.fsmonitor"]);
+    assert!(scan.notes.is_empty(), "{scan:?}");
+}
+
 async fn quarantine_all(ctx: &ToolContext, scan: &tools::nested_repos::Scan) {
     for repo in &scan.dangerous {
         tools::nested_repos::quarantine(ctx, &repo.git_dir)
