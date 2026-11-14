@@ -44,14 +44,23 @@ impl SessionPool {
             .hub_of(session_id)
             .await
             .ok_or_else(|| PoolError::session_not_found(session_id))?;
+        Ok(self.subscribe_to(&hub, session_id, watcher).await)
+    }
+
+    async fn subscribe_to(
+        &self,
+        hub: &SessionHub,
+        session_id: &str,
+        watcher: Arc<dyn SessionWatcher>,
+    ) -> Subscribed {
         let pending = hub.subscribe(watcher);
-        Ok(Subscribed {
+        Subscribed {
             session_id: session_id.to_string(),
             last_seq: self.transcript_len(session_id).await,
             pending,
             resumed: false,
             scene_inferred: None,
-        })
+        }
     }
 
     /// [`Self::subscribe_session`], resuming `session_id` first when it is
@@ -65,16 +74,19 @@ impl SessionPool {
         session_id: &str,
         watcher: Arc<dyn SessionWatcher>,
     ) -> Result<Subscribed, PoolError> {
-        match self.subscribe_session(session_id, watcher.clone()).await {
-            Err(PoolError::SessionNotFound { .. }) => {}
-            subscribed => return subscribed,
+        let scene_inferred = self.refuse_scene_mismatch(session_id).await?;
+        if let Some(hub) = self.hub_of(session_id).await {
+            return Ok(self.subscribe_to(&hub, session_id, watcher).await);
         }
-        let resumed = self.resume_session(session_id, false, None).await?;
-        let subscribed = self.subscribe_session(session_id, watcher).await?;
+        let (resumed, pending) = self
+            .resume_watched(session_id, false, None, Some(watcher))
+            .await?;
         Ok(Subscribed {
+            session_id: session_id.to_string(),
+            last_seq: resumed.message_count,
+            pending,
             resumed: true,
-            scene_inferred: Some(resumed.scene_inferred),
-            ..subscribed
+            scene_inferred: Some(scene_inferred),
         })
     }
 

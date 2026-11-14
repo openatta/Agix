@@ -105,6 +105,21 @@ impl SessionPool {
         create_if_missing: bool,
         options: Option<&SessionOptions>,
     ) -> Result<api::ResumeReport, PoolError> {
+        self.resume_watched(session_id, create_if_missing, options, None)
+            .await
+            .map(|(report, _)| report)
+    }
+
+    /// [`Self::resume_unchecked`], with `watcher` subscribed to the session
+    /// once it is in memory and before its log is counted, so the report's
+    /// `message_count` is the watermark of that subscription.
+    pub(in crate::session_pool) async fn resume_watched(
+        &self,
+        session_id: &str,
+        create_if_missing: bool,
+        options: Option<&SessionOptions>,
+        watcher: Option<Arc<dyn SessionWatcher>>,
+    ) -> Result<(api::ResumeReport, Vec<api::PendingAsk>), PoolError> {
         let resume_start = Instant::now();
         let settings = self.bindings.pool_settings().await;
         let mode = effective_permission_mode(&settings, options);
@@ -112,12 +127,11 @@ impl SessionPool {
         // Already live: report state, touch nothing. The lock is released
         // before the (disk-reading) history lookup — `sessions` is the
         // pool's hottest mutex and every other holder keeps it CPU-only.
-        let already_active = self.live.core_of(session_id).await.map(|core| {
+        if let Some(core) = self.live.core_of(session_id).await {
             core.hub().touch();
-            active_times(&core)
-        });
-        if let Some((name, created_at, last_active)) = already_active {
-            let (message_count, entry_count) = self.directory.history_counts(session_id).await;
+            let (report, pending) = self
+                .watched_report(&core, api::ResumeStatus::AlreadyActive, mode, watcher)
+                .await;
             self.events.record(telemetry::TelemetryEvent::resume_action(
                 session_id,
                 0,
@@ -125,26 +139,15 @@ impl SessionPool {
                 telemetry::ResumeActionPayload {
                     outcome: telemetry::ResumeOutcome::Succeeded,
                     source: "already_active".into(),
-                    entry_count,
-                    projected_message_count: message_count,
+                    entry_count: report.entry_count,
+                    projected_message_count: report.message_count,
                     compact_boundary_count: 0,
                     sidechain_entry_count: 0,
                     warning_kind: None,
                     latency_ms: resume_start.elapsed().as_millis() as u64,
                 },
             ));
-            return Ok(self
-                .resume_report(
-                    session_id,
-                    api::ResumeStatus::AlreadyActive,
-                    message_count,
-                    entry_count,
-                    name,
-                    created_at,
-                    last_active,
-                    mode,
-                )
-                .await);
+            return Ok((report, pending));
         }
 
         // Not already active — serialize against a concurrent cascade
@@ -175,7 +178,6 @@ impl SessionPool {
                         return Err(PoolError::Internal(e));
                     }
                 };
-                let (message_count, entry_count) = self.directory.history_counts(session_id).await;
                 if !has_history && !create_if_missing {
                     self.record_refused_resume(session_id, "not_found", resume_start);
                     return Err(PoolError::session_gone(
@@ -187,45 +189,46 @@ impl SessionPool {
                     ));
                 }
 
-                let raced = self
-                    .live
-                    .core_of(session_id)
-                    .await
-                    .map(|core| active_times(&core));
-                if let Some((name, created_at, last_active)) = raced {
-                    return Ok(self
-                        .resume_report(
-                            session_id,
-                            api::ResumeStatus::AlreadyActive,
-                            message_count,
-                            entry_count,
-                            name,
-                            created_at,
-                            last_active,
-                            mode,
-                        )
-                        .await);
-                }
-                let core = self
-                    .resume_or_create(session_id.to_string(), options)
-                    .await
-                    .map_err(PoolError::from)?;
-                let (_, created_at, last_active) = active_times(&core);
-
-                Ok(self
-                    .resume_report(
-                        core.id(),
+                let (core, status) = match self.live.core_of(session_id).await {
+                    Some(raced) => (raced, api::ResumeStatus::AlreadyActive),
+                    None => (
+                        self.resume_or_create(session_id.to_string(), options)
+                            .await
+                            .map_err(PoolError::from)?,
                         api::ResumeStatus::loaded(has_history),
-                        message_count,
-                        entry_count,
-                        None,
-                        created_at,
-                        last_active,
-                        mode,
-                    )
-                    .await)
+                    ),
+                };
+                Ok(self.watched_report(&core, status, mode, watcher).await)
             })
             .await
+    }
+
+    /// `watcher` subscribed to the session in memory, then its log counted
+    /// for the report. A session found already active reports its name.
+    async fn watched_report(
+        &self,
+        core: &SessionCore,
+        status: api::ResumeStatus,
+        mode: base::settings::PermissionMode,
+        watcher: Option<Arc<dyn SessionWatcher>>,
+    ) -> (api::ResumeReport, Vec<api::PendingAsk>) {
+        let pending = watcher.map(|w| core.hub().subscribe(w)).unwrap_or_default();
+        let (name, created_at, last_active) = active_times(core);
+        let name = name.filter(|_| status == api::ResumeStatus::AlreadyActive);
+        let (message_count, entry_count) = self.directory.history_counts(core.id()).await;
+        let report = self
+            .resume_report(
+                core.id(),
+                status,
+                message_count,
+                entry_count,
+                name,
+                created_at,
+                last_active,
+                mode,
+            )
+            .await;
+        (report, pending)
     }
 
     fn record_refused_resume(&self, session_id: &str, why: &str, started: Instant) {

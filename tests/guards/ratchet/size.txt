@@ -32,7 +32,7 @@ fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::c
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::export_session            115
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::fork_session              128
 fn    crates/assembly/src/session_pool/facade/listing.rs          SessionPool::list_all                  139
-fn    crates/assembly/src/session_pool/facade/resume.rs           SessionPool::resume_unchecked          128
+fn    crates/assembly/src/session_pool/facade/resume.rs           SessionPool::resume_watched            89
 fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::set_project_trust         90
 fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::set_provider              117
 fn    crates/assembly/src/session_pool/facade/turn.rs             SessionPool::run_turn                  179

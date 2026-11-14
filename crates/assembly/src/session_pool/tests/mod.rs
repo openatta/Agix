@@ -160,5 +160,6 @@ mod script_binding;
 mod session_listing;
 mod set_model;
 mod steer;
+mod subscribe_resuming;
 mod turn_driver;
 mod with_session_lock;
