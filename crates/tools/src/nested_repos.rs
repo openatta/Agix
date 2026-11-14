@@ -18,6 +18,11 @@
 //! directory found anywhere else in the tree, are only reported. Each is
 //! reported once per session, and a repository someone kept is reported again
 //! only once its configuration changes.
+//!
+//! The threat is a repository a command creates or changes, not the user's
+//! own: [`take_baseline`] records what is there before the session's first
+//! tool call, and a repository whose configuration is still as it was then is
+//! at most mentioned.
 
 use base::tool::ToolContext;
 use std::collections::BTreeSet;
@@ -66,7 +71,10 @@ pub async fn scan(ctx: &ToolContext) -> Scan {
     let root = top.clone().unwrap_or_else(|| ctx.cwd.clone());
     let mut known: BTreeSet<PathBuf> = BTreeSet::new();
     if let Some(top) = &top {
-        examine_gitlinks(ctx, top, &mut known, &mut scan).await;
+        for repo in gitlinked(ctx, top).await {
+            known.insert(repo.dot_git.clone());
+            report(ctx, top, repo, &mut scan);
+        }
     }
 
     for git_dir in nested_git_entries(ctx, &root).await {
@@ -81,48 +89,74 @@ pub async fn scan(ctx: &ToolContext) -> Scan {
     scan
 }
 
+/// Note, once per session and before its first tool call runs, the nested
+/// repositories already there: what they name is the user's, and [`scan`]
+/// leaves one alone while its configuration is as it was then.
+pub async fn take_baseline(ctx: &ToolContext) {
+    if ctx.session.ledger().nested_repos_at_start.is_some() {
+        return;
+    }
+    let found = match top_level(ctx).await {
+        Some(top) => gitlinked(ctx, &top).await,
+        None => Vec::new(),
+    };
+    let at_start = found.into_iter().map(|r| (r.dot_git, r.digest)).collect();
+    // Two first calls may race here; the baseline that finished first was
+    // taken before either ran, so it is the one kept.
+    ctx.session
+        .ledger()
+        .nested_repos_at_start
+        .get_or_insert(at_start);
+}
+
+/// A repository reached through a gitlink, and what its git directory says.
+struct Gitlinked {
+    dot_git: PathBuf,
+    declared: bool,
+    keys: Vec<String>,
+    digest: u64,
+}
+
 /// Every gitlink the user's `git status` in `top` enters: the index's, and
 /// each nested repository's own, nesting and count bounded.
-async fn examine_gitlinks(
-    ctx: &ToolContext,
-    top: &Path,
-    known: &mut BTreeSet<PathBuf>,
-    scan: &mut Scan,
-) {
+async fn gitlinked(ctx: &ToolContext, top: &Path) -> Vec<Gitlinked> {
+    let mut found = Vec::new();
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
     let mut level = vec![top.to_path_buf()];
     for _ in 0..MAX_DEPTH {
         let mut next = Vec::new();
         for worktree in level {
             let declared = declared_submodules(ctx, &worktree).await;
             for link in gitlinks(ctx, &worktree).await {
-                if known.len() >= MAX_REPOS {
-                    return;
+                if seen.len() >= MAX_REPOS {
+                    return found;
                 }
                 let nested = worktree.join(&link);
                 let dot_git = nested.join(".git");
-                if !known.insert(dot_git.clone()) {
+                if !seen.insert(dot_git.clone()) {
                     continue;
                 }
                 let Some(git_dir) = resolve_git_dir(ctx, &dot_git).await else {
                     continue;
                 };
-                let declared = declared.contains(&link);
-                examine(ctx, top, dot_git, &git_dir, declared, scan).await;
+                let (keys, digest) = examine(ctx, &git_dir).await;
+                found.push(Gitlinked {
+                    dot_git,
+                    declared: declared.contains(&link),
+                    keys,
+                    digest,
+                });
                 next.push(nested);
             }
         }
         level = next;
     }
+    found
 }
 
-async fn examine(
-    ctx: &ToolContext,
-    root: &Path,
-    dot_git: PathBuf,
-    git_dir: &Path,
-    declared: bool,
-    scan: &mut Scan,
-) {
+/// What in a git directory names a program, and a digest of everything
+/// that is read for it.
+async fn examine(ctx: &ToolContext, git_dir: &Path) -> (Vec<String>, u64) {
     let config = read_lossy(ctx, &git_dir.join("config")).await;
     let worktree_config = read_lossy(ctx, &git_dir.join("config.worktree")).await;
     let hooks = hooks(ctx, git_dir).await;
@@ -136,22 +170,46 @@ async fn examine(
         }
     }
     keys.extend(hooks.into_iter().map(|(name, _)| format!("hooks/{name}")));
-    if keys.is_empty() {
-        if first_report(ctx, &dot_git, digest) && !declared {
+    (keys, digest)
+}
+
+fn report(ctx: &ToolContext, root: &Path, repo: Gitlinked, scan: &mut Scan) {
+    let shown_at = shown(root, &repo.dot_git);
+    if repo.keys.is_empty() {
+        if first_report(ctx, &repo.dot_git, repo.digest) && !repo.declared {
             scan.notes.push(format!(
-                "`{}` is a repository nested in the project and added to its index; its \
-                 configuration names no program.",
-                shown(root, &dot_git)
+                "`{shown_at}` is a repository nested in the project and added to its index; \
+                 its configuration names no program."
             ));
         }
         return;
     }
-    let kept = ctx.session.ledger().nested_repos.get(&dot_git) == Some(&digest);
+    let (at_start, kept) = {
+        let ledger = ctx.session.ledger();
+        let at_start = ledger
+            .nested_repos_at_start
+            .as_ref()
+            .and_then(|repos| repos.get(&repo.dot_git))
+            == Some(&repo.digest);
+        let kept = ledger.nested_repos.get(&repo.dot_git) == Some(&repo.digest);
+        (at_start, kept)
+    };
+    if at_start {
+        if first_report(ctx, &repo.dot_git, repo.digest) && !repo.declared {
+            scan.notes.push(format!(
+                "`{shown_at}` is a repository nested in the project whose configuration names \
+                 programs ({}); it was there before this session's first call and is left as \
+                 it is.",
+                repo.keys.join(", ")
+            ));
+        }
+        return;
+    }
     if !kept {
         scan.dangerous.push(Dangerous {
-            git_dir: dot_git,
-            keys,
-            digest,
+            git_dir: repo.dot_git,
+            keys: repo.keys,
+            digest: repo.digest,
         });
     }
 }

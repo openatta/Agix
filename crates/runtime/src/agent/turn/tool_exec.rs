@@ -275,6 +275,7 @@ pub(super) async fn execute_tool_inner(
         .obligations
         .scan_nested_repos
         .then(|| tool_ctx.clone());
+    tools::nested_repos::take_baseline(&tool_ctx).await;
 
     let input_for_post_hook = input.clone();
     let (result, latency_ms, input_json_size) =

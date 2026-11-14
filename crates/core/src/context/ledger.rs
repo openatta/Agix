@@ -13,6 +13,10 @@ pub struct SessionLedger {
     /// Repositories nested in the project the session has already reported
     /// or been told to keep, with a digest of their configuration then.
     pub nested_repos: std::collections::BTreeMap<std::path::PathBuf, u64>,
+    /// The repositories nested in the project before the session's first
+    /// tool call ran, with a digest of their configuration then; `None`
+    /// until that call.
+    pub nested_repos_at_start: Option<std::collections::BTreeMap<std::path::PathBuf, u64>>,
 }
 
 impl SessionLedger {

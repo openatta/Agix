@@ -409,6 +409,34 @@ async fn hooks_worktree_configuration_and_a_non_utf8_config_are_checked() {
     assert!(scan.notes.is_empty(), "{scan:?}");
 }
 
+/// What was nested before the session's first call is the user's: it is
+/// mentioned once and left alone until its configuration changes.
+#[tokio::test]
+async fn a_repository_there_before_the_session_is_mentioned_once_until_it_changes() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    bash(&ctx, &plant(&elsewhere.path().join("pwned"))).await;
+    tools::nested_repos::take_baseline(&ctx).await;
+    bash(&ctx, "touch b").await;
+
+    let first = tools::nested_repos::scan(&ctx).await;
+    assert!(first.dangerous.is_empty(), "{first:?}");
+    assert_eq!(first.notes.len(), 1, "{first:?}");
+    assert!(first.notes[0].contains("sub/.git"), "{first:?}");
+    assert!(first.notes[0].contains("before"), "{first:?}");
+    let again = tools::nested_repos::scan(&ctx).await;
+    assert!(
+        again.dangerous.is_empty() && again.notes.is_empty(),
+        "{again:?}"
+    );
+
+    tools::nested_repos::take_baseline(&ctx).await;
+    bash(&ctx, "cd sub && git config core.pager ./p.sh").await;
+    let changed = tools::nested_repos::scan(&ctx).await;
+    assert_eq!(changed.dangerous.len(), 1, "{changed:?}");
+}
+
 async fn quarantine_all(ctx: &ToolContext, scan: &tools::nested_repos::Scan) {
     for repo in &scan.dangerous {
         tools::nested_repos::quarantine(ctx, &repo.git_dir)

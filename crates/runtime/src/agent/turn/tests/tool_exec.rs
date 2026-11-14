@@ -1527,6 +1527,57 @@ async fn a_background_command_is_checked_when_its_task_ends() {
     assert!(!dir.path().join("sub/.git").exists());
 }
 
+/// The user's own submodule, there before the session: its git directory
+/// under `.git/modules`, with LFS filters and a pre-commit hook.
+fn users_submodule(cwd: &std::path::Path) {
+    let lib = cwd.join("lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    git_in(&lib, &["init", "-q"]);
+    std::fs::write(lib.join("f"), "f").unwrap();
+    git_in(&lib, &["add", "f"]);
+    git_in(&lib, &["commit", "-qm", "s"]);
+    git_in(
+        &lib,
+        &["config", "filter.lfs.process", "git-lfs filter-process"],
+    );
+    git_in(&lib, &["config", "filter.lfs.required", "true"]);
+    std::fs::create_dir_all(cwd.join(".git/modules")).unwrap();
+    std::fs::rename(lib.join(".git"), cwd.join(".git/modules/lib")).unwrap();
+    std::fs::write(lib.join(".git"), "gitdir: ../.git/modules/lib\n").unwrap();
+    std::fs::write(cwd.join(".git/modules/lib/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
+    std::fs::write(
+        cwd.join(".gitmodules"),
+        "[submodule \"lib\"]\n\tpath = lib\n\turl = ./lib\n",
+    )
+    .unwrap();
+    git_in(cwd, &["add", "lib", ".gitmodules"]);
+    git_in(cwd, &["commit", "-qm", "lib"]);
+}
+
+#[tokio::test]
+async fn the_users_own_submodule_is_left_alone_until_a_command_changes_it() {
+    let (dir, ctx) = scanning_session(true, Arc::new(base::interface::elicitation::DeclineAll));
+    let cwd = dir.path().canonicalize().unwrap();
+    users_submodule(&cwd);
+
+    let answer =
+        execute_tool_with_telemetry(&ctx, "Bash", serde_json::json!({"command": "touch b"}))
+            .await
+            .unwrap();
+    assert!(!answer.text.contains("Moved aside"), "{}", answer.text);
+    assert!(cwd.join("lib/.git").is_file());
+
+    let changed = execute_tool_with_telemetry(
+        &ctx,
+        "Bash",
+        serde_json::json!({"command": "git -C lib config core.fsmonitor 'touch pwned; false'"}),
+    )
+    .await
+    .unwrap();
+    assert!(changed.text.contains("Moved aside"), "{}", changed.text);
+    assert!(!cwd.join("lib/.git").exists());
+}
+
 /// A file read from outside the project reaches the model fenced; one
 /// inside comes back as it is.
 #[tokio::test]
