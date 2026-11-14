@@ -345,7 +345,7 @@ impl Agent {
                                                 hand_to_turn_loop(
                                                     &tx,
                                                     &self.channels.current_turn_cancel,
-                                                    &cancel,
+                                                    cancel,
                                                     InputMessage::User {
                                                         content: round.message,
                                                         attachments: vec![],

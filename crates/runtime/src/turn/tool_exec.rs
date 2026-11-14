@@ -464,7 +464,7 @@ async fn fire_tool_lifecycle(
             fire_ctx_lifecycle_hook(ctx, event, |i| i.with_tool(name, inp)).await;
         }
         if name == "PushNotification" && !outcome.as_ref().is_ok_and(|a| a.reported_failure) {
-            notify_host(ctx, &input_for_post_hook).await;
+            notify_host(ctx, input_for_post_hook).await;
         }
     }
 }

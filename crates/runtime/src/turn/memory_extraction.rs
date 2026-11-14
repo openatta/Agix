@@ -205,7 +205,7 @@ fn parse_memories(
     full_text: &str,
     environment: &dyn base::interface::environment::Environment,
 ) -> Vec<DurableMemory> {
-    if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&full_text) {
+    if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(full_text) {
         parsed
             .iter()
             .filter_map(|mem| {
