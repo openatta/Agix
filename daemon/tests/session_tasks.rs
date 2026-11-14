@@ -1519,6 +1519,10 @@ async fn a_live_team_member_is_one_of_its_sessions_tasks() {
         .as_str()
         .unwrap()
         .to_string();
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     daemon
         .ok(
             "session.run_turn",
@@ -1540,6 +1544,10 @@ async fn a_live_team_member_is_one_of_its_sessions_tasks() {
     assert!(id.starts_with("member-"), "{member}");
     assert_eq!(member["detail"]["team"], "crew", "{member}");
     assert_eq!(member["detail"]["member"], "scribe", "{member}");
+    assert!(
+        member["started_ms"].as_i64().unwrap() >= before_ms,
+        "the member's start time: {member}"
+    );
 
     let stopped = daemon
         .ok(

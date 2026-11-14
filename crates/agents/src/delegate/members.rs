@@ -27,6 +27,8 @@ pub(crate) struct PersistentMember {
     pub(crate) session_id: String,
     pub(crate) inbox: MemberInbox,
     pub(crate) cancel: CancellationToken,
+    /// Unix milliseconds.
+    pub(crate) started_ms: i64,
     /// Epoch seconds since the member last went idle, or `i64::MAX` while it
     /// runs a message: a running member is never reclaimed for idling.
     pub(crate) idle_since: Arc<AtomicI64>,
@@ -131,6 +133,13 @@ impl PersistentMembers {
             spawn_lock: Default::default(),
         }
     }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub(crate) fn now_secs() -> i64 {
@@ -278,6 +287,7 @@ impl Delegator {
                 session_id: spec.session_id.clone(),
                 inbox: inbox.clone(),
                 cancel: cancel.clone(),
+                started_ms: now_ms(),
                 idle_since: idle_since.clone(),
                 idle_seq: idle_seq.clone(),
             },
@@ -340,6 +350,7 @@ impl Delegator {
                     team: team.clone(),
                     member: member.clone(),
                 },
+                started_ms: m.started_ms,
             })
             .collect();
         members.sort_by(|a, b| a.id.cmp(&b.id));

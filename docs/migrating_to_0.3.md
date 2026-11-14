@@ -2555,7 +2555,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 - **`Delegator::live_members() -> Vec<LiveMember>`**:池靠它知道会话里有没有活着的常驻成员。没有缺省实现
   (`Agix-v0.3.12-2026111302` 及更早带一个返回空的缺省),每个实现都要写:包装别的 `Delegator` 的转发它,
-  没有常驻成员的返回空。
+  没有常驻成员的返回空。`LiveMember` 多了 `started_ms`(成员建起的 Unix 毫秒),`session.tasks` 里
+  `kind: "member"` 的条目照它报 `started_ms`(以前是 0)。
 
 - **`AgentSpawner` 一族删除。** `Delegator::delegate(DelegateRequest) -> Result<Delegated,
   DelegateError>` 与 `stop_member(&TeamSeat)` 取代它;`DelegateRequest` 是 `#[non_exhaustive]`,

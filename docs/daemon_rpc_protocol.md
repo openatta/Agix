@@ -1978,7 +1978,7 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 `prompt_id`;答完(或超时)回到 `running`。它仍在跑:`stopTask`、`messageTask` 照常。
 
 `member` 是一个活着的常驻团队成员(`id` 形如 `member-…`):它交给的每条消息各是一个 `teammate`
-任务,其中一个在跑时它是 `running`,否则 `idle`;`started_ms` 为 0。活着的成员会挡住重建
+任务,其中一个在跑时它是 `running`,否则 `idle`;`started_ms` 是它建起的时刻。活着的成员会挡住重建
 (`SESSION_BUSY`,`reason: "background_tasks"`),`session.stopTask` 拿它的 `id` 停掉它,之后它不再列出。
 
 正在跑的全列出,已经结束的保留最近 20 个。会话不存在 → `SESSION_NOT_FOUND`。

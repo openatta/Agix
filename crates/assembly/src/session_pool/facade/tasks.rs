@@ -451,7 +451,7 @@ fn member_task(
         } else {
             TaskStatus::Idle
         },
-        started_ms: 0,
+        started_ms: member.started_ms,
         ended_ms: None,
         detail,
         error: None,

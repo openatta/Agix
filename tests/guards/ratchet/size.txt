@@ -22,7 +22,7 @@ fn    crates/agents/src/agent_tool/build.rs                       Delegator::run
 fn    crates/agents/src/agent_tool/catalog.rs                     parse_agent_type_file                  93
 fn    crates/agents/src/agent_tool/mod.rs                         AgentTool::call                        81
 fn    crates/agents/src/agent_tool/turn.rs                        run_one_turn                           98
-fn    crates/agents/src/delegate/members.rs                       Delegator::spawn_member                84
+fn    crates/agents/src/delegate/members.rs                       Delegator::spawn_member                85
 fn    crates/agents/src/delegate/mod.rs                           Delegator::delegate                    86
 fn    crates/assembly/src/assemble.rs                             pool                                   100
 fn    crates/assembly/src/export.rs                               pack                                   100

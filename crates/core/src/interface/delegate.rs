@@ -147,6 +147,8 @@ pub struct TeamSeat {
 pub struct LiveMember {
     pub id: String,
     pub seat: TeamSeat,
+    /// When the member was spawned, in Unix milliseconds.
+    pub started_ms: i64,
 }
 
 #[derive(Debug, Clone)]
