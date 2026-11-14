@@ -701,6 +701,57 @@ async fn post_tool_use_hooks_run_for_a_tool_whose_turn_was_cancelled() {
     );
 }
 
+/// Cancels the turn it runs in, and fails for it.
+struct FailsByCancellingItsTurn(tokio_util::sync::CancellationToken);
+#[async_trait::async_trait]
+impl base::tool::Tool for FailsByCancellingItsTurn {
+    fn name(&self) -> &str {
+        "FailsByCancellingItsTurn"
+    }
+    fn spec(&self) -> base::tool::ToolSpec {
+        base::tool::ToolSpec::new()
+    }
+    fn description(&self) -> &str {
+        "cancels its turn and fails (test tool)"
+    }
+    fn input_schema(&self, _: base::tool::PathStyle) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn call(
+        &self,
+        _input: serde_json::Value,
+        _ctx: base::tool::ToolContext,
+        _progress: base::tool::ProgressSender,
+    ) -> Result<base::tool::ToolResult, base::error::ToolError> {
+        self.0.cancel();
+        Err(base::error::ToolError::Cancelled)
+    }
+}
+
+/// A call that fails because its turn was cancelled is still reported to
+/// `PostToolUseFailure`, whose answer nothing waits for.
+#[tokio::test]
+async fn post_tool_use_failure_runs_for_a_call_its_cancelled_turn_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("failure-hook-ran");
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    let ctx = ctx_with_marker_hook(hooks::HookEvent::PostToolUseFailure, &marker, tools.clone());
+    tools.register(Arc::new(FailsByCancellingItsTurn(ctx.cancel.clone())));
+
+    let result =
+        execute_tool_with_telemetry(&ctx, "FailsByCancellingItsTurn", serde_json::json!({})).await;
+
+    assert!(result.is_err() && ctx.cancel.is_cancelled());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        marker.exists(),
+        "PostToolUseFailure did not run for a call its cancelled turn failed"
+    );
+}
+
 /// Builds a `ToolExecCtx` whose runner touches `marker` when `event` fires.
 fn ctx_with_marker_hook(
     event: hooks::HookEvent,
