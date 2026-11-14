@@ -128,13 +128,13 @@ pub struct HookRunner {
     net: Arc<dyn base::interface::exec::Network>,
     /// Track executed `once` hooks: set of (HookEvent, config_index) that have
     /// already fired and must not fire again in this session.
-    once_executed: std::sync::Mutex<std::collections::HashSet<(HookEvent, usize)>>,
+    once_executed: Arc<std::sync::Mutex<std::collections::HashSet<(HookEvent, usize)>>>,
     /// Optional file watcher for `FileChanged` hooks.
     /// Kept alive so the underlying notify watcher continues to receive events.
     file_watcher: std::sync::Mutex<Option<crate::watcher::FileWatcher>>,
     /// Pending async rewake hooks — (event, config_index) pairs awaiting a
     /// wake signal. When the wake channel fires, these hooks are re-executed.
-    pending_rewakes: std::sync::Mutex<std::collections::HashSet<(HookEvent, usize)>>,
+    pending_rewakes: Arc<std::sync::Mutex<std::collections::HashSet<(HookEvent, usize)>>>,
     /// Optional wake channel receiver. Something sends `()` via the
     /// associated sender to signal that background work has completed,
     /// triggering re-execution of pending rewake hooks.
@@ -159,9 +159,9 @@ impl HookRunner {
             prompt_executor: None,
             agent_executor: None,
             net: Arc::new(platform::LocalNetwork::default()),
-            once_executed: std::sync::Mutex::new(std::collections::HashSet::new()),
+            once_executed: Default::default(),
             file_watcher: std::sync::Mutex::new(None),
-            pending_rewakes: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pending_rewakes: Default::default(),
             wake_receiver: std::sync::Mutex::new(None),
             hooks_search_dirs: Vec::new(),
             project_untrusted: false,
@@ -371,8 +371,10 @@ impl HookRunner {
     /// reported [`HookOutcome::Cancelled`] rather than left to its timeout.
     /// Not at an event whose answer is ignored ([`Answer::Ignored`]): it
     /// reports something that already happened, and the turn or session that
-    /// fired it going away is no reason to keep that from its hooks, which
-    /// run to their own timeout.
+    /// fired it going away is no reason to keep that from its hooks. Nor is it
+    /// a reason to wait for them: once `stop` is cancelled this returns with
+    /// no outcomes, and the hooks run on to their own timeout in the
+    /// background.
     ///
     /// [`Answer::Ignored`]: crate::catalog::Answer::Ignored
     pub async fn run(
@@ -381,11 +383,56 @@ impl HookRunner {
         input: &HookInput,
         stop: &CancellationToken,
     ) -> HookRunResult {
-        let unstoppable = CancellationToken::new();
-        let stop = match event.spec().answer {
-            crate::catalog::Answer::Ignored => &unstoppable,
-            crate::catalog::Answer::Acts(_) => stop,
-        };
+        if matches!(event.spec().answer, crate::catalog::Answer::Acts(_)) {
+            return self.run_now(event, input, stop).await;
+        }
+        if !self.settings.contains_key(&event) {
+            return HookRunResult::default();
+        }
+        let runner = self.sharing_state();
+        let input = input.clone();
+        let mut ran = tokio::spawn(async move {
+            runner
+                .run_now(event, &input, &CancellationToken::new())
+                .await
+        });
+        tokio::select! {
+            biased;
+            ran = &mut ran => match ran {
+                Ok(result) => result,
+                Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                Err(_) => HookRunResult::default(),
+            },
+            () = stop.cancelled() => HookRunResult::default(),
+        }
+    }
+
+    /// A runner for hooks that outlive the call that fired them: the same
+    /// hooks, executors and `once` / rewake bookkeeping, without the file
+    /// watcher or the wake channel, which stay with `self`.
+    fn sharing_state(&self) -> Self {
+        Self {
+            settings: self.settings.clone(),
+            default_timeout: self.default_timeout,
+            prompt_executor: self.prompt_executor.clone(),
+            agent_executor: self.agent_executor.clone(),
+            net: self.net.clone(),
+            once_executed: self.once_executed.clone(),
+            file_watcher: std::sync::Mutex::new(None),
+            pending_rewakes: self.pending_rewakes.clone(),
+            wake_receiver: std::sync::Mutex::new(None),
+            hooks_search_dirs: self.hooks_search_dirs.clone(),
+            project_untrusted: self.project_untrusted,
+            process: self.process.clone(),
+        }
+    }
+
+    async fn run_now(
+        &self,
+        event: HookEvent,
+        input: &HookInput,
+        stop: &CancellationToken,
+    ) -> HookRunResult {
         let configs = match self.settings.get(&event) {
             Some(v) => v,
             None => return HookRunResult::default(),
@@ -1917,29 +1964,61 @@ mod tests {
         assert!(result.blocked().is_some(), "{:?}", result.outcomes);
     }
 
+    async fn appears(path: &std::path::Path) -> bool {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     /// A hook at an event that only reports what happened runs even once
     /// the turn or session that fired it has been stopped.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_observer_hook_runs_though_its_turn_was_stopped() {
+        let dir = tempfile_dir();
+        let ran = dir.join("ran");
         let r = HookRunner::new(HashMap::from([(
             HookEvent::SubagentStop,
-            vec![command("echo ran")],
+            vec![command(&format!("touch '{}'", ran.display()))],
         )]));
         let stop = CancellationToken::new();
         stop.cancel();
-        let result = r
-            .run(
-                HookEvent::SubagentStop,
-                &HookInput::lifecycle("SubagentStop", "s", ".", "default"),
-                &stop,
-            )
-            .await;
-        assert!(
-            matches!(result.outcomes[0], HookOutcome::Ran { .. }),
-            "{:?}",
-            result.outcomes
-        );
+        r.run(
+            HookEvent::SubagentStop,
+            &HookInput::lifecycle("SubagentStop", "s", ".", "default"),
+            &stop,
+        )
+        .await;
+        assert!(appears(&ran).await, "the hook never ran");
+    }
+
+    /// Nor is it waited for once its turn is stopped: it goes on in the
+    /// background, and whatever fired it goes on too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_observer_hook_is_not_waited_for_once_its_turn_is_stopped() {
+        let dir = tempfile_dir();
+        let started = dir.join("started");
+        let mut slow = command(&format!("touch '{}'; sleep 30", started.display()));
+        if let HookConfig::Command { timeout, .. } = &mut slow {
+            *timeout = Some(60_000);
+        }
+        let r = HookRunner::new(HashMap::from([(HookEvent::TurnStart, vec![slow])]));
+        let stop = CancellationToken::new();
+        let input = HookInput::lifecycle("TurnStart", "s", ".", "default");
+
+        let returned = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(r.run(HookEvent::TurnStart, &input, &stop), async {
+                assert!(appears(&started).await, "the hook never started");
+                stop.cancel();
+            })
+        })
+        .await;
+        assert!(returned.is_ok(), "the stopped turn waited for its hook");
     }
 
     fn blocking_on_error(mut hook: HookConfig) -> HookConfig {

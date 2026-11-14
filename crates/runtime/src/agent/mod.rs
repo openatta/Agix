@@ -51,6 +51,9 @@ const ASK_USER_QUESTION: &str = "AskUserQuestion";
 /// watches `ended`; and the engine takes itself off the session's state.
 struct SessionEnd {
     ended: CancellationToken,
+    /// The token [`Agent::run`] was handed: cancelled once the engine is
+    /// being stopped, while `ended` waits for it to have stopped.
+    stopping: CancellationToken,
     tools: Arc<InMemoryToolRegistry>,
     state: Arc<base::context::SessionState>,
     attachment: base::context::EngineAttachment,

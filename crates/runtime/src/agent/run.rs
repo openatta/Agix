@@ -172,6 +172,7 @@ impl Agent {
     /// or the input channel closes. Does NOT consume self — the agent can be reused after stop.
     pub async fn run(&mut self, cancel: CancellationToken) {
         let run_started = std::time::Instant::now();
+        self.session_end.stopping = cancel.clone();
         self.session_start().await;
         let (mut fwd_rx, own_input) = self.spawn_input_demux(&cancel);
         let exit_reason = self.run_loop(&cancel, &mut fwd_rx, &own_input).await;

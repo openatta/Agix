@@ -13,6 +13,7 @@ impl Builder {
         };
         let session_end = SessionEnd {
             ended: w.hooks.session_ended,
+            stopping: CancellationToken::new(),
             tools: w.resolved.tools.clone(),
             state: w.session_state.clone(),
             attachment: w.attachment,

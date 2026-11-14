@@ -364,14 +364,14 @@ impl Agent {
     /// a veto. The `has_hooks_for` guard matters, since `HookRunner::run`
     /// spawns processes and these sites are on every turn's hot path.
     ///
-    /// The hooks stop when the session ends: this is for an event about the
-    /// session, or about a turn that is over.
+    /// For an event about the session, or about a turn that is over: an
+    /// engine being stopped does not wait for its hooks.
     pub(crate) async fn fire_lifecycle_hook(
         &self,
         event: hooks::HookEvent,
         build: impl FnOnce(hooks::HookInput) -> hooks::HookInput,
     ) {
-        self.fire_turn_hook(event, self.session_ended(), build)
+        self.fire_turn_hook(event, &self.session_end.stopping, build)
             .await;
     }
 

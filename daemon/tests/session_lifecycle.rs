@@ -5515,8 +5515,10 @@ async fn a_stop_hook_that_discontinues_still_ends_the_turn_and_frees_the_session
     srv.stop().await;
 }
 
-/// A session pushed out of a full pool and used again comes back once its
-/// old engine has stopped — its `SessionEnd` hook done — and not beside it.
+/// A session pushed out of a full pool and used again comes back with its
+/// history, and each engine's `SessionStart` and `SessionEnd` hooks run — an
+/// evicted engine's `SessionEnd` in the background, which the session coming
+/// back does not wait for.
 #[tokio::test]
 async fn an_evicted_session_resumes_without_locked() {
     let log_dir = tempfile::tempdir().unwrap();
@@ -5564,11 +5566,118 @@ async fn an_evicted_session_resumes_without_locked() {
     })
     .await
     .expect("every hook ran");
-    assert_eq!(
-        lines[..4],
-        ["start", "start", "end", "start"],
-        "the first session came back before its old engine had stopped: {lines:?}"
-    );
+    let count = |what: &str| lines.iter().filter(|line| *line == what).count();
+    assert_eq!((count("start"), count("end")), (3, 2), "{lines:?}");
+
+    srv.stop().await;
+}
+
+/// A slow `SessionEnd` hook still runs when the session is rebuilt for a new
+/// prompt, but the rebuild does not wait for it.
+#[tokio::test]
+async fn a_slow_session_end_hook_does_not_hold_up_a_rebuild() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("first"), text_round("second")],
+        hooked_settings(serde_json::json!({
+            "SessionEnd": [{
+                "type": "command",
+                "command": format!("sleep 8; echo end >> '{}'", log.display()),
+                "timeout": 30000
+            }]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+    let sid = run_turn(&srv.sock, None, "hello").await;
+
+    let set = tokio::time::timeout(
+        Duration::from_secs(4),
+        rpc(
+            &srv.sock,
+            &format!(
+                r#"{{"jsonrpc":"2.0","method":"session.setPrompt","params":{{"session_id":"{sid}","append":"Answer briefly."}},"id":3}}"#
+            ),
+        ),
+    )
+    .await
+    .expect("the rebuild waited for the SessionEnd hook");
+    assert!(set["result"].is_object(), "{set}");
+    let again = tokio::time::timeout(
+        Duration::from_secs(4),
+        run_turn(&srv.sock, Some(&sid), "again"),
+    )
+    .await
+    .expect("the next turn waited for the SessionEnd hook");
+    assert_eq!(again, sid, "the session was not kept");
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("end")
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the SessionEnd hook never finished");
+
+    srv.stop().await;
+}
+
+/// A turn stuck in a slow notify-only hook does not keep its session from
+/// closing: closed, it can be resumed at once.
+#[tokio::test]
+async fn a_turn_in_a_slow_turn_start_hook_does_not_hold_up_close_and_resume() {
+    let log_dir = tempfile::tempdir().unwrap();
+    let log = log_dir.path().join("hooks.log");
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("answer")],
+        hooked_settings(serde_json::json!({
+            "TurnStart": [{
+                "type": "command",
+                "command": format!("echo started >> '{}'; sleep 8", log.display()),
+                "timeout": 30000
+            }]
+        })),
+        Duration::ZERO,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{}}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no session: {created}"))
+        .to_string();
+
+    let mut turn = UnixStream::connect(&srv.sock).await.unwrap();
+    turn.write_all(
+        format!(
+            r#"{{"jsonrpc":"2.0","method":"session.run_turn","params":{{"session_id":"{sid}","message":"hello"}},"id":2}}"#
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    turn.write_all(b"\n").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("started")
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the TurnStart hook never ran");
+
+    tokio::time::timeout(Duration::from_secs(2), close_and_resume(&srv.sock, &sid))
+        .await
+        .expect("close and resume waited for the TurnStart hook");
 
     srv.stop().await;
 }

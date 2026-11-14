@@ -259,6 +259,9 @@ agent hook 的子 Agent 以 `cancelled` 停下;它按失败算,写了 `"on_error
 报告已经发生的事的 hook 不被叫停,跑到它自己的超时为止:下表里"只通知"的事件(子 Agent 随会话
 一起停下时的 `SubagentStop`、会话结束时的 `SessionEnd`、回合被打断时已经跑完的工具的
 `PostToolUseFailure` 等),以及工具已经跑完的 `PostToolUse`——回合在工具跑的时候被打断也照发。
+不叫停也不等:回合被打断、会话关闭、被驱逐、为新的 prompt 或设置重建、daemon 关停时,"只通知"
+的 hook 留在后台跑到它自己的超时为止,回合照常结束,引擎照常停下。所以重建出来的引擎的
+`SessionStart` 可能比旧引擎的 `SessionEnd` 先跑完;daemon 进程退出时还没跑完的被杀掉。
 `PreToolUse` 跑完时回合已经被打断的,这次调用不执行。
 
 ```json
