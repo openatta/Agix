@@ -254,6 +254,9 @@ impl Agent {
                 "cached micro-compact applied — pending cache_edits generated"
             );
             self.compaction.cached_mc.record_pass(ids);
+            self.compaction
+                .cached_mc
+                .forget_edits_missing_from(&self.session.messages);
         }
     }
 
@@ -603,6 +606,9 @@ impl Agent {
         // The warning can fire again once the budget fills up again.
         self.compaction.compact_warning_issued = false;
         self.compaction.auto_backoff = AutoCompactBackoff::default();
+        self.compaction
+            .cached_mc
+            .forget_edits_missing_from(&self.session.messages);
 
         // The opening context message and recalled memories are ordinary
         // compaction victims and not part of the recovery above. Resetting

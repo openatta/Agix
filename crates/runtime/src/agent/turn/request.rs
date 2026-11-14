@@ -555,7 +555,7 @@ impl Agent {
                     pair_dangling_tool_uses(self.session.messages().to_vec()),
                     fallback,
                     origin,
-                    cache_edits,
+                    self.compaction.lend_cache_edits(),
                 )
                 .await
             }

@@ -101,6 +101,24 @@ impl CachedMicroCompact {
             self.pending_edits.retain(|id| !sent.contains(id));
         }
     }
+
+    /// Forget the pending edits whose tool result is no longer in `messages`
+    /// — a compaction dropped it, and an edit for it would point at nothing.
+    pub fn forget_edits_missing_from(&mut self, messages: &[ModelMessage]) {
+        if self.pending_edits.is_empty() {
+            return;
+        }
+        let present: std::collections::HashSet<&str> = messages
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                ModelContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        self.pending_edits
+            .retain(|id| present.contains(id.as_str()));
+    }
 }
 
 /// Blank every tool result but the `keep_recent` newest, and report the

@@ -798,3 +798,144 @@ async fn a_failed_compaction_puts_back_what_the_passes_before_it_rewrote() {
     assert!(!agent.compaction.ever_cleared());
     assert_eq!(compact_frames(&mut rx), 0);
 }
+
+fn mentions_gone_tool(m: &base::interface::model::ModelMessage) -> bool {
+    use base::interface::model::ModelContentBlock;
+    m.content.iter().any(|b| match b {
+        ModelContentBlock::ToolUse { id, .. } => id == "toolu_gone",
+        ModelContentBlock::ToolResult { tool_use_id, .. } => tool_use_id == "toolu_gone",
+        _ => false,
+    })
+}
+
+/// An agent whose compaction drops the `toolu_gone` round and keeps the
+/// `toolu_kept` one, with cache edits pending for both.
+fn agent_with_edits_for_a_dropped_result(model: Arc<dyn Model>) -> Agent {
+    use base::interface::model::{MessageRole, ModelContentBlock, ModelMessage};
+    let (mut agent, _rx, _tx) = Builder::new()
+        .scene(Arc::new(scene::code::spec(
+            scene::code::Interaction::Interactive,
+        )))
+        .model(model)
+        .settings(Arc::new(test_settings()))
+        .compactor(Arc::new(KeepingCompactor {
+            keep: |m| !mentions_gone_tool(m),
+            strategy: compaction::compact::CompactStrategy::Snip,
+        }))
+        .skip_warmup(true)
+        .build()
+        .expect("build should succeed");
+    for (id, padding) in [("toolu_gone", 200), ("toolu_kept", 1)] {
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::Assistant,
+            content: vec![
+                ModelContentBlock::Text {
+                    text: "padding words ".repeat(padding),
+                },
+                ModelContentBlock::ToolUse {
+                    id: id.into(),
+                    name: "Bash".into(),
+                    input: serde_json::json!({"command": "ls"}),
+                },
+            ],
+        });
+        agent.session.push_message(ModelMessage {
+            role: MessageRole::User,
+            content: vec![ModelContentBlock::ToolResult {
+                tool_use_id: id.into(),
+                content: "[Old tool result content cleared]".into(),
+                is_error: Some(false),
+            }],
+        });
+    }
+    agent
+        .compaction
+        .pend_cache_edits(vec!["toolu_gone".into(), "toolu_kept".into()]);
+    agent
+}
+
+/// A cache edit names a tool result; once a compaction dropped that
+/// result, the edit points at nothing and is not sent.
+#[tokio::test]
+async fn a_compaction_forgets_the_cache_edits_for_the_results_it_dropped() {
+    let mut agent = agent_with_edits_for_a_dropped_result(Arc::new(DummyModel));
+    agent
+        .run_compaction(
+            1,
+            1,
+            crate::turn::CompactTrigger::Auto,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("a compaction");
+    assert_eq!(agent.compaction.lend_cache_edits(), vec!["toolu_kept"]);
+}
+
+/// Refuses the conversation's first call for size, answers the rest, and
+/// keeps the cache edits each call carried.
+#[derive(Default)]
+struct RefusedForSizeOnce {
+    cache_edits: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Model for RefusedForSizeOnce {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        _messages: Vec<base::interface::model::ModelMessage>,
+        params: base::interface::model::StreamParams,
+        _cancel: CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::{ModelError, ModelErrorKind, ModelEvent, Usage};
+        let ended = ModelEvent::EndTurn {
+            stop_reason: "end_turn".into(),
+            usage: Usage::default(),
+        };
+        if params.origin.as_ref().and_then(|o| o.purpose()).is_some() {
+            return Ok(Box::new(futures::stream::iter(vec![Ok(ended)])));
+        }
+        let mut calls = self.cache_edits.lock().unwrap();
+        calls.push(params.cache_edits.clone());
+        if calls.len() == 1 {
+            return Err(ModelError::new(
+                ModelErrorKind::ContextTooLong,
+                "prompt is too long",
+            ));
+        }
+        Ok(Box::new(futures::stream::iter(vec![
+            Ok(ModelEvent::TextDelta { text: "ok".into() }),
+            Ok(ended),
+        ])))
+    }
+}
+
+/// The retry after a size refusal is sent once the compaction is done, so
+/// it carries only the edits whose tool results survived it.
+#[tokio::test]
+async fn the_retry_after_a_size_refusal_drops_the_cache_edits_the_compaction_orphaned() {
+    let model = Arc::new(RefusedForSizeOnce::default());
+    let mut agent = agent_with_edits_for_a_dropped_result(model.clone());
+    agent
+        .process_turn(
+            InputMessage::User {
+                content: "go".into(),
+                attachments: vec![],
+                turn_id: "t1".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the retry is answered");
+    assert_eq!(
+        *model.cache_edits.lock().unwrap(),
+        vec![
+            vec!["toolu_gone".to_string(), "toolu_kept".to_string()],
+            vec!["toolu_kept".to_string()],
+        ]
+    );
+}
