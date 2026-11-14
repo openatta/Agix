@@ -218,11 +218,11 @@ async fn call(&self, input: Value, ctx: ToolContext, progress: ProgressSender)
     -> Result<ToolResult, ToolError>
 {
     for (i, row) in rows.iter().enumerate() {
-        progress.update(ProgressUpdate {
-            message: format!("row {} of {}", i + 1, rows.len()),
-            progress: Some((i + 1) as f64),
-            total: Some(rows.len() as f64),
-        });
+        progress.update(
+            ProgressUpdate::text(format!("row {} of {}", i + 1, rows.len()))
+                .with_progress((i + 1) as f64)
+                .with_total(rows.len() as f64),
+        );
         import(row).await?;
     }
     // 只有一句话时:progress.send("connecting");

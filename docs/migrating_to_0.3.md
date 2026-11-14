@@ -1833,7 +1833,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 事件转成 JSON 的嵌入方用它就能和 daemon 发的帧一致。
 
 - 对 `AgentEvent` 做穷尽 `match` 的要加一支。
-- 已经调 `progress.send(..)` 的工具不用改。要报计数的用新的 `progress.update(ProgressUpdate {..})`;
+- 已经调 `progress.send(..)` 的工具不用改。要报计数的用新的 `progress.update(ProgressUpdate::text(..).with_progress(..))`;
   `ProgressCallback` 多了带缺省实现的 `on_update`,只实现 `on_progress` 的照旧能编译。`Bash` 报的
   每一行不再带结尾的换行。
 - 写法见 `extension_points.md`「报进度」。
@@ -2696,6 +2696,37 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 不加的(安全裁决、宿主的回答与输入、设置值、会话协议、线上码,以及 `AgentEvent`、`DelegateMode`)由
 守卫 A5 逐个写明为什么封闭。`plugin::PluginError` 新增 `EngineVersion`(没有 `#[non_exhaustive]`,
 crate 外穷尽 `match` 要补分支),`PluginMeta` 新增公开字段 `requires_engine`。
+
+#### 加了 `#[non_exhaustive]` 的结构体
+
+在定义它的 crate 之外不能再用结构体字面量或 `..Default::default()` 构造,解构要写 `..`:
+
+- `base::tool`:`ToolResult`、`ToolContext`、`PromptContext`、`ProgressUpdate`;
+- `base::interface::model::ToolDef`;
+- `base::interface::scene`:`ToolSurface`、`ModuleSurface`、`TokenBudget`、`ExecutionParams`、
+  `ScenePromptContext`、`ReminderContext`;
+- `base::interface::delegate::StartedAgent`;
+- `base::settings`:`Settings`、`ModelSettings`、`PathSettings`、`ExecutionSettings`、`SandboxConfig`、
+  `CompactionConfig`、`PluginsConfig`;
+- `plugin::manifest`:`PluginMeta`、`ScriptPayload`、`McpPayload`、`SceneSection`、`SkillsSection`、`AgentDef`
+  (从 TOML 读出,嵌入方一般不构造)。
+
+怎么构造:
+
+- `ToolResult::text(s)` / `error_text(s)` / `blocks(v)`,再 `.with_error(..)`、`.with_structured(..)`、
+  `.with_mcp_meta(..)`、`.with_new_messages(..)`;
+- `ToolContext::new(cwd, cancel, exec, config, session)`,其余字段取缺省,需要时在值上改;
+- `ProgressUpdate::text(msg).with_progress(..).with_total(..)`;
+- `ToolDef::new(name, description, schema).with_source(..)`;
+- `ReminderContext::new(cwd)` 加 `.git_status(..)`、`.memory_summary(..)`;`TokenBudget::new(threshold,
+  keep_recent)`、`ExecutionParams::new(max_api_calls)`、`ModuleSurface::new(allow, deny)`、
+  `StartedAgent::new(..)`;`ToolSurface` 用 `from_lists` / `allowing` / `denying` / `deferring`;
+- `PromptContext`、`ScenePromptContext`、`PathSettings`、`ExecutionSettings`、`CompactionConfig`:
+  `X::default()` 后改字段;`Settings::defaults_for(model)` 后改字段,`ModelSettings`、`SandboxConfig`、
+  `PluginsConfig` 经 `Settings` 改(如 `values.model.max_tokens = ..`)。
+
+`let mut x = X::default(); x.f = ..;` 会触发 clippy 的 `field_reassign_with_default`,工作区各 crate
+已放行;自己的 crate 开着 `-D warnings` 的,同样放行或改用构造函数。
 
 #### 测试与守卫
 
