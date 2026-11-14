@@ -154,7 +154,7 @@ impl HookEvent {
                 Ignored,
             ),
             HookEvent::PermissionDenied => (
-                "一次工具调用被拒:规则拒绝、`PreToolUse` 拦下、没人可问时的询问、宿主答拒绝或没给出决定、询问超时",
+                "一次工具调用被拒:规则拒绝、`PreToolUse` 拦下、没人可问时的询问、宿主答拒绝或没给出决定、询问超时;skill 的内联命令被拒也算,按一次 `Bash` 调用",
                 "`tool_name`、`tool_input`、`reason`、`turn_id`",
                 Ignored,
             ),

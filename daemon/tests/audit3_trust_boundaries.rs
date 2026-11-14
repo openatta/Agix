@@ -396,13 +396,17 @@ async fn a_pre_tool_use_hook_blocks_a_skills_inline_command() {
     let work = dir.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
     let block = r#"echo '{"decision":"block","message":"inline says no"}'"#;
+    let denied = dir.path().join("denied.jsonl");
     let (sock, model) = serve_with_probe_skill(
         dir.path(),
         &work,
         json!({
             "sandbox": {"dangerously_disable_sandbox": true},
             "permission_rules": [{"tool": "Bash", "action": "allow"}],
-            "hooks_config": {"PreToolUse": [{"type": "command", "command": block, "if": "Bash"}]},
+            "hooks_config": {
+                "PreToolUse": [{"type": "command", "command": block, "if": "Bash"}],
+                "PermissionDenied": [{"type": "command", "command": format!("cat >> '{}'", denied.display())}],
+            },
         }),
         "Marker: !`echo W1\"\"-INLINE-RAN`",
     )
@@ -417,6 +421,15 @@ async fn a_pre_tool_use_hook_blocks_a_skills_inline_command() {
         "the Skill tool's inline command was not blocked by the hook: {later}"
     );
     assert!(!later.contains("W1-INLINE-RAN"), "it ran: {later}");
+    let told = denials(&denied, 1).await;
+    assert_eq!(told[0]["tool_name"], "Bash", "{told:?}");
+    assert!(
+        told[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("inline says no"),
+        "{told:?}"
+    );
 
     let before = model.calls();
     model.push_turn(text_round("done"));
@@ -431,6 +444,62 @@ async fn a_pre_tool_use_hook_blocks_a_skills_inline_command() {
         "`/probe`'s inline command was not blocked by the hook: {sent}"
     );
     assert!(!sent.contains("W1-INLINE-RAN"), "it ran: {sent}");
+}
+
+/// The `PermissionDenied` payloads `log` holds once there are `n` of them.
+async fn denials(log: &std::path::Path, n: usize) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let told: Vec<Value> = std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        if told.len() >= n {
+            return told;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "PermissionDenied was not fired {n} time(s): {told:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A skill's inline command the permission rules refuse fires
+/// `PermissionDenied`, as a refused `Bash` call does.
+#[tokio::test]
+async fn a_skills_inline_command_the_rules_refuse_fires_permission_denied() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let denied = dir.path().join("denied.jsonl");
+    let (sock, model) = serve_with_probe_skill(
+        dir.path(),
+        &work,
+        json!({
+            "sandbox": {"dangerously_disable_sandbox": true},
+            "permission_rules": [{"tool": "Bash", "action": "deny"}],
+            "hooks_config": {
+                "PermissionDenied": [{"type": "command", "command": format!("cat >> '{}'", denied.display())}],
+            },
+        }),
+        "Marker: !`echo W2\"\"-INLINE-RAN`",
+    )
+    .await;
+
+    model.push_turn(tool_round("call-skill", "Skill", json!({"skill": "probe"})));
+    model.push_turn(text_round("done"));
+    turn_events(&sock, json!({"message": "use the probe skill"})).await;
+    let later = later_requests(&model);
+    assert!(!later.contains("W2-INLINE-RAN"), "it ran: {later}");
+    let told = denials(&denied, 1).await;
+    assert_eq!(told[0]["tool_name"], "Bash", "{told:?}");
+    assert_eq!(
+        told[0]["tool_input"]["command"], "echo W2\"\"-INLINE-RAN",
+        "{told:?}"
+    );
 }
 
 /// A skill's inline command nests a dangerous repository in the project; it

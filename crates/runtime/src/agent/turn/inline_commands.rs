@@ -62,4 +62,16 @@ impl base::interface::inline_command::InlineCommandHooks for SessionInlineComman
             .run(hooks::HookEvent::Notification, &payload, cancel)
             .await;
     }
+
+    async fn denied(&self, input: &Value, reason: &str, cancel: &CancellationToken) {
+        if !self.hooks.has_hooks_for(hooks::HookEvent::PermissionDenied) {
+            return;
+        }
+        let mut payload = self.payload("PermissionDenied", input).with_reason(reason);
+        payload.turn_id = self.turn_id.clone();
+        let _ = self
+            .hooks
+            .run(hooks::HookEvent::PermissionDenied, &payload, cancel)
+            .await;
+    }
 }

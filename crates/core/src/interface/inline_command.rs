@@ -16,4 +16,8 @@ pub trait InlineCommandHooks: Send + Sync {
     /// Tell the host what the command left behind, as a `Bash` call's is
     /// told: a `Notification` event and the `Notification` hook.
     async fn notify(&self, input: &Value, message: &str, cancel: &CancellationToken);
+
+    /// Tell the host the command was refused, as a refused `Bash` call is
+    /// told: the `PermissionDenied` hook, with `reason`.
+    async fn denied(&self, input: &Value, reason: &str, cancel: &CancellationToken);
 }

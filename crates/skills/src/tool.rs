@@ -557,6 +557,13 @@ async fn expand_dynamic_context(
     out
 }
 
+/// Why a skill's inline command did not get to run: its input does not
+/// check, or the policy refused it.
+enum NotRun {
+    Invalid(String),
+    Denied(String),
+}
+
 /// What the policy lets a skill's inline command run on and what it owes
 /// once it has run, or why it will not let it run. Nobody can be asked about
 /// one, so its input is checked and it is judged as a call nobody can
@@ -572,14 +579,16 @@ async fn inline_command_approval(
         base::interface::permission::Approval,
         base::interface::permission::Obligations,
     ),
-    String,
+    NotRun,
 > {
     use base::interface::permission::{Approval, Attendance, PermissionOutcome, ToolFacts};
     let Some(permission) = permission else {
-        return Err("no permission check is wired for this skill".to_string());
+        return Err(NotRun::Denied(
+            "no permission check is wired for this skill".to_string(),
+        ));
     };
     if let base::tool::ValidationResult::Err(message, _) = bash.validate_input(input, ctx).await {
-        return Err(message);
+        return Err(NotRun::Invalid(message));
     }
     let attendance = match ctx.attendance {
         Attendance::Attended => Attendance::NoOneToAsk(
@@ -605,8 +614,8 @@ async fn inline_command_approval(
             profile,
             obligations,
         } => Ok((Approval::new(basis, profile), obligations)),
-        PermissionOutcome::Deny { reason } => Err(reason.message),
-        PermissionOutcome::Prompt { message, .. } => Err(message),
+        PermissionOutcome::Deny { reason } => Err(NotRun::Denied(reason.message)),
+        PermissionOutcome::Prompt { message, .. } => Err(NotRun::Denied(message)),
     }
 }
 
@@ -634,8 +643,15 @@ async fn run_skill_shell_command(
             ctx.approval = Some(approval);
             obligations
         }
-        Err(reason) => {
+        Err(NotRun::Invalid(reason)) => {
             tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
+            return format!("[`{command}` not run: {reason}]");
+        }
+        Err(NotRun::Denied(reason)) => {
+            tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
+            if let Some(hooks) = &ctx.inline_commands {
+                hooks.denied(&input, &reason, &ctx.cancel).await;
+            }
             return format!("[`{command}` not run: {reason}]");
         }
     };
