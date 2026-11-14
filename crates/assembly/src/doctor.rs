@@ -91,12 +91,18 @@ pub struct SettingsTiersCheck {
 
 impl SettingsTiersCheck {
     /// `settings` are the ones loaded from these tiers; what their load left
-    /// out is reported against the tier it came from.
+    /// out is reported against the tier it came from. The project tier is the
+    /// one of the project they were loaded for, else `paths`' project.
     pub fn new(paths: &dyn DaemonPaths, settings: &LoadedSettings) -> Self {
+        let project = settings
+            .paths
+            .workspace
+            .project_root()
+            .map_or_else(|| paths.project_root(), Path::to_path_buf);
         Self {
             global: paths.global_root(),
             scene: paths.config_root(),
-            project: paths.project_root().join(".agix"),
+            project: project.join(".agix"),
             ignored: settings.ignored.clone(),
         }
     }

@@ -883,3 +883,37 @@ async fn the_default_project_is_configured_from_the_directory_it_works_in() {
         "{settings}"
     );
 }
+
+/// `daemon.doctor` reports the project-tier file the daemon's own project is
+/// read from — the one in the directory it was assembled on.
+#[tokio::test]
+async fn doctor_lists_the_project_settings_of_the_directory_the_daemon_works_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, work, configured) = (
+        dir.path().join("home"),
+        dir.path().join("work"),
+        dir.path().join("configured"),
+    );
+    for project in [&work, &configured] {
+        std::fs::create_dir_all(project.join(".agix")).unwrap();
+    }
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(work.join(".agix/settings.json"), "{ not json").unwrap();
+    std::fs::write(configured.join(".agix/settings.json"), "{}").unwrap();
+    let daemon = Daemon::serve_naming(dir, home, work.clone(), configured).await;
+
+    let check = daemon.doctor_check("settings.tiers").await;
+    let project = check["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["tier"] == "project")
+        .unwrap_or_else(|| panic!("no project tier: {check}"))
+        .clone();
+    assert_eq!(
+        project["path"],
+        json!(work.join(".agix/settings.json").display().to_string()),
+        "{check}"
+    );
+    assert_eq!(project["parses"], false, "{check}");
+}
