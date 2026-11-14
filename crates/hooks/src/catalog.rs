@@ -92,12 +92,15 @@ impl HookEvent {
                     "`decision: \"block\"`:结果换成 `Denied by PostToolUse hook: <message>`,同一批并发的\
                      其他调用被取消(skill 的内联命令:正文里换成 \
                      \"[`cmd` output withheld: Denied by PostToolUse hook: <message>]\");\
-                     `continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`;内联命令不认)",
+                     `continue: false`:这一批工具跑完后结束这一轮(`stopped_by_hook`;skill 的内联命令:\
+                     模型调 `Skill` 时同样结束这次调用所在的一轮,用户打 `/name` 展开时还没有一轮,\
+                     不起作用,展开出的那一轮照常跑)",
                 ),
             ),
             HookEvent::PostToolUseFailure => (
                 "工具调用以错误结束(工具返回错误或 panic)时,在 PostToolUse 之前;\
-                 工具自己报告失败的结果(如 Bash 非零退出)不算",
+                 工具自己报告失败的结果(如 Bash 非零退出)不算;skill 正文里的 `` !`cmd` `` \
+                 按一次 `Bash` 调用算(`turn_id` 在 `/name` 展开时没有)",
                 "`tool_name`、`tool_input`、`reason`(错误文本)、`turn_id`",
                 Ignored,
             ),

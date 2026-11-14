@@ -2168,7 +2168,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   PreToolUse hook: …]";`updated_input` 换掉命令,换过的照样过权限。hook 的批准不算替人答应:要询问的
   内联命令照样不跑,`decision: "approve"` 放不行它。跑完之后过 `PostToolUse` hook(`tool_result` 是
   它的输出),hook 拦下的输出不进正文,换成 "[`cmd` output withheld: Denied by PostToolUse hook: …]";
-  `continue: false` 对内联命令不起作用。被 hook 拦下或被权限拒下时,
+  `continue: false` 在模型调 `Skill` 时与 `Bash` 一样,这一批工具跑完后结束这一轮(`stopped_by_hook`);
+  用户打 `/name` 展开时还没有一轮可结束,不起作用,展开出的那一轮照常跑。`Bash` 没能跑起来
+  (工具返回错误,不是非零退出)时,和 `Bash` 一样先发 `PostToolUseFailure` hook。被 hook 拦下或被权限拒下时,
   和 `Bash` 一样触发 `PermissionDenied` hook(`tool_name` 为 `Bash`,`reason` 是拒绝的原因)。它跑完移开危险的嵌套仓库时,
   和 `Bash` 一样发 `Notification` hook 与 `notification` 帧(以前只写进正文)。
 - **hook 的 `timeout` 最多 10 分钟。** 写得更大的按 10 分钟算,加载时记一行 warn;`PostToolUse` 等
@@ -2628,7 +2630,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   base::interface::inline_command::InlineCommandHooks>>`**:引擎给每次工具调用与 `/name` 展开填上,
   skill 的内联命令经它过 `PreToolUse`、被拒时触发 `PermissionDenied`、报告移开的嵌套仓库;自己构造
   `ToolContext` 的不填就没有这几步。自己实现 `InlineCommandHooks` 的要补 `denied(input, reason, cancel)`
-  与 `post_tool_use(input, output, is_error) -> Option<String>`(返回拦下的理由,`None` 是放行)。
+  、`post_tool_use(input, output, is_error) -> Option<String>`(返回拦下的理由,`None` 是放行)与
+  `failed(input, error, cancel)`(`Bash` 没能跑起来时过 `PostToolUseFailure`)。
 - **`SessionStart` 的 `source`**:spawn `run` 之前调 `Agent::starts_as(runtime::agent::StartSource)`;
   不调的不带 `source`。`hooks::HookInput` 多了 `source: Option<String>`(结构体字面量要补,或用
   `..Default::default()`),`with_source` 设它。

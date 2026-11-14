@@ -20,6 +20,9 @@ pub(super) struct SessionInlineCommands {
     pub(super) events: Option<crate::agent::EventSender>,
     /// `None` while a `/name` command expands, before its turn has an id.
     pub(super) turn_id: Option<String>,
+    /// The turn's "end after this round" flag a `PostToolUse` hook's
+    /// `continue: false` sets; `None` while a `/name` command expands.
+    pub(super) discontinued: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl SessionInlineCommands {
@@ -91,11 +94,31 @@ impl base::interface::inline_command::InlineCommandHooks for SessionInlineComman
                 &CancellationToken::new(),
             )
             .await;
+        if result.discontinued() {
+            if let Some(discontinued) = &self.discontinued {
+                discontinued.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         result.blocked().map(|response| {
             response
                 .message
                 .clone()
                 .unwrap_or_else(|| "no reason given".into())
         })
+    }
+
+    async fn failed(&self, input: &Value, error: &str, cancel: &CancellationToken) {
+        if !self
+            .hooks
+            .has_hooks_for(hooks::HookEvent::PostToolUseFailure)
+        {
+            return;
+        }
+        let mut payload = self.payload("PostToolUseFailure", input).with_reason(error);
+        payload.turn_id = self.turn_id.clone();
+        let _ = self
+            .hooks
+            .run(hooks::HookEvent::PostToolUseFailure, &payload, cancel)
+            .await;
     }
 }

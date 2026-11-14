@@ -25,4 +25,8 @@ pub trait InlineCommandHooks: Send + Sync {
     /// `Bash` call's result: why one of them blocked it, if one did. Not
     /// cancellable: the command has run, and the hooks are owed the news.
     async fn post_tool_use(&self, input: &Value, output: &str, is_error: bool) -> Option<String>;
+
+    /// The session's `PostToolUseFailure` hooks, as on a `Bash` call that
+    /// ended in `error` instead of a result.
+    async fn failed(&self, input: &Value, error: &str, cancel: &CancellationToken);
 }

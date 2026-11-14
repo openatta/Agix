@@ -645,3 +645,106 @@ async fn a_repository_a_skills_inline_command_nests_is_reported_to_the_host() {
         "{input}"
     );
 }
+
+/// A skill's inline command that `Bash` fails to run at all — here its
+/// working directory is gone, removed by the command before it — fires
+/// `PostToolUseFailure`, with the payload a failed `Bash` call's carries.
+#[tokio::test]
+async fn a_skills_inline_command_that_fails_fires_post_tool_use_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let failed = dir.path().join("failed.jsonl");
+    let (sock, model) = serve_with_probe_skill(
+        dir.path(),
+        &work,
+        json!({
+            "sandbox": {"dangerously_disable_sandbox": true},
+            "permission_rules": [{"tool": "Bash", "action": "allow"}],
+            "hooks_config": {
+                "PostToolUseFailure": [{"type": "command", "command": format!("cat >> '{}'", failed.display())}],
+            },
+        }),
+        &format!("Gone: !`rm -rf '{}'`\nMarker: !`echo W8`", work.display()),
+    )
+    .await;
+
+    model.push_turn(tool_round("call-skill", "Skill", json!({"skill": "probe"})));
+    model.push_turn(text_round("done"));
+    turn_events(&sock, json!({"message": "use the probe skill"})).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let told: Vec<Value> = loop {
+        let told: Vec<Value> = std::fs::read_to_string(&failed)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        if !told.is_empty() {
+            break told;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "PostToolUseFailure was not fired"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["hook_event_name"], "PostToolUseFailure", "{told:?}");
+    assert_eq!(told[0]["tool_name"], "Bash", "{told:?}");
+    assert_eq!(told[0]["tool_input"]["command"], "echo W8", "{told:?}");
+    assert!(
+        !told[0]["reason"].as_str().unwrap_or_default().is_empty(),
+        "{told:?}"
+    );
+    assert!(
+        !told[0]["turn_id"].as_str().unwrap_or_default().is_empty(),
+        "{told:?}"
+    );
+}
+
+/// A `PostToolUse` hook answering `continue: false` on a skill's inline
+/// command ends the turn the `Skill` call is in, as it ends a `Bash` call's;
+/// a `/name` expansion has no turn yet, and the turn it opens runs.
+#[tokio::test]
+async fn a_post_tool_use_hook_discontinuing_a_skills_inline_command_ends_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let (sock, model) = serve_with_probe_skill(
+        dir.path(),
+        &work,
+        json!({
+            "sandbox": {"dangerously_disable_sandbox": true},
+            "permission_rules": [{"tool": "Bash", "action": "allow"}],
+            "hooks_config": {
+                "PostToolUse": [{"type": "command", "command": r#"echo '{"continue":false}'"#, "if": "Bash"}],
+            },
+        }),
+        "Marker: !`echo W9`",
+    )
+    .await;
+
+    model.push_turn(tool_round("call-skill", "Skill", json!({"skill": "probe"})));
+    let (events, result) = turn_events(&sock, json!({"message": "use the probe skill"})).await;
+    let done: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["kind"] == "turn_complete")
+        .collect();
+    assert_eq!(done.len(), 1, "{events:?}");
+    assert_eq!(done[0]["stop_reason"], "stopped_by_hook", "{events:?}");
+    assert_eq!(model.calls(), 1, "the model was asked again");
+
+    model.push_turn(text_round("done"));
+    let (events, _) = turn_events(
+        &sock,
+        json!({"session_id": result["session_id"], "message": "/probe"}),
+    )
+    .await;
+    let done: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["kind"] == "turn_complete")
+        .collect();
+    assert_eq!(done.len(), 1, "{events:?}");
+    assert_eq!(done[0]["stop_reason"], "end_turn", "{events:?}");
+}

@@ -281,6 +281,7 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
         session_state: ctx.session_state.clone(),
         events: ctx.events.clone(),
         turn_id: Some(ctx.turn_id.clone()),
+        discontinued: Some(ctx.discontinued.clone()),
     }));
     tool_ctx
 }
@@ -320,6 +321,7 @@ impl Agent {
             session_state: self.session_state.clone(),
             events: Some(self.channels.event_tx.clone()),
             turn_id: None,
+            discontinued: None,
         }));
         ctx
     }

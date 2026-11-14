@@ -495,7 +495,10 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// nobody can be asked about: a dangerous repository it nested in the project
 /// is moved aside, and the host is told as for a `Bash` call. Its output then
 /// goes past the `PostToolUse` hooks, and one that blocks it keeps it out of
-/// the expansion.
+/// the expansion; one answering `continue: false` ends the turn of the
+/// `Skill` call it ran in, and does nothing while a `/name` command expands,
+/// before there is a turn. A command `Bash` fails to run at all goes past the
+/// `PostToolUseFailure` hooks first.
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
@@ -667,23 +670,7 @@ async fn run_skill_shell_command(
     };
     let after = obligations.scan_nested_repos.then(|| ctx.clone());
     let hooks = ctx.inline_commands.clone();
-    let (mut out, is_error) = match bash
-        .call(input.clone(), ctx, ProgressSender::noop(""))
-        .await
-    {
-        // Trim exactly one trailing newline, matching shell `$(...)` command
-        // substitution semantics — without this, every inline placeholder
-        // splice leaves a stray blank line/line-break before whatever
-        // follows it in the skill body, since `echo`-style commands always
-        // end their output in `\n`.
-        Ok(r) => match r.content {
-            ToolResultContent::Text(t) => {
-                (t.strip_suffix('\n').unwrap_or(&t).to_string(), r.is_error)
-            }
-            ToolResultContent::Blocks(_) => (String::new(), r.is_error),
-        },
-        Err(e) => (format!("[error running `{command}`: {e}]"), true),
-    };
+    let (mut out, is_error) = bash_output(&bash, &input, ctx, command).await;
     if let Some(after) = after {
         for line in tools::nested_repos::settle_unasked(&after).await {
             // Only a repository it moved aside, or could not, is reported in
@@ -704,6 +691,40 @@ async fn run_skill_shell_command(
         }
     }
     out
+}
+
+/// What `Bash` printed for a skill's inline command, and whether it failed;
+/// one it could not run at all goes past the `PostToolUseFailure` hooks.
+async fn bash_output(
+    bash: &Arc<dyn base::tool::Tool>,
+    input: &serde_json::Value,
+    ctx: ToolContext,
+    command: &str,
+) -> (String, bool) {
+    let hooks = ctx.inline_commands.clone();
+    let cancel = ctx.cancel.clone();
+    match bash
+        .call(input.clone(), ctx, ProgressSender::noop(""))
+        .await
+    {
+        // Trim exactly one trailing newline, matching shell `$(...)` command
+        // substitution semantics — without this, every inline placeholder
+        // splice leaves a stray blank line/line-break before whatever
+        // follows it in the skill body, since `echo`-style commands always
+        // end their output in `\n`.
+        Ok(r) => match r.content {
+            ToolResultContent::Text(t) => {
+                (t.strip_suffix('\n').unwrap_or(&t).to_string(), r.is_error)
+            }
+            ToolResultContent::Blocks(_) => (String::new(), r.is_error),
+        },
+        Err(e) => {
+            if let Some(hooks) = &hooks {
+                hooks.failed(input, &e.to_string(), &cancel).await;
+            }
+            (format!("[error running `{command}`: {e}]"), true)
+        }
+    }
 }
 
 /// Register the `Skill` tool over `m` in `r`.
