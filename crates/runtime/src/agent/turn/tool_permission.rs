@@ -251,7 +251,10 @@ async fn ask(
         },
         (prompt_timeout > 0).then(|| std::time::Duration::from_secs(prompt_timeout)),
     );
+    // An answer that already took the prompt is the answer, cancelled or not:
+    // the host was told it was answered, and an "always allow" is kept.
     let outcome = tokio::select! {
+        biased;
         outcome = ask => match outcome {
             Some(outcome) => outcome,
             None => {

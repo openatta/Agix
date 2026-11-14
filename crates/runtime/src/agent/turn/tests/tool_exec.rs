@@ -1272,6 +1272,78 @@ async fn permission_prompt_answered_permit_always_grants_in_the_scope_asked_for(
     }
 }
 
+/// An answer that took the prompt before the turn was cancelled is the
+/// answer: an "always allow" is kept, and the prompt is reported answered,
+/// however close the two were.
+#[tokio::test]
+async fn an_answer_that_took_the_prompt_before_a_cancel_is_kept() {
+    use base::interface::permission::{Grant, GrantScope, PermissionSet};
+    for round in 0..16 {
+        let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+        tools.register(std::sync::Arc::new(ContentProbeTool {
+            called: Default::default(),
+        }));
+        let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+        let mut ctx = test_exec_ctx(tools, hooks_runner);
+        let grants = Arc::new(RecordedGrants::default());
+        ctx.permission = PermissionSet {
+            policy: Arc::new(PromptTestPermission { prompt_id: "raced" }),
+            grants: Some(grants.clone()),
+        };
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let pending: Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<
+                    String,
+                    tokio::sync::oneshot::Sender<crate::agent::PermissionDecision>,
+                >,
+            >,
+        > = Default::default();
+        ctx.elicitation = Arc::new(crate::elicitation::ChannelElicitation::new(
+            crate::event_bus::EventBus::new(tx),
+            pending.clone(),
+        ));
+        let cancel = ctx.cancel.clone();
+
+        let call = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({}));
+        tokio::pin!(call);
+        while !pending.lock().unwrap().contains_key("raced") {
+            assert!(futures::poll!(&mut call).is_pending(), "round {round}");
+        }
+        crate::turn::resolve_permission_response(
+            &pending,
+            &Default::default(),
+            "raced".into(),
+            crate::agent::PermissionDecision::PermitAlways {
+                scope: crate::agent::PersistScope::Session,
+            },
+        );
+        cancel.cancel();
+        let _ = call.await;
+
+        assert_eq!(
+            grants.0.lock().unwrap().as_slice(),
+            &[Grant::new(
+                "Probe",
+                Some("git status".into()),
+                GrantScope::Session
+            )],
+            "round {round}"
+        );
+        let resolved: Vec<_> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                AgentEvent::PromptResolved { resolution, .. } => Some(resolution),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            resolved,
+            [base::event::PromptResolution::Answered],
+            "round {round}"
+        );
+    }
+}
+
 #[test]
 fn a_redacting_transformer_also_takes_the_structured_result_away() {
     let mut ctx = test_exec_ctx(
