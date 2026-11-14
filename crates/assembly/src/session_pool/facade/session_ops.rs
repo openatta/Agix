@@ -247,7 +247,7 @@ impl SessionPool {
         if switching_provider {
             self.live
                 .with_session_lock(session_id, async {
-                    let held = self.take_idle_slot(session_id).await?;
+                    let held = self.hold_for_rebuild(session_id).await?;
                     self.rebuild_on_changed_spec(session_id, held, change).await
                 })
                 .await
@@ -315,7 +315,7 @@ impl SessionPool {
         let prompt = self
             .live
             .with_session_lock(session_id, async {
-                let spec = match self.take_idle_slot(session_id).await {
+                let spec = match self.hold_for_rebuild(session_id).await {
                     Ok(held) => {
                         self.rebuild_on_changed_spec(session_id, held, change)
                             .await?

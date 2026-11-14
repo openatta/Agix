@@ -428,7 +428,7 @@ impl SessionPool {
     ) -> Result<String, Rebuild> {
         self.live
             .with_session_lock(sid, async {
-                let held = self.take_idle_slot(sid).await?;
+                let held = self.hold_for_rebuild(sid).await?;
                 self.rebuild_holding(sid, held, options).await
             })
             .await
@@ -438,7 +438,7 @@ impl SessionPool {
     /// rebuild is aborted or the rebuilt entry replaces it. A session whose
     /// background tasks still run is not idle: they run under its engine and
     /// would be stopped with it. Callers hold `sid`'s session lock.
-    pub(in crate::session_pool) async fn take_idle_slot(
+    pub(in crate::session_pool) async fn hold_for_rebuild(
         &self,
         sid: &str,
     ) -> Result<HeldSlot, Rebuild> {
