@@ -235,9 +235,9 @@ async fn ask(
             .with_reason(format!("waiting for a permission decision on `{name}`"))
     })
     .await;
-    let ask = ctx
-        .elicitation
-        .ask(base::interface::elicitation::ElicitRequest {
+    let prompt_timeout = ctx.config.permission_prompt_timeout_secs;
+    let ask = ctx.elicitation.ask_within(
+        base::interface::elicitation::ElicitRequest {
             id: prompt_id.clone(),
             kind: base::interface::elicitation::ElicitKind::Authorization {
                 tool_name: name.to_string(),
@@ -248,30 +248,24 @@ async fn ask(
             options: crate::elicitation::ChannelElicitation::authorization_options(
                 ctx.permission.grants.is_some(),
             ),
-        });
-    tokio::pin!(ask);
-    let prompt_timeout = ctx.config.permission_prompt_timeout_secs;
-    let timeout_fut = async move {
-        if prompt_timeout == 0 {
-            std::future::pending::<()>().await
-        } else {
-            tokio::time::sleep(std::time::Duration::from_secs(prompt_timeout)).await
-        }
-    };
-    tokio::pin!(timeout_fut);
+        },
+        (prompt_timeout > 0).then(|| std::time::Duration::from_secs(prompt_timeout)),
+    );
     let outcome = tokio::select! {
-        // Dropping `ask` here is what discards a late answer for this id —
-        // see `ChannelElicitation`'s registration guard.
-        _ = &mut timeout_fut => {
-            return refused(Refusal {
-                reason: "permission prompt timed out".into(),
-                error: format!(
-                    "Denied by permission: no answer to the permission prompt within \
-                     {prompt_timeout}s"
-                ),
-            });
-        }
-        outcome = &mut ask => outcome,
+        outcome = ask => match outcome {
+            Some(outcome) => outcome,
+            None => {
+                return refused(Refusal {
+                    reason: "permission prompt timed out".into(),
+                    error: format!(
+                        "Denied by permission: no answer to the permission prompt within \
+                         {prompt_timeout}s"
+                    ),
+                });
+            }
+        },
+        // Dropping the ask is what discards a late answer for this id — see
+        // `ChannelElicitation`'s registration guard.
         _ = ctx.cancel.cancelled() => {
             return Answer::Cancelled { waited_ms: waited.elapsed().as_millis() as u64 };
         }

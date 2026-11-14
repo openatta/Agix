@@ -75,17 +75,41 @@ pub(crate) struct ParentElicitation {
 #[async_trait]
 impl Elicitation for ParentElicitation {
     async fn ask(&self, request: ElicitRequest) -> ElicitOutcome {
+        self.put(request, None)
+            .await
+            .unwrap_or_else(|| ElicitOutcome::declined("the question was withdrawn"))
+    }
+
+    async fn ask_within(
+        &self,
+        request: ElicitRequest,
+        within: Option<std::time::Duration>,
+    ) -> Option<ElicitOutcome> {
+        self.put(request, within).await
+    }
+
+    fn can_clarify(&self) -> bool {
+        false
+    }
+}
+
+impl ParentElicitation {
+    async fn put(
+        &self,
+        request: ElicitRequest,
+        within: Option<std::time::Duration>,
+    ) -> Option<ElicitOutcome> {
         let ElicitKind::Authorization {
             tool_name, paths, ..
         } = request.kind
         else {
-            return ElicitOutcome::declined(
+            return Some(ElicitOutcome::declined(
                 "a sub-agent can put only permission questions to the person, through its \
                  parent session",
-            );
+            ));
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _open = OpenQuestion::register(self, &request.id, tx);
+        let mut open = OpenQuestion::register(self, &request.id, tx);
         let prompt = base::event::AgentEvent::PermissionPrompt {
             prompt_id: request.id.clone(),
             tool_name,
@@ -96,19 +120,15 @@ impl Elicitation for ParentElicitation {
             task_id: self.task.as_ref().map(|task| task.task_id.clone()),
         };
         if self.events.send(prompt).is_err() {
-            return ElicitOutcome::declined(format!(
+            return Some(ElicitOutcome::declined(format!(
                 "the parent session closed before it could answer. Original prompt: {}",
                 request.message
-            ));
+            )));
         }
-        match rx.await {
+        Some(match open.open.wait(rx, within).await? {
             Ok(decision) => ElicitOutcome::answered(&decision),
             Err(_) => ElicitOutcome::declined("permission request closed without an answer"),
-        }
-    }
-
-    fn can_clarify(&self) -> bool {
-        false
+        })
     }
 }
 
@@ -117,7 +137,7 @@ impl Elicitation for ParentElicitation {
 struct OpenQuestion<'a> {
     asker: &'a ParentElicitation,
     prompt_id: &'a str,
-    _open: runtime::elicitation::OpenPrompt<runtime::agent::PermissionDecision>,
+    open: runtime::elicitation::OpenPrompt<runtime::agent::PermissionDecision>,
 }
 
 impl<'a> OpenQuestion<'a> {
@@ -138,7 +158,7 @@ impl<'a> OpenQuestion<'a> {
         Self {
             asker,
             prompt_id,
-            _open: open,
+            open,
         }
     }
 }

@@ -1084,6 +1084,66 @@ async fn permission_prompt_with_no_response_blocks_until_cancelled() {
     assert_eq!(event.kind(), "tool_cancelled");
 }
 
+/// An answer that took the prompt before its timeout passed is the answer,
+/// even when the timeout passes before the answer is read: the call runs,
+/// and the prompt is reported answered and nothing else.
+#[tokio::test(start_paused = true)]
+async fn a_permission_answer_that_beat_the_timeout_is_the_answer() {
+    let called = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let tools = Arc::new(base::tool::InMemoryToolRegistry::new());
+    tools.register(std::sync::Arc::new(ProbeTool {
+        called: called.clone(),
+    }));
+    let hooks_runner = Arc::new(hooks::HookRunner::new(std::collections::HashMap::new()));
+    let mut ctx = test_exec_ctx_with_permission(
+        tools,
+        hooks_runner,
+        Arc::new(PromptTestPermission { prompt_id: "raced" }),
+    );
+    ctx.config = Arc::new({
+        let mut config = (*ctx.config).clone();
+        config.permission_prompt_timeout_secs = 5;
+        config
+    });
+    let pending: crate::agent::PendingPermissions = Default::default();
+    let (events, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    ctx.elicitation = Arc::new(crate::elicitation::ChannelElicitation::new(
+        crate::event_bus::EventBus::new(events),
+        pending.clone(),
+    ));
+
+    let call = execute_tool_with_telemetry(&ctx, "Probe", serde_json::json!({"x": 1}));
+    tokio::pin!(call);
+    let answer = loop {
+        tokio::select! {
+            _ = &mut call => panic!("the call ended before it was answered"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(1)) => {}
+        }
+        if let Some(answer) = pending.lock().unwrap().remove("raced") {
+            break answer;
+        }
+    };
+    tokio::select! {
+        _ = &mut call => panic!("the call ended as unanswered although its answer had taken the prompt"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(6)) => {}
+    }
+    answer
+        .send(crate::agent::PermissionDecision::Permit)
+        .unwrap();
+
+    assert!(call.await.is_ok());
+    assert!(called.lock().unwrap().is_some());
+    let resolved: Vec<_> = std::iter::from_fn(|| events_rx.try_recv().ok())
+        .filter_map(|event| match event {
+            AgentEvent::PromptResolved {
+                resolution, reason, ..
+            } => Some((resolution, reason)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(resolved, [(base::event::PromptResolution::Answered, None)]);
+}
+
 #[tokio::test]
 async fn permission_prompt_answered_deny_blocks_the_call() {
     let called = std::sync::Arc::new(std::sync::Mutex::new(None));

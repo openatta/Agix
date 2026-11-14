@@ -1124,6 +1124,7 @@ async fn a_task_sub_agents_question_reaches_the_parents_host_naming_its_task() {
         AgentEvent::PromptResolved {
             prompt_id,
             resolution,
+            ..
         } => Some((prompt_id, resolution)),
         _ => None,
     });
@@ -1158,6 +1159,7 @@ async fn a_sub_agents_question_given_up_on_is_withdrawn_from_the_parents_host() 
         if let AgentEvent::PromptResolved {
             prompt_id,
             resolution,
+            ..
         } = rx.recv().await.expect("the end of the question")
         {
             assert_eq!(prompt_id, "p2");

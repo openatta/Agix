@@ -90,36 +90,41 @@ impl Tool for AskUserQuestionTool {
             "options": input.options.iter().map(|o| json!({"key": o.key, "label": o.label})).collect::<Vec<_>>(),
         });
 
+        let within = match ctx.config.permission_prompt_timeout_secs {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        };
         let asked = match &ctx.elicitation {
             Some(asker) => Some(
-                asker.ask(ElicitRequest {
-                    id: ctx.tool_use_id.clone(),
-                    kind: ElicitKind::Clarification {
-                        header: input.header.clone(),
-                        tool_use_id: Some(ctx.tool_use_id.clone()),
+                asker.ask_within(
+                    ElicitRequest {
+                        id: ctx.tool_use_id.clone(),
+                        kind: ElicitKind::Clarification {
+                            header: input.header.clone(),
+                            tool_use_id: Some(ctx.tool_use_id.clone()),
+                        },
+                        message: input.question.clone(),
+                        options: input
+                            .options
+                            .iter()
+                            .map(|o| ElicitOption {
+                                key: o.key.clone(),
+                                label: o.label.clone(),
+                            })
+                            .collect(),
                     },
-                    message: input.question.clone(),
-                    options: input
-                        .options
-                        .iter()
-                        .map(|o| ElicitOption {
-                            key: o.key.clone(),
-                            label: o.label.clone(),
-                        })
-                        .collect(),
-                }),
+                    within,
+                ),
             ),
             None => None,
         };
         let outcome = match asked {
-            Some(ask) => match ctx.config.permission_prompt_timeout_secs {
-                0 => ask.await,
-                secs => tokio::time::timeout(Duration::from_secs(secs), ask)
-                    .await
-                    .unwrap_or_else(|_| {
-                        ElicitOutcome::declined(format!("the user did not answer within {secs}s"))
-                    }),
-            },
+            Some(ask) => ask.await.unwrap_or_else(|| {
+                ElicitOutcome::declined(format!(
+                    "the user did not answer within {}s",
+                    ctx.config.permission_prompt_timeout_secs
+                ))
+            }),
             None => ElicitOutcome::declined(
                 "this engine was built with no way to reach the user, so the question \
                  was not asked",

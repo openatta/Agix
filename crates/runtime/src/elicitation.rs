@@ -5,13 +5,14 @@
 //! as `InputMessage::PermissionResponse`; a clarification, when the host said
 //! it can answer one, goes out as `AgentEvent::QuestionPrompt` and comes back
 //! as `InputMessage::QuestionResponse`. Either way a one-shot is registered
-//! under the prompt id before the event is emitted, and dropping the ask (its
-//! timeout fired, the turn was cancelled) removes the registration, so a late
-//! answer for that id is discarded rather than waking a call that already
-//! resolved. However the ask ends, the same drop emits
-//! `AgentEvent::PromptResolved`, so whoever shows the prompt learns it is
-//! gone ([`OpenPrompt`]). A library embedder can replace all of this with a
-//! direct call into their own UI.
+//! under the prompt id before the event is emitted. Its timeout passing, or
+//! the ask being dropped (the turn was cancelled), removes the registration,
+//! so a late answer for that id is discarded rather than waking a call that
+//! already resolved; whichever of the answer and the deadline takes the
+//! registration out first is the one that counts. However the ask ends,
+//! `AgentEvent::PromptResolved` goes out once, so whoever shows the prompt
+//! learns it is gone and why ([`OpenPrompt`]). A library embedder can replace
+//! all of this with a direct call into their own UI.
 //!
 //! # What it cannot serve
 //!
@@ -24,6 +25,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use base::interface::elicitation::{
@@ -83,11 +85,12 @@ impl ChannelElicitation {
         tool_name: String,
         paths: Vec<PathBuf>,
         tool_use_id: Option<String>,
-    ) -> ElicitOutcome {
+        within: Option<Duration>,
+    ) -> Option<ElicitOutcome> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         // Registered before emitting, so an answer that comes back instantly
         // still finds somewhere to land.
-        let _open = OpenPrompt::register(&request.id, &self.pending, tx, self.events.clone());
+        let mut open = OpenPrompt::register(&request.id, &self.pending, tx, self.events.clone());
         let _ = self.events.send(base::event::AgentEvent::PermissionPrompt {
             prompt_id: request.id,
             tool_name,
@@ -98,14 +101,14 @@ impl ChannelElicitation {
             task_id: None,
         });
 
-        match rx.await {
+        Some(match open.wait(rx, within).await? {
             Ok(decision) => ElicitOutcome::answered(&decision),
             // The only registration is the one above, and it is removed on
             // drop — so this means the host's side went away. Fail closed.
             Err(_) => {
                 ElicitOutcome::declined("permission request channel closed without an answer")
             }
-        }
+        })
     }
 
     async fn clarify(
@@ -114,9 +117,10 @@ impl ChannelElicitation {
         request: ElicitRequest,
         header: Option<String>,
         tool_use_id: Option<String>,
-    ) -> ElicitOutcome {
+        within: Option<Duration>,
+    ) -> Option<ElicitOutcome> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let _open = OpenPrompt::register(&request.id, questions, tx, self.events.clone());
+        let mut open = OpenPrompt::register(&request.id, questions, tx, self.events.clone());
         let _ = self.events.send(base::event::AgentEvent::QuestionPrompt {
             prompt_id: request.id,
             question: request.message,
@@ -127,12 +131,37 @@ impl ChannelElicitation {
             task_id: None,
         });
 
-        match rx.await {
+        Some(match open.wait(rx, within).await? {
             Ok(QuestionAnswer::Answer { text }) => ElicitOutcome::answered(&text),
             Ok(QuestionAnswer::Decline { reason }) => {
                 ElicitOutcome::declined(format!("the user declined to answer: {reason}"))
             }
             Err(_) => ElicitOutcome::declined("question channel closed without an answer"),
+        })
+    }
+
+    async fn put(&self, request: ElicitRequest, within: Option<Duration>) -> Option<ElicitOutcome> {
+        match request.kind.clone() {
+            ElicitKind::Authorization {
+                tool_name,
+                paths,
+                tool_use_id,
+            } => {
+                self.authorize(request, tool_name, paths, tool_use_id, within)
+                    .await
+            }
+            ElicitKind::Clarification {
+                header,
+                tool_use_id,
+            } => match &self.questions {
+                Some(questions) => {
+                    self.clarify(questions, request, header, tool_use_id, within)
+                        .await
+                }
+                None => Some(cannot_carry("a clarification")),
+            },
+            ElicitKind::Import { .. } => Some(cannot_carry("an import confirmation")),
+            _ => Some(cannot_carry("this kind of question")),
         }
     }
 }
@@ -142,14 +171,15 @@ impl ChannelElicitation {
 ///
 /// Tied to the waiting future's lifetime, so an ask dropped for a reason
 /// nobody has thought of yet still cannot leave a stale registration behind.
-/// The drop is the one place an ask ends: an answer took the entry out of the
-/// table on its way in, anything else — a timeout, a cancelled turn, a
-/// closing session — finds it still there and takes it out here. Either way
-/// `PromptResolved` goes out, once.
+/// Whoever takes the entry out of the table decides how the ask ended: an
+/// answer takes it on its way in; [`Self::wait`] takes it when the deadline
+/// passes first; the drop takes what is left — a cancelled turn, a closing
+/// session. `PromptResolved` goes out once, saying which.
 pub struct OpenPrompt<T> {
     id: String,
     pending: Waiting<T>,
     events: EventSender,
+    announced: bool,
 }
 
 impl<T> OpenPrompt<T> {
@@ -167,26 +197,67 @@ impl<T> OpenPrompt<T> {
             id: id.to_string(),
             pending: pending.clone(),
             events,
+            announced: false,
         }
     }
-}
 
-impl<T> Drop for OpenPrompt<T> {
-    fn drop(&mut self) {
+    /// Wait on `rx`, the receiving end of what was registered, for the
+    /// answer, giving up once `within` has passed: `None` then. An answer
+    /// that took the entry out before the deadline did is waited for and
+    /// returned, however close the two were.
+    pub async fn wait(
+        &mut self,
+        mut rx: tokio::sync::oneshot::Receiver<T>,
+        within: Option<Duration>,
+    ) -> Option<Result<T, tokio::sync::oneshot::error::RecvError>> {
+        let Some(within) = within else {
+            return Some(rx.await);
+        };
+        tokio::select! {
+            answer = &mut rx => return Some(answer),
+            _ = tokio::time::sleep(within) => {}
+        }
+        if self.withdraw(base::event::WithdrawalReason::TimedOut) {
+            return None;
+        }
+        Some(rx.await)
+    }
+
+    /// Take the entry out, if no answer has: whether this did.
+    fn withdraw(&mut self, reason: base::event::WithdrawalReason) -> bool {
         let unanswered = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.id)
             .is_some();
+        if unanswered {
+            self.announce(Some(reason));
+        }
+        unanswered
+    }
+
+    fn announce(&mut self, withdrawn: Option<base::event::WithdrawalReason>) {
+        self.announced = true;
         let _ = self.events.send(base::event::AgentEvent::PromptResolved {
             prompt_id: std::mem::take(&mut self.id),
-            resolution: if unanswered {
-                base::event::PromptResolution::Withdrawn
-            } else {
-                base::event::PromptResolution::Answered
+            resolution: match withdrawn {
+                Some(_) => base::event::PromptResolution::Withdrawn,
+                None => base::event::PromptResolution::Answered,
             },
+            reason: withdrawn,
         });
+    }
+}
+
+impl<T> Drop for OpenPrompt<T> {
+    fn drop(&mut self) {
+        if self.announced {
+            return;
+        }
+        if !self.withdraw(base::event::WithdrawalReason::Cancelled) {
+            self.announce(None);
+        }
     }
 }
 
@@ -217,22 +288,17 @@ fn cannot_carry(what: &str) -> ElicitOutcome {
 #[async_trait]
 impl Elicitation for ChannelElicitation {
     async fn ask(&self, request: ElicitRequest) -> ElicitOutcome {
-        match request.kind.clone() {
-            ElicitKind::Authorization {
-                tool_name,
-                paths,
-                tool_use_id,
-            } => self.authorize(request, tool_name, paths, tool_use_id).await,
-            ElicitKind::Clarification {
-                header,
-                tool_use_id,
-            } => match &self.questions {
-                Some(questions) => self.clarify(questions, request, header, tool_use_id).await,
-                None => cannot_carry("a clarification"),
-            },
-            ElicitKind::Import { .. } => cannot_carry("an import confirmation"),
-            _ => cannot_carry("this kind of question"),
-        }
+        self.put(request, None)
+            .await
+            .unwrap_or_else(|| ElicitOutcome::declined("the question was withdrawn"))
+    }
+
+    async fn ask_within(
+        &self,
+        request: ElicitRequest,
+        within: Option<Duration>,
+    ) -> Option<ElicitOutcome> {
+        self.put(request, within).await
     }
 }
 
@@ -322,10 +388,72 @@ mod tests {
                 base::event::AgentEvent::PromptResolved {
                     prompt_id,
                     resolution,
+                    ..
                 } => Some((prompt_id, resolution)),
                 _ => None,
             })
             .collect()
+    }
+
+    fn reasons(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<base::event::AgentEvent>,
+    ) -> Vec<Option<base::event::WithdrawalReason>> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                base::event::AgentEvent::PromptResolved { reason, .. } => Some(reason),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A prompt nobody answers in time is withdrawn as timed out; one given
+    /// up on because its turn went away, as cancelled.
+    #[tokio::test(start_paused = true)]
+    async fn a_withdrawn_prompt_says_whether_it_timed_out_or_was_cancelled() {
+        use base::event::WithdrawalReason::{Cancelled, TimedOut};
+        let (events, mut rx) = bus();
+        let pending: Pending = Default::default();
+        let asker = ChannelElicitation::new(events, pending.clone());
+
+        let outcome = asker
+            .ask_within(authorization("late"), Some(Duration::from_secs(5)))
+            .await;
+        assert!(outcome.is_none());
+        assert_eq!(reasons(&mut rx), [Some(TimedOut)]);
+
+        {
+            let ask = asker.ask(authorization("dropped"));
+            tokio::pin!(ask);
+            let _ = tokio::time::timeout(Duration::from_millis(50), &mut ask).await;
+        }
+        assert_eq!(reasons(&mut rx), [Some(Cancelled)]);
+        assert!(pending.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+    }
+
+    /// An answer that took the prompt before its deadline passed is the
+    /// answer, even when the deadline passes before it is read: it is not
+    /// also reported withdrawn, nor refused as unanswered.
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_that_beat_the_deadline_is_taken_and_reported_answered() {
+        let (events, mut rx) = bus();
+        let pending: Pending = Default::default();
+        let (tx, answer_rx) = tokio::sync::oneshot::channel::<PermissionDecision>();
+        let mut open = OpenPrompt::register("raced", &pending, tx, events);
+        let answer = registered(&pending, "raced").await;
+
+        let waited = {
+            let wait = open.wait(answer_rx, Some(Duration::from_secs(5)));
+            tokio::pin!(wait);
+            assert!(tokio::time::timeout(Duration::from_secs(6), &mut wait)
+                .await
+                .is_err());
+            answer.send(PermissionDecision::Permit).unwrap();
+            wait.await
+        };
+        drop(open);
+
+        assert!(matches!(waited, Some(Ok(PermissionDecision::Permit))));
+        assert_eq!(resolutions(&mut rx), [("raced".to_string(), Answered)]);
     }
 
     /// The registration must not outlive the ask. A caller that gives up and

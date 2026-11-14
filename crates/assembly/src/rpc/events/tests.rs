@@ -87,6 +87,10 @@ fn agent_samples() -> Vec<(&'static str, Value)> {
             json!({"kind": "prompt_resolved", "prompt_id": "q2", "resolution": "withdrawn"}),
         ),
         (
+            "prompt_timed_out",
+            json!({"kind": "prompt_resolved", "prompt_id": "p3", "resolution": "withdrawn", "reason": "timed_out"}),
+        ),
+        (
             "turn_start",
             json!({"kind": "turn_start", "turn_id": "inner"}),
         ),

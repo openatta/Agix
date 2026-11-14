@@ -573,6 +573,43 @@
       }
     },
     {
+      "between_turns": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt_resolved",
+            "prompt_id": "p3",
+            "reason": "timed_out",
+            "resolution": "withdrawn"
+          },
+          "session_id": "s1",
+          "turn_id": null
+        }
+      },
+      "case": "prompt_timed_out",
+      "event": {
+        "kind": "prompt_resolved",
+        "prompt_id": "p3",
+        "reason": "timed_out",
+        "resolution": "withdrawn"
+      },
+      "in_turn": {
+        "jsonrpc": "2.0",
+        "method": "session.event",
+        "params": {
+          "event": {
+            "kind": "prompt_resolved",
+            "prompt_id": "p3",
+            "reason": "timed_out",
+            "resolution": "withdrawn"
+          },
+          "session_id": "s1",
+          "turn_id": "t1"
+        }
+      }
+    },
+    {
       "between_turns": null,
       "case": "turn_start",
       "event": {

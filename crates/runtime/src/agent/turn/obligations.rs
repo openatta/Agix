@@ -133,40 +133,35 @@ async fn kept_by_a_person(
     if after.attendance != Attendance::Attended {
         return false;
     }
-    let ask = ctx.elicitation.ask(ElicitRequest {
-        id: base::id::Id::new().to_string(),
-        kind: ElicitKind::Clarification {
-            header: Some("Nested repository".into()),
-            tool_use_id: Some(after.tool_use_id.clone()),
-        },
-        message: format!(
-            "`{name}` left a repository at `{shown}` whose configuration names programs ({}). \
+    let timeout = ctx.config.permission_prompt_timeout_secs;
+    let ask = ctx.elicitation.ask_within(
+        ElicitRequest {
+            id: base::id::Id::new().to_string(),
+            kind: ElicitKind::Clarification {
+                header: Some("Nested repository".into()),
+                tool_use_id: Some(after.tool_use_id.clone()),
+            },
+            message: format!(
+                "`{name}` left a repository at `{shown}` whose configuration names programs ({}). \
              A `git` run in the project would enter it and run them outside the sandbox. Keep \
              it, or move its git directory aside?",
-            repo.keys.join(", ")
-        ),
-        options: vec![
-            ElicitOption {
-                key: QUARANTINE.into(),
-                label: "Move it aside".into(),
-            },
-            ElicitOption {
-                key: KEEP.into(),
-                label: "Keep it".into(),
-            },
-        ],
-    });
-    let timeout = ctx.config.permission_prompt_timeout_secs;
-    let deadline = async move {
-        if timeout == 0 {
-            std::future::pending::<()>().await
-        } else {
-            tokio::time::sleep(std::time::Duration::from_secs(timeout)).await
-        }
-    };
+                repo.keys.join(", ")
+            ),
+            options: vec![
+                ElicitOption {
+                    key: QUARANTINE.into(),
+                    label: "Move it aside".into(),
+                },
+                ElicitOption {
+                    key: KEEP.into(),
+                    label: "Keep it".into(),
+                },
+            ],
+        },
+        (timeout > 0).then(|| std::time::Duration::from_secs(timeout)),
+    );
     tokio::select! {
-        answer = ask => answer.answer_as::<String>().as_deref() == Some(KEEP),
-        _ = deadline => false,
+        answer = ask => answer.and_then(|a| a.answer_as::<String>()).as_deref() == Some(KEEP),
         _ = ctx.cancel.cancelled() => false,
     }
 }

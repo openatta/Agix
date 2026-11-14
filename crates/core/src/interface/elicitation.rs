@@ -147,6 +147,24 @@ pub trait Elicitation: Send + Sync {
     /// is not.
     async fn ask(&self, request: ElicitRequest) -> ElicitOutcome;
 
+    /// [`ask`](Self::ask), given up on once `within` has passed with no
+    /// answer: `None` then. `within: None` waits as long as `ask` does.
+    ///
+    /// An implementation whose answers arrive from elsewhere should override
+    /// this so the deadline and an answer cannot both win: one answer that
+    /// lands as the deadline passes is either taken or refused, never taken
+    /// and reported as not taken.
+    async fn ask_within(
+        &self,
+        request: ElicitRequest,
+        within: Option<std::time::Duration>,
+    ) -> Option<ElicitOutcome> {
+        match within {
+            None => Some(self.ask(request).await),
+            Some(within) => tokio::time::timeout(within, self.ask(request)).await.ok(),
+        }
+    }
+
     /// Whether a clarification asked here can reach a person. A session
     /// whose elicitation cannot carry one is not offered `AskUserQuestion`.
     fn can_clarify(&self) -> bool {

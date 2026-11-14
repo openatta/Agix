@@ -137,6 +137,9 @@ pub enum AgentEvent {
     PromptResolved {
         prompt_id: String,
         resolution: PromptResolution,
+        /// Why it was withdrawn; `None` when it was answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<WithdrawalReason>,
     },
 
     /// A turn has started. Every `TurnStart` is followed by exactly one
@@ -398,6 +401,17 @@ pub enum PromptResolution {
     /// The engine stopped waiting with no answer: the prompt timed out, the
     /// turn asking it was cancelled or ended, or the session is closing.
     Withdrawn,
+}
+
+/// Why the engine stopped waiting on an ask with no answer.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WithdrawalReason {
+    /// Nobody answered within the prompt timeout.
+    TimedOut,
+    /// The turn asking it was cancelled or ended, or the session is closing.
+    Cancelled,
 }
 
 fn logged() -> bool {

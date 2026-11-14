@@ -1428,7 +1428,8 @@ async fn a_question_one_host_answers_is_withdrawn_from_every_other() {
     assert_eq!(late["pending_prompts"], serde_json::json!([]), "{late}");
 }
 
-/// A question nobody answers in time is withdrawn from every watcher.
+/// A question nobody answers in time is withdrawn from every watcher, as
+/// timed out.
 #[tokio::test]
 async fn a_question_nobody_answers_in_time_is_withdrawn() {
     let daemon =
@@ -1450,6 +1451,7 @@ async fn a_question_nobody_answers_in_time_is_withdrawn() {
     let resolved = eventually!("the prompt's end", first_of(&watching, "prompt_resolved"));
     assert_eq!(resolved["prompt_id"], prompt["prompt_id"], "{resolved}");
     assert_eq!(resolved["resolution"], "withdrawn", "{resolved}");
+    assert_eq!(resolved["reason"], "timed_out", "{resolved}");
 }
 
 /// Refuses the first call with a 401, then never answers.

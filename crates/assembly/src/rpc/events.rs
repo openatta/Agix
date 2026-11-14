@@ -9,7 +9,7 @@ use base::context::goal::GoalView;
 use base::context::{TaskEvent, TaskInfo};
 use base::event::{
     AgentEvent, ContextUsage, FailureKind, PromptResolution, QueuedUserMessage, TeamStageStatus,
-    TurnFailure,
+    TurnFailure, WithdrawalReason,
 };
 use base::interface::elicitation::ElicitOption;
 use base::interface::model::Usage;
@@ -81,6 +81,8 @@ pub enum SessionEventPayload {
     PromptResolved {
         prompt_id: String,
         resolution: PromptResolution,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<WithdrawalReason>,
     },
     SubagentProgress {
         agent_label: String,
@@ -403,9 +405,11 @@ impl SessionEventPayload {
             AgentEvent::PromptResolved {
                 prompt_id,
                 resolution,
+                reason,
             } => Self::PromptResolved {
                 prompt_id: prompt_id.clone(),
                 resolution: *resolution,
+                reason: *reason,
             },
             AgentEvent::TurnStart { turn_id: _ } => Self::TurnStart {},
             AgentEvent::StepStart { step, turn_id: _ } => Self::StepStart { step: *step },
