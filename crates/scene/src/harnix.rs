@@ -55,10 +55,7 @@ pub fn spec() -> SceneSpec {
     s.supports_team = true;
     s.tools = ToolSurface::allowing(TOOLS).deferring(DEFERRED);
     s.path_style = PathStyle::WorkspaceRelative;
-    s.token_budget = TokenBudget {
-        compact_threshold: 150_000,
-        compact_keep_recent: 15,
-    };
+    s.token_budget = TokenBudget::new(150_000, 15);
     s.reminders = vec![Reminder::GitStatus];
     s.session_naming =
         Some("用 3-5 个词概括以下对话的主题，只输出标题不要任何解释：\n{first_message}".into());

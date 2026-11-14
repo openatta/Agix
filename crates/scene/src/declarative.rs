@@ -354,28 +354,22 @@ impl DeclaredScene {
         spec.description = file.description;
         spec.tools = ToolSurface::from_lists(&file.tools, &file.disallowed_tools)
             .deferring(&file.deferred_tools);
-        spec.token_budget = TokenBudget {
-            compact_threshold: file
-                .token_budget
+        spec.token_budget = TokenBudget::new(
+            file.token_budget
                 .compact_threshold
                 .unwrap_or(DEFAULT_COMPACT_THRESHOLD),
-            compact_keep_recent: file
-                .token_budget
+            file.token_budget
                 .compact_keep_recent
                 .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT),
-        };
-        spec.execution = ExecutionParams {
-            max_api_calls_per_turn: file
-                .execution
+        );
+        spec.execution = ExecutionParams::new(
+            file.execution
                 .max_api_calls_per_turn
                 .unwrap_or(ExecutionParams::default().max_api_calls_per_turn),
-        };
+        );
         spec.requires_project = file.requires_project;
         spec.supports_team = file.supports_team;
-        spec.modules = ModuleSurface {
-            allow: file.modules,
-            deny: file.disabled_modules,
-        };
+        spec.modules = ModuleSurface::new(file.modules, file.disabled_modules);
         spec.reminders = file.reminders;
         spec.interactive = file.interactive;
         if let Some(skills) = file.bundled_skills {
@@ -541,26 +535,14 @@ mod tests {
     const MINIMAL: &str = r#"{"id": "review", "name": "Review"}"#;
 
     fn ctx() -> ScenePromptContext<'static> {
-        ScenePromptContext {
-            cwd: Cow::Borrowed("/work"),
-            os: Cow::Borrowed("darwin"),
-            shell: Cow::Borrowed("zsh"),
-            home_dir: Cow::Borrowed("/home/me"),
-            date: Cow::Borrowed("2026-11-05"),
-            model_name: Cow::Borrowed("claude-test"),
-            skills_text: None,
-            mcp_instructions: None,
-            session_memory: None,
-            is_git: false,
-            git_branch: None,
-            is_worktree: false,
-            git_status: None,
-            language: None,
-            scratchpad_dir: None,
-            output_style_content: None,
-            available_tools: None,
-            tool_results_ever_cleared: false,
-        }
+        let mut c = ScenePromptContext::default();
+        c.cwd = Cow::Borrowed("/work");
+        c.os = Cow::Borrowed("darwin");
+        c.shell = Cow::Borrowed("zsh");
+        c.home_dir = Cow::Borrowed("/home/me");
+        c.date = Cow::Borrowed("2026-11-05");
+        c.model_name = Cow::Borrowed("claude-test");
+        c
     }
 
     fn parse(scene_json: &str, prompt_md: &str) -> Result<DeclaredScene, SceneLoadError> {
@@ -642,11 +624,11 @@ mod tests {
         assert!(!s.modules.permits("mcp"));
         assert!(!s.modules.permits("team"));
 
-        let r = s.reminder(&ReminderContext {
-            cwd: Cow::Borrowed("/work"),
-            git_status: Some(Cow::Borrowed("M a.rs")),
-            memory_summary: Some(Cow::Borrowed("likes tests")),
-        });
+        let r = s.reminder(
+            &ReminderContext::new("/work")
+                .git_status("M a.rs")
+                .memory_summary("likes tests"),
+        );
         let memory = r.find("likes tests").unwrap();
         let git = r.find("M a.rs").unwrap();
         assert!(memory < git, "reminders come in the order listed: {r}");
@@ -670,11 +652,11 @@ mod tests {
     #[test]
     fn no_reminders_unless_asked_for() {
         let s = parse(MINIMAL, "p").unwrap().spec;
-        let r = s.reminder(&ReminderContext {
-            cwd: Cow::Borrowed("/work"),
-            git_status: Some(Cow::Borrowed("M a.rs")),
-            memory_summary: Some(Cow::Borrowed("likes tests")),
-        });
+        let r = s.reminder(
+            &ReminderContext::new("/work")
+                .git_status("M a.rs")
+                .memory_summary("likes tests"),
+        );
         assert_eq!(r, "");
     }
 

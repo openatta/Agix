@@ -141,26 +141,16 @@ pub(crate) fn session_block(ctx: &ScenePromptContext) -> PromptBlock {
 #[cfg(test)]
 pub(crate) fn test_ctx() -> ScenePromptContext<'static> {
     use std::borrow::Cow;
-    ScenePromptContext {
-        cwd: Cow::Borrowed("/home/user/project"),
-        os: Cow::Borrowed("linux"),
-        shell: Cow::Borrowed("bash"),
-        home_dir: Cow::Borrowed("/home/user"),
-        date: Cow::Borrowed("2026-06-10"),
-        model_name: Cow::Borrowed("claude-sonnet-4-6"),
-        skills_text: None,
-        mcp_instructions: None,
-        session_memory: None,
-        is_git: true,
-        git_branch: Some(Cow::Borrowed("main")),
-        is_worktree: false,
-        git_status: None,
-        language: None,
-        scratchpad_dir: None,
-        output_style_content: None,
-        available_tools: None,
-        tool_results_ever_cleared: false,
-    }
+    let mut c = ScenePromptContext::default();
+    c.cwd = Cow::Borrowed("/home/user/project");
+    c.os = Cow::Borrowed("linux");
+    c.shell = Cow::Borrowed("bash");
+    c.home_dir = Cow::Borrowed("/home/user");
+    c.date = Cow::Borrowed("2026-06-10");
+    c.model_name = Cow::Borrowed("claude-sonnet-4-6");
+    c.is_git = true;
+    c.git_branch = Some(Cow::Borrowed("main"));
+    c
 }
 
 #[cfg(test)]

@@ -133,10 +133,7 @@ pub fn spec(interaction: Interaction) -> SceneSpec {
         .chain(user)
         .map(|s| s.to_string())
         .collect();
-    s.token_budget = TokenBudget {
-        compact_threshold: 150_000,
-        compact_keep_recent: 20,
-    };
+    s.token_budget = TokenBudget::new(150_000, 20);
     s.reminders = vec![Reminder::GitStatus];
     s
 }
@@ -653,11 +650,7 @@ mod tests {
 
     #[test]
     fn reminder_includes_git() {
-        let rctx = ReminderContext {
-            cwd: Cow::Borrowed("/tmp"),
-            git_status: Some(Cow::Borrowed("On branch main")),
-            memory_summary: None,
-        };
+        let rctx = ReminderContext::new("/tmp").git_status("On branch main");
         let r = code().reminder(&rctx);
         assert!(r.contains("On branch main"));
         assert!(r.contains("system-reminder"));
@@ -665,11 +658,7 @@ mod tests {
 
     #[test]
     fn reminder_leaves_the_memory_index_to_the_prompt() {
-        let rctx = ReminderContext {
-            cwd: Cow::Borrowed("/tmp"),
-            git_status: None,
-            memory_summary: Some(Cow::Borrowed("- [deploy](deploy.md)")),
-        };
+        let rctx = ReminderContext::new("/tmp").memory_summary("- [deploy](deploy.md)");
         assert_eq!(code().reminder(&rctx), "");
     }
 

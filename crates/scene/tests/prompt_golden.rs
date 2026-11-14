@@ -24,28 +24,23 @@ const DECLARATIVE_JSON: &str = r#"{
 const DECLARATIVE_PROMPT: &str = "You review code in {{cwd}} on {{os}}.";
 
 fn ctx() -> ScenePromptContext<'static> {
-    ScenePromptContext {
-        cwd: Cow::Borrowed("/work/project"),
-        os: Cow::Borrowed("linux"),
-        shell: Cow::Borrowed("bash"),
-        home_dir: Cow::Borrowed("/home/me"),
-        date: Cow::Borrowed("2026-11-10"),
-        model_name: Cow::Borrowed("claude-test"),
-        skills_text: Some(Cow::Borrowed("- skillify: turn a session into a skill")),
-        mcp_instructions: Some(Cow::Borrowed("## github\nUse the GitHub tools.")),
-        session_memory: None,
-        is_git: true,
-        git_branch: Some(Cow::Borrowed("main")),
-        is_worktree: false,
-        git_status: Some(Cow::Borrowed("M src/lib.rs")),
-        language: None,
-        scratchpad_dir: Some(Cow::Borrowed("/tmp/scratch")),
-        output_style_content: None,
-        available_tools: Some(Cow::Borrowed(
-            "Agent,Bash,Edit,Glob,Grep,Read,RunCode,Skill,TaskWait,TeamCreate,ToolSearch,Write",
-        )),
-        tool_results_ever_cleared: false,
-    }
+    let mut c = ScenePromptContext::default();
+    c.cwd = Cow::Borrowed("/work/project");
+    c.os = Cow::Borrowed("linux");
+    c.shell = Cow::Borrowed("bash");
+    c.home_dir = Cow::Borrowed("/home/me");
+    c.date = Cow::Borrowed("2026-11-10");
+    c.model_name = Cow::Borrowed("claude-test");
+    c.skills_text = Some(Cow::Borrowed("- skillify: turn a session into a skill"));
+    c.mcp_instructions = Some(Cow::Borrowed("## github\nUse the GitHub tools."));
+    c.is_git = true;
+    c.git_branch = Some(Cow::Borrowed("main"));
+    c.git_status = Some(Cow::Borrowed("M src/lib.rs"));
+    c.scratchpad_dir = Some(Cow::Borrowed("/tmp/scratch"));
+    c.available_tools = Some(Cow::Borrowed(
+        "Agent,Bash,Edit,Glob,Grep,Read,RunCode,Skill,TaskWait,TeamCreate,ToolSearch,Write",
+    ));
+    c
 }
 
 fn render(scene: &SceneSpec) -> serde_json::Value {

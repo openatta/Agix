@@ -24,10 +24,7 @@ pub fn spec() -> SceneSpec {
     let mut s = SceneSpec::new("mini", "Agix Mini", Arc::new(MiniPrompt));
     s.description = "最小编码场景 — 九个常驻工具与几行提示词".into();
     s.tools = ToolSurface::allowing(TOOLS);
-    s.token_budget = TokenBudget {
-        compact_threshold: 150_000,
-        compact_keep_recent: 10,
-    };
+    s.token_budget = TokenBudget::new(150_000, 10);
     s.reminders = vec![Reminder::GitStatus];
     s
 }
