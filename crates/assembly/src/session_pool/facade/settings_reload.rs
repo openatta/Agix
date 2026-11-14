@@ -135,9 +135,23 @@ impl SessionPool {
                 .iter()
                 .cloned(),
         );
+        let startup_scene = self.bindings.startup_scene().await;
+        let mut other_scenes: Vec<(String, PathBuf)> = self
+            .scenes
+            .served()
+            .iter()
+            .filter(|scene| scene.id != startup_scene)
+            .map(|scene| {
+                let dir = self.bindings.scene_root(&scene.id, &startup_scene);
+                (scene.id.clone(), dir)
+            })
+            .collect();
+        other_scenes.sort();
+        other_scenes.dedup();
         let mut report = crate::doctor::run_doctor(
             self.bindings.paths().as_ref(),
             self.scenes.default_id(),
+            &other_scenes,
             settings,
             self.directory.store().is_some(),
             self.plugins.status(),

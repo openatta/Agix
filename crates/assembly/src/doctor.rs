@@ -22,6 +22,9 @@ use std::sync::Arc;
 #[derive(serde::Serialize)]
 struct TierStatus {
     tier: &'static str,
+    /// For a scene tier, which scene's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scene: Option<String>,
     path: String,
     exists: bool,
     parses: bool,
@@ -39,6 +42,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
     if !path.exists() {
         return TierStatus {
             tier,
+            scene: None,
             path: path_str,
             exists: false,
             parses: true,
@@ -51,6 +55,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(value) => TierStatus {
                 tier,
+                scene: None,
                 path: path_str,
                 exists: true,
                 parses: true,
@@ -60,6 +65,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
             },
             Err(e) => TierStatus {
                 tier,
+                scene: None,
                 path: path_str,
                 exists: true,
                 parses: false,
@@ -70,6 +76,7 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
         },
         Err(e) => TierStatus {
             tier,
+            scene: None,
             path: path_str,
             exists: true,
             parses: false,
@@ -80,28 +87,36 @@ fn inspect_tier(tier: &'static str, dir: &Path) -> TierStatus {
     }
 }
 
-/// The three settings.json tiers: is each one there, does it parse, and
-/// does every value in it fit its setting?
+/// The settings.json tiers — global, each active scene's, project: is each
+/// one there, does it parse, and does every value in it fit its setting?
 pub struct SettingsTiersCheck {
     global: PathBuf,
-    scene: PathBuf,
+    scenes: Vec<(String, PathBuf)>,
     project: PathBuf,
     ignored: Vec<base::settings::IgnoredValue>,
 }
 
 impl SettingsTiersCheck {
-    /// `settings` are the ones loaded from these tiers; what their load left
-    /// out is reported against the tier it came from. The project tier is the
-    /// one of the project they were loaded for, else `paths`' project.
-    pub fn new(paths: &dyn DaemonPaths, settings: &LoadedSettings) -> Self {
+    /// `settings` are the ones loaded from these tiers for their scene; what
+    /// their load left out is reported against the tier it came from. The
+    /// project tier is the one of the project they were loaded for, else
+    /// `paths`' project. `other_scenes` are the tier directories of the other
+    /// active scenes, reported after it for whether they exist and parse.
+    pub fn new(
+        paths: &dyn DaemonPaths,
+        settings: &LoadedSettings,
+        other_scenes: &[(String, PathBuf)],
+    ) -> Self {
         let project = settings
             .paths
             .workspace
             .project_root()
             .map_or_else(|| paths.project_root(), Path::to_path_buf);
+        let mut scenes = vec![(settings.paths.scope.clone(), paths.config_root())];
+        scenes.extend(other_scenes.iter().cloned());
         Self {
             global: paths.global_root(),
-            scene: paths.config_root(),
+            scenes,
             project: project.join(".agix"),
             ignored: settings.ignored.clone(),
         }
@@ -114,12 +129,19 @@ impl HealthCheck for SettingsTiersCheck {
     }
 
     fn check(&self) -> CheckResult {
-        let mut tiers = vec![
-            inspect_tier("global", &self.global),
-            inspect_tier("scene", &self.scene),
-            inspect_tier("project", &self.project),
-        ];
-        for tier in &mut tiers {
+        let mut tiers = vec![inspect_tier("global", &self.global)];
+        for (scene, dir) in &self.scenes {
+            tiers.push(TierStatus {
+                scene: Some(scene.clone()),
+                ..inspect_tier("scene", dir)
+            });
+        }
+        tiers.push(inspect_tier("project", &self.project));
+        let loaded_scene = self.scenes.first().map(|(scene, _)| scene.as_str());
+        for tier in tiers
+            .iter_mut()
+            .filter(|t| t.scene.is_none() || t.scene.as_deref() == loaded_scene)
+        {
             tier.ignored_values = self
                 .ignored
                 .iter()
@@ -127,16 +149,20 @@ impl HealthCheck for SettingsTiersCheck {
                 .cloned()
                 .collect();
         }
-        let broken: Vec<&str> = tiers.iter().filter(|t| !t.parses).map(|t| t.tier).collect();
+        let label = |t: &TierStatus| match &t.scene {
+            Some(scene) => format!("scene ({scene})"),
+            None => t.tier.to_string(),
+        };
+        let broken: Vec<String> = tiers.iter().filter(|t| !t.parses).map(label).collect();
         let misfits: Vec<String> = self
             .ignored
             .iter()
             .map(|v| format!("{} ({})", v.tier, v.key))
             .collect();
-        let with_unknown: Vec<&str> = tiers
+        let with_unknown: Vec<String> = tiers
             .iter()
             .filter(|t| !t.unknown_keys.is_empty())
-            .map(|t| t.tier)
+            .map(label)
             .collect();
         let details = serde_json::to_value(&tiers).unwrap_or(serde_json::Value::Null);
 
@@ -422,13 +448,18 @@ impl HealthCheck for ProjectTrustCheck {
 pub fn run_doctor(
     paths: &dyn DaemonPaths,
     scene_id: &str,
+    other_scenes: &[(String, PathBuf)],
     settings: Arc<LoadedSettings>,
     history_store_wired: bool,
     plugin_status: crate::plugins::PluginStatus,
     extra: &HealthChecks,
 ) -> DoctorReport {
     let mut checks = HealthChecks::new()
-        .with(Arc::new(SettingsTiersCheck::new(paths, &settings)))
+        .with(Arc::new(SettingsTiersCheck::new(
+            paths,
+            &settings,
+            other_scenes,
+        )))
         .with(Arc::new(ProviderRoutingCheck::new(settings.clone())))
         .with(Arc::new(HooksCheck::new(settings.clone())))
         .with(Arc::new(MemoryCheck::new(settings.clone())))
@@ -566,6 +597,7 @@ mod tests {
         let report = super::run_doctor(
             paths,
             scene_id,
+            &[],
             settings,
             history_store_wired,
             plugin_status,
@@ -964,6 +996,7 @@ mod documented_shape_tests {
         serde_json::to_value(run_doctor(
             &StaticDaemonPaths::new(dir.to_path_buf()),
             "code",
+            &[],
             Arc::new(settings),
             true,
             crate::plugins::PluginStatus::Enabled,

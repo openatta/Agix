@@ -804,7 +804,7 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
       { "name":"sandbox.strict_profile",    "status":"…",  "summary":"…" } ] },
   "settings_tiers": [
     { "tier":"global",  "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
-    { "tier":"scene",   "path":"…/settings.json",       "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
+    { "tier":"scene",   "scene":"code", "path":"…/settings.json", "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] },
     { "tier":"project", "path":"…/.agix/settings.json", "exists":false, "parses":true, "error":null, "unknown_keys":[], "ignored_values":[] } ],
   "providers": { "ok":true, "default_provider":null, "configured":[], "task_models":[],
                  "warnings":[], "error":null },
@@ -826,6 +826,10 @@ tab 不能拖住 turn,也不能拖住其他正在看的 tab。被取消的一方
 `memory` 数的是会话用的记忆(全局与项目两个目录合起来)。到了上限(200 条)是 `degraded`:
 轮末的记忆抽取不再添新的,已有的一条不删,要腾地方得有人删掉一些。`memory_enabled` 为
 `false` 时是 `ok`,`details.enabled` 为 `false`。
+
+`settings_tiers` 依次是全局层、每个激活场景的场景层(`scene` 是哪个场景;daemon 启动的场景在前,
+其余按 id 排)、项目层。场景层里只有启动场景那一项带 `ignored_values`,其余的只报存在、能否解析与
+`unknown_keys`;哪一层读不了时 `summary` 写作 `scene (<id>)`。
 
 `settings_tiers[].unknown_keys` 是那份文件里没有任何设置读的顶层键(拼错的、别的工具的),
 加载时被忽略,daemon 日志里各有一条 warn。有这样的键时 `settings.tiers` 仍是 `ok`,
@@ -992,7 +996,7 @@ SIGINT / SIGTERM 走同一条路。
       "requires_project":true, "supports_team":true } ] }
 ```
 
-`sessions` 是当前内存里挂在这个场景下的会话数。**数组顺序不稳定**(底层是
+`sessions` 是当前内存里在这个场景下跑的会话数,有没有落盘的 transcript 都算。**数组顺序不稳定**(底层是
 HashMap),客户端要按 `scene` 找条目,不要按下标。
 
 #### `scene.activate`

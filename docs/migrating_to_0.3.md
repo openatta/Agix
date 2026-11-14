@@ -2357,6 +2357,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`session.tasks` 列出活着的常驻团队成员**:`kind: "member"`,`task_id` 为 `member-…`(即
   `SESSION_BUSY` 的 `running_task_ids` 与 `session.stopTask` 认的那个 id),`status` 为 `idle` 或
   `running`,`detail` 为 `{team, member}`。`kind` 与 `status` 各多一个取值,按枚举穷尽处理的客户端要跟着改。
+- **`daemon.doctor` 的 `settings.tiers` 列出每个激活场景的场景层**:场景层的条目多一个 `scene` 键,
+  激活了几个场景就有几项(以前只有启动场景那一项);别的场景的 `settings.json` 读不了时这项检查同样是
+  `degraded`。**`scene.list` 的 `sessions`** 数内存里的会话按各自所在的场景,没有 transcript 的会话
+  (`Transcripts::Nowhere`、还没落盘的)也算,以前不算。
 - **`mcp.status` 列出项目自己声明、因用了项目不能用的东西而没启动的 server**(`"grant": "enterprise"`、
   `client_secret_env`、`private_key_jwt` 的 `key_env` / `key_file`),`state` 为 `denied`,`error` 说明原因。
   以前这样的 server 在 `mcp.status` 里不出现。
@@ -2715,6 +2719,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `WatcherId`;`PromptAnswer::prompt_type()` 改为 `kind() -> AskKind`。`SessionEvent::Task(TaskEvent)`、
   `GoalChanged(Option<GoalView>)` 带类型。没调 `start_scheduler` 的池也转发轮间、任务与目标事件。
   `SessionWatcher::deliver` 不在会话的锁下调用:仍不能阻塞,但可以回调池(以前回调会卡死)。
+- **`doctor::run_doctor` 多一个参数 `other_scenes: &[(String, PathBuf)]`**(在 `scene_id` 之后),
+  `SettingsTiersCheck::new` 同样多它:启动场景之外各激活场景的 id 与场景层目录。
 - **池级通知是 `DaemonEvent`。** `SessionPool::emit_event(DaemonEvent)`、`subscribe_events() ->
   broadcast::Receiver<DaemonEvent>`;新增 `EvictReason`(多 `EngineFault`)、`CloseReason`、`ImportSource`。
 - **`run_turn(TurnRequest, Option<Arc<dyn SessionWatcher>>) -> Result<TurnOutcome, PoolError>`。**

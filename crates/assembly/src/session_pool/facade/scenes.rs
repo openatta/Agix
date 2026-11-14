@@ -10,17 +10,14 @@ impl SessionPool {
     }
 
     /// `scene.list` — every scene this binary registers, each flagged with
-    /// whether it's currently active. `sessions` counts *in-memory* live
-    /// sessions recorded under that scene (an approximation — matches what
-    /// `session.list`'s own active/inactive split already accepts; a
-    /// disk-wide count would need scanning every session's `Meta`, not
-    /// worth it just for this summary view).
+    /// whether it's currently active. `sessions` counts the sessions in
+    /// memory by the scene each runs in, whether or not it has a transcript;
+    /// a disk-wide count would need scanning every session's `Meta`, not
+    /// worth it just for this summary view.
     pub async fn list_scenes(&self) -> Vec<api::SceneSummary> {
         let mut counts: HashMap<String, usize> = HashMap::new();
-        for sid in self.live.ids().await {
-            if let Some(scene) = self.directory.facts_of(&sid).await.scene {
-                *counts.entry(scene).or_insert(0) += 1;
-            }
+        for scene in self.live.map_all(|live| live.core.scene().id.clone()).await {
+            *counts.entry(scene).or_insert(0) += 1;
         }
         self.scenes.list(&counts)
     }

@@ -973,6 +973,56 @@ async fn a_reload_keeps_the_max_tokens_fallback() {
     assert_eq!(settings["model"]["max_tokens"], 2000, "{settings}");
 }
 
+/// `scene.list` counts the sessions in memory, whether or not they have a
+/// transcript.
+#[tokio::test]
+async fn scene_list_counts_a_session_that_has_no_transcript() {
+    let daemon = Daemon::start(json!({}), json!({})).await;
+    daemon.ok("session.create", json!({})).await;
+    let listed = daemon.ok("scene.list", json!({})).await;
+    let code = listed["scenes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["scene"] == "code")
+        .cloned()
+        .unwrap();
+    assert_eq!(code["sessions"], 1, "{listed}");
+}
+
+/// `daemon.doctor` reads the settings tier of every active scene, not only
+/// the one the daemon started with.
+#[tokio::test]
+async fn doctor_reports_the_settings_tier_of_every_active_scene() {
+    let daemon = Daemon::start(json!({}), json!({})).await;
+    let harnix = daemon.home.join("scenes/harnix");
+    std::fs::create_dir_all(&harnix).unwrap();
+    std::fs::write(harnix.join("settings.json"), "{ not json").unwrap();
+    daemon
+        .ok("scene.activate", json!({"scene": "harnix"}))
+        .await;
+
+    let check = daemon.doctor_check("settings.tiers").await;
+    let scenes: Vec<serde_json::Value> = check["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["tier"] == "scene")
+        .cloned()
+        .collect();
+    assert_eq!(scenes.len(), 2, "{check}");
+    assert_eq!(scenes[0]["scene"], "code", "{check}");
+    assert_eq!(scenes[0]["parses"], true, "{check}");
+    assert_eq!(scenes[1]["scene"], "harnix", "{check}");
+    assert_eq!(
+        scenes[1]["path"],
+        json!(harnix.join("settings.json").display().to_string()),
+        "{check}"
+    );
+    assert_eq!(scenes[1]["parses"], false, "{check}");
+    assert_eq!(check["status"], "degraded", "{check}");
+}
+
 /// With no prompt timeout given at assembly, the settings' own
 /// `execution.permission_prompt_timeout_secs` is the one sessions run under.
 #[tokio::test]

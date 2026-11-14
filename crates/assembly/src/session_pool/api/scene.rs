@@ -8,7 +8,7 @@ pub struct SceneSummary {
     pub name: String,
     pub description: String,
     pub active: bool,
-    /// Sessions in memory recorded under this scene.
+    /// Sessions in memory running in this scene.
     pub sessions: usize,
     pub requires_project: bool,
     pub supports_team: bool,
