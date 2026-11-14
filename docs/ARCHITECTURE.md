@@ -461,7 +461,8 @@ recorder 不落盘:同一进程里的重建共用同一个 recorder,回放接着
   `TurnComplete` 的 context、首轮命名写的是票据上的 core,`session.close` 之后同一个 id 恢复出来的是
   另一个 core,旧回合碰不到它;代际号只用来判断还回回合槽时是不是同一代引擎。
 - **事件出口** `SessionHub` 每个会话一个(叶子锁:订阅者、待答提问、最近活动时间),事件当场同步交给
-  每个 `SessionWatcher::deliver`,不去锁池。池不拼 JSON 帧也不认识 `rpc::Client`:会话事件是领域类型
+  每个 `SessionWatcher::deliver`,不去锁池;交的时候不持着 hub 的锁,投递由另一把锁串行,`deliver`
+  里回调池或同一个 hub 不会卡住。池不拼 JSON 帧也不认识 `rpc::Client`:会话事件是领域类型
   `SessionFrame`,线上的 §7 帧由 `rpc/events.rs` 的 `SessionEventPayload::project` 投影,
   `server/watch.rs` 为连接实现 `SessionWatcher`。投递是同步入队,所以 `turn_complete`
   一定排在同一连接上 `run_turn` 的响应之前。定时任务与目标轮的 `run_turn` 不带发起订阅者

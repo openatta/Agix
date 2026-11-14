@@ -2711,6 +2711,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `Arc<dyn SessionWatcher>`、返回 `Subscribed`(待答提问是 `PendingAsk`);`unsubscribe_session` 收
   `WatcherId`;`PromptAnswer::prompt_type()` 改为 `kind() -> AskKind`。`SessionEvent::Task(TaskEvent)`、
   `GoalChanged(Option<GoalView>)` 带类型。没调 `start_scheduler` 的池也转发轮间、任务与目标事件。
+  `SessionWatcher::deliver` 不在会话的锁下调用:仍不能阻塞,但可以回调池(以前回调会卡死)。
 - **池级通知是 `DaemonEvent`。** `SessionPool::emit_event(DaemonEvent)`、`subscribe_events() ->
   broadcast::Receiver<DaemonEvent>`;新增 `EvictReason`(多 `EngineFault`)、`CloseReason`、`ImportSource`。
 - **`run_turn(TurnRequest, Option<Arc<dyn SessionWatcher>>) -> Result<TurnOutcome, PoolError>`。**

@@ -1,17 +1,22 @@
 //! 每个会话自己的事件出口 `SessionHub`：谁在看它、它还在等谁回答、它最近一次
 //! 有动静是什么时候。事件经它同步交给订阅者，不经过池级的 `sessions` 锁。
 //!
-//! 锁序里它是叶子：持着它不 `.await`、不去拿别的锁；`SessionWatcher::deliver`
-//! 只做非阻塞的入队。
+//! 锁序里它是叶子：持着它不 `.await`、不去拿别的锁。帧在锁下定好收件人、排进
+//! 发件队列，放开锁再交给 `SessionWatcher::deliver`。投递由另一把锁串行：同一时刻
+//! 只有一个线程在投递，发帧的调用返回时它的帧已经交出去了，每个订阅者收到的帧仍是
+//! 发出的先后。订阅者在 `deliver` 里回调池或这个 hub 不会卡住：它在同一线程上再发
+//! 的帧排在队尾，由正在投递的这一层接着交出去。
 
 use crate::session_pool::api::{AskKind, PendingAsk, SessionFrame, SessionWatcher, WatcherId};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 pub(in crate::session_pool) struct SessionHub {
     inner: Mutex<Inner>,
+    delivery: Mutex<()>,
     epoch: Instant,
     active_ms: AtomicU64,
 }
@@ -20,12 +25,20 @@ pub(in crate::session_pool) struct SessionHub {
 struct Inner {
     watchers: Vec<Arc<dyn SessionWatcher>>,
     pending: HashMap<String, PendingAsk>,
+    outbox: VecDeque<Outgoing>,
+    delivering_on: Option<ThreadId>,
+}
+
+struct Outgoing {
+    frame: SessionFrame,
+    to: Vec<Arc<dyn SessionWatcher>>,
 }
 
 impl SessionHub {
     pub(in crate::session_pool) fn active_at(at: Instant) -> Self {
         Self {
             inner: Mutex::new(Inner::default()),
+            delivery: Mutex::new(()),
             epoch: at,
             active_ms: AtomicU64::new(0),
         }
@@ -59,7 +72,7 @@ impl SessionHub {
         except: Option<WatcherId>,
     ) {
         self.touch();
-        deliver(&mut self.lock(), frame, except);
+        self.send(self.lock(), frame, except);
     }
 
     /// Recorded before it goes out, under the same lock: a watcher that
@@ -82,7 +95,7 @@ impl SessionHub {
                 frame: frame.clone(),
             },
         );
-        deliver(&mut inner, &frame, None);
+        self.send(inner, &frame, None);
     }
 
     /// The ask `prompt_id` is no longer open: forgotten and announced under
@@ -92,7 +105,7 @@ impl SessionHub {
         self.touch();
         let mut inner = self.lock();
         inner.pending.remove(prompt_id);
-        deliver(&mut inner, frame, None);
+        self.send(inner, frame, None);
     }
 
     /// Start watching, and what is still being asked as of that moment.
@@ -138,12 +151,69 @@ impl SessionHub {
 
     /// Back to watching nothing and asking nothing.
     pub(in crate::session_pool) fn clear(&self) {
-        *self.lock() = Inner::default();
+        let mut inner = self.lock();
+        inner.watchers.clear();
+        inner.pending.clear();
+    }
+
+    /// Queue `frame` for whoever watches now and deliver the queue with the
+    /// state lock released. Returns once `frame` has been handed over, except
+    /// when called from inside a `deliver` on this hub: the delivery under way
+    /// hands it over next. A watcher that cannot take a frame is dropped and
+    /// gets no more.
+    fn send(
+        &self,
+        mut inner: MutexGuard<'_, Inner>,
+        frame: &SessionFrame,
+        except: Option<WatcherId>,
+    ) {
+        let to = inner
+            .watchers
+            .iter()
+            .filter(|w| Some(w.id()) != except)
+            .cloned()
+            .collect();
+        inner.outbox.push_back(Outgoing {
+            frame: frame.clone(),
+            to,
+        });
+        let this_thread = std::thread::current().id();
+        if inner.delivering_on == Some(this_thread) {
+            return;
+        }
+        drop(inner);
+        let _delivery = self.delivery.lock().unwrap_or_else(|e| e.into_inner());
+        let _unwind = StillDelivering(self);
+        let mut dropped: Vec<WatcherId> = Vec::new();
+        loop {
+            let mut inner = self.lock();
+            if !dropped.is_empty() {
+                inner.watchers.retain(|w| !dropped.contains(&w.id()));
+            }
+            let Some(Outgoing { frame, to }) = inner.outbox.pop_front() else {
+                inner.delivering_on = None;
+                return;
+            };
+            inner.delivering_on = Some(this_thread);
+            drop(inner);
+            for watcher in to {
+                let id = watcher.id();
+                if !dropped.contains(&id) && !watcher.deliver(&frame) {
+                    dropped.push(id);
+                }
+            }
+        }
     }
 }
 
-fn deliver(inner: &mut Inner, frame: &SessionFrame, except: Option<WatcherId>) {
-    inner
-        .watchers
-        .retain(|w| Some(w.id()) == except || w.deliver(frame));
+/// A watcher that panics in `deliver` must not leave the hub believing a
+/// delivery is still under way, which would hold every later frame back.
+struct StillDelivering<'a>(&'a SessionHub);
+
+impl Drop for StillDelivering<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.lock().delivering_on = None;
+        }
+    }
 }

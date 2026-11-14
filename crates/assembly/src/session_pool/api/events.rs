@@ -10,8 +10,9 @@ pub struct WatcherId(pub u64);
 /// Something watching sessions — a client connection, an embedder's sink.
 pub trait SessionWatcher: Send + Sync {
     fn id(&self) -> WatcherId;
-    /// Called with the session's lock held: must not block. `false` drops
-    /// this watcher's subscription to the session.
+    /// Runs on whichever thread published the frame, with no lock of the
+    /// session held: must not block, and may call back into the pool.
+    /// `false` drops this watcher's subscription to the session.
     fn deliver(&self, frame: &SessionFrame) -> bool;
 }
 
