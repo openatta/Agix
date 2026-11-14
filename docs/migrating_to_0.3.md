@@ -1998,8 +1998,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   原文;`git log:*`、带 `?` 的 URL 同理。写进 `settings.local.json` 的条目多一个 `"match": "exact"`;
   旧版本写下的、不带 `match` 的条目照旧按模式读。deny / ask 规则、宿主策略的 deny 照样排在它前面。
   skill 的 `allowed-tools`(本轮授权)仍按模式匹配。
-- **会话不记授权时不再提供"总是允许"。** 宿主配 `PermissionSet::without_grants` 的会话,提示帧的
-  选项里没有 `permit_always`;万一仍答了,只放行这一次并告警,不写盘。
+- **会话不记授权时不再提供"总是允许"。** 宿主配 `PermissionSet::without_grants` 的会话,`Elicitation`
+  收到的选项里没有 `permit_always`;万一仍答了,只放行这一次并告警,不写盘。
 - **子 Agent 的询问由子会话自己的 runtime 发出。** 帧仍在父会话上发、`message` 仍带
   `[sub-agent <id>]` 前缀与 `task_id`;不同的是 `PermissionRequested`、`Notification` hook 在子会话上
   触发,超时与取消按子会话的设置与取消令牌,拒绝文本与父会话自己的问题一致(`Denied by permission: …`)。
@@ -2241,7 +2241,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   "overloaded: overloaded (HTTP 529)";`engine_stopped`、`engine_unreachable` 的 message 也加了前缀。
   要改的:按 `data.retryable` / `retry_after_ms` 决定是否、何时重发,不再解析 message。
 - **`error` 帧的 `code` 不再是 `turn_error`**,改为同一组 `kind` 值,并多了 `retryable`、
-  `retry_after_ms`。旁观的订阅者收到的与发起者 `data` 一致。
+  `retry_after_ms`。旁观的订阅者收到的 `error` 帧带同样的 `kind`、`retryable`、`retry_after_ms`(没有 `side_effects`)。
 - **`kind` 多了 `persist_failed`**(`setPrompt`、换厂商的 `setModel` 重建前补写日志失败,可重试)与
   `internal`(回合驱动 panic)。
 - **处理请求时 panic 回 `INTERNAL_ERROR`(-32603)**,message 为 "internal error while serving
@@ -2293,7 +2293,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`session.close` 等进行中的重建或恢复结束后再关**,不再被随后完成的重建复活。会话被关闭后用同一
   id 恢复,旧回合迟到的收尾不再写进新会话(`context`、自动命名)。
 - **`scene.deactivate` 与建会话不再竞争。** 停用按内存里会话的场景判断并在会话表锁下完成;正在建的
-  会话插表时场景已停用则以 `SCENE_NOT_ACTIVE` 失败。挡路的会话 id 按字典序列出。
+  会话插表时场景已停用则以 `SCENE_NOT_FOUND`(-32004)失败(池内是 `PoolError::SceneNotActive`)。挡路的会话 id 按字典序列出。
 - **`session.startAgent`** 的 `permission_rules` 只取其中的 deny;会话没有装配子 Agent 时报
   `INVALID_REQUEST`(协议文档 §9)。参数读不进来时 message 由 "session.startAgent: <serde 错误>" 改为
   统一的 "invalid params for session.startAgent: …"。
@@ -2329,7 +2329,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 | `assembly::session_pool::{RpcError, ResumeError, SetModelError}`(含 0.3.7 的 `SetModelError::Busy`、0.3.11 的 `ResumeError::Busy`) | `PoolError`,见"会话池" |
 | `assembly::rpc_schema::{rpc_json_schema, session_event_kinds, daemon_event_kinds, method_names, error_codes}` | `assembly::server::schema::{rpc_json_schema, session_event_kinds, daemon_event_kinds}`;方法表是 `assembly::server::methods()`,错误码是 `rpc::ErrorCode::ALL` |
 | `assembly::rpc::StreamFrame` | `rpc::DaemonEventFrame`(params 为池的 `DaemonEvent` 或 server 的 `ServerDaemonEvent`) |
-| `assembly::rpc::{SessionOptions, RecorderOptions, ClockOptions, TelemetryOptions}` | `assembly::session_pool::api::options::*`;宽松读法(`read_options` 等)留在 `rpc` |
+| `assembly::rpc::{SessionOptions, RecorderOptions, ClockOptions, TelemetryOptions}` | `assembly::session_pool::api::{SessionOptions, RecorderOptions, ClockOptions, TelemetryOptions}`;宽松读法(`read_options` 等)留在 `rpc` |
 | `rpc::{PROMPT_TYPE_PERMISSION, PROMPT_TYPE_QUESTION}` | `session_pool::api::AskKind` |
 | `assembly::export::ArchiveFormat` | `assembly::session_pool::api::ArchiveFormat` |
 | `assembly::AllowAllPermission`、`daemon::AllowAllPermission` | 删除,见"权限" |
@@ -2424,7 +2424,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `managed: bool`;新增 `Basis`、`Answerable`、`Reason`、`Stage`、`ExecProfile`、`Obligations`、
   `Approval` 与 `PermissionOutcome::{deny, prompt, is_permit}`。
 - **宿主自己的策略是 `Policy` 里的一层规则,不再替换引擎的判定。** `Assembly.permission:
-  Option<PermissionSet>` 改为 `Assembly.host_policy: Option<Arc<dyn PermissionPolicy>>`:它的 deny 在
+  Option<Arc<dyn Permission>>` 改为 `Assembly.host_policy: Option<Arc<dyn PermissionPolicy>>`:它的 deny 在
   任何模式下生效(bypass 下也是),Prompt 是一条 ask 规则,Permit 只等于一条 allow 规则(来源
   `RuleSource::Host`,序列化为 `"host"`),凭据、deny / ask 规则、模式硬拒照样在它前面。所以宿主的
   "全部放行"不再跳过凭据检查与计划模式,在 `default` 模式下则会放行原本要问的调用。
@@ -2465,7 +2465,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   (兑现不了的逐条明细),不再是 `Copy`。用结构体字面量构造
   `SandboxPolicy`、`ProcessSpec` 的要补上(或用 `ProcessSpec::new` / `..Default::default()`)。
   `tools::bash::confine_shell` 返回 `ProcessSpec`(不再是 `Result`);新增
-  `tools::bash::{confinement_report, strict_sandbox_policy}`。
+  `tools::bash::{confinement_report, strict_sandbox_policy}`。`tools::security::check_write_permission`
+  删除,改用 `tools::security::{write_facts, read_facts}`。
 - **`FileSystem` 新增带缺省实现的 `rename`**(缺省返回失败、什么都不动;本机与内存实现已有),转发型
   替身要转发它。`tools::nested_repos::quarantine(ctx, git_dir) -> Result<PathBuf, ExecError>` 经会话的文件
   系统改名;新增 `tools::nested_repos::settle_unasked`(没人可问时按许可移开危险仓库)。`skills` 改为正常
@@ -2570,7 +2571,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   输出 token 目标、已调用的 skill 挪进 `SessionState` 的 `SessionLedger`(`Agent.token_budget`、
   `PromptContext.invoked_skills` 删除);模型选择记在 `SessionState::model_choice` /
   `set_model_choice`,引擎每轮开头读。`snapshot_file`、`restore_snapshot`、`restore_to_turn`、
-  `bump_turn`、`current_turn`、`carry_session_state_from`、`GoalSlot::carry_arming_from`、
+  `bump_turn`、`current_turn`、`carry_session_state_from`,连同类型 `FileSnapshot`、`FileSnapshotRegistry`、`GoalSlot::carry_arming_from`、
   `restore_goal`、`restore_durable_state` 删除,后两者改用 `restore_from_log(goal, durable)`;
   `DurableState` 新增 `activated_tools`。
 - **任务与目标类型化。** `RunningTask::info() -> TaskInfo`、`SessionState::task_infos()`、
@@ -2580,7 +2581,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **宿主可以持有会话状态跨引擎。** `Builder::session_state(state, generation)` 让引擎在宿主给的状态上跑,
   `build` 不挂载,宿主在上一代引擎停下后调 `Agent::attach_session`;`Builder::steering(handle)` 让插话
   队列跨引擎(`SteerHandle` 实现 `Default`)。`Agent::resume_session` 拆成 `load_transcript(id)` 与
-  `restore_state_from_log()`。`Builder::run_slots(..)` 给 `RunCode` 的空位(`runtime::default_run_slots()`
+  `restore_state_from_log()`。`Builder::run_slots(..)` 给 `RunCode` 的空位(`runtime::agent::default_run_slots()`
   每次给一份新的;`ptc::default_run_slots()` 同样不再是进程级共享的一份)。
 - **输入与命令。** `InputMessage::Steer` 去掉 `ack`,要知道是否被收下用 `SteerHandle::offer`;
   `InputMessage::Context` 的 `reply` 是 `oneshot::Sender<Result<ContextAnswer, ContextError>>`
@@ -2616,8 +2617,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 - **池的错误是 `PoolError`。** `session_pool::{RpcError, ResumeError, SetModelError}` 删除;池方法一律返回
   `Result<_, PoolError>`,错误码、message 与 `data` 由 `server/errors.rs` 一处决定。忙是
-  `PoolError::SessionBusy(Busy)`(`Busy::{turn_running, rebuilding, background_tasks, previous_engine}`,
-  `BusyReason` 是 `#[non_exhaustive]`,多了 `ContextOperation`);引擎失败是
+  `PoolError::SessionBusy(Busy)`(`BusyReason` 是 `#[non_exhaustive]`,多了 `ContextOperation`);引擎失败是
   `PoolError::Engine(TurnFailure)`,`EngineStopped`、`EngineUnreachable` 并入它。
 - **池方法返回领域类型,不再是 `serde_json::Value`。** 生命周期(`create_session` → `SessionCreated`、
   `session_detail` → `SessionDetail`、`resume_session` → `ResumeReport`、`delete_session`、`fork_session`、
@@ -2640,11 +2640,13 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`run_turn(TurnRequest, Option<Arc<dyn SessionWatcher>>) -> Result<TurnOutcome, PoolError>`。**
   `TurnRequest` 的发起方是 `Initiator { Client, Schedule, Goal }`;`TurnOutcome` 是 `#[non_exhaustive]`。
   回合由池 spawn 的驱动跑,调用方的 future 被丢下也不影响这一轮。
-- **池的构造。** `SessionPool::new` 是 `pub(crate)`,池只经 `assembly::assemble::pool` 与 `Assembly`
+- **池的构造。** `SessionPool::builder` 是 `pub(crate)`,池只经 `assembly::assemble::pool` 与 `Assembly`
   得到;池上的 `with_*` 方法删除(crate 外本来就调不到)。新增 `session_pool::MCP_COMPILED`;没编进 MCP
   的构建里 `mcp_status`、`add_mcp_server` 等方法也存在(返回空或内部错误)。`SessionPool::run_slots()`
   读出池的 `RunCode` 空位。`start_janitor` / `start_config_watcher` 只持池的弱引用、返回 `JoinHandle`,
   最后一个外部持有者放手后池被释放,两个循环随之退出。
+- **`SessionPool::check_scene` 与 `session_pool::SceneCheck` 删除。** 场景不符由 `resume_session` /
+  `fork_session` 报 `PoolError::SceneMismatch`。
 - **`Assembly::permission_prompt_timeout` 改为 `Option<Duration>`**,`None` 由会话设置决定。
 - **默认项目只有一个根:`Assembly.cwd`。** 不传 `project_root` 的会话(和显式传这个目录的)以前在
   `Assembly.cwd` 里干活,项目层设置、`settings.local.json`、`config.setProvider` / `config.reload`

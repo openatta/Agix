@@ -92,7 +92,7 @@
 //! them off. The daemon refuses its own descendants on the unix socket as
 //! well, which is what holds where no backend runs.
 //!
-//! **The whole file is behind the `sandbox` feature, off by default.** What it
+//! **Behind the `sandbox` feature: off here, on in assembly and the daemon.** What it
 //! constrains is the commands the *model* runs, which is defence in depth on a
 //! machine whose owner is sitting at it and a boundary only where the agent
 //! acts for someone else. Without the feature the backends are not compiled,

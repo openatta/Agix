@@ -56,9 +56,8 @@ fn unenforced(enforcement: base::interface::exec::Enforcement) -> bool {
 fn unenforceable(tool: &str) -> String {
     format!(
         "Refused: {tool} would run under a sandbox policy this build on this platform ({}) \
-         cannot enforce all of, and `sandbox.require_enforcement` is on. The backend is behind \
-         a compile-time feature that is off by default: rebuild with `--features sandbox`, and \
-         on Linux install bubblewrap. Or set `sandbox.require_enforcement: false` to accept what \
+         cannot enforce all of, and `sandbox.require_enforcement` is on. On Linux install \
+         bubblewrap; a build without the `sandbox` feature has no backend at all. Or set `sandbox.require_enforcement: false` to accept what \
          this build can do, or `sandbox.dangerously_disable_sandbox: true` to stop asking for a \
          sandbox.",
         std::env::consts::OS

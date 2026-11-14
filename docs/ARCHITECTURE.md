@@ -6,7 +6,7 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
 把引擎包成 JSON-RPC 服务,同时也是集成测试的载体。
 
 这份文档讲**组件、概念、和它们之间的约束**。总览与快速开始见仓库根目录的 `README.md`
-(中文版 `README.zh-CN.md`)。想知道怎么用请看:
+(中文版 `docs/README.zh-CN.md`)。想知道怎么用请看:
 
 - `daemon_rpc_protocol.md` —— 通过 RPC 使用它
 - `extension_points.md` —— 能扩展什么(总揽)
@@ -56,7 +56,7 @@ Agix 是一个**库**,不是一个应用。它提供的是"跑一个 agent 会�
   `model`、`hooks`、`permissions`、`mcp`、`plugin`、`assembly`、`daemon`,清单与
   各自的理由在 `MAY_USE_PLATFORM`;`scene`、`history`、`session`、`compaction`、
   `telemetry`、`ptc`、`team`、`skills`、`script-host`、`agents` 只经契约,测试里用到的除外。
-  子 Agent 要的执行层是父会话的那一套,经 `AgentTool::with_exec` 传下去,自己不碰本机。
+  子 Agent 要的执行层是父会话的那一套,随 `HostContracts` 经 `Builder::inherit` 交给子会话,自己不碰本机。
 - 内核与模块不能带模块命名的 feature,也不转发模块 feature;模块开关只在 `assembly`
   里以 `dep:<模块>` 的形式出现。`wasmtime` 一类的运行时任何成员都不依赖。
 - 唯一装配点由可见性保证:`SessionPool::builder` 是 `pub(crate)`,`assembly` 之外建不出第二个池,

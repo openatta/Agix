@@ -382,7 +382,7 @@ glob 清单),项目自己写的忽略。三态:
 | `default` | 未显式放行的工具调用都发 `prompt` 询问(**默认**) |
 | `bubble` | 把询问上抛给父 Agent —— 程序专用,写进 settings.json 会被退回 `default` |
 | `acceptEdits` | 自动放行项目内的文件写入与只读调用,其余询问。"项目内"指会话的工作目录、`sandbox.additional_directories`,读还包括 `sandbox.read_directories`(`sandbox.read_anywhere` 时不限):项目外的写入照样询问,`Read` / `Glob` / `Grep` 读项目外、只读的 `Bash` / `Monitor` 命令参数指向项目外(含 `~`、`$VAR` 这类展开不了的写法)也照样询问,与 `default` 一致(`.ssh` 一类的凭据仍被拒)。项目内的 `.git`、`.agix`、`.claude`、`.agents/skills` 下的写入也照样询问(改它们等于改 agent 自己的规则)。只读的 `Bash` / `Monitor` 命令只要跑 `git`,就还要求每一次 `git` 找到的仓库就是会话目录自己所在的那个(不能是裸仓库;`cd` 进项目自带的嵌套 `.git`、或 `cd` 到去向不明的目录再跑 `git`,都要询问),因为仓库配置(`core.fsmonitor`、`diff.external` 一类)会让 git 自己去启动程序,会话自己的仓库是用户的,项目里带来的是别人写的。`WebFetch` / `Ping` 只放行 `sandbox.allowed_domains` 列出的主机;MCP 工具一律询问,server 自报的 `readOnlyHint` 不算(有 allow 规则的照常放行) |
-| `bypassPermissions` | 不询问、不看用户各层(设置文件、`options.permission_rules`)的规则 —— 那些规则里的 `deny`、`/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行。凭据(`.ssh` / `.aws` / `.gnupg`、状态目录里的设置与 token 等,§6.1)任何模式都拒,部署方 managed 层的 `deny` / `ask` 照样生效;只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
+| `bypassPermissions` | 不询问、不看用户各层(设置文件、`options.permission_rules`)的规则 —— 那些规则里的 `deny`、`/etc/passwd` 一类路径、`rm -rf /` 一类命令都放行。凭据(`.ssh` / `.aws` / `.gnupg`、状态目录里的设置与 token 等,§6.1)任何模式都拒,部署方 managed 层的 `deny` / `ask`、宿主策略的 `deny` 照样生效;`PreToolUse` hook 的拦截、委派带来的 deny 照样拒;`sandbox.require_enforcement` 打开而沙箱兜不住的命令照样拒(没装 `bwrap` 的 Linux 上即每条 `Bash`);除此之外只有不合法的输入(没读过就改、超出上限、会被读错的路径)被拒,`Bash` 仍在 OS 沙箱里 |
 
 `auto`、`yolo` 是 `bypassPermissions` 的另外两种写法:在 settings.json、`options.permission_mode`、
 agent 类型的 frontmatter 里都收,解析出来就是 `bypassPermissions`,夹紧、存进会话日志、
@@ -483,7 +483,7 @@ bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会�
 
 `permit_always` 放行的是这一次调用的原文:`touch *.rs` 不会放行 `touch other.rs`。`local` 写下的是
 `{"tool": "Bash(touch *.rs)", "action": "allow", "match": "exact"}`,`match: "exact"` 让之后的会话
-同样按原文比对。会话的权限不记放行时(嵌入方给了 `without_grants`),提问里不提供 `permit_always`。
+同样按原文比对。会话的权限不记放行时(嵌入方给了 `without_grants`),嵌入方的 `Elicitation` 收到的选项里没有 `permit_always`。
 
 未信任的项目(§3.6)不读它 `settings.local.json` 里的 allow 规则,`local` 写下的规则因此
 不会被之后的会话读回;要它持久,先信任这个项目。无项目会话(`project_root: null`)没有
@@ -511,6 +511,9 @@ bypass(`disable_bypass_permissions_mode`)时,请求 `bypassPermissions` 的会�
 | `pause_turn` | 模型请求暂停。引擎把这条回复原样发回去让它接着写,所以一轮通常不以它结束;只有恢复策略不续(如 `NeverRecover`)时才会 |
 | `cancelled` | 这一轮被 `session.interrupt` 取消;已经推过的那段回复留在 transcript 里 |
 | `max_turns_reached` | 触到本轮 API 调用次数上限(引擎自己发的,不来自 API) |
+| `stopped_by_hook` | hook 截停了这一轮(`PostToolUse` / `Stop` hook 要求不再继续),理由在 `turn_complete.message` |
+| `context_exceeded` | 上下文超限且压缩也救不回来 |
+| `budget_exceeded` | 触到花费上限 |
 | `unknown` | 反序列化兜底,遇到未知取值时的落点 |
 
 ---
@@ -2932,7 +2935,7 @@ id 也不出现在别的帧里。程序自己的进度(`log()` 的输出、调�
 | -32010 | PROJECT_NOT_FOUND | `project_root` 不存在或不是目录 |
 | -32012 | PROJECT_REQUIRED | 场景 `requires_project` 为真,但传了 `project_root: null` |
 | -32014 | SIDECHAIN_TERMINAL | 侧链会话已终态收尾,不可 resume |
-| -32015 | SESSION_BUSY | 会话正忙,`data.reason` 说它在忙什么(§9.1):已有 turn 在跑且 `on_busy` 是 `reject`(§5.3),正在原地重建,有后台任务挡着需要重建的调用,或要把它调回内存时它上一个引擎还没停下(`session.resume`) |
+| -32015 | SESSION_BUSY | 会话正忙,`data.reason` 说它在忙什么(§9.1):已有 turn 在跑且 `on_busy` 是 `reject`(§5.3),正在原地重建,有后台任务挡着需要重建的调用,正在做上下文操作,或要把它调回内存时它上一个引擎还没停下(`session.resume`) |
 | -32016 | PLUGINS_DISABLED | 插件子系统不可用 —— 被编译裁掉或被策略关闭 |
 | -32017 | TOO_MANY_IN_FLIGHT | 这条连接同时在途的请求已达上限(§5.2) |
 | -32018 | TASK_NOT_FOUND | `session.taskOutput`:引擎不知道这个任务(没跑过、结束得早已被忘掉,或引擎不在内存里) |
