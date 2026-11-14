@@ -65,8 +65,8 @@ fn    crates/permissions/src/invocation.rs                        resolve_comman
 fn    crates/permissions/src/path_safety.rs                       check_write_for                        146
 fn    crates/permissions/src/shell.rs                             lex                                    119
 fn    crates/platform/src/process.rs                              LocalProcess::spawn                    82
-fn    crates/platform/src/sandbox.rs                              build_macos_profile                    155
-fn    crates/platform/src/sandbox.rs                              linux_wrap                             128
+fn    crates/platform/src/sandbox.rs                              build_macos_profile                    157
+fn    crates/platform/src/sandbox.rs                              linux_wrap                             129
 fn    crates/plugin/src/manifest.rs                               validate                               95
 fn    crates/ptc/src/lib.rs                                       dispatch_calls                         93
 fn    crates/ptc/src/lib.rs                                       spawn_watchers                         87
