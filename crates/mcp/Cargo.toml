@@ -41,3 +41,6 @@ scene = { workspace = true }
 hooks = { workspace = true }
 tempfile = { workspace = true }
 mcp-oauth-mock = { workspace = true }
+
+[lints.clippy]
+field_reassign_with_default = "allow"

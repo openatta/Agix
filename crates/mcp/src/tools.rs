@@ -115,13 +115,7 @@ impl Tool for ListMcpResourcesTool {
                     .join("\n")
             )
         };
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(body),
-            is_error: false,
-            structured_content: Some(json!({"resources": all})),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(body).with_structured(json!({"resources": all})))
     }
 }
 
@@ -199,16 +193,10 @@ impl Tool for ReadMcpResourceTool {
             .collect();
 
         if candidates.is_empty() {
-            return Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text(format!(
-                    "No matching MCP server (filter: {:?})",
-                    input.server
-                )),
-                is_error: true,
-                structured_content: None,
-                mcp_meta: None,
-                new_messages: None,
-            });
+            return Ok(ToolResult::error_text(format!(
+                "No matching MCP server (filter: {:?})",
+                input.server
+            )));
         }
 
         let mut last_err = None;
@@ -228,30 +216,18 @@ impl Tool for ReadMcpResourceTool {
                     } else {
                         text
                     };
-                    return Ok(ToolResult {
-                        content: base::tool::ToolResultContent::Text(body),
-                        is_error: false,
-                        structured_content: Some(
-                            json!({"server": client.server_name(), "uri": input.uri}),
-                        ),
-                        mcp_meta: None,
-                        new_messages: None,
-                    });
+                    return Ok(ToolResult::text(body).with_structured(
+                        json!({"server": client.server_name(), "uri": input.uri}),
+                    ));
                 }
                 Err(e) => last_err = Some(format!("{}", e)),
             }
         }
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(format!(
-                "could not read resource '{}': {}",
-                input.uri,
-                last_err.unwrap_or_else(|| "no client succeeded".into())
-            )),
-            is_error: true,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::error_text(format!(
+            "could not read resource '{}': {}",
+            input.uri,
+            last_err.unwrap_or_else(|| "no client succeeded".into())
+        )))
     }
 }
 
@@ -370,13 +346,7 @@ impl Tool for DispatchMcpTool {
                     .join("\n")
             )
         };
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(body),
-            is_error: false,
-            structured_content: Some(json!({"tools": all})),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(body).with_structured(json!({"tools": all})))
     }
 }
 

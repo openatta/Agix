@@ -16,7 +16,6 @@ use base::{
     tool::ToolOrigin,
     tool::ToolResult,
     tool::ToolResultBlock,
-    tool::ToolResultContent,
     tool::ToolSpec,
     tool::ValidationResult,
     tool::{PromptContext, ToolContext},
@@ -281,13 +280,7 @@ fn into_tool_result(result: McpCallResult) -> ToolResult {
         return r;
     }
     let blocks = into_tool_result_blocks(result.content);
-    ToolResult {
-        content: ToolResultContent::Blocks(blocks),
-        is_error,
-        structured_content: None,
-        mcp_meta: None,
-        new_messages: None,
-    }
+    ToolResult::blocks(blocks).with_error(is_error)
 }
 
 /// Scan an MCP tool result for an elicitation URL (`mcp://` or `elicitation://`
