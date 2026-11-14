@@ -13,7 +13,6 @@ file  crates/mcp/src/connect.rs                            -                    
 file  crates/mcp/src/manager.rs                            -                                        1273
 file  crates/mcp/src/oauth/mod.rs                          -                                        1104
 file  crates/platform/src/sandbox.rs                       -                                        1498
-file  crates/ptc/src/lib.rs                                -                                        973
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
 file  crates/telemetry/src/recorder/mod.rs                 -                                        958
@@ -43,8 +42,6 @@ fn    crates/permissions/src/path_safety.rs                check_write_for      
 fn    crates/permissions/src/shell.rs                      lex                                      119
 fn    crates/platform/src/sandbox.rs                       build_macos_profile                      161
 fn    crates/platform/src/sandbox.rs                       linux_wrap                               162
-fn    crates/ptc/src/lib.rs                                RunCodeTool::call                        101
-fn    crates/ptc/src/lib.rs                                execute                                  181
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/team/src/coordinator.rs                       DefaultCoordinator::orchestrate          474

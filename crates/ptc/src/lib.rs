@@ -9,6 +9,7 @@
 //! `docs/ptc.md`.
 
 mod engine;
+mod run;
 
 use async_trait::async_trait;
 use base::context::{RunningStatus, RunningTask, SessionState, TaskType};
@@ -19,6 +20,7 @@ use base::tool::{
     PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolRegistry, ToolResult, ToolSpec,
 };
 use engine::{CallRequest, Host, Run, ScriptEnd};
+use run::execute;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -268,6 +270,62 @@ fn first_sentence(text: &str, max_chars: usize) -> String {
     }
 }
 
+impl RunCodeTool {
+    fn start_background(
+        &self,
+        input: RunCodeInput,
+        dispatch: Arc<dyn ToolDispatch>,
+        ctx: &ToolContext,
+        description: String,
+    ) -> ToolResult {
+        let task_id = format!("code-{}", base::id::Id::new());
+        // The session ending cuts the run off; a TaskStop on its own
+        // token, a child of that, still gets the grace period.
+        let cancel = ctx.cancel.child_token();
+        let task = ctx.session.register_task(
+            task_id.clone(),
+            TaskType::Code,
+            cancel.child_token(),
+            serde_json::json!({
+                "description": description,
+                "background": true,
+                "tool_use_id": ctx.tool_use_id,
+            }),
+        );
+        let (session, limits, slots) = (
+            ctx.session.clone(),
+            self.limits.clone(),
+            self.slots_for(ctx),
+        );
+        tokio::spawn(async move {
+            let outcome = execute(
+                input,
+                dispatch,
+                &task,
+                &session,
+                &limits,
+                slots.as_ref(),
+                cancel,
+                true,
+            )
+            .await;
+            session.post_notice(Some(task.task_id.clone()), notification(&task, &outcome));
+            session.finish_task(
+                &task.task_id,
+                if outcome.is_error {
+                    RunningStatus::Failed(first_line(&outcome.text))
+                } else {
+                    RunningStatus::Completed
+                },
+            );
+        });
+        ToolResult::text(format!(
+            "Started {task_id} in the background. Its result arrives as a notification; \
+             TaskOutput reads it, TaskStop stops it, TaskMessage reaches messages()."
+        ))
+    }
+}
+
 #[async_trait]
 impl Tool for RunCodeTool {
     fn name(&self) -> &str {
@@ -314,51 +372,7 @@ impl Tool for RunCodeTool {
             .unwrap_or_else(|| "program".to_string());
 
         if input.background {
-            let task_id = format!("code-{}", base::id::Id::new());
-            // The session ending cuts the run off; a TaskStop on its own
-            // token, a child of that, still gets the grace period.
-            let cancel = ctx.cancel.child_token();
-            let task = ctx.session.register_task(
-                task_id.clone(),
-                TaskType::Code,
-                cancel.child_token(),
-                serde_json::json!({
-                    "description": description,
-                    "background": true,
-                    "tool_use_id": ctx.tool_use_id,
-                }),
-            );
-            let (session, limits, slots) = (
-                ctx.session.clone(),
-                self.limits.clone(),
-                self.slots_for(&ctx),
-            );
-            tokio::spawn(async move {
-                let outcome = execute(
-                    input,
-                    dispatch,
-                    &task,
-                    &session,
-                    &limits,
-                    slots.as_ref(),
-                    cancel,
-                    true,
-                )
-                .await;
-                session.post_notice(Some(task.task_id.clone()), notification(&task, &outcome));
-                session.finish_task(
-                    &task.task_id,
-                    if outcome.is_error {
-                        RunningStatus::Failed(first_line(&outcome.text))
-                    } else {
-                        RunningStatus::Completed
-                    },
-                );
-            });
-            return Ok(ToolResult::text(format!(
-                "Started {task_id} in the background. Its result arrives as a notification; \
-                 TaskOutput reads it, TaskStop stops it, TaskMessage reaches messages()."
-            )));
+            return Ok(self.start_background(input, dispatch, &ctx, description));
         }
 
         let scope = base::context::TaskScope::new(
@@ -516,189 +530,6 @@ struct CallLog {
     entries: Mutex<Vec<String>>,
     failed: AtomicU32,
     made: AtomicU32,
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn execute(
-    input: RunCodeInput,
-    dispatch: Arc<dyn ToolDispatch>,
-    task: &Arc<RunningTask>,
-    session: &Arc<SessionState>,
-    limits: &Limits,
-    run_slots: Option<&Arc<Semaphore>>,
-    turn_cancel: CancellationToken,
-    background: bool,
-) -> Outcome {
-    let not_started = |why: &str| Outcome {
-        text: format!("The program did not start: {why}."),
-        value: None,
-        is_error: true,
-    };
-    let _slot = match run_slots {
-        None => None,
-        Some(slots) => tokio::select! {
-            slot = slots.clone().acquire_owned() => match slot {
-                Ok(slot) => Some(slot),
-                Err(_) => return not_started("no program can run in this process any more"),
-            },
-            _ = turn_cancel.cancelled() => return not_started("the turn was interrupted"),
-            _ = task.cancel.cancelled() => return not_started("it was stopped"),
-        },
-    };
-    let started = engine::now_ms();
-    let deadline = Arc::new(AtomicU64::new(started + limits.time.as_millis() as u64));
-    let hard_stop = CancellationToken::new();
-    let stop_requested = Arc::new(AtomicBool::new(false));
-    let cause = Arc::new(StopCause::default());
-    let messages = Arc::new(Mutex::new(Vec::new()));
-    let _ = task.inbox.set(Arc::new(CodeInbox(messages.clone())));
-    let calls_log = Arc::new(CallLog {
-        entries: Mutex::new(Vec::new()),
-        failed: AtomicU32::new(0),
-        made: AtomicU32::new(0),
-    });
-
-    let watchers = CancellationToken::new();
-    spawn_watchers(
-        task,
-        &turn_cancel,
-        &deadline,
-        &hard_stop,
-        &stop_requested,
-        &cause,
-        &watchers,
-        limits,
-    );
-
-    let (calls_tx, calls_rx) = mpsc::unbounded_channel();
-    let log_task = task.clone();
-    let program_log = Arc::new(Mutex::new(ProgramLog::new(limits.log_chars)));
-    let (log_buffer, notify_log) = (program_log.clone(), program_log.clone());
-    let notices_left = Arc::new(AtomicU32::new(limits.notices));
-    let (notify_task, notify_session) = (task.clone(), session.clone());
-    let host = Host {
-        calls: calls_tx,
-        log: Arc::new(move |text: String| {
-            log_task.append_output(&format!("{text}\n"));
-            log_buffer
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(&text);
-        }),
-        notify: Arc::new(move |text: String| {
-            notify_task.append_output(&format!("[notify] {text}\n"));
-            if !background {
-                notify_log
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(&text);
-            } else if take_one(&notices_left) {
-                notify_session.post_notice(
-                    None,
-                    format!(
-                        "<task-update>\n<task-id>{}</task-id>\n{text}\n</task-update>",
-                        notify_task.task_id
-                    ),
-                );
-            }
-        }),
-        stop_requested: stop_requested.clone(),
-        messages,
-        args: input
-            .args
-            .as_ref()
-            .map(Value::to_string)
-            .unwrap_or_else(|| "{}".into()),
-    };
-
-    let dispatcher = tokio::spawn(dispatch_calls(
-        calls_rx,
-        dispatch,
-        task.clone(),
-        limits.clone(),
-        deadline.clone(),
-        started,
-        hard_stop.clone(),
-        cause.clone(),
-        calls_log.clone(),
-    ));
-
-    let ended = engine::spawn(Run {
-        code: input.code,
-        host,
-        memory_limit: limits.memory_bytes,
-        deadline_ms: deadline.clone(),
-        hard_stop: hard_stop.clone(),
-    })
-    .await
-    .unwrap_or(ScriptEnd::Stopped);
-    hard_stop.cancel();
-    watchers.cancel();
-    let mut dispatcher = dispatcher;
-    if tokio::time::timeout(limits.stop_grace, &mut dispatcher)
-        .await
-        .is_err()
-    {
-        // Dropping the dispatcher's JoinSet aborts every sub-call still in it.
-        dispatcher.abort();
-        task.append_output(&format!(
-            "(sub-calls still running {}s after the program ended were abandoned)\n",
-            limits.stop_grace.as_secs()
-        ));
-    }
-    task.report_progress();
-
-    let made = calls_log.made.load(Ordering::SeqCst);
-    let failed = calls_log.failed.load(Ordering::SeqCst);
-    let summary = format!(
-        "({made} tool calls, {failed} failed){}",
-        program_log.lock().unwrap_or_else(|e| e.into_inner()).tail()
-    );
-    let outcome = match ended {
-        ScriptEnd::Returned(json) => {
-            let value = serde_json::from_str::<Value>(&json).ok();
-            let (text, cut) = truncate(&json, limits.result_chars);
-            let note = if cut {
-                format!(" — result cut at {} characters", limits.result_chars)
-            } else {
-                String::new()
-            };
-            Outcome {
-                text: format!("{text}\n{summary}{note}"),
-                value: if cut { None } else { value },
-                is_error: false,
-            }
-        }
-        ScriptEnd::Threw(message) => Outcome {
-            text: format!(
-                "The program threw:\n{}\n{summary}{}\n\
-                 The full guide to what a program can use: ToolSearch select:RunCode.",
-                cut_note(&message, limits.result_chars),
-                completed_calls(&calls_log)
-            ),
-            value: None,
-            is_error: true,
-        },
-        ScriptEnd::Stopped => {
-            let why = cause.get().unwrap_or_else(|| {
-                if engine::now_ms() >= deadline.load(Ordering::Relaxed) {
-                    "it ran out of time".to_string()
-                } else {
-                    "it was stopped".to_string()
-                }
-            });
-            Outcome {
-                text: format!(
-                    "The program did not finish: {why}.\n{summary}{}",
-                    completed_calls(&calls_log)
-                ),
-                value: None,
-                is_error: true,
-            }
-        }
-    };
-    task.append_output(&format!("{}\n", outcome.text));
-    outcome
 }
 
 #[allow(clippy::too_many_arguments)]
