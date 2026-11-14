@@ -313,7 +313,7 @@ impl Tool for TeamMemorySaveTool {
         "TeamMemorySave"
     }
     fn description(&self) -> &str {
-        ""
+        "Save a fact to this team's shared memory, where every member sees it; saving under an existing name replaces that entry."
     }
 
     fn input_schema(&self, _: PathStyle) -> Value {
@@ -417,19 +417,12 @@ impl Tool for TeamMemoryReadTool {
         "TeamMemoryRead"
     }
     fn description(&self) -> &str {
-        ""
+        "Read one entry of this team's shared memory by the name the memory index lists."
     }
 
     fn input_schema(&self, _: PathStyle) -> Value {
         serde_json::to_value(schemars::schema_for!(TeamMemoryReadInput))
             .expect("schemars output is valid JSON")
-    }
-
-    async fn guide(&self, _: &PromptContext) -> Option<String> {
-        Some(
-            "Read one entry of this team's shared memory by the name the memory index lists."
-                .to_string(),
-        )
     }
 
     fn spec(&self) -> ToolSpec {
@@ -890,5 +883,18 @@ mod tests {
         )
         .await;
         states_a_contained_call(&TeamMemoryReadTool::new(store), serde_json::json!({})).await;
+    }
+
+    #[test]
+    fn every_team_memory_tool_describes_itself() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(TeamMemoryStore::with_dir(tmp.path().join("memory")));
+        let tools: [Box<dyn Tool>; 2] = [
+            Box::new(TeamMemorySaveTool::new(store.clone(), "t/a")),
+            Box::new(TeamMemoryReadTool::new(store)),
+        ];
+        for tool in tools {
+            assert!(!tool.description().is_empty(), "{}", tool.name());
+        }
     }
 }

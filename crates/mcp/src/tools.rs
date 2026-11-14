@@ -41,7 +41,7 @@ impl Tool for ListMcpResourcesTool {
         "ListMcpResources"
     }
     fn description(&self) -> &str {
-        ""
+        "List the resources (files, URIs, schemas) that connected MCP servers expose; pass `server` to list one server's."
     }
 
     fn spec(&self) -> ToolSpec {
@@ -145,7 +145,7 @@ impl Tool for ReadMcpResourceTool {
         "ReadMcpResource"
     }
     fn description(&self) -> &str {
-        ""
+        "Read one MCP resource by its URI, as ListMcpResources lists it."
     }
 
     fn spec(&self) -> ToolSpec {
@@ -275,7 +275,7 @@ impl Tool for DispatchMcpTool {
         "MCP"
     }
     fn description(&self) -> &str {
-        ""
+        "List the tools each connected MCP server provides, under the `mcp__<server>__<tool>` names they are called by."
     }
 
     fn spec(&self) -> ToolSpec {
@@ -557,6 +557,18 @@ mod tests {
             let facts = tool.permission_facts(&input, &ctx).await;
             assert_eq!(facts.reach, base::interface::permission::Reach::Operator);
             states_a_contained_call(tool.as_ref(), input).await;
+        }
+    }
+
+    #[test]
+    fn every_mcp_feature_tool_describes_itself() {
+        let tools: [Box<dyn Tool>; 3] = [
+            Box::new(ListMcpResourcesTool::new(vec![])),
+            Box::new(ReadMcpResourceTool::new(vec![])),
+            Box::new(DispatchMcpTool::new(vec![])),
+        ];
+        for tool in tools {
+            assert!(!tool.description().is_empty(), "{}", tool.name());
         }
     }
 }

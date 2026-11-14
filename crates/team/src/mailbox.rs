@@ -294,7 +294,7 @@ impl base::tool::Tool for SendMessageTool {
         "SendMessage"
     }
     fn description(&self) -> &str {
-        ""
+        "Send a message to a teammate by label. Your plain text output is not visible to other agents; this is how you reach them."
     }
 
     fn spec(&self) -> ToolSpec {
@@ -397,7 +397,7 @@ impl base::tool::Tool for ReadMailTool {
         "ReadMail"
     }
     fn description(&self) -> &str {
-        ""
+        "Read and remove the messages other agents in your team sent you, oldest first."
     }
 
     fn spec(&self) -> ToolSpec {
@@ -482,7 +482,7 @@ impl base::tool::Tool for ListPeersTool {
         "ListPeers"
     }
     fn description(&self) -> &str {
-        ""
+        "List the labels of the teammates you can send messages to."
     }
 
     fn spec(&self) -> ToolSpec {
@@ -888,5 +888,18 @@ mod tests {
         .await;
         states_a_contained_call(&ReadMailTool::new(mb.clone(), "a"), serde_json::json!({})).await;
         states_a_contained_call(&ListPeersTool::new(mb), serde_json::json!({})).await;
+    }
+
+    #[test]
+    fn every_mailbox_tool_describes_itself() {
+        let mb = Arc::new(MailboxStore::new(vec!["a".into()]));
+        let tools: [Box<dyn base::tool::Tool>; 3] = [
+            Box::new(SendMessageTool::new(mb.clone(), "a")),
+            Box::new(ReadMailTool::new(mb.clone(), "a")),
+            Box::new(ListPeersTool::new(mb)),
+        ];
+        for tool in tools {
+            assert!(!tool.description().is_empty(), "{}", tool.name());
+        }
     }
 }
