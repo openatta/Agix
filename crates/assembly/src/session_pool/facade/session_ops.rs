@@ -224,6 +224,11 @@ impl SessionPool {
         let spec = self
             .live
             .with_session_lock(session_id, async {
+                // A close or delete queued ahead of this on the lock has
+                // taken the session since the check above.
+                if !self.live.contains(session_id).await {
+                    return Err(PoolError::session_not_found(session_id));
+                }
                 let current_provider = self.specs.get(session_id).and_then(|spec| spec.provider());
                 let binding = self.binding_for(project.as_deref(), &scene).await;
                 binding
@@ -330,6 +335,10 @@ impl SessionPool {
                     Ok(held) => {
                         self.rebuild_on_changed_spec(session_id, held, change)
                             .await?
+                    }
+                    Err(Rebuild::NotLive) if !self.session_exists(session_id).await => {
+                        self.specs.forget(session_id);
+                        return Err(Rebuild::NotLive);
                     }
                     Err(Rebuild::NotLive) => {
                         let spec = self.specs.update(session_id, change).1;

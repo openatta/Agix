@@ -267,3 +267,121 @@ async fn a_failed_rebuild_keeps_a_model_chosen_while_it_was_on_its_way() {
         "and not the prompt of the rebuild that failed"
     );
 }
+
+/// Until `sid`'s session lock has `n` callers holding or waiting on it.
+async fn until_the_session_lock_has(pool: &SessionPool, sid: &str, n: usize) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        // The table's own entry is one of the references counted.
+        while pool.live.session_lock_holders(sid).await < n + 1 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the callers reached the session lock");
+}
+
+/// Queue a `session.delete` of `sid` and then `change` behind a holder of its
+/// session lock, let the holder go, and return what `change` came to.
+async fn change_queued_behind_a_delete<T: Send + 'static>(
+    pool: &Arc<SessionPool>,
+    sid: &str,
+    change: impl FnOnce(Arc<SessionPool>, String) -> tokio::task::JoinHandle<Result<T, PoolError>>,
+) -> Result<T, PoolError> {
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let holder = {
+        let (pool, sid) = (pool.clone(), sid.to_string());
+        tokio::spawn(async move {
+            pool.live
+                .with_session_lock(&sid, async {
+                    let _ = released.await;
+                })
+                .await
+        })
+    };
+    until_the_session_lock_has(pool, sid, 1).await;
+    let deleted = {
+        let (pool, sid) = (pool.clone(), sid.to_string());
+        tokio::spawn(async move { pool.delete_session(&sid, false).await })
+    };
+    until_the_session_lock_has(pool, sid, 2).await;
+    let changed = change(pool.clone(), sid.to_string());
+    until_the_session_lock_has(pool, sid, 3).await;
+    release.send(()).unwrap();
+    holder.await.unwrap();
+    deleted.await.unwrap().expect("the session was deleted");
+    changed.await.unwrap()
+}
+
+fn assert_the_session_stays_deleted(
+    pool: &SessionPool,
+    sid: &str,
+    entries: Result<Vec<history::entry::EnvelopedEntry>, PoolError>,
+) {
+    assert!(
+        matches!(entries, Err(PoolError::SessionNotFound { .. })),
+        "a deleted session's log is not written back: {entries:?}"
+    );
+    assert!(
+        pool.specs.get(sid).is_none(),
+        "nor is its spec kept in memory"
+    );
+}
+
+/// `setModel` that waited on the session lock behind `session.delete` finds
+/// the session gone: it is refused, and writes no spec that would bring back
+/// a log for the deleted id.
+#[tokio::test]
+async fn a_model_chosen_behind_a_delete_finds_the_session_gone() {
+    let store: Arc<dyn history::store::HistoryStore> =
+        Arc::new(history::store::InMemoryHistoryStore::new());
+    let (pool, _dir) = test_pool_with_store(Some(store)).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+
+    let chosen = change_queued_behind_a_delete(&pool, &sid, |pool, sid| {
+        tokio::spawn(async move {
+            pool.set_session_model(&sid, Some("claude-opus-4-6"), None)
+                .await
+        })
+    })
+    .await;
+
+    assert!(
+        matches!(chosen, Err(PoolError::SessionNotFound { .. })),
+        "expected the session to be gone, got {chosen:?}"
+    );
+    let entries = pool.directory.load_entries(&sid).await;
+    assert_the_session_stays_deleted(&pool, &sid, entries);
+}
+
+/// The same for `setPrompt` on a session that is not in memory.
+#[tokio::test]
+async fn a_prompt_chosen_behind_a_delete_finds_the_session_gone() {
+    let store: Arc<dyn history::store::HistoryStore> =
+        Arc::new(history::store::InMemoryHistoryStore::new());
+    let (pool, _dir) = test_pool_with_store(Some(store)).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+    pool.shutdown_session(&sid).await.expect("closed");
+
+    let chosen = change_queued_behind_a_delete(&pool, &sid, |pool, sid| {
+        tokio::spawn(async move {
+            pool.set_session_prompt(&sid, |p| p.append = Some("Answer briefly.".into()))
+                .await
+        })
+    })
+    .await;
+
+    assert!(
+        matches!(chosen, Err(PoolError::SessionNotFound { .. })),
+        "expected the session to be gone, got {chosen:?}"
+    );
+    let entries = pool.directory.load_entries(&sid).await;
+    assert_the_session_stays_deleted(&pool, &sid, entries);
+}
