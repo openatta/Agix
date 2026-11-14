@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use guards::{allow, par_flat_map, ratchet, scan, ws, View};
 
-const FN_MAX: usize = 100;
+const FN_MAX: usize = 80;
 const FILE_MAX: usize = 800;
 const DATA: &str = "ratchet/size.txt";
 

@@ -196,21 +196,21 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
 每一步上"选哪条路"的判断是决策,**开放**。
 
 ```
-收用户消息
+收用户消息(open_turn)
   └─ UserPromptSubmit hook · 斜杠命令 · 记忆召回 · 先放进空闲期间到的通知(§3.8)
-循环:
-  ├─ 0. 落盘        上一步写进内存的消息先落盘
+循环(step):
+  ├─ 0. 落盘        checkpoint:上一步写进内存的消息先落盘
   ├─ 1. 停止判断    TurnPolicy::before_model_call   ← 这一轮还该不该继续
-  ├─ 2. 压缩        Compactor::should_compact       ← 该不该压、压什么
-  ├─ 3. 硬顶        ContextBudget::hard_cap
+  ├─ 2. 压缩        compact_if_needed · Compactor::should_compact  ← 该不该压、压什么
+  ├─ 3. 硬顶        over_hard_cap · ContextBudget::hard_cap
   ├─ 4. 装配提示词  PromptAssembler / 注册的块 / 装配钩子
-  ├─ 5. 调模型      Model + ModelInterceptor + BackoffPolicy
+  ├─ 5. 调模型      call_model · Model + ModelInterceptor + BackoffPolicy
   │     ├─ 边流边跑工具 PermissionPolicy → ToolMiddleware → Tool → ToolResultTransformer
   │     └─ 出错 → RecoveryPolicy:换模型 / 压缩重试 / 原样重发 / 失败
   ├─ 6. 复查        TurnPolicy::after_model_call    ← 这一轮还走不走下一步
-  ├─ 7. 记账        BudgetPolicy::on_usage          ← 继续 / 警告 / 耗尽
-  ├─ 8. 有工具调用:送达这一轮运行期间收到的用户消息与通知,再来一轮
-  └─ 9. 没有:RecoveryPolicy::on_early_stop       ← 抬 max_tokens 重发 / pause_turn 发回去续上
+  ├─ 7. 记账        account_call · charge_budget · BudgetPolicy::on_usage  ← 继续 / 警告 / 耗尽
+  ├─ 8. 有工具调用(between_tool_steps):送达这一轮运行期间收到的用户消息与通知,再来一轮
+  └─ 9. 没有(reply_stopped):RecoveryPolicy::on_early_stop       ← 抬 max_tokens 重发 / pause_turn 发回去续上
          Stop hook(结束这一轮 / 拦下:把理由交给模型再来一轮);
          BudgetPolicy::on_output_target 决定是否续写
          (收尾时还有没送达的用户消息,再调一次模型回答它们)
