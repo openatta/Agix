@@ -111,6 +111,7 @@ pub struct RunningTask {
     progress_sent: std::sync::Mutex<u64>,
     /// The session's task event channel, once the task is registered.
     events: std::sync::OnceLock<tokio::sync::broadcast::Sender<TaskEvent>>,
+    end_claimed: std::sync::atomic::AtomicBool,
 }
 
 /// Delivers a message to a running task's work.
@@ -157,7 +158,17 @@ impl RunningTask {
             waiting_for: std::sync::Mutex::new(Vec::new()),
             progress_sent: std::sync::Mutex::new(0),
             events: std::sync::OnceLock::new(),
+            end_claimed: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Whether the caller is the one to end this task and tell its parent
+    /// how: `true` to the first of its lease and whoever stops it with a
+    /// notice, `false` to the other.
+    pub(crate) fn claim_end(&self) -> bool {
+        !self
+            .end_claimed
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
     }
 
     /// Where this task's `task_*` events go; set once, by the session that

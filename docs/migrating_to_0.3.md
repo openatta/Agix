@@ -2278,7 +2278,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `session.stopTask`(`member-…` id)停成员时,与 `TaskStop` 停那个任务一样立即结束,不再等那一轮
   返回;以前模型流不理会取消时,这条任务一直是 `running`,`session.setPrompt` 一直报
   `SESSION_BUSY{background_tasks}` 并列出它。它正在跑和排着队的每条消息,父模型照旧各收到一条
-  `<status>stopped</status>` 的 task-notification。不理会取消的那一轮可能在后台继续跑、继续执行
+  `<status>stopped</status>` 的 task-notification,停下与那一轮自己收尾撞在一起时也只一条。不理会取消的那一轮可能在后台继续跑、继续执行
   工具,而 `session.tasks` 和忙检查都已经不算它了。
 - **`turn_complete` 之后、回合槽归还之前到达的 `session.run_turn` 等槽**,不再按 `on_busy` 报忙或插话。
   `session.setPrompt`、`session.setModel`、`session.inspectContext` / `dropMessages` / `editMessage`
@@ -2611,7 +2611,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **assembly。** `StartAgentParams::into_request` 返回 `DelegateRequest`;`SessionPool::start_agent` 收
   `DelegateRequest`,`mode` 不是 `Host` 时回 `InvalidRequest`。
 - **`base::context::session::TaskLease`**:构造即登记任务,`conclude(status, notice)` 收尾,未收尾就被丢下的记为
-  `Cancelled`。委派任务一律登记在父会话的 `SessionState` 上。
+  `Cancelled`。委派任务一律登记在父会话的 `SessionState` 上。从租约之外停任务、要给父会话发通知的用
+  `SessionState::stop_with_notice(task, notice)`:它与租约的 `conclude` / 丢弃谁先到谁结束任务、发通知,
+  后到的什么都不做,一个任务只一条通知。
 
 #### hooks
 

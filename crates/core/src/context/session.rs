@@ -690,6 +690,24 @@ impl SessionState {
         true
     }
 
+    /// Stop `task` from outside its lease, posting `notice` as its end's
+    /// notice before it ends. Of this and the lease, whichever comes first
+    /// ends the task and notifies; the other leaves both to it.
+    pub fn stop_with_notice(
+        &self,
+        task: &RunningTask,
+        notice: impl FnOnce(&RunningTask) -> String,
+    ) {
+        task.cancel.cancel();
+        if !task.claim_end() {
+            return;
+        }
+        if !task.has_ended() {
+            self.post_notice(Some(task.task_id.clone()), notice(task));
+        }
+        self.cancel_running_task(&task.task_id);
+    }
+
     /// Builder：设初始权限模式（CLI 启动时从 settings/CLI 注入）。
     pub fn with_permission_mode(self, mode: PermissionMode) -> Self {
         self.set_permission_mode(mode);
@@ -1084,6 +1102,9 @@ impl TaskLease {
     /// already stopped from outside gets none, since whoever stopped it knows.
     pub fn conclude(mut self, status: RunningStatus, notice: Option<String>) {
         self.concluded = true;
+        if !self.task.claim_end() {
+            return;
+        }
         if let Some(notice) = notice.filter(|_| !self.task.has_ended()) {
             self.session
                 .post_notice(Some(self.task.task_id.clone()), notice);
@@ -1094,7 +1115,7 @@ impl TaskLease {
 
 impl Drop for TaskLease {
     fn drop(&mut self) {
-        if self.concluded {
+        if self.concluded || !self.task.claim_end() {
             return;
         }
         if let Some(notice) = self.stopped_notice.as_ref() {
@@ -1300,6 +1321,32 @@ mod tests {
         assert!(task.has_ended());
         assert_eq!(*task.status.lock().unwrap(), RunningStatus::Cancelled);
         assert_eq!(session.take_notices(), ["t2 stopped"]);
+    }
+
+    #[test]
+    fn a_task_stopped_while_its_lease_concludes_is_noticed_once() {
+        let session = std::sync::Arc::new(SessionState::for_tests("/tmp".into()));
+        let lease = leased(&session, "t4");
+        let task = lease.task().clone();
+        let (entered, in_window) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let stopper = {
+            let session = session.clone();
+            std::thread::spawn(move || {
+                session.stop_with_notice(&task, |task| {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                    format!("{} stopped", task.task_id)
+                });
+            })
+        };
+        in_window.recv().unwrap();
+        lease.conclude(RunningStatus::Completed, Some("t4 done".into()));
+        release.send(()).unwrap();
+        stopper.join().unwrap();
+        let task = session.find_running_task("t4").expect("kept after it ends");
+        assert_eq!(session.take_notices(), ["t4 stopped"]);
+        assert_eq!(*task.status.lock().unwrap(), RunningStatus::Cancelled);
     }
 
     #[test]

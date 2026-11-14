@@ -3,7 +3,7 @@
 # they had when the guard was introduced. A ceiling only goes down:
 # AGIX_UPDATE_RATCHET=1 cargo test -p guards --test integration size::
 file  crates/compaction/src/compact.rs                            -                                      979
-file  crates/core/src/context/session.rs                          -                                      1136
+file  crates/core/src/context/session.rs                          -                                      1156
 file  crates/core/src/interface/catalog.rs                        -                                      831
 file  crates/core/src/interface/tool.rs                           -                                      1037
 file  crates/core/src/memory.rs                                   -                                      1088

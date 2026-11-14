@@ -70,15 +70,10 @@ impl MemberInbox {
     fn stop_unfinished(&self, session: &SessionState) {
         let unfinished =
             std::mem::take(&mut *self.unfinished.lock().unwrap_or_else(|e| e.into_inner()));
-        for task in unfinished.iter().filter(|task| !task.has_ended()) {
-            // Before the task ends, as a lease's own notice is: whoever wakes
-            // on the end finds it there to withdraw. Its lease, ending later,
-            // sees the task ended and posts none.
-            session.post_notice(
-                Some(task.task_id.clone()),
-                task_notification(task, &DelegateEnd::Cancelled),
-            );
-            session.cancel_running_task(&task.task_id);
+        for task in &unfinished {
+            session.stop_with_notice(task, |task| {
+                task_notification(task, &DelegateEnd::Cancelled)
+            });
         }
     }
 
