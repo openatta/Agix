@@ -9,6 +9,9 @@ use crate::session_pool::*;
 enum Claim {
     Taken(TurnTicket, InputSender),
     Busy(Busy),
+    /// The running turn's last frame has gone out and it is giving the slot
+    /// back.
+    Finishing,
     Steered(Busy, Arc<SessionCore>),
     Skipped,
 }
@@ -180,6 +183,9 @@ impl SessionPool {
                     {
                         return Claim::Skipped;
                     }
+                    if live.turn.running().is_some_and(|turn| turn.terminated) {
+                        return Claim::Finishing;
+                    }
                     if let Some(busy) = live.turn.busy(&sid) {
                         // Offered under the table lock, and only to an engine
                         // not yet told to stop: a close takes the session out
@@ -227,6 +233,7 @@ impl SessionPool {
                 .ok_or_else(|| PoolError::session_not_found(&sid))?;
             let busy = match claim {
                 Claim::Taken(ticket, input_tx) => break (ticket, input_tx),
+                Claim::Finishing => None,
                 Claim::Skipped => {
                     return Ok(TurnOutcome::Skipped {
                         session_id: sid,
@@ -243,9 +250,9 @@ impl SessionPool {
                         into_turn_id: busy.current_turn_id,
                     });
                 }
-                Claim::Busy(busy) => busy,
+                Claim::Busy(busy) => Some(busy),
             };
-            if matches!(on_busy, OnBusy::Reject) {
+            if let (Some(busy), OnBusy::Reject) = (busy, &on_busy) {
                 return Err(PoolError::SessionBusy(busy));
             }
             // The timeout covers a session that was replaced or dropped while

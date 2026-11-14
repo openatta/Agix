@@ -2277,6 +2277,98 @@ async fn every_watcher_has_turn_complete_before_the_turns_response() {
     srv.stop().await;
 }
 
+/// `turn_complete` means the session is idle: a watcher that sends the next
+/// turn the moment it sees one, refusing to queue, is never told the session
+/// is busy with the turn that just completed — not even after a goal's last
+/// round, which still has the goal's end to write down.
+#[tokio::test]
+async fn a_turn_sent_on_turn_complete_finds_the_session_free() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("done")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+    let created = rpc(
+        &srv.sock,
+        r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{}}"#,
+    )
+    .await;
+    let sid = created["result"]["session_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+
+    let (read, mut write) = UnixStream::connect(&srv.sock).await.unwrap().into_split();
+    let mut lines = BufReader::new(read).lines();
+    let subscribe = serde_json::json!({
+        "jsonrpc": "2.0", "method": "session.subscribe", "id": 1,
+        "params": {"session_id": sid},
+    });
+    write
+        .write_all(format!("{subscribe}\n").as_bytes())
+        .await
+        .unwrap();
+    until_response(&mut lines, 1).await;
+
+    for n in 0..30u64 {
+        let goal = |params: serde_json::Value, method: &str| {
+            serde_json::json!({"jsonrpc": "2.0", "method": method, "id": 1, "params": params})
+                .to_string()
+        };
+        rpc(
+            &srv.sock,
+            &goal(
+                serde_json::json!({"session_id": sid, "action": "clear"}),
+                "session.updateGoal",
+            ),
+        )
+        .await;
+        let set = rpc(
+            &srv.sock,
+            &goal(
+                serde_json::json!({"session_id": sid, "objective": "tidy up", "max_rounds": 1}),
+                "session.setGoal",
+            ),
+        )
+        .await;
+        assert!(set["result"].is_object(), "{set}");
+
+        let id = 100 + n;
+        let next = serde_json::json!({
+            "jsonrpc": "2.0", "method": "session.run_turn", "id": id,
+            "params": {"session_id": sid, "message": "next", "turn_id": format!("t{n}"),
+                       "on_busy": "reject"},
+        });
+        let mut sent = false;
+        let answer = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let line = lines.next_line().await.unwrap().expect("connection open");
+                let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if frame["id"] == id {
+                    return frame;
+                }
+                let goal_round_over = frame["params"]["event"]["kind"] == "turn_complete"
+                    && frame["params"]["turn_id"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("goal-"));
+                if goal_round_over && !sent {
+                    sent = true;
+                    write
+                        .write_all(format!("{next}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            }
+        })
+        .await
+        .expect("the turn sent on turn_complete was answered");
+        assert!(answer["result"].is_object(), "round {n}: {answer}");
+    }
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn a_project_bound_sessions_memories_land_in_its_own_project() {
     // The scripted client repeats its last round forever, so the background
