@@ -59,6 +59,15 @@ pub use provider::{Block, ProviderStub, Purpose, Reply, SeenRequest};
 pub use telemetry::{telemetry_kinds, telemetry_until};
 pub use world::World;
 
+/// The text inside a tool result's `<external-content>` fence, or the whole
+/// text when the result is not fenced.
+pub fn inside_fence(text: &str) -> &str {
+    text.strip_prefix("<external-content")
+        .and_then(|rest| rest.split_once(">\n"))
+        .and_then(|(_, body)| body.split_once("\n</external-content>"))
+        .map_or(text, |(inner, _)| inner)
+}
+
 /// What a daemon is pointed at for its model: an Anthropic Messages endpoint
 /// and the model name sessions default to.
 pub trait ModelEndpoint {

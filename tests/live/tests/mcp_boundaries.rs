@@ -350,11 +350,11 @@ async fn the_same_tool_on_two_servers_reaches_the_server_it_was_called_on() -> a
     ]);
     let events = run.turn(&session, "echo on both").await?;
     assert_eq!(
-        result_of(&events, "mcp__right__echo").map(|r| r.1.as_str()),
+        result_of(&events, "mcp__right__echo").map(|r| live::inside_fence(&r.1)),
         Some("to-the-right")
     );
     assert_eq!(
-        result_of(&events, "mcp__left__echo").map(|r| r.1.as_str()),
+        result_of(&events, "mcp__left__echo").map(|r| live::inside_fence(&r.1)),
         Some("to-the-left")
     );
     assert_eq!(
@@ -807,7 +807,10 @@ async fn webfetch_answers_odd_pages_and_refuses_odd_urls() -> anyhow::Result<()>
     assert_eq!(results.len(), 7, "{:?}", events.tool_results);
 
     let (_, empty, failed) = results[0];
-    assert!(!failed && empty.starts_with("[HTTP 200"), "{empty}");
+    assert!(
+        !failed && live::inside_fence(empty).starts_with("[HTTP 200"),
+        "{empty}"
+    );
     let (_, blob, failed) = results[1];
     assert!(!failed && blob.contains("BLOB-MARK"), "{blob}");
     let (_, looped, failed) = results[2];

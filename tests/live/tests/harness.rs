@@ -461,7 +461,12 @@ async fn the_toy_mcp_server_answers_over_stdio_and_http() -> anyhow::Result<()> 
     ]);
     let events = run.turn(&session, "use the toy").await?;
     let content = |i: usize| events.tool_results.get(i).cloned().unwrap_or_default();
-    assert_eq!(content(0).1, "统一码 🦀", "{:?}", events.tool_results);
+    assert_eq!(
+        live::inside_fence(&content(0).1),
+        "统一码 🦀",
+        "{:?}",
+        events.tool_results
+    );
     assert!(
         content(1).1.contains("RESOURCE-TOKEN-913"),
         "{:?}",
