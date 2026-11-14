@@ -242,8 +242,8 @@ impl LiveSession {
         !self.is_busy() && !self.core.log.is_behind()
     }
 
-    /// Whether eviction would cut something off: a turn, a rebuild, or
-    /// background tasks.
+    /// Whether eviction would cut something off: a turn, a rebuild,
+    /// background tasks, or team members.
     pub(in crate::session_pool) fn is_busy(&self) -> bool {
         !self.turn.is_idle()
             || self
@@ -252,6 +252,25 @@ impl LiveSession {
                 .list_running_tasks()
                 .iter()
                 .any(|(_, status)| matches!(status, base::context::RunningStatus::Running))
+            || !self.live_members().is_empty()
+    }
+
+    /// What runs under this engine beside the turns and would stop with it:
+    /// the running background tasks, then the live team members, by id.
+    pub(in crate::session_pool) fn background_work(&self) -> Vec<String> {
+        let mut ids = self.core.state.running_background_task_ids();
+        ids.extend(self.live_members().into_iter().map(|m| m.id));
+        ids
+    }
+
+    pub(in crate::session_pool) fn live_members(
+        &self,
+    ) -> Vec<base::interface::delegate::LiveMember> {
+        self.engine
+            .delegator
+            .as_ref()
+            .map(|d| d.live_members())
+            .unwrap_or_default()
     }
 }
 

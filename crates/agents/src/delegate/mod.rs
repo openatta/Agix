@@ -15,8 +15,8 @@ mod tools;
 
 use async_trait::async_trait;
 use base::interface::delegate::{
-    DelegateError, DelegateMode, DelegateRequest, Delegated, MemberLifetime, StopsWith, TeamSeat,
-    Workdir,
+    DelegateError, DelegateMode, DelegateRequest, Delegated, LiveMember, MemberLifetime, StopsWith,
+    TeamSeat, Workdir,
 };
 
 pub(crate) use admission::{Admission, HookAgentRunning, HookAgents, Limits, SlotRule};
@@ -164,5 +164,9 @@ impl base::interface::delegate::Delegator for Delegator {
 
     async fn stop_member(&self, seat: &TeamSeat) {
         self.stop_persistent_member(seat);
+    }
+
+    fn live_members(&self) -> Vec<LiveMember> {
+        self.live_persistent_members()
     }
 }

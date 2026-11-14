@@ -182,15 +182,42 @@ impl SessionPool {
 
     /// `session.stopTask`: stop one of `session.tasks`' entries. A scheduled
     /// job is cancelled; running work is stopped the way the model's
-    /// `TaskStop` stops it — a shell command's whole process group goes.
-    /// `false` if there is no such running task.
+    /// `TaskStop` stops it — a shell command's whole process group goes. A
+    /// team member's id, as a refused rebuild names it, stops that member.
+    /// `false` if there is no such running task or member.
     pub async fn stop_task(&self, session_id: &str, task_id: &str) -> bool {
         if self.scheduler.remove_for(session_id, task_id) {
             return true;
         }
-        self.live_state(session_id)
+        if self
+            .live_state(session_id)
             .await
             .is_some_and(|s| s.cancel_running_task(task_id))
+        {
+            return true;
+        }
+        self.stop_member(session_id, task_id).await
+    }
+
+    /// Stop the team member `member_id` names, as `TeamDelete` would.
+    async fn stop_member(&self, session_id: &str, member_id: &str) -> bool {
+        let found = self
+            .live
+            .with_live(session_id, |live| {
+                let delegator = live.engine.delegator.clone()?;
+                let member = live
+                    .live_members()
+                    .into_iter()
+                    .find(|m| m.id == member_id)?;
+                Some((delegator, member.seat))
+            })
+            .await
+            .flatten();
+        let Some((delegator, seat)) = found else {
+            return false;
+        };
+        delegator.stop_member(&seat).await;
+        true
     }
 
     /// `session.messageTask`: hand a message to a running background

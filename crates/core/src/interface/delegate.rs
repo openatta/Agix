@@ -142,6 +142,13 @@ pub struct TeamSeat {
     pub member: String,
 }
 
+/// A persistent member alive under a delegator, idle or running a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveMember {
+    pub id: String,
+    pub seat: TeamSeat,
+}
+
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct StartedAgent {
@@ -203,6 +210,12 @@ pub trait Delegator: Send + Sync {
 
     /// Stop a persistent member; nothing when there is no such member.
     async fn stop_member(&self, seat: &TeamSeat);
+
+    /// The persistent members alive, sorted by id. They run under the engine
+    /// that holds this delegator and stop with it.
+    fn live_members(&self) -> Vec<LiveMember> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

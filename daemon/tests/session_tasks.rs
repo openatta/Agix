@@ -1361,6 +1361,115 @@ async fn a_session_running_background_work_is_not_rebuilt_under_it() {
     assert_eq!(model.abandoned.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
+fn ask_member(id: &str, prompt: &str) -> Vec<StreamEvent> {
+    tool_round(
+        "Agent",
+        id,
+        serde_json::json!({"team_name": "crew", "name": "scribe", "prompt": prompt}),
+    )
+}
+
+/// The member's model calls that carry `prompt`: the parent's carry it too,
+/// in its `Agent` call, beside what it was asked first.
+fn member_requests(model: &MockAnthropicClient, prompt: &str) -> Vec<String> {
+    (0..model.calls())
+        .map(|i| serde_json::to_string(&model.nth_request(i).unwrap()).unwrap())
+        .filter(|r| r.contains(prompt) && !r.contains("brief the scribe"))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_session_with_an_idle_team_member_is_not_rebuilt_under_it() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(ask_member("a1", "remember PELICAN"));
+    model.push_turn(text_round("noted"));
+    model.push_turn(text_round("asked"));
+    let daemon = Daemon::start_configured(model.clone(), |settings, _| {
+        settings.execution.team_enabled = true;
+    })
+    .await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "brief the scribe"}),
+        )
+        .await;
+    eventually!("the member go idle", {
+        let tasks = daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await;
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["kind"] == "teammate" && t["status"] == "done")
+            .then_some(())
+    });
+
+    daemon.ok("config.reload", serde_json::json!({})).await;
+    model.push_turn(text_round("hello"));
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "hello"}),
+        )
+        .await;
+    let refused = daemon
+        .call(
+            "session.setPrompt",
+            serde_json::json!({"session_id": session, "append": "Be brief."}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32015, "{refused}");
+    assert_eq!(
+        refused["error"]["data"]["reason"], "background_tasks",
+        "{refused}"
+    );
+    let members = refused["error"]["data"]["running_task_ids"].clone();
+    assert_eq!(members.as_array().map(Vec::len), Some(1), "{refused}");
+
+    model.push_turn(ask_member("a2", "what did I ask you to remember?"));
+    model.push_turn(text_round("PELICAN"));
+    model.push_turn(text_round("asked again"));
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "ask the scribe again"}),
+        )
+        .await;
+    let asked = eventually!("the member take the second message", {
+        member_requests(&model, "what did I ask you to remember?").pop()
+    });
+    assert!(
+        asked.contains("remember PELICAN"),
+        "the member forgot its first message: {asked}"
+    );
+
+    let stopped = daemon
+        .ok(
+            "session.stopTask",
+            serde_json::json!({"session_id": session, "task_id": members[0]}),
+        )
+        .await;
+    assert_eq!(stopped["stopped"], true, "{stopped}");
+    eventually!(
+        "the session take a new prompt once its member is stopped",
+        {
+            let r = daemon
+                .call(
+                    "session.setPrompt",
+                    serde_json::json!({"session_id": session, "append": "Be brief."}),
+                )
+                .await;
+            r.get("result").is_some().then_some(())
+        }
+    );
+}
+
 fn asks_to_run(command: &str) -> Arc<MockAnthropicClient> {
     let model = Arc::new(MockAnthropicClient::new());
     model.push_turn(tool_round(

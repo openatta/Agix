@@ -17,7 +17,9 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use base::context::{EngineConfig, SessionState};
 use base::frozen::SkillEntry;
-use base::interface::delegate::{DelegateError, DelegateRequest, Delegated, Delegator, TeamSeat};
+use base::interface::delegate::{
+    DelegateError, DelegateRequest, Delegated, Delegator, LiveMember, TeamSeat,
+};
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
 use base::interface::scene::SceneSpec;
@@ -222,6 +224,10 @@ impl Delegator for LateDelegator {
         if let Some(delegator) = self.get() {
             delegator.stop_member(seat).await;
         }
+    }
+
+    fn live_members(&self) -> Vec<LiveMember> {
+        self.get().map(|d| d.live_members()).unwrap_or_default()
     }
 }
 

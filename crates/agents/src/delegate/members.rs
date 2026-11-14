@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use base::context::{TaskLease, TaskType};
 use base::interface::delegate::{
-    AskRoute, DelegateEnd, DelegateError, Delegated, StartedAgent, TeamSeat,
+    AskRoute, DelegateEnd, DelegateError, Delegated, LiveMember, StartedAgent, TeamSeat,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -284,6 +284,26 @@ impl Delegator {
             tracing::debug!(team = %seat.team, member = %seat.member, id = %m.id, "stopping persistent team member");
             m.cancel.cancel();
         }
+    }
+
+    pub(crate) fn live_persistent_members(&self) -> Vec<LiveMember> {
+        let mut members: Vec<LiveMember> = self
+            .members
+            .live
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, m)| !m.cancel.is_cancelled())
+            .map(|((team, member), m)| LiveMember {
+                id: m.id.clone(),
+                seat: TeamSeat {
+                    team: team.clone(),
+                    member: member.clone(),
+                },
+            })
+            .collect();
+        members.sort_by(|a, b| a.id.cmp(&b.id));
+        members
     }
 
     /// Stops (a) every member idle longer than `team_member_idle_timeout_secs`
