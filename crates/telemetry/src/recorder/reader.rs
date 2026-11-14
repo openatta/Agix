@@ -96,45 +96,27 @@ pub fn load(dir: &Path) -> Result<Recording, ReadError> {
                 line_no,
                 &mut damaged,
             ),
-            Record::TextChunks(run) => match expand_text_run(&run, false) {
-                Ok(chunks) => push_events(
-                    &mut calls,
-                    run.call,
-                    chunks.into_iter().map(|c| c.chunk),
-                    line_no,
-                    &mut damaged,
-                ),
-                Err(e) => {
-                    tracing::warn!(line = line_no, error = %e, "recording: malformed packed run, skipped");
-                    damaged += 1;
-                }
-            },
-            Record::ThinkingChunks(run) => match expand_text_run(&run, true) {
-                Ok(chunks) => push_events(
-                    &mut calls,
-                    run.call,
-                    chunks.into_iter().map(|c| c.chunk),
-                    line_no,
-                    &mut damaged,
-                ),
-                Err(e) => {
-                    tracing::warn!(line = line_no, error = %e, "recording: malformed packed run, skipped");
-                    damaged += 1;
-                }
-            },
-            Record::ToolArgsChunks(run) => match expand_tool_args_run(&run) {
-                Ok(chunks) => push_events(
-                    &mut calls,
-                    run.call,
-                    chunks.into_iter().map(|c| c.chunk),
-                    line_no,
-                    &mut damaged,
-                ),
-                Err(e) => {
-                    tracing::warn!(line = line_no, error = %e, "recording: malformed packed run, skipped");
-                    damaged += 1;
-                }
-            },
+            Record::TextChunks(run) => push_packed(
+                &mut calls,
+                run.call,
+                expand_text_run(&run, false),
+                line_no,
+                &mut damaged,
+            ),
+            Record::ThinkingChunks(run) => push_packed(
+                &mut calls,
+                run.call,
+                expand_text_run(&run, true),
+                line_no,
+                &mut damaged,
+            ),
+            Record::ToolArgsChunks(run) => push_packed(
+                &mut calls,
+                run.call,
+                expand_tool_args_run(&run),
+                line_no,
+                &mut damaged,
+            ),
             Record::End(end) => match calls.iter_mut().find(|c| c.request.seq == end.call) {
                 Some(call) => call.end = Some(end),
                 None => {
@@ -158,6 +140,61 @@ pub fn load(dir: &Path) -> Result<Recording, ReadError> {
         calls,
         damaged,
     })
+}
+
+/// Loads a recording for replay, applying the hand-written override beside it
+/// if there is one. An override is deliberate, so a broken one fails the
+/// replay instead of being skipped: an edit that silently did nothing is worse
+/// than one that says why it could not.
+pub(super) fn load_for_replay(
+    dir: &Path,
+    name: &str,
+) -> Result<Recording, base::interface::model::ModelError> {
+    use base::interface::model::{ModelError, ModelEvent};
+    let mut recording = load(dir)
+        .map_err(|e| ModelError::protocol(format!("recorder: cannot replay {name:?}: {e}")))?;
+    if recording.damaged > 0 {
+        tracing::warn!(
+            name,
+            damaged = recording.damaged,
+            "recorder: replaying a recording with unreadable lines"
+        );
+    }
+    if let Some(doc) = super::override_doc::load(dir)
+        .map_err(|e| ModelError::protocol(format!("recorder: {name:?}: {e}")))?
+    {
+        let mut responses: Vec<Vec<ModelEvent>> =
+            recording.calls.iter().map(|c| c.response.clone()).collect();
+        super::override_doc::apply(&doc, &mut responses)
+            .map_err(|e| ModelError::protocol(format!("recorder: {name:?}: {e}")))?;
+        for (call, response) in recording.calls.iter_mut().zip(responses) {
+            call.response = response;
+        }
+        tracing::info!(name, "recorder: replaying with an override applied");
+    }
+    Ok(recording)
+}
+
+fn push_packed(
+    calls: &mut [RecordedCall],
+    call_seq: u64,
+    expanded: Result<Vec<super::format::ChunkRecord>, super::pack::PackError>,
+    line_no: usize,
+    damaged: &mut usize,
+) {
+    match expanded {
+        Ok(chunks) => push_events(
+            calls,
+            call_seq,
+            chunks.into_iter().map(|c| c.chunk),
+            line_no,
+            damaged,
+        ),
+        Err(e) => {
+            tracing::warn!(line = line_no, error = %e, "recording: malformed packed run, skipped");
+            *damaged += 1;
+        }
+    }
 }
 
 fn push_events(

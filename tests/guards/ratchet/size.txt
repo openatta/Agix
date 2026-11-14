@@ -15,7 +15,7 @@ file  crates/mcp/src/oauth/mod.rs                          -                    
 file  crates/platform/src/sandbox.rs                       -                                        1498
 file  crates/session/src/session.rs                        -                                        835
 file  crates/team/src/coordinator.rs                       -                                        1005
-file  crates/telemetry/src/recorder/mod.rs                 -                                        958
+file  crates/telemetry/src/recorder/mod.rs                 -                                        942
 fn    crates/agents/src/agent_tool/mod.rs                  AgentTool::call                          187
 fn    crates/agents/src/lib.rs                             AgentsModule::on_session                 111
 fn    crates/assembly/src/assemble.rs                      pool                                     137
@@ -45,7 +45,5 @@ fn    crates/platform/src/sandbox.rs                       linux_wrap           
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/team/src/coordinator.rs                       DefaultCoordinator::orchestrate          474
-fn    crates/telemetry/src/recorder/mod.rs                 RecorderModel::replay                    106
-fn    crates/telemetry/src/recorder/reader.rs              load                                     113
 fn    crates/tools/src/bash/paths.rs                       path_args_stay_within                    111
 fn    daemon/src/main.rs                                   serve                                    333

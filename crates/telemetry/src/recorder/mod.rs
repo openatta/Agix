@@ -738,32 +738,7 @@ impl RecorderModel {
         let state = match replays.get_mut(name) {
             Some(state) => state,
             None => {
-                let dir = config.root.join(name);
-                let mut recording = reader::load(&dir).map_err(|e| {
-                    ModelError::protocol(format!("recorder: cannot replay {name:?}: {e}"))
-                })?;
-                if recording.damaged > 0 {
-                    tracing::warn!(
-                        name,
-                        damaged = recording.damaged,
-                        "recorder: replaying a recording with unreadable lines"
-                    );
-                }
-                // A hand-written override is deliberate, so a broken one fails
-                // the replay instead of being skipped — an edit that silently
-                // did nothing is worse than one that says why it could not.
-                if let Some(doc) = override_doc::load(&dir)
-                    .map_err(|e| ModelError::protocol(format!("recorder: {name:?}: {e}")))?
-                {
-                    let mut responses: Vec<Vec<ModelEvent>> =
-                        recording.calls.iter().map(|c| c.response.clone()).collect();
-                    override_doc::apply(&doc, &mut responses)
-                        .map_err(|e| ModelError::protocol(format!("recorder: {name:?}: {e}")))?;
-                    for (call, response) in recording.calls.iter_mut().zip(responses) {
-                        call.response = response;
-                    }
-                    tracing::info!(name, "recorder: replaying with an override applied");
-                }
+                let recording = reader::load_for_replay(&config.root.join(name), name)?;
                 replays
                     .entry(name.to_string())
                     .or_insert(ReplayState::new(recording))
@@ -783,22 +758,7 @@ impl RecorderModel {
                 .iter()
                 .filter(|c| c.request.purpose.as_deref() == purpose)
                 .count();
-            return Err(match purpose {
-                Some(wanted) if may_go_unreplayed(wanted) => ModelError::not_recorded(format!(
-                    "recording {name:?} has no unreplayed {wanted:?} call for session \
-                     {recorded_session:?}"
-                )),
-                Some(wanted) => ModelError::protocol(format!(
-                    "recorder: recording {name:?} has {same_kind} {wanted:?} call(s) for \
-                     session {recorded_session:?}, live run asked for #{}",
-                    same_kind + 1
-                )),
-                None => ModelError::protocol(format!(
-                    "recorder: recording {name:?} has {same_kind} conversation call(s) for \
-                     session {recorded_session:?}, live run asked for #{}",
-                    same_kind + 1
-                )),
-            });
+            return Err(exhausted_error(name, &recorded_session, purpose, same_kind));
         };
         let call = state.calls_of(&recorded_session)[at].clone();
         state.mark_replayed(&recorded_session, at);
@@ -827,6 +787,30 @@ impl RecorderModel {
         let events: Vec<Result<ModelEvent, ModelError>> =
             call.response.iter().cloned().map(Ok).collect();
         Ok(Box::new(futures::stream::iter(events)))
+    }
+}
+
+fn exhausted_error(
+    name: &str,
+    recorded_session: &str,
+    purpose: Option<&str>,
+    same_kind: usize,
+) -> ModelError {
+    match purpose {
+        Some(wanted) if may_go_unreplayed(wanted) => ModelError::not_recorded(format!(
+            "recording {name:?} has no unreplayed {wanted:?} call for session \
+             {recorded_session:?}"
+        )),
+        Some(wanted) => ModelError::protocol(format!(
+            "recorder: recording {name:?} has {same_kind} {wanted:?} call(s) for \
+             session {recorded_session:?}, live run asked for #{}",
+            same_kind + 1
+        )),
+        None => ModelError::protocol(format!(
+            "recorder: recording {name:?} has {same_kind} conversation call(s) for \
+             session {recorded_session:?}, live run asked for #{}",
+            same_kind + 1
+        )),
     }
 }
 
