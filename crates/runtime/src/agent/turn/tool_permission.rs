@@ -31,11 +31,21 @@ pub(super) async fn pre_tool_use(
         user_prompt: None,
         ..Default::default()
     };
-    let hook_result = ctx
-        .hooks
-        .run(hooks::HookEvent::PreToolUse, &pre_input, &ctx.cancel)
+    answer_of_pre_tool_use(&ctx.hooks, &pre_input, input, &ctx.cancel).await
+}
+
+/// Run the `PreToolUse` hooks on `pre_input`, about a call with `input`.
+pub(super) async fn answer_of_pre_tool_use(
+    hooks: &hooks::HookRunner,
+    pre_input: &hooks::HookInput,
+    input: serde_json::Value,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> (serde_json::Value, base::interface::permission::HookAnswer) {
+    use base::interface::permission::HookAnswer;
+    let hook_result = hooks
+        .run(hooks::HookEvent::PreToolUse, pre_input, cancel)
         .await;
-    if ctx.cancel.is_cancelled() {
+    if cancel.is_cancelled() {
         let answer = HookAnswer::Block {
             hook: "PreToolUse".into(),
             reason: "the turn was cancelled before its hooks answered".into(),

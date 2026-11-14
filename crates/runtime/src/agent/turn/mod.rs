@@ -5,6 +5,7 @@
 mod attachments;
 mod compact;
 mod gate;
+mod inline_commands;
 mod memory_extraction;
 mod obligations;
 mod process;

@@ -479,7 +479,8 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// Security posture: a skill body is untrusted input the same way a
 /// model-generated Bash command is — a project skill is whatever the
 /// repository says — so each command is held to what a model's `Bash` call
-/// with that command would be: the session's permission policy decides first,
+/// with that command would be: the session's `PreToolUse` hooks
+/// (`ctx.inline_commands`) and permission policy decide first,
 /// then it runs through the session's own `Bash` with this invocation's
 /// `ToolContext` (same sandbox, cwd, cancellation). A session whose tools
 /// leave `Bash` out runs none. A deny rule refuses it;
@@ -563,6 +564,7 @@ async fn inline_command_approval(
     permission: Option<&dyn base::interface::permission::PermissionPolicy>,
     bash: &Arc<dyn base::tool::Tool>,
     input: &serde_json::Value,
+    hook: &base::interface::permission::HookAnswer,
     ctx: &ToolContext,
 ) -> Result<
     (
@@ -594,6 +596,7 @@ async fn inline_command_approval(
         ctx,
         &ctx.session,
     )
+    .with_hook(hook)
     .with_attendance(attendance);
     match permission.decide(&request).await {
         PermissionOutcome::Permit {
@@ -620,8 +623,12 @@ async fn run_skill_shell_command(
         tracing::warn!(command = %command, "skill inline command not run: the session has no Bash");
         return format!("[`{command}` not run: this session has no Bash tool]");
     };
+    let (input, hook) = match &ctx.inline_commands {
+        Some(hooks) => hooks.pre_tool_use(input, &ctx.cancel).await,
+        None => (input, base::interface::permission::HookAnswer::None),
+    };
     let mut ctx = ctx.clone();
-    let obligations = match inline_command_approval(permission, &bash, &input, &ctx).await {
+    let obligations = match inline_command_approval(permission, &bash, &input, &hook, &ctx).await {
         Ok((approval, obligations)) => {
             ctx.approval = Some(approval);
             obligations

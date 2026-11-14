@@ -1,5 +1,6 @@
 //! 工具运行环境：沙箱、出口、引擎 git 的装配，工具上下文，子调用分发与技能调用上下文。
 
+use super::inline_commands::SessionInlineCommands;
 use super::tool_exec::{execute_tool_with_telemetry, ToolExecCtx};
 use crate::agent::Agent;
 use base::tool::ToolContext;
@@ -273,6 +274,12 @@ pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Too
     );
     tool_ctx.attendance = attendance_of(&ctx.session_state, ctx.from_code);
     tool_ctx.turn = ctx.turn.clone();
+    tool_ctx.inline_commands = Some(Arc::new(SessionInlineCommands {
+        hooks: ctx.hooks.clone(),
+        session_id: ctx.session_id.clone(),
+        cwd: ctx.cwd.clone(),
+        session_state: ctx.session_state.clone(),
+    }));
     tool_ctx
 }
 
@@ -304,6 +311,12 @@ impl Agent {
         );
         ctx.attendance = attendance_of(&self.session_state, false);
         ctx.turn = self.turn.scope.clone();
+        ctx.inline_commands = Some(Arc::new(SessionInlineCommands {
+            hooks: self.gate.hooks().clone(),
+            session_id: self.session.session_id.clone(),
+            cwd: self.settings.paths.working_dir().to_path_buf(),
+            session_state: self.session_state.clone(),
+        }));
         ctx
     }
 }

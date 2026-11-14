@@ -74,7 +74,7 @@ impl HookEvent {
         use Answer::{Acts, Ignored};
         let (fires, payload, answer) = match self {
             HookEvent::PreToolUse => (
-                "每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算",
+                "每次工具调用分发之前,在输入校验与权限检查之前;子 Agent 的调用也算,skill 正文里的 `` !`cmd` `` 按一次 `Bash` 调用算(没有 `tool_use_id`)",
                 "`tool_name`、`tool_input`、`tool_use_id`",
                 Acts(
                     "`decision: \"block\"`(或 exit 2):这次调用不执行,模型收到 \

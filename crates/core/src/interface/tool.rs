@@ -331,6 +331,9 @@ pub struct ToolContext {
     /// What the policy let this call through on; `None` when nothing judged it.
     pub approval: Option<crate::interface::permission::Approval>,
     pub turn: Arc<TurnScope>,
+    /// What a shell command this call runs outside a tool call of its own
+    /// answers to; `None` where nothing is wired to hear it.
+    pub inline_commands: Option<Arc<dyn crate::interface::inline_command::InlineCommandHooks>>,
 }
 
 /// What belongs to the one turn a call is made in, and ends with it.
@@ -399,6 +402,7 @@ impl ToolContext {
             attendance: crate::interface::permission::Attendance::Attended,
             approval: None,
             turn: Arc::default(),
+            inline_commands: None,
         }
     }
 

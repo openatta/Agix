@@ -1212,9 +1212,10 @@ MCP 工具不管 server 报不报 `readOnlyHint` 都询问——那是 server �
 `Agent(team_name)` 里自己要的 `permission_mode` 只能收紧。子 Agent 的询问经父会话的通道到宿主,等待上限就是会话的
 `permission_prompt_timeout`;在那里答"永久允许",记下的是这一条命令或路径,不是整个工具。
 
-skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的权限策略(按一次
-`Bash` 调用判):deny 规则拒掉的不跑,要询问的也不跑——预处理没有人可问——只有规则
-放行的、或走自含通道放行的(项目内的只读命令)才执行,替换成一行写明原因的文字。
+skill 正文里的 `` !`cmd` `` 在送给模型之前执行,同样先过会话的 `PreToolUse` hook 与权限策略
+(按一次 `Bash` 调用判,hook 收到的 `tool_name` 是 `Bash`、`tool_input` 是 `{"command": …}`):
+hook 拦下的、deny 规则拒掉的不跑,要询问的也不跑——预处理没有人可问——只有规则放行的、
+hook 批准的、或走自含通道放行的(项目内的只读命令)才执行,不跑的替换成一行写明原因的文字。
 判定和执行用的都是会话注册表里的 `Bash`;场景的工具白名单里没有 `Bash` 的会话,命令一条都不跑。
 skill 自己的 `allowed-tools` 这时还没生效,不能给自己的命令开门。未信任项目自己的 skill
 (`.agents/skills/`)里的命令一条都不跑(§6.6)。

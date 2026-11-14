@@ -317,3 +317,118 @@ async fn audit3_a_dangerous_repository_two_gitlinks_deep_is_moved_aside() {
         "the user's `git status` ran a program the command named"
     );
 }
+
+/// A daemon serving sessions in `work` on the global `settings`, with one
+/// skill, `probe`, whose body is `body`.
+async fn serve_with_probe_skill(
+    dir: &std::path::Path,
+    work: &std::path::Path,
+    settings: Value,
+    body: &str,
+) -> (std::path::PathBuf, Arc<MockAnthropicClient>) {
+    let global = dir.join("agix");
+    let skill = global.join("skills").join("probe");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(global.join("settings.json"), settings.to_string()).unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        format!("---\nname: probe\ndescription: probes\n---\n{body}\n"),
+    )
+    .unwrap();
+    let sock = dir.join("agix.sock");
+    let paths =
+        StaticDaemonPaths::with_project(global.clone(), work.to_path_buf()).with_global(global);
+    let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
+    config.settings.values.memory_enabled = false;
+    let model = Arc::new(MockAnthropicClient::new());
+    let pool = daemon::assemble::pool(
+        &config,
+        Arc::new(scene::code::spec(scene::code::Interaction::Interactive)),
+        daemon::Assembly {
+            cwd: Some(work.to_path_buf()),
+            model_client: Some(model.clone() as Arc<dyn AnthropicClient>),
+            transcripts: daemon::Transcripts::Nowhere,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the daemon assembles");
+    let server = Arc::new(DaemonServer::new(pool, CancellationToken::new()));
+    let listener = DaemonServer::bind_unix(&sock).unwrap();
+    tokio::spawn(async move {
+        let _ = server.serve_unix_listener(listener).await;
+    });
+    (sock, model)
+}
+
+/// The events of one `session.run_turn`, and its result.
+async fn turn_events(sock: &std::path::Path, params: Value) -> (Vec<Value>, Value) {
+    let request = json!({"jsonrpc":"2.0","method":"session.run_turn","params":params,"id":1});
+    let mut conn = UnixStream::connect(sock).await.unwrap();
+    conn.write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let (r, _w) = conn.split();
+    let mut reader = BufReader::new(r);
+    let mut events = Vec::new();
+    loop {
+        let mut line = String::new();
+        let n = tokio::time::timeout(Duration::from_secs(120), reader.read_line(&mut line))
+            .await
+            .expect("the turn ended")
+            .unwrap();
+        assert!(n > 0, "connection closed before the turn ended");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        if frame.get("id").is_some() {
+            assert!(frame.get("result").is_some(), "turn failed: {frame}");
+            return (events, frame["result"].clone());
+        }
+        events.push(frame["params"]["event"].clone());
+    }
+}
+
+/// A `PreToolUse` hook that blocks `Bash` blocks a skill's inline command
+/// too, whether the model invokes the skill or the user types `/probe`; the
+/// expansion says why the command did not run.
+#[tokio::test]
+async fn a_pre_tool_use_hook_blocks_a_skills_inline_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let block = r#"echo '{"decision":"block","message":"inline says no"}'"#;
+    let (sock, model) = serve_with_probe_skill(
+        dir.path(),
+        &work,
+        json!({
+            "sandbox": {"dangerously_disable_sandbox": true},
+            "permission_rules": [{"tool": "Bash", "action": "allow"}],
+            "hooks_config": {"PreToolUse": [{"type": "command", "command": block, "if": "Bash"}]},
+        }),
+        "Marker: !`echo W1\"\"-INLINE-RAN`",
+    )
+    .await;
+
+    model.push_turn(tool_round("call-skill", "Skill", json!({"skill": "probe"})));
+    model.push_turn(text_round("done"));
+    let (_, result) = turn_events(&sock, json!({"message": "use the probe skill"})).await;
+    let later = later_requests(&model);
+    assert!(
+        later.contains("Blocked by PreToolUse hook: inline says no"),
+        "the Skill tool's inline command was not blocked by the hook: {later}"
+    );
+    assert!(!later.contains("W1-INLINE-RAN"), "it ran: {later}");
+
+    let before = model.calls();
+    model.push_turn(text_round("done"));
+    turn_events(
+        &sock,
+        json!({"session_id": result["session_id"], "message": "/probe"}),
+    )
+    .await;
+    let sent = serde_json::to_string(&model.nth_request(before).unwrap()).unwrap();
+    assert!(
+        sent.contains("Blocked by PreToolUse hook: inline says no"),
+        "`/probe`'s inline command was not blocked by the hook: {sent}"
+    );
+    assert!(!sent.contains("W1-INLINE-RAN"), "it ran: {sent}");
+}

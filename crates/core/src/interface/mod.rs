@@ -75,6 +75,7 @@ pub mod event_sink;
 pub mod exec;
 pub mod health;
 pub mod import_callback;
+pub mod inline_command;
 pub mod instruction_provider;
 pub mod mcp_servers;
 pub mod memory_contracts;
