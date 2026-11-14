@@ -5,10 +5,8 @@ use crate::turn::attachments::truncate_at_char_boundary;
 use base::interface::model::MessageRole;
 use base::interface::model::ModelContentBlock;
 use base::interface::model::ModelMessage;
-use std::collections::HashSet;
-use std::sync::Arc;
 
-type Recall = (Vec<String>, Vec<base::memory::DurableMemory>);
+use crate::turn::recall::{Recall, RecallQuery};
 
 pub(super) struct PendingRecall {
     handle: tokio_util::task::AbortOnDropHandle<Recall>,
@@ -24,48 +22,14 @@ impl Agent {
             if !self.settings.values.memory_enabled {
                 None
             } else {
-                let store = self.memory.memory_store.clone();
-                let model = self.llm.model.clone();
-                let query = query.to_string();
-                let already_surfaced: HashSet<String> = self
-                    .prompt
-                    .frozen
-                    .as_ref()
-                    .map(|f| f.already_surfaced.clone())
-                    .unwrap_or_default();
-                let recent_tools = self.tooling.tools.names();
-                let model_name = self.settings.values.model.model_name.clone();
-                let session_id = self.session.session_id.clone();
-                let retriever = Arc::clone(&self.memory.memory_retriever);
-                let hooks = Arc::clone(&self.memory.retrieval_hooks);
-                Some(tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
-                    async move {
-                        let memories = tokio::task::spawn_blocking(move || store.load_all())
-                            .await
-                            .unwrap_or_default();
-                        // The retriever reads what was just loaded rather than
-                        // the store, whose reads block.
-                        let snapshot = base::interface::memory_contracts::InMemoryStorage::new(
-                            memories.clone(),
-                        );
-                        let names = base::interface::memory_contracts::retrieve_with_hooks(
-                            retriever.as_ref(),
-                            &hooks,
-                            &snapshot,
-                            model.as_ref(),
-                            base::interface::memory_contracts::RetrievalRequest {
-                                query,
-                                limit: 5,
-                                already_surfaced,
-                                recent_tools,
-                                model_name,
-                                session_id: Some(session_id),
-                            },
-                        )
-                        .await;
-                        (names, memories)
-                    },
-                )))
+                let ask = RecallQuery {
+                    query: query.to_string(),
+                    already_surfaced: self.prompt.surfaced().cloned().unwrap_or_default(),
+                    recent_tools: self.tooling.tools.names(),
+                    model_name: self.settings.values.model.model_name.clone(),
+                    session_id: self.session.session_id.clone(),
+                };
+                Some(self.memory.start_recall(self.llm.model.clone(), ask))
             };
         let started_at = std::time::Instant::now();
         handle.map(|handle| PendingRecall { handle, started_at })
@@ -111,7 +75,7 @@ impl Agent {
                 }
             };
         let relevant: Vec<base::memory::DurableMemory> = {
-            let surfaced = self.prompt.frozen.as_ref().map(|f| &f.already_surfaced);
+            let surfaced = self.prompt.surfaced();
             prefetch_names
                 .iter()
                 .filter_map(|name| all.iter().find(|m| &m.name == name).cloned())
@@ -121,20 +85,10 @@ impl Agent {
         };
         if !relevant.is_empty() {
             // Mark injected memories as surfaced to avoid repeated injection.
-            if let Some(ref mut frozen) = self.prompt.frozen {
-                for m in &relevant {
-                    frozen.already_surfaced.insert(m.name.clone());
-                }
-            }
-            {
-                let store = self.memory.memory_store.clone();
-                let names: Vec<String> = relevant.iter().map(|m| m.name.clone()).collect();
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = store.record_recalled(&names) {
-                        tracing::debug!(error = %e, "recording a memory recall failed");
-                    }
-                });
-            }
+            self.prompt
+                .mark_surfaced(relevant.iter().map(|m| m.name.as_str()));
+            self.memory
+                .record_recalled(relevant.iter().map(|m| m.name.clone()).collect());
 
             // Carry the memory body, not just its one-line description:
             // the description exists to decide relevance, and a model that

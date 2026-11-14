@@ -359,7 +359,13 @@ async fn an_extraction_that_finishes_in_time_is_waited_for() {
         marks.store(true, std::sync::atomic::Ordering::SeqCst);
     });
     tx.send(()).unwrap();
-    assert!(crate::turn::finish_within(&mut tasks, crate::turn::MEMORY_EXTRACTION_GRACE).await);
+    assert!(
+        crate::turn::memory_extraction::finish_within(
+            &mut tasks,
+            crate::turn::MEMORY_EXTRACTION_GRACE
+        )
+        .await
+    );
     assert!(done.load(std::sync::atomic::Ordering::SeqCst));
 }
 
@@ -367,7 +373,9 @@ async fn an_extraction_that_finishes_in_time_is_waited_for() {
 async fn an_extraction_still_running_past_the_grace_is_aborted() {
     let mut tasks = tokio::task::JoinSet::new();
     let gone = never_finishing(&mut tasks);
-    assert!(!crate::turn::finish_within(&mut tasks, std::time::Duration::ZERO).await);
+    assert!(
+        !crate::turn::memory_extraction::finish_within(&mut tasks, std::time::Duration::ZERO).await
+    );
     assert!(gone.load(std::sync::atomic::Ordering::SeqCst));
     assert!(tasks.is_empty());
 }
@@ -388,7 +396,7 @@ async fn a_stopped_engine_leaves_no_extraction_running() {
         .skip_warmup(true)
         .build()
         .expect("build should succeed");
-    let gone = never_finishing(&mut agent.memory.extractions);
+    let gone = never_finishing(agent.memory.extractions_mut());
     let cancel = tokio_util::sync::CancellationToken::new();
     cancel.cancel();
     agent.run(cancel).await;

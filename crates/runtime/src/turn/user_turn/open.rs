@@ -27,9 +27,7 @@ impl Agent {
         // per-session one wearing a per-turn name — and a script bound to a
         // point that fires per tool call goes quiet in the middle of a long
         // session with nothing to say why.
-        for turn_start in self.gate.turn_starts.iter() {
-            turn_start();
-        }
+        self.gate.run_turn_starts();
 
         // UserPromptSubmit: where a hook sees the message that opens a turn,
         // before any turn setup (skills rescan, FrozenContext,
@@ -97,16 +95,7 @@ impl Agent {
         // tools only for the rest of the turn it was invoked in — clear
         // whatever the *previous* turn granted before this new user message
         // starts a fresh one.
-        use base::interface::permission::{Grant, GrantScope};
-        let slash_skill_grants = std::mem::take(&mut self.slash_skill_grants);
-        if let Some(grants) = &self.gate.permission.grants {
-            grants.clear(GrantScope::Turn);
-            for (tool, pattern) in slash_skill_grants {
-                let _ = grants
-                    .grant(Grant::new(tool, pattern, GrantScope::Turn))
-                    .await;
-            }
-        }
+        self.gate.begin_turn().await;
 
         ControlFlow::Continue(content)
     }
@@ -115,7 +104,7 @@ impl Agent {
         self.announce_skill_changes();
         self.refresh_frozen_context().await;
 
-        if !self.prompt.session_context_injected {
+        if !self.prompt.context_injected() {
             self.inject_session_context().await;
         }
         self.push_system_reminder();
@@ -137,7 +126,7 @@ impl Agent {
             .iter()
             .map(|s| s.name.clone())
             .collect();
-        if let Some(skills_before) = self.prompt.announced_skills.replace(skills_now.clone()) {
+        if let Some(skills_before) = self.prompt.replace_announced(skills_now.clone()) {
             // Surface the diff as a system-reminder in the conversation itself,
             // not just a rebuilt static "## Available Skills" list — a model
             // mid-session tends to trust what it already said over a change
@@ -192,7 +181,7 @@ impl Agent {
     async fn refresh_frozen_context(&mut self) {
         // Compute frozen context lazily on first turn. Includes git status,
         // branch, platform, etc.
-        let collected_this_turn = self.prompt.frozen.is_none();
+        let collected_this_turn = self.prompt.frozen().is_none();
         let engine_git = engine_exec_from(
             &self.config,
             &self.exec,
@@ -200,7 +189,7 @@ impl Agent {
             self.settings.trust(),
         );
         if collected_this_turn {
-            self.prompt.frozen = Some(
+            self.prompt.set_frozen(
                 crate::turn::collect_frozen(
                     &self.settings.paths,
                     &*self.policies.environment,
@@ -219,7 +208,7 @@ impl Agent {
         // the point of the type. Skipped on the turn that just collected —
         // that snapshot is seconds old.
         if !collected_this_turn {
-            if let Some(ref mut frozen) = self.prompt.frozen {
+            if let Some(frozen) = self.prompt.frozen_mut() {
                 frozen.refresh_git_status(&engine_git).await;
             }
         }
@@ -231,7 +220,7 @@ impl Agent {
         // Called once per
         // turn, and the git slice it reads was refreshed just above, so the
         // status shown is this turn's, not the session's opening snapshot.
-        if let Some(ref frozen) = self.prompt.frozen {
+        if let Some(frozen) = self.prompt.frozen() {
             let ctx = base::interface::scene::ReminderContext {
                 cwd: std::borrow::Cow::Owned(
                     self.settings

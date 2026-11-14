@@ -620,7 +620,7 @@ async fn a_slash_command_expands_through_the_catalog_and_grants_for_its_turn() {
         catalog,
     ));
     let grants = Arc::new(Grants::default());
-    agent.gate.permission.grants = Some(grants.clone());
+    agent.gate.permission_mut().grants = Some(grants.clone());
 
     agent
         .process_turn(

@@ -96,10 +96,7 @@ impl Agent {
                     stop_reason: stop_reason.to_string(),
                     api_calls,
                     tool_calls,
-                    permission_denials: self
-                        .gate
-                        .permission_denial_count
-                        .load(std::sync::atomic::Ordering::Relaxed),
+                    permission_denials: self.gate.denials(),
                     last_tool_name: None,
                     last_tool_was_error: false,
                     turn_duration_ms: start.elapsed().as_millis() as u64,

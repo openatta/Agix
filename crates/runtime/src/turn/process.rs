@@ -3,7 +3,6 @@
 use super::attachments::describe_attachments;
 use super::request::sync_mcp_adapters;
 use super::token_budget::{find_token_budget_directive, strip_token_budget_directive};
-use super::tool_exec::resolve_permission_response;
 use super::{TurnError, TurnOutcome, ENDS_A_GOAL_ROUND_NORMALLY};
 use crate::agent::{Agent, EngineCommand, InputMessage};
 use base::event::AgentEvent;
@@ -145,20 +144,11 @@ impl Agent {
                 // function's comment. Kept for direct `process_turn` callers
                 // (tests, embedders driving the engine themselves), sharing
                 // one implementation so the two paths can't diverge.
-                resolve_permission_response(
-                    &self.gate.pending_permissions,
-                    &self.gate.permission_denial_count,
-                    prompt_id,
-                    decision,
-                );
+                self.gate.resolve_permission(prompt_id, decision);
                 Ok(TurnOutcome::default())
             }
             InputMessage::QuestionResponse { prompt_id, answer } => {
-                crate::elicitation::resolve_question_response(
-                    &self.gate.pending_questions,
-                    &prompt_id,
-                    answer,
-                );
+                self.gate.resolve_question(&prompt_id, answer);
                 Ok(TurnOutcome::default())
             }
             InputMessage::Steer { .. } => Ok(TurnOutcome::default()),
@@ -285,9 +275,14 @@ impl Agent {
                     let expansion = self
                         .tooling
                         .commands
-                        .run_prompt_command(&entry, sc, &ctx, self.gate.permission.policy.as_ref())
+                        .run_prompt_command(
+                            &entry,
+                            sc,
+                            &ctx,
+                            self.gate.permission().policy.as_ref(),
+                        )
                         .await;
-                    self.slash_skill_grants = expansion.grants;
+                    self.gate.set_slash_grants(expansion.grants);
                     return Some(
                         self.run_user_turn(
                             expansion.text,
@@ -424,11 +419,11 @@ impl Agent {
         stop: &CancellationToken,
         build: impl FnOnce(hooks::HookInput) -> hooks::HookInput,
     ) {
-        if !self.gate.hooks.has_hooks_for(event) {
+        if !self.gate.hooks().has_hooks_for(event) {
             return;
         }
         let input = build(self.lifecycle_input(format!("{event:?}")));
-        let _ = self.gate.hooks.run(event, &input, stop).await;
+        let _ = self.gate.hooks().run(event, &input, stop).await;
     }
 
     /// A hook payload for `event` carrying only the session's id, cwd and
@@ -568,12 +563,12 @@ impl Agent {
             PromptScreen::Pass(content) => content,
             blocked => return blocked,
         };
-        let attachments = if self.prompt.prompt_middleware.is_empty() {
+        let attachments = if self.prompt.middleware().is_empty() {
             Vec::new()
         } else {
             describe_attachments(attachments).await
         };
-        for middleware in self.prompt.prompt_middleware.iter() {
+        for middleware in self.prompt.middleware().iter() {
             let call = base::interface::prompt_middleware::PromptCall {
                 session_id: &self.session.session_id,
                 turn_id: &self.current_turn_id,
@@ -608,7 +603,7 @@ impl Agent {
     ) -> PromptScreen {
         if !self
             .gate
-            .hooks
+            .hooks()
             .has_hooks_for(hooks::HookEvent::UserPromptSubmit)
         {
             return PromptScreen::Pass(content);
@@ -624,7 +619,7 @@ impl Agent {
         };
         let hook_result = self
             .gate
-            .hooks
+            .hooks()
             .run(hooks::HookEvent::UserPromptSubmit, &prompt_input, stop)
             .await;
         if let Some(response) = hook_result.blocked() {

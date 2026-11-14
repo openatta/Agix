@@ -231,25 +231,21 @@ impl Agent {
 
         // If the previous session was interrupted while a permission prompt was
         // pending, re-inject the stored decision so the agent can continue.
-        if let Some(decision) = self.gate.orphaned_permission.take() {
-            if !self.gate.has_handled_orphaned_permission {
-                tracing::info!(
-                    ?decision,
-                    "Recovering orphaned permission from previous session"
-                );
-                self.gate.has_handled_orphaned_permission = true;
-                let _ = self
-                    .process_turn(
-                        InputMessage::PermissionResponse {
-                            prompt_id: "orphaned".into(),
-                            decision,
-                        },
-                        cancel.clone(),
-                    )
-                    .await;
-            }
+        if let Some(decision) = self.gate.take_orphaned() {
+            tracing::info!(
+                ?decision,
+                "Recovering orphaned permission from previous session"
+            );
+            let _ = self
+                .process_turn(
+                    InputMessage::PermissionResponse {
+                        prompt_id: "orphaned".into(),
+                        decision,
+                    },
+                    cancel.clone(),
+                )
+                .await;
         }
-        self.gate.has_handled_orphaned_permission = true;
 
         if !self.identity.skip_warmup {
             self.warmup().await;
@@ -281,9 +277,11 @@ impl Agent {
             // stray read of it yields `None` rather than blocking forever.
             let (_closed_tx, closed_rx) = mpsc::unbounded_channel();
             let raw_rx = std::mem::replace(&mut self.channels.input_rx, closed_rx);
-            let pending = self.gate.pending_permissions.clone();
-            let questions = self.gate.pending_questions.clone();
-            let denials = self.gate.permission_denial_count.clone();
+            let crate::turn::DemuxHandles {
+                pending,
+                questions,
+                denials,
+            } = self.gate.demux_handles();
             let turn_cancel = self.channels.current_turn_cancel.clone();
             let session_cancel = cancel.clone();
             let steering = self.channels.steering.clone();
@@ -313,7 +311,7 @@ impl Agent {
         let exit_reason: &'static str;
         loop {
             self.gate
-                .hooks
+                .hooks()
                 .check_rewakes(self.session_ended(), self.lifecycle_input(String::new()))
                 .await;
 
@@ -388,11 +386,9 @@ impl Agent {
         // What a failed write left for the next step, and goal changes made
         // since the last one, would otherwise never reach the log.
         let _ = self.flush_log().await;
-        crate::turn::finish_within(
-            &mut self.memory.extractions,
-            crate::turn::MEMORY_EXTRACTION_GRACE,
-        )
-        .await;
+        self.memory
+            .finish(crate::turn::MEMORY_EXTRACTION_GRACE)
+            .await;
         // SessionEnd — one exit point for all three ways the loop ends
         // (shutdown command, input channel closed, cancellation), so a hook
         // that cleans up gets to run regardless of which one happened.
@@ -411,10 +407,7 @@ impl Agent {
                     total_turns: self.session.turn_count,
                     total_api_calls: spent.api_calls,
                     total_tool_calls: spent.tool_calls,
-                    total_permission_denials: self
-                        .gate
-                        .permission_denial_count
-                        .load(std::sync::atomic::Ordering::Relaxed),
+                    total_permission_denials: self.gate.denials(),
                     total_input_tokens: spent.usage.input_tokens.into(),
                     total_output_tokens: spent.usage.output_tokens.into(),
                     total_cache_creation: spent.usage.cache_creation_input_tokens.into(),
@@ -472,7 +465,7 @@ impl Agent {
         // Skills directories are deliberately not rescanned here: the watcher
         // `Builder::build()` attaches to `self.skills` is already live, and
         // `build()` scanned the same directories moments ago.
-        self.prompt.frozen = Some(frozen);
+        self.prompt.set_frozen(frozen);
         tracing::debug!("Startup warmup complete");
     }
 
@@ -497,8 +490,8 @@ impl Agent {
         id: &str,
     ) -> Result<(), session::session::SessionError> {
         self.session.resume(id).await?;
-        self.prompt.session_context_injected =
-            crate::turn::holds_session_context(&self.session.messages);
+        self.prompt
+            .set_context_injected(crate::turn::holds_session_context(&self.session.messages));
         Ok(())
     }
 
@@ -594,12 +587,12 @@ impl Agent {
 
     /// The session's permission: its policy and its grants.
     pub fn permission(&self) -> &PermissionSet {
-        &self.gate.permission
+        self.gate.permission()
     }
 
     /// Access the memory store (read-only).
     pub fn memory(&self) -> &MemoryStore {
-        &self.memory.memory_store
+        self.memory.store()
     }
 
     pub fn skills(&self) -> &dyn base::interface::skill_catalog::SkillCatalog {
@@ -608,7 +601,7 @@ impl Agent {
 
     /// Access the hooks runner (read-only).
     pub fn hooks(&self) -> &HookRunner {
-        &self.gate.hooks
+        self.gate.hooks()
     }
 
     /// Access the MCP manager (read-only).

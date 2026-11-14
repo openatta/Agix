@@ -290,12 +290,12 @@ impl Agent {
             telemetry_handle: self.telemetry.handle().clone(),
             turn_id: self.current_turn_id.clone(),
             cancel: cancel.clone(),
-            hooks: Arc::clone(&self.gate.hooks),
+            hooks: Arc::clone(self.gate.hooks()),
             config: Arc::clone(&self.config),
             exec: self.exec.clone(),
-            permission: self.gate.permission.clone(),
+            permission: self.gate.permission().clone(),
             session_state: Arc::clone(&self.session_state),
-            elicitation: Arc::clone(&self.gate.elicitation),
+            elicitation: Arc::clone(self.gate.elicitation()),
             tool_middleware: Arc::clone(&self.tooling.tool_middleware),
             result_transformers: Arc::clone(&self.tooling.result_transformers),
             discontinued: Arc::clone(discontinued),
@@ -395,7 +395,7 @@ impl Agent {
             && self.settings.paths.project_root().is_some()
             && Self::included_git_mutating_bash_call(self.this_step())
         {
-            if let Some(ref mut frozen) = self.prompt.frozen {
+            if let Some(frozen) = self.prompt.frozen_mut() {
                 frozen
                     .refresh_git(&engine_exec_from(
                         &self.config,

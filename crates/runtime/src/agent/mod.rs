@@ -25,6 +25,7 @@ mod commands;
 mod instruments;
 mod messages;
 mod run;
+use crate::turn::{Gate, Memory, PromptContext};
 pub use builder::{default_run_slots, Builder, HostContracts, HostLayers};
 use instruments::Telemetry;
 pub use messages::*;
@@ -91,9 +92,6 @@ pub struct Agent {
     /// Read by the *next* turn, to decide whether to rescan for skills; starts
     /// `true` so the first turn scans.
     pub(crate) last_had_tool_uses: bool,
-    /// Set before the turn begins and taken once its prompt has been screened;
-    /// a turn a hook blocks leaves them for the next one.
-    pub(crate) slash_skill_grants: Vec<(String, Option<String>)>,
     /// Keyed by `session.turn_count`, which only a completed turn advances, so
     /// a cancelled turn's counts carry into the next.
     pub(crate) repeat_guard: crate::repeat_guard::RepeatGuard,
@@ -137,57 +135,12 @@ pub(crate) struct Tooling {
     pub(crate) tool_policy: Arc<crate::tool_policy::ToolPolicy>,
 }
 
-/// Permission, the questions put to the host, and hooks.
-pub(crate) struct Gate {
-    pub(crate) permission: PermissionSet,
-    /// A `prompt_id` with no entry (timed out, stale or duplicate response)
-    /// is ignored by whoever resolves it.
-    pub(crate) pending_permissions: PendingPermissions,
-    pub(crate) pending_questions: crate::elicitation::PendingQuestions,
-    pub(crate) elicitation: Arc<dyn base::interface::elicitation::Elicitation>,
-    /// Atomic and shared because the input demultiplexer resolves permission
-    /// responses off the turn's thread, with no `&mut self`.
-    pub(crate) permission_denial_count: Arc<std::sync::atomic::AtomicU32>,
-    pub(crate) orphaned_permission: Option<crate::agent::PermissionDecision>,
-    pub(crate) has_handled_orphaned_permission: bool,
-    pub(crate) hooks: Arc<HookRunner>,
-    pub(crate) turn_starts: Arc<Vec<crate::plugin::TurnStart>>,
-}
-
-/// What a request's system prompt and opening context are built from.
-pub(crate) struct PromptContext {
-    pub(crate) prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry>,
-    pub(crate) prompt_assembler: Arc<dyn base::interface::prompt_assembler::PromptAssembler>,
-    pub(crate) prompt_middleware:
-        Arc<Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>>,
-    /// Computed lazily on the first turn unless the builder seeded it.
-    pub(crate) frozen: Option<base::frozen::FrozenContext>,
-    pub(crate) claude_md_content: Option<String>,
-    /// Read on every assembly, as the rule directories used to be scanned.
-    pub(crate) rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
-    /// Cleared by `/clear` and by compaction.
-    pub(crate) session_context_injected: bool,
-    /// `None` until the first turn, whose prompt lists them all.
-    pub(crate) announced_skills: Option<std::collections::HashSet<String>>,
-}
-
 /// Pluggable answers to "how long", "how much" and "is it healthy".
 pub(crate) struct Policies {
     pub(crate) turn_policy: Arc<dyn base::interface::turn_policy::TurnPolicy>,
     pub(crate) budget_policy: Arc<dyn base::interface::budget_policy::BudgetPolicy>,
     pub(crate) health: Arc<base::interface::health::HealthChecks>,
     pub(crate) environment: Arc<dyn base::interface::environment::Environment>,
-}
-
-/// Durable memory and how a turn recalls from it.
-pub(crate) struct Memory {
-    pub(crate) memory_store: Arc<MemoryStore>,
-    pub(crate) memory_retriever: Arc<dyn base::interface::memory_contracts::MemoryRetriever>,
-    pub(crate) retrieval_hooks: Arc<Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>>,
-    pub(crate) extract_after_turn: bool,
-    /// Extractions started at the end of a turn, finished or abandoned when
-    /// the session stops.
-    pub(crate) extractions: tokio::task::JoinSet<()>,
 }
 
 /// Compaction and micro-compaction, and what they remember between turns.

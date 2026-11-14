@@ -205,10 +205,7 @@ async fn a_host_can_supply_the_standing_instructions_without_a_file() {
         .build()
         .expect("build should succeed");
 
-    assert_eq!(
-        agent.prompt.claude_md_content.as_deref(),
-        Some("Always run the linter.")
-    );
+    assert_eq!(agent.prompt.claude_md(), Some("Always run the linter."));
 }
 
 #[test]

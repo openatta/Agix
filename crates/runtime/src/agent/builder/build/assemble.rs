@@ -74,7 +74,6 @@ impl Builder {
             settings,
             turn: Default::default(),
             last_had_tool_uses: true,
-            slash_skill_grants: Vec::new(),
             repeat_guard: Default::default(),
             telemetry: Telemetry::new(w.resolved.telemetry_handle),
             channels: Channels {
@@ -138,27 +137,25 @@ impl Builder {
         hooks: Arc<HookRunner>,
         turn_starts: Vec<crate::plugin::TurnStart>,
     ) -> Gate {
-        Gate {
+        let elicitation = self.ext.elicitation.take().unwrap_or_else(|| {
+            let channel = crate::elicitation::ChannelElicitation::new(
+                event_tx.clone(),
+                pending_permissions.clone(),
+            );
+            Arc::new(if self.spec.question_prompts {
+                channel.with_questions(pending_questions.clone())
+            } else {
+                channel
+            })
+        });
+        Gate::new(
             permission,
-            elicitation: self.ext.elicitation.take().unwrap_or_else(|| {
-                let channel = crate::elicitation::ChannelElicitation::new(
-                    event_tx.clone(),
-                    pending_permissions.clone(),
-                );
-                Arc::new(if self.spec.question_prompts {
-                    channel.with_questions(pending_questions.clone())
-                } else {
-                    channel
-                })
-            }),
+            elicitation,
             pending_permissions,
             pending_questions,
-            permission_denial_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            orphaned_permission: None,
-            has_handled_orphaned_permission: false,
             hooks,
-            turn_starts: Arc::new(turn_starts),
-        }
+            turn_starts,
+        )
     }
 
     pub(super) fn prompt_context(
@@ -168,20 +165,17 @@ impl Builder {
         claude_md_content: Option<String>,
         rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
     ) -> PromptContext {
-        PromptContext {
+        PromptContext::new(
             prompt_registry,
-            prompt_assembler: self
-                .ext
+            self.ext
                 .prompt_assembler
                 .take()
                 .unwrap_or_else(|| Arc::new(base::interface::prompt_assembler::DefaultAssembler)),
-            prompt_middleware: Arc::new(prompt_middleware),
-            frozen: self.spec.frozen.take(),
+            prompt_middleware,
+            self.spec.frozen.take(),
             claude_md_content,
             rules,
-            session_context_injected: false,
-            announced_skills: None,
-        }
+        )
     }
 
     pub(super) fn memory(
@@ -189,17 +183,15 @@ impl Builder {
         memory_store: Arc<MemoryStore>,
         retrieval_hooks: Vec<Arc<dyn base::interface::memory_contracts::RetrievalHook>>,
     ) -> Memory {
-        Memory {
+        Memory::new(
             memory_store,
-            memory_retriever: self
-                .host
+            self.host
                 .memory_retriever
                 .take()
                 .unwrap_or_else(|| Arc::new(base::interface::memory_contracts::LlmRetriever)),
-            retrieval_hooks: Arc::new(retrieval_hooks),
-            extract_after_turn: self.spec.memory_extraction,
-            extractions: tokio::task::JoinSet::new(),
-        }
+            retrieval_hooks,
+            self.spec.memory_extraction,
+        )
     }
 }
 

@@ -2,7 +2,7 @@
 
 use super::TurnLoopState;
 use crate::agent::Agent;
-use crate::turn::memory_extraction::extract_memories_after_turn;
+use crate::turn::recall::Extraction;
 use crate::turn::TurnOutcome;
 use base::interface::model::MessageRole;
 use base::interface::model::ModelContentBlock;
@@ -105,9 +105,8 @@ impl Agent {
         // Gated on `memory_enabled` — see the prefetch block above for why this matters
         // (the flag's whole point is opting out of the memory subsystem entirely, not just
         // the static prompt injection).
-        if self.settings.values.memory_enabled && self.memory.extract_after_turn {
-            let session_messages = self.session.messages().to_vec();
-            let store = self.memory.memory_store.clone();
+        if self.settings.values.memory_enabled && self.memory.extracts_after_turn() {
+            let messages = self.session.messages().to_vec();
             // `task_models.memory` lets an app point this background
             // extraction call at a different vendor/model than the main
             // conversation — same TaskRouter mechanism already proven
@@ -127,21 +126,13 @@ impl Agent {
                     self.settings.values.model.model_name.clone(),
                 ),
             };
-            let prompt_intro = self.scene.memory_extraction_intro.clone();
-            let environment = self.policies.environment.clone();
-            let session_id = self.session.session_id.clone();
-            while self.memory.extractions.try_join_next().is_some() {}
-            self.memory.extractions.spawn(async move {
-                extract_memories_after_turn(
-                    store,
-                    &session_messages,
-                    model.as_ref(),
-                    &model_name,
-                    prompt_intro.as_deref(),
-                    &*environment,
-                    &session_id,
-                )
-                .await;
+            self.memory.spawn_extraction(Extraction {
+                messages,
+                model,
+                model_name,
+                prompt_intro: self.scene.memory_extraction_intro.clone(),
+                environment: self.policies.environment.clone(),
+                session_id: self.session.session_id.clone(),
             });
         }
     }

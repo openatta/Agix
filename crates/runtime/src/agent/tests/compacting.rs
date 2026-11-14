@@ -107,7 +107,7 @@ pub(super) fn compacting_agent_and_events(
     agent
         .session
         .push_message(text_message(MessageRole::Assistant, "hi"));
-    agent.prompt.session_context_injected = true;
+    agent.prompt.set_context_injected(true);
     (agent, rx)
 }
 
@@ -124,7 +124,7 @@ pub(super) async fn compacted_with(
         )
         .await
         .expect("a compaction");
-    agent.prompt.session_context_injected
+    agent.prompt.context_injected()
 }
 
 pub(super) fn in_plan_mode_with_a_task(agent: &Agent) {
@@ -217,7 +217,7 @@ async fn an_automatic_compaction_with_nothing_to_drop_changes_nothing() {
         .await;
     assert_eq!(outcome, Err(crate::turn::NotCompacted::NothingToDrop));
     assert_eq!(transcript_text(&agent), before);
-    assert!(agent.prompt.session_context_injected);
+    assert!(agent.prompt.context_injected());
     assert_eq!(compact_frames(&mut rx), 0);
 }
 
@@ -241,7 +241,7 @@ async fn a_compaction_whose_recovery_outweighs_what_it_dropped_is_not_applied() 
         .await;
     assert_eq!(outcome, Err(crate::turn::NotCompacted::NothingToDrop));
     assert_eq!(agent.session.messages().len(), before);
-    assert!(agent.prompt.session_context_injected);
+    assert!(agent.prompt.context_injected());
     assert_eq!(compact_frames(&mut rx), 0);
 }
 
@@ -264,7 +264,7 @@ async fn compacting_after_a_size_refusal_is_a_full_compaction() {
         )
         .await
         .expect("compacted");
-    assert!(!agent.prompt.session_context_injected);
+    assert!(!agent.prompt.context_injected());
     assert_eq!(compact_frames(&mut rx), 1);
 }
 

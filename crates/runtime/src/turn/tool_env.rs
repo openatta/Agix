@@ -305,7 +305,7 @@ impl Agent {
             parent_messages: None,
             agent_depth: self.identity.agent_depth,
             events_tx: None,
-            elicitation: Some(Arc::clone(&self.gate.elicitation)),
+            elicitation: Some(Arc::clone(self.gate.elicitation())),
             exec: self.exec.clone(),
             dispatch: None,
             from_code: false,

@@ -156,7 +156,7 @@ fn describe(agent: &Agent, seen: &Mutex<Vec<String>>) -> String {
         env.read_anywhere, env.unattended, env.base_mode
     )
     .unwrap();
-    let blocks = agent.prompt.prompt_registry.blocks();
+    let blocks = agent.prompt.registry().blocks();
     let names: Vec<&str> = blocks.iter().map(|b| b.name.as_str()).collect();
     writeln!(out, "prompt_registry_blocks: {names:?}").unwrap();
     for line in seen.lock().unwrap().iter() {

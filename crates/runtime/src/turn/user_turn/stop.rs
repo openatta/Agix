@@ -54,7 +54,7 @@ impl Agent {
         state: &mut TurnLoopState,
         cancel: &CancellationToken,
     ) -> Option<ControlFlow<StopReason>> {
-        if !self.gate.hooks.has_hooks_for(hooks::HookEvent::Stop) {
+        if !self.gate.hooks().has_hooks_for(hooks::HookEvent::Stop) {
             return None;
         }
         let stop_hook_input = hooks::HookInput {
@@ -67,7 +67,7 @@ impl Agent {
         };
         let hook_result = self
             .gate
-            .hooks
+            .hooks()
             .run(hooks::HookEvent::Stop, &stop_hook_input, cancel)
             .await;
         if hook_result.discontinued() {

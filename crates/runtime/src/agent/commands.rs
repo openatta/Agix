@@ -36,11 +36,8 @@ impl Agent {
         if let Err(e) = self.session.clear().await {
             tracing::warn!(error = %e, "failed to record /clear in the transcript");
         }
-        self.prompt.session_context_injected = false;
-        self.prompt.announced_skills = None;
-        self.gate
-            .permission_denial_count
-            .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.prompt.forget_conversation();
+        self.gate.reset_denials();
         let mut ledger = self.session_state.ledger();
         ledger.invoked_skills.clear();
         ledger.token_target.target = None;

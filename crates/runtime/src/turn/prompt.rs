@@ -9,6 +9,111 @@ use base::interface::scene::ScenePromptContext;
 use base::prompt::PromptBlock;
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::sync::Arc;
+
+/// What a request's system prompt and opening context are built from.
+pub(crate) struct PromptContext {
+    prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry>,
+    prompt_assembler: Arc<dyn base::interface::prompt_assembler::PromptAssembler>,
+    prompt_middleware: Arc<Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>>,
+    /// Computed lazily on the first turn unless the builder seeded it.
+    frozen: Option<base::frozen::FrozenContext>,
+    claude_md_content: Option<String>,
+    /// Read on every assembly, as the rule directories used to be scanned.
+    rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
+    /// Cleared by `/clear` and by compaction.
+    session_context_injected: bool,
+    /// `None` until the first turn, whose prompt lists them all.
+    announced_skills: Option<std::collections::HashSet<String>>,
+}
+
+impl PromptContext {
+    pub(crate) fn new(
+        prompt_registry: Arc<dyn base::interface::prompt_registry::PromptRegistry>,
+        prompt_assembler: Arc<dyn base::interface::prompt_assembler::PromptAssembler>,
+        prompt_middleware: Vec<Arc<dyn base::interface::prompt_middleware::PromptMiddleware>>,
+        frozen: Option<base::frozen::FrozenContext>,
+        claude_md_content: Option<String>,
+        rules: Arc<dyn base::interface::instruction_provider::RuleProvider>,
+    ) -> Self {
+        Self {
+            prompt_registry,
+            prompt_assembler,
+            prompt_middleware: Arc::new(prompt_middleware),
+            frozen,
+            claude_md_content,
+            rules,
+            session_context_injected: false,
+            announced_skills: None,
+        }
+    }
+
+    pub(crate) fn registry(&self) -> &Arc<dyn base::interface::prompt_registry::PromptRegistry> {
+        &self.prompt_registry
+    }
+
+    pub(crate) fn middleware(
+        &self,
+    ) -> &[Arc<dyn base::interface::prompt_middleware::PromptMiddleware>] {
+        &self.prompt_middleware
+    }
+
+    #[cfg(test)]
+    pub(crate) fn claude_md(&self) -> Option<&str> {
+        self.claude_md_content.as_deref()
+    }
+
+    pub(crate) fn frozen(&self) -> Option<&base::frozen::FrozenContext> {
+        self.frozen.as_ref()
+    }
+
+    pub(crate) fn frozen_mut(&mut self) -> Option<&mut base::frozen::FrozenContext> {
+        self.frozen.as_mut()
+    }
+
+    pub(crate) fn set_frozen(&mut self, frozen: base::frozen::FrozenContext) {
+        self.frozen = Some(frozen);
+    }
+
+    pub(crate) fn surfaced(&self) -> Option<&HashSet<String>> {
+        self.frozen.as_ref().map(|f| &f.already_surfaced)
+    }
+
+    pub(crate) fn mark_surfaced<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        if let Some(ref mut frozen) = self.frozen {
+            for name in names {
+                frozen.already_surfaced.insert(name.to_string());
+            }
+        }
+    }
+
+    pub(crate) fn context_injected(&self) -> bool {
+        self.session_context_injected
+    }
+
+    pub(crate) fn set_context_injected(&mut self, injected: bool) {
+        self.session_context_injected = injected;
+    }
+
+    /// After compaction: the opening context counts as injected only while
+    /// the kept messages still hold it, and every memory may surface again.
+    pub(crate) fn reset_context(&mut self, still_held: bool) {
+        self.session_context_injected = still_held;
+        if let Some(ref mut frozen) = self.frozen {
+            frozen.already_surfaced.clear();
+        }
+    }
+
+    /// After `/clear`: the next turn opens as the first did.
+    pub(crate) fn forget_conversation(&mut self) {
+        self.session_context_injected = false;
+        self.announced_skills = None;
+    }
+
+    pub(crate) fn replace_announced(&mut self, now: HashSet<String>) -> Option<HashSet<String>> {
+        self.announced_skills.replace(now)
+    }
+}
 
 /// Tokens a request spends before any conversation content: the assembled
 /// system prompt plus every tool definition's name, description and JSON
@@ -432,7 +537,7 @@ impl Agent {
                 .iter()
                 .flat_map(|f| f.memory_blocks.iter().map(|e| e.path.clone()))
                 .collect();
-            if let Err(e) = self.gate.hooks.watch_files(&loaded) {
+            if let Err(e) = self.gate.hooks().watch_files(&loaded) {
                 tracing::warn!(error = %e, "could not watch the instruction files for FileChanged");
             }
         }
@@ -493,10 +598,10 @@ impl Agent {
         let rules = self.prompt.rules.rules();
         let blocks = self.prompt.prompt_assembler.assemble(
             &base::interface::prompt_assembler::AssemblyRequest {
-                registry: self.prompt.prompt_registry.as_ref(),
+                registry: self.prompt.registry().as_ref(),
                 scene: self.scene.as_ref(),
                 settings: &self.settings.values,
-                memory_store: &self.memory.memory_store,
+                memory_store: self.memory.store(),
                 ctx: &ctx,
                 rules: &rules,
                 skills_text: skills_ref,
@@ -508,7 +613,7 @@ impl Agent {
         // synchronous function for every caller that registers none.
         base::interface::prompt_assembly::run_async_assembly_hooks(
             blocks,
-            &self.prompt.prompt_registry.async_assembly_hooks(),
+            &self.prompt.registry().async_assembly_hooks(),
             &ctx,
         )
         .await

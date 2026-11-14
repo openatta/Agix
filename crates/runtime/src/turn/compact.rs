@@ -484,10 +484,8 @@ impl Agent {
         // recovery above. Resetting both re-injects nothing here; it makes the
         // next turn's injection paths eligible again. A strategy that kept the
         // opening message keeps the flag.
-        self.prompt.session_context_injected = holds_session_context(&self.session.messages);
-        if let Some(ref mut frozen) = self.prompt.frozen {
-            frozen.already_surfaced.clear();
-        }
+        self.prompt
+            .reset_context(holds_session_context(&self.session.messages));
 
         tracing::info!(
             strategy = ?strategy,
@@ -516,12 +514,12 @@ impl Agent {
         } = *summary;
         if self
             .gate
-            .hooks
+            .hooks()
             .has_hooks_for(hooks::config::HookEvent::PostCompact)
         {
             let _ = self
                 .gate
-                .hooks
+                .hooks()
                 .run(
                     hooks::config::HookEvent::PostCompact,
                     &hooks::HookInput {
@@ -553,14 +551,14 @@ impl Agent {
     ) -> bool {
         if !self
             .gate
-            .hooks
+            .hooks()
             .has_hooks_for(hooks::config::HookEvent::PreCompact)
         {
             return true;
         }
         let hook_result = self
             .gate
-            .hooks
+            .hooks()
             .run(
                 hooks::config::HookEvent::PreCompact,
                 &hooks::HookInput {
