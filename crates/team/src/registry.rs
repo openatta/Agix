@@ -155,6 +155,26 @@ impl TeamRegistry {
         }
     }
 
+    /// As [`update_member_lifecycle`](Self::update_member_lifecycle), for a
+    /// member already on record only: an unknown team or member is left
+    /// unknown.
+    pub fn update_recorded_member_lifecycle(
+        &self,
+        team_name: &str,
+        label: &str,
+        lifecycle: TeammateLifecycle,
+        idle_since_secs: Option<u64>,
+    ) {
+        let mut teams = self.teams.write().unwrap_or_else(|e| e.into_inner());
+        let recorded = teams
+            .get_mut(team_name)
+            .and_then(|t| t.members.iter_mut().find(|m| m.label == label));
+        if let Some(m) = recorded {
+            m.lifecycle = lifecycle;
+            m.idle_since_secs = idle_since_secs;
+        }
+    }
+
     /// The permission grant already established for this team's persistent
     /// members, if any — see `TeamInfo::permission_mode`'s doc comment.
     pub fn team_permission_mode(&self, team_name: &str) -> Option<PermissionMode> {

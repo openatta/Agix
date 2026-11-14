@@ -21,7 +21,7 @@ use crate::agent_tool::{
 /// A live member. Its agent and channels live inside its loop; `cancel` is
 /// enough to stop it.
 pub(crate) struct PersistentMember {
-    /// For logs only: routing is by the `(team, member)` key, and a name
+    /// Tells this member from one spawned later under the same key; a name
     /// reused after a stop gets a new id.
     pub(crate) id: String,
     pub(crate) session_id: String,
@@ -237,7 +237,7 @@ impl Delegator {
         live.write().unwrap_or_else(|e| e.into_inner()).insert(
             key,
             PersistentMember {
-                id,
+                id: id.clone(),
                 session_id: spec.session_id.clone(),
                 inbox: inbox.clone(),
                 cancel: cancel.clone(),
@@ -249,6 +249,8 @@ impl Delegator {
             .deliver(self, &seat, &cancel, prompt)
             .ok_or_else(|| DelegateError::Build("the new member's inbox closed".into()))?;
         tokio::spawn(member_loop(MemberLoop {
+            id,
+            live: live.clone(),
             delegate,
             messages,
             cancel,
@@ -331,6 +333,8 @@ impl Delegator {
 }
 
 struct MemberLoop {
+    id: String,
+    live: Arc<RwLock<HashMap<(String, String), PersistentMember>>>,
     delegate: Delegate,
     messages: tokio::sync::mpsc::UnboundedReceiver<PersistentMessage>,
     cancel: CancellationToken,
@@ -349,9 +353,18 @@ struct MemberLoop {
 }
 
 impl MemberLoop {
+    /// Recorded for `TeamList` while this is the member under its key. Once
+    /// stopped it only updates its own entry, if the team still has one: a
+    /// turn that outlives the stop must not write over a member that took its
+    /// place, nor bring back a team deleted under it.
     fn lifecycle(&self, state: team::coordinator::TeammateLifecycle, at: Option<u64>) {
-        if let Some(r) = &self.registry {
-            r.update_member_lifecycle(&self.seat.team, &self.seat.member, state, at);
+        let Some(r) = &self.registry else { return };
+        let (team, member) = (&self.seat.team, &self.seat.member);
+        let live = self.live.read().unwrap_or_else(|e| e.into_inner());
+        match live.get(&(team.clone(), member.clone())) {
+            Some(m) if m.id == self.id => r.update_member_lifecycle(team, member, state, at),
+            Some(_) => {}
+            None => r.update_recorded_member_lifecycle(team, member, state, at),
         }
     }
 }

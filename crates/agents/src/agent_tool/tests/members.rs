@@ -967,3 +967,164 @@ async fn a_delegates_member_is_refused_at_the_cap() {
         base::context::task::TaskStatus::Failed
     );
 }
+
+/// Holds a turn call whose conversation carries `mark` until `release`,
+/// whether or not the call is cancelled; answers every other one at once.
+struct HoldsUntilReleased {
+    mark: &'static str,
+    held: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl Model for HoldsUntilReleased {
+    fn api_type(&self) -> base::provider::ApiType {
+        base::provider::ApiType::Anthropic
+    }
+    async fn stream(
+        &self,
+        _prompt_blocks: Vec<base::prompt::PromptBlock>,
+        _tools: Vec<base::interface::model::ToolDef>,
+        messages: Vec<ModelMessage>,
+        _params: base::interface::model::StreamParams,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<base::interface::model::ModelStream, base::interface::model::ModelError> {
+        use base::interface::model::ModelEvent;
+        if serde_json::to_string(&messages)
+            .unwrap_or_default()
+            .contains(self.mark)
+        {
+            self.held.notify_one();
+            self.release.notified().await;
+        }
+        Ok(Box::new(futures::stream::iter(vec![
+            Ok(ModelEvent::TextDelta {
+                text: "done".into(),
+            }),
+            Ok(ModelEvent::EndTurn {
+                stop_reason: "end_turn".into(),
+                usage: Default::default(),
+            }),
+        ])))
+    }
+}
+
+/// A member stopped mid-turn and replaced under the same name: when the old
+/// one's turn finally ends, it does not write over what `TeamList` shows for
+/// the new one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_members_late_turn_leaves_its_replacement_alone() {
+    use team::coordinator::TeammateLifecycle;
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let registry = Arc::new(team::registry::TeamRegistry::new());
+    let agent_tool = TestParent {
+        team_registry: Some(registry.clone()),
+        ..TestParent::new(Arc::new(HoldsUntilReleased {
+            mark: "OLD-MEMBER-MARK",
+            held: held.clone(),
+            release: release.clone(),
+        }))
+    }
+    .agent_tool();
+    let session = agent_tool.parent_state();
+    let send = |prompt: &str| {
+        agent_tool.spawn_or_message_team_member(
+            "team".into(),
+            "worker".into(),
+            prompt.into(),
+            None,
+            std::env::temp_dir(),
+            session.clone(),
+            None,
+        )
+    };
+    let wait_ended = |task_id: String| {
+        let session = session.clone();
+        async move {
+            if let Some(task) = session.find_running_task(&task_id) {
+                tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+                    .await
+                    .expect("the message's task ends");
+            }
+        }
+    };
+    let lifecycle = || {
+        registry
+            .list()
+            .iter()
+            .flat_map(|t| t.members.clone())
+            .find(|m| m.label == "worker")
+            .map(|m| m.lifecycle)
+    };
+
+    let old = send("OLD-MEMBER-MARK work").await.expect("spawned");
+    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+        .await
+        .expect("the old member's turn reaches the model");
+    agent_tool.stop_team_member("team", "worker").await;
+    let new = send("new work").await.expect("a new member is spawned");
+    wait_ended(new).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while lifecycle() != Some(TeammateLifecycle::Idle) {
+        assert!(std::time::Instant::now() < deadline, "{:?}", lifecycle());
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    release.notify_one();
+    wait_ended(old).await;
+    for _ in 0..50 {
+        assert_eq!(lifecycle(), Some(TeammateLifecycle::Idle));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// A team deleted while one of its members is mid-turn stays deleted when
+/// that turn ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_teams_late_turn_does_not_bring_the_team_back() {
+    use team::coordinator::Coordinator as _;
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let registry = Arc::new(team::registry::TeamRegistry::new());
+    let agent_tool = TestParent {
+        team_registry: Some(registry.clone()),
+        ..TestParent::new(Arc::new(HoldsUntilReleased {
+            mark: "MEMBER-MARK",
+            held: held.clone(),
+            release: release.clone(),
+        }))
+    }
+    .agent_tool();
+    let session = agent_tool.parent_state();
+    let task_id = agent_tool
+        .spawn_or_message_team_member(
+            "team".into(),
+            "worker".into(),
+            "MEMBER-MARK work".into(),
+            None,
+            std::env::temp_dir(),
+            session.clone(),
+            None,
+        )
+        .await
+        .expect("spawned");
+    let task = session.find_running_task(&task_id).expect("its task");
+    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+        .await
+        .expect("the member's turn reaches the model");
+    team::coordinator::DefaultCoordinator::with_delegator(agent_tool.delegator.clone())
+        .with_registry(registry.clone())
+        .cleanup_team("team")
+        .await
+        .expect("the team is deleted");
+
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(10), task.wait_ended())
+        .await
+        .expect("the member's turn ends");
+    for _ in 0..50 {
+        assert!(registry.list().is_empty(), "{:?}", registry.list());
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
