@@ -163,7 +163,7 @@ impl Limits {
             max_depth: config.max_agent_depth,
             slots: SlotRule::new(subagent_slots, depth),
             hook_agents,
-            max_persistent_members: config.team_max_persistent_members.max(1),
+            max_persistent_members: config.team_max_persistent_members,
             member_idle_timeout_secs: config.team_member_idle_timeout_secs,
         }
     }

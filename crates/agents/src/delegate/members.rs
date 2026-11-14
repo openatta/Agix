@@ -155,6 +155,14 @@ impl Delegator {
         prompt: String,
     ) -> Result<Delegated, DelegateError> {
         let me = self.me()?;
+        if self.limits.max_persistent_members == 0 {
+            return Err(DelegateError::Limit(
+                "persistent team members are turned off in this session \
+                 (execution.team_max_persistent_members is 0). Call Agent without team_name \
+                 and name to run a one-shot sub-agent instead, or do the work yourself."
+                    .into(),
+            ));
+        }
         let _spawning = self.members.spawn_lock.lock().await;
         let key = (seat.team.clone(), seat.member.clone());
         self.reclaim_idle_members(Some(&key));
@@ -177,10 +185,20 @@ impl Delegator {
         }
         let alive = live.read().unwrap_or_else(|e| e.into_inner()).len();
         if alive >= self.limits.max_persistent_members {
+            let busy = if alive == 1 {
+                "1 persistent member is busy, the most this session keeps \
+                 (execution.team_max_persistent_members). Message it, wait for it to go idle, \
+                 or stop it with TaskStop or TeamDelete."
+                    .to_string()
+            } else {
+                format!(
+                    "{alive} persistent members are busy, the most this session keeps \
+                     (execution.team_max_persistent_members). Message one of them, wait for \
+                     one to go idle, or stop one with TaskStop or TeamDelete."
+                )
+            };
             return Err(DelegateError::Limit(format!(
-                "team member limit reached: {alive} persistent members are busy, the most \
-                 this session keeps (execution.team_max_persistent_members). Message one of \
-                 them, wait for one to go idle, or stop one with TaskStop or TeamDelete."
+                "team member limit reached: {busy}"
             )));
         }
 

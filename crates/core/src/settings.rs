@@ -417,10 +417,10 @@ pub struct ExecutionSettings {
     #[serde(default)]
     pub team_enabled: bool,
     /// Reclaim policy for persistent team members (`Agent` tool's
-    /// `team_name`+`name` mode): total pool size across a session. When the
-    /// pool exceeds this, the oldest-idle members are stopped (never an
-    /// `Active` one) until it's back at or under the cap — reclaims just
-    /// enough, not everything.
+    /// `team_name`+`name` mode): total pool size across a session. Past it the
+    /// oldest-idle members are stopped (never an `Active` one), just enough to
+    /// be back at the cap. `0` turns persistent members off: such a call is
+    /// refused; one-shot sub-agents are not affected.
     #[serde(default = "default_team_max_persistent_members")]
     pub team_max_persistent_members: usize,
     /// Reclaim policy for persistent team members: how long a member may

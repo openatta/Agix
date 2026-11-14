@@ -64,9 +64,12 @@ async fn a_new_member_past_the_cap_is_refused_while_every_member_is_busy() {
         .await
         .expect_err("the only place is taken by a busy member");
     assert!(
-        refused.to_string().contains("team member limit reached"),
+        refused
+            .to_string()
+            .contains("team member limit reached: 1 persistent member is busy"),
         "{refused}"
     );
+    assert!(refused.to_string().contains("Message it,"), "{refused}");
     assert_eq!(
         agent_tool
             .delegator
@@ -414,6 +417,41 @@ impl Model for ModelNameModel {
             }),
         ])))
     }
+}
+
+#[tokio::test]
+async fn a_cap_of_zero_refuses_persistent_members_and_leaves_one_shot_delegates_alone() {
+    let asked_for = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut config = EngineConfig::defaults_for("test-model");
+    config.team_max_persistent_members = 0;
+    let agent_tool = TestParent {
+        config: Arc::new(config),
+        ..TestParent::new(Arc::new(ModelNameModel {
+            asked_for: asked_for.clone(),
+        }))
+    }
+    .with_team()
+    .agent_tool();
+    let session = agent_tool.parent_state();
+
+    let refused = message_member(&agent_tool, &session, "a")
+        .await
+        .expect_err("no persistent member may start at a cap of 0");
+    assert!(
+        refused
+            .to_string()
+            .contains("persistent team members are turned off"),
+        "{refused}"
+    );
+    assert!(asked_for.lock().unwrap().is_empty());
+
+    let req = DelegateRequest::new(
+        "review",
+        DelegateMode::Wait,
+        StopsWith::Call(tokio_util::sync::CancellationToken::new()),
+    );
+    let answer = finished_text(agent_tool.delegate(req).await).unwrap();
+    assert_eq!(answer, "{\"ok\":true}");
 }
 
 #[tokio::test]

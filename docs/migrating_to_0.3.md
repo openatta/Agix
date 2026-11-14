@@ -2130,6 +2130,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   字段(读旧文件时缺省 `false`)。
 - **停掉的常驻成员晚结束的那一轮不再改写状态。** 以前它会把同名接替者显示成 `Shutdown`,或把已被
   `TeamDelete` 删掉的团队重新登记出来。
+- **`execution.team_max_persistent_members` 写 0 就是不要常驻成员。** 带 `team_name` + `name` 的
+  `Agent` 调用被拒(`Denied`,"persistent team members are turned off"),一次性子 Agent 不受影响。
+  以前 0 按 1 算。
 - **带类型的 fork skill(`agent:`)、团队阶段成员与常驻成员也拿到类型的 `system_prompt`**(预载 skill
   在前,其后 `<system_prompt>\n\nTask: <prompt>`);以前只有 `Agent` 工具与 `session.startAgent` 起的
   才有。常驻成员只在第一条消息前拼。

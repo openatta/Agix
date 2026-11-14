@@ -127,7 +127,7 @@
         },
         "team_max_persistent_members": {
           "default": 20,
-          "description": "Reclaim policy for persistent team members (`Agent` tool's\n`team_name`+`name` mode): total pool size across a session. When the\npool exceeds this, the oldest-idle members are stopped (never an\n`Active` one) until it's back at or under the cap — reclaims just\nenough, not everything.",
+          "description": "Reclaim policy for persistent team members (`Agent` tool's\n`team_name`+`name` mode): total pool size across a session. Past it the\noldest-idle members are stopped (never an `Active` one), just enough to\nbe back at the cap. `0` turns persistent members off: such a call is\nrefused; one-shot sub-agents are not affected.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
