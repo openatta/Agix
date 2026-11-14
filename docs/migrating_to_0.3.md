@@ -1968,355 +1968,720 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 ## 0.3.11 之后:到 0.3.12
 
-0.3.12 把几处"同一件事有几条路径"收成一条:Tool 接口、延迟加载、会话池的回合状态与事件出口、
-引擎自己起的进程、`Builder` 的注入口。对 RPC 客户端是几处边界行为变化(`SESSION_BUSY` 的 `data`、
-重建期间的拒绝、`interrupt`);对嵌入方是一批删除与改名,没有兼容层。
+0.3.12 把几处"同一件事有几条路径"收成一条:工具对权限只报事实、由引擎的 `Policy` 一处判定;
+子 Agent、团队成员、fork skill、宿主起的 Agent、agent hook 都经 `Delegator::delegate` 派发;
+会话池拆成门面加协作者,会话状态跟着会话走、重建只换引擎,回合交给池里的驱动跑;RPC 方法表
+全部类型化;一轮怎么失败有了结构化的 `TurnFailure`;场景是数据(`SceneSpec`);设置拆成文件值
+(`Settings`)与加载结果(`LoadedSettings`);引擎自己起的进程走会话的 `exec.process`。
 
-最低 Rust 版本不变。0.3.11 一节里写到、这一版已删除或改名的路径,在本节的"路径去向"一栏集中说明,
-0.3.11 一节本身保持原样。
+对部署方是一批权限收紧(工具不报事实就问、未信任项目层逐键白名单、"总是允许"只放行原文、
+只读通道跑在严格 profile 里)和子 Agent 工具面的收窄;对 RPC 客户端是参数严格读、
+`ENGINE_ERROR` 带 `data`、几种新帧与新取值;对嵌入方是一批删除与改名,没有兼容层。
+
+最低 Rust 版本不变。更早各节里写到、这一版已删除或改名的路径,在"嵌入方"的"路径去向"一栏
+集中说明,那些小节本身保持原样。
 
 ### 部署 `agixd` 的
 
-#### 权限与沙箱
+#### 权限判定
 
+- **工具只报事实,判定在引擎的 `Policy` 一处做。** 判定顺序见 `ARCHITECTURE.md` §6。部署能看到的
+  差别:模式分派要问时,提示语用工具自己的问句(如 "Bash command requires confirmation"),没有问句
+  才是 "Allow <tool>?";managed 层读不了时未知工具也直接拒绝(以前先问);`PreToolUse` hook 拦下的
+  调用现在触发 `PermissionDenied` hook;输入不合法的调用先报校验错误,不再先报被 hook 拦下。
+- **没有声明权限事实的工具每次调用都问,无人值守时拒绝。** 内建工具、MCP 工具、示例插件都声明了;
+  宿主编译进来的 Rust 插件工具要实现 `permission_facts`(见"嵌入方")。
+- **`durable: true` 的 `CronCreate` 在 `default`、`acceptEdits` 下要问,无人值守时拒绝。** 以前直接
+  放行。`permission_rules` allow、hook approve、`bypassPermissions` 照样放行。
+- **人答的"总是允许"只放行字面相同的调用。** 本会话与本项目两档按工具名相等、内容去首尾空白后字面
+  相等匹配:以前答过 `touch *.rs` 的"总是允许"会放行 `touch other.rs`,现在只放行 `touch *.rs` 这一条
+  原文;`git log:*`、带 `?` 的 URL 同理。写进 `settings.local.json` 的条目多一个 `"match": "exact"`;
+  旧版本写下的、不带 `match` 的条目照旧按模式读。deny / ask 规则、宿主策略的 deny 照样排在它前面。
+  skill 的 `allowed-tools`(本轮授权)仍按模式匹配。
+- **会话不记授权时不再提供"总是允许"。** 宿主配 `PermissionSet::without_grants` 的会话,提示帧的
+  选项里没有 `permit_always`;万一仍答了,只放行这一次并告警,不写盘。
+- **子 Agent 的询问由子会话自己的 runtime 发出。** 帧仍在父会话上发、`message` 仍带
+  `[sub-agent <id>]` 前缀与 `task_id`;不同的是 `PermissionRequested`、`Notification` hook 在子会话上
+  触发,超时与取消按子会话的设置与取消令牌,拒绝文本与父会话自己的问题一致(`Denied by permission: …`)。
+  子 Agent 答 `permit_always` + `local` 现在写进项目的 `settings.local.json`(以前一律降成本会话)。
+  父会话通道已关时的拒绝文本改为 "the parent session closed before it could answer. Original
+  prompt: …"。
+- **程序发起的调用要问时直接拒绝。** `RunCode` 的子调用不再走 elicitation,文本为
+  "Denied by permission: <问句> — this call needs the user's approval, which a program cannot
+  ask for — …";程序起的子 Agent 被拒时文本为 "<问句> — a sub-agent started from a program cannot
+  ask for the user's approval — leave this step out of the program and run it directly"。
+- **fork skill 的 `allowed-tools` 在 fork 出的子会话里生效。** 它只回答模式本来要问的那一问:deny、
+  ask 规则、managed ask、plan / dontAsk 的拒绝、凭据都不受影响;无人值守的 fork 里被授权的命令也能跑。
+  授权不写进父会话,fork 结束后父会话里同一条命令照样要问。子 Agent 内联运行的 skill 的
+  `allowed-tools` 同样只在它自己的回合里生效。
+- **设置里的 `execution.permission_prompt_timeout_secs` 生效了。** 以前 daemon 总拿
+  `--permission-prompt-timeout`(缺省 300)盖掉它;现在优先级是命令行 > 设置 > 300,显式写
+  `--permission-prompt-timeout 300` 也算给了。`session.resume` 报的 `permission.prompt_timeout_secs`
+  按同一规则取。要改的:设置里写了这个值、却靠命令行缺省的 300 兜底的部署,删掉设置里的值或在命令行写明。
+
+#### 未信任的项目
+
+- **项目层设置改成逐键白名单。** 以前扣下一份名单、其余放行;现在设置文件里能出现的每个键各有一条
+  归类(放行、只能往严处改、扣下),没有条目的一律扣下并列进 `requires_trust`。新扣下的:
+  `sandbox.reap_process_groups` 关掉、`telemetry_enabled` 关掉、`plugins.enable_on_install` 打开、
+  `execution.team_enabled` 打开;`execution` 下 `max_agent_depth`、`max_api_calls_per_turn`、
+  `max_budget_tokens`(`null` 即不限)、`max_concurrent_subagents`、`max_parallelism`、
+  `team_max_persistent_members`、`team_member_idle_timeout_secs`、`team_stage_concurrency` 比下面
+  几层大;`permission_prompt_timeout_secs` 更长或为 0;`model.api_type`、`prompt_override` 一律扣下。
+  `hooks_config`、`scripts`、`telemetry_url`、`recorder`、`instruction_file` 写成 `null` 或空也扣下
+  (以前能借此清掉用户层的值)。拼错的键扣下并列进 `requires_trust`(以前只告警忽略),`$schema`
+  不算。类型不对的标量照旧由合并丢弃、记进 `ignored`。信任的项目照常生效,只是
+  `project.status` / `daemon.doctor` 的 `requires_trust` 会多列出这些键,并按键名排序
+  (`permission_rules.allow(...)` 仍在后面)。
+- **沙箱关闭或兜不住时,未信任项目里引擎自己的 `git` 不再运行。** 每轮的快照只取 `.git/HEAD` 里的
+  分支名(status、log、user、主分支为空),`EnterWorktree` 等报 "git refused";模型发起的
+  `git status` 一类不再走只读通道自动放行,改为询问。可信项目、没有项目的会话不受影响。宿主要求
+  沙箱(`require_enforcement`)而兜不住时,快照现在也带上分支名。
+
+#### 沙箱与执行
+
+- **只读通道放行的命令跑在严格 profile 里。** 只读通道放行的 `Bash`、`acceptEdits` 放行的只读
+  `Monitor` 现在断网、只写会话 `TMPDIR`、只读可读根与系统根、最小环境(`PATH HOME USER LOGNAME
+  SHELL TERM LANG LC_* TZ TMPDIR`,不吃 `sandbox.subprocess_env.allow`)、拒 IPC 出路;以前与人批准
+  的命令同一个 profile。只读命令要用别的环境变量或读可读根之外的系统位置的,会失败或被问。人批准、
+  规则、hook、bypass 放行的命令照旧跑在会话 profile 里;无人值守会话里放行的命令照旧拒 IPC。
+- **`require_enforcement` 打开而沙箱兜不住时,命令在询问之前就被拒**(`PermissionDenied` hook 照常
+  触发),不再出现"人批准了、命令却被拒";工具结果里不再有 `structured_content.refused =
+  "sandbox_unenforceable"`。严格 profile 兜不住、会话 profile 兜得住时,只读命令改为询问。
+- **`daemon.doctor` 新增检查 `sandbox.strict_profile`。** 机器兑现不了严格 profile(没有沙箱后端、
+  Linux 没有 `bwrap`、开着 `dangerously_disable_sandbox`)时为 `degraded`,`doctor` 的总状态随之是
+  `degraded`。
+- **命令之后检查嵌套仓库。** 每条不在严格 profile 里跑的命令(同步命令在结果之前,后台 `Monitor`
+  在任务结束时)多跑一次 `git ls-files -s` 和一次有界目录遍历(跳过 `node_modules`、`target` 等依赖
+  与构建目录)。命令在项目里留下未在 `.gitmodules` 声明、`config` 会拉起程序的嵌套仓库时:有人值守
+  问"保留 / 移开",超时、拒答、取消按移开;无人值守或没人可问直接把它的 `.git` 改名为
+  `.git.agix-quarantine-<UTC 时间>`(改回原名即可还原)。两种都在工具结果末尾附一行说明,发
+  `Notification` hook 与 `notification` 帧;无害的嵌套 `.git`、未声明的 gitlink 只提示一次。
+- **外部内容围栏按可达范围统一加。** MCP 工具的结果(含错误)、`WebFetch` / `Ping` 的结果(含 HTTP
+  错误页与重定向说明,`[HTTP 200 | …]` 结果头现在在围栏里面)、写到或读到可读根之外的
+  `Grep` / `Glob` / `Edit` / `Write` / `NotebookEdit`(以前只有 `Read`)都放进
+  `<external-content>`;开了 `sandbox.read_anywhere` 的会话读项目外文件不再加围栏;`RunCode` 程序
+  发起的调用不加。
 - **项目放在状态目录里、围栏被撤掉时,状态目录的配置对沙箱命令只读。** 以前这种部署只有状态目录的
   `settings.json` 和场景文件受保护,macOS 上状态目录的 `settings.local.json` 也可写。现在状态目录
   按配置根处理:`settings.json`、`settings.local.json`、`mcp.local.json`,以及 `skills`、`hooks`、
   `agents`、`mcp`、`plugins`、`rules`、`scenes`、`policy`、`scripts`、`output-styles` 目录,沙箱里的命令
   都不能写;cwd 本身所在的那个配置目录除外,否则项目整个不可写。macOS 用 deny 规则,不存在的目录同样
-  拦住;Linux 上已存在的目录只读挂载,不存在的目录挂一个只读空 tmpfs,会在状态目录里留下空目录(与项目
-  `.agix` 的做法相同);不存在的配置文件在 Linux 上仍挡不住新建,这是残留。要改的:项目放在状态目录里、
-  又让沙箱命令往这些位置写的,改成别的位置,或在沙箱外改。
-- **macOS:profile 写出之后才新建的场景,它的场景文件也不可写。** 以前只保护写 profile 时已知或已存在的
-  场景;现在 `<状态目录>/scenes/<场景>/` 下的 `settings.json`、`scene.json`、`prompt.md` 由一条正则统一
-  拦住,会话中途新建的场景同样。状态目录根下的 `scene.json`、`prompt.md` 也不可写。要改的:靠沙箱命令
-  在会话里建场景并写这三个文件的,改在沙箱外做。
-- **Linux:被链接的场景整个遮住。** 遮挡只认真目录:`scenes/` 下的符号链接、`scenes/` 里的普通文件,
-  不再原样放进沙箱,而是留在 tmpfs 之下读不到。以前按名字逐个处理已知场景。要改的:把场景目录做成符号
-  链接的部署,沙箱里的命令从此读不到那个场景。
-- **macOS:链进 `scenes/` 的场景目录,其 key 文件与 `mcp/oauth` 对沙箱命令不可读。** 以前读拒绝只按
-  `<状态目录>/scenes/<场景>/` 匹配,链接目标在别处的场景,其 `settings.json` 在沙箱里读得到;现在按解析后的
-  位置另加读拒绝。Linux 撤掉围栏时的逐个遮挡同样跟随符号链接。
-- **凭据位置改由一张表生成,两个后端不再各写一份。** 表里新增的凭据位置两个后端自动跟上。macOS 上状态
-  目录与场景目录原来共用的一条读拒绝正则现在分开写,效果不变。Linux 的状态目录遮挡效果与以前相同
-  (挂载按名字排序)。
-- **文件工具与 gate 对 key 文件的判断变宽。** 以前只认路径本身是 key 文件;现在"是它或在它之下"都算
-  凭据,`<状态目录>/settings.json/x` 这样以 key 文件名为目录名的路径也被拒。正常部署碰不到。
-- **宿主自己的策略不带授权一侧时,引擎不再写 `settings.local.json`。** 配
-  `PermissionSet::without_grants` 时,"总是允许(Local)"回 `GrantError::NotKept`,不落盘;要引擎写盘,
-  让策略同时实现授权并用 `PermissionSet::of(..)`(见"嵌入方")。引擎自己的 `RuleSetPermission` 不受影响;
-  它写 `settings.local.json` 改在 `spawn_blocking` 里做,不再占 async 线程。
-- **设置里的 `execution.permission_prompt_timeout_secs` 生效了。** 以前 daemon 总拿
-  `--permission-prompt-timeout`(缺省 300)盖掉它;现在优先级是命令行 > 设置 > 300。嵌入方的
-  `Assembly::permission_prompt_timeout` 改为 `Option<Duration>`,`None` 由设置决定。要改的:设置里写了
-  这个值、却靠命令行缺省的 300 兜底的部署,删掉设置里的值或在命令行写明。
+  拦住;Linux 用 tmpfs 盖住含凭据的目录、其余条目只读绑回,再把项目与会话 `TMPDIR` 挖洞挂回,之后改写
+  或新建的凭据落在 tmpfs 下读不到(项目恰好是状态目录本身、或在凭据所在目录之上或之中时仍逐文件遮挡)。
+  要改的:项目放在状态目录里、又让沙箱命令往这些位置写的,改成别的
+  位置,或在沙箱外改。
+- **macOS:profile 写出之后才新建的场景,它的场景文件也不可写。** `<状态目录>/scenes/<场景>/` 下的
+  `settings.json`、`scene.json`、`prompt.md` 由正则统一拦住,会话中途新建的场景同样;状态目录根下的
+  `scene.json`、`prompt.md` 也不可写。要改的:靠沙箱命令在会话里建场景并写这三个文件的,改在沙箱外做。
+- **链进 `scenes/` 的场景目录按解析后的位置保护。** macOS 上它的 key 文件与 `mcp/oauth` 不可读、
+  场景文件不可写;文件工具按真实路径读它的 `settings.json` 同样被拒(会话建好之后才链进来的不算)。
+  Linux 上 `scenes/` 下的符号链接与普通文件留在 tmpfs 之下,沙箱里读不到那个场景。要改的:把场景
+  目录做成符号链接、又要沙箱命令读它的部署,改成真目录。
+- **凭据位置改由一张表生成,两个后端不再各写一份。** 文件工具与权限判定对 key 文件的判断变宽:
+  "是它或在它之下"都算凭据,`<状态目录>/settings.json/x` 这样的路径也被拒。正常部署碰不到。
+- **引擎的 `git` 与 `pdftotext` 走会话的 `exec.process`。** 以前直接起在宿主上,环境按缺省策略取,
+  超时只杀 `git` 本身。现在每轮的 `git status`、worktree 的创建与清理、`ExitWorktree` 查未保存工作
+  的 `git`(另有 15 秒上限)、`Read` 读 PDF 的 `pdftotext`(单次上限 120 秒)都经会话的
+  `exec.process`:环境用 `sandbox.subprocess_env`,进程组随会话台账,超时整组停;会话命令进沙箱时
+  它们也进同一个沙箱(只写会话 `TMPDIR`、不通网络)。要改的:设了 `sandbox.subprocess_env.mode =
+  "allowlist"` 的部署,`git` 需要的变量(如自定义的 `GIT_*`)要补进 `allow`;`pdftotext` 装在沙箱
+  读不到的位置的,放开读。
+- **`RunCode` 的并发空位按池计。** 0.3.10 一节写的"进程内同时至多 2×CPU 个"现在是每个会话池各
+  2×CPU 个,同一进程里的两个池不再互相挤占。
+- **`sandbox.reap_process_groups` 在会话中途打开时,下一次重建起生效**(以前要新会话)。
 
-#### 引擎自己起的进程
+#### 子 Agent 与团队
 
-- **引擎的 `git` 走会话的 `exec.process`。** 以前它直接用 `tokio::process` 起在宿主上,环境按缺省
-  策略取,超时只杀 `git` 本身,它派生的 filter driver 留在原地。现在每轮的 `git status`、worktree
-  的创建与清理、`ExitWorktree` 查未保存工作的 `git`,都经 `base::engine_exec::EngineExec` 交给
-  会话的 `exec.process`:环境用与会话命令同一份 `sandbox.subprocess_env`,进入 `LocalProcess` 的
-  进程组与台账,超时整组停;会话的命令进沙箱时它也进同一个沙箱(只写会话的 `TMPDIR` 与本次点名的
-  目录,不通网络)。要改的:设了 `sandbox.subprocess_env.mode = "allowlist"` 的部署,`git` 现在只看得到
-  `allow` 列出的变量(以前按缺省策略:继承宿主环境、去掉引擎自己的凭据),它需要的变量(如自定义的 `GIT_*`)要补进 `allow`。
-  `ExitWorktree` 的未保存工作检查另有 15 秒上限。
-- **`Read` 读 PDF 的 `pdftotext` 走 `EngineExec::helper`。** 以前在宿主上、沙箱外起,没有超时,环境
-  按缺省策略;现在经会话的 `exec.process`,会话命令进沙箱时它也进同一个沙箱(只写会话的 `TMPDIR`,
-  不通网络),环境取 `sandbox.subprocess_env`,单次上限 120 秒。拒绝、失败、超时都仍给"Install
-  pdftotext"的提示。要改的:`pdftotext` 装在沙箱读不到的位置、或需要 `allowlist` 之外的变量的,
-  按各自情况放开。
+- **带白名单的 agent 类型只拿到白名单里的工具。** `explore`、`plan`、`code-reviewer` 及写了
+  `allowed_tools` 的自定义类型,以前还拿到白名单外的引擎与模块工具(`Skill`、`Task*`、`Cron*`、
+  `EnterWorktree` / `ExitWorktree`、`Agent`、`Team*` 等),现在要用须显式列出;类型 `mcp_servers`
+  授予的 server 视同列在白名单里。类型的 `disallowed_tools` 现在也作用于 `mcp_servers` 授予的 MCP 工具。
+- **子 Agent 没有 `CronCreate` / `CronList` / `CronDelete`,也不再自己读 `scheduled_tasks.json`、
+  起调度。**
+- **`mcp__<server>` 按工具来源匹配。** agent 类型、`session.startAgent` 与场景名单里的 `mcp__*`、
+  `mcp__<server>`、`mcp__<server>__*` 按工具的 MCP 来源比对配置里的 server 名,`mcp__my.docs` 现在
+  匹配得到 `mcp__my_docs__*` 的工具;不是 MCP 来源、名字恰好以 `mcp__` 开头的工具不再被放行。
+- **场景的 `disallowed_tools` 在白名单非空时也生效。** 以前白名单非空就忽略黑名单。内建场景不变;
+  依赖旧语义的自定义场景会变窄。
+- **名额只有一条规则:持名额者不等。** 子 Agent 起的 `TeamCreate` 在名额满时成员被拒、团队报失败;
+  根会话的团队成员排队等名额,并发不再越过 `max_concurrent_subagents`;常驻成员每跑一轮占一个名额,
+  空闲时不占。模型直接调 `Agent`、宿主 `session.startAgent` 在根会话里到上限仍立即拒绝
+  (`TASK_LIMIT`),`RunCode` 的 `agent()` 仍排队。
+- **团队被中断后不再派发下一阶段。** 当前阶段收尾后停止,不做该阶段的汇总评判;排着等并发许可的
+  成员不再派出;最后一个阶段汇总时被中断也算取消。`state.json` 与 `events.jsonl`(`team_completed`)
+  写 `cancelled`,工具结果 `is_error` 为真;`events.jsonl` 的 `member_completed` 多一个 `cancelled`
+  字段(读旧文件时缺省 `false`)。
+- **停掉的常驻成员晚结束的那一轮不再改写状态。** 以前它会把同名接替者显示成 `Shutdown`,或把已被
+  `TeamDelete` 删掉的团队重新登记出来。
+- **带类型的 fork skill(`agent:`)、团队阶段成员与常驻成员也拿到类型的 `system_prompt`**(预载 skill
+  在前,其后 `<system_prompt>\n\nTask: <prompt>`);以前只有 `Agent` 工具与 `session.startAgent` 起的
+  才有。常驻成员只在第一条消息前拼。
+- **等待模式的 fork skill、`TeamCreate` 的成员现在是父会话的任务**:`session.tasks` 看得到,
+  `TaskStop` 停得了;被停下的 fork 报成错误(以前当成功返回部分文本)。前台委派失败时任务记为
+  `failed`;准入被拒的委派不留任务;后台委派建 worktree 失败时工具调用直接报错。
+- **agent hook 接上了取消。** 回合被中断时 command hook 的子进程被杀、prompt / http 的等待放弃、
+  agent hook 的裁判子 Agent 停下;`PreToolUse` 跑完时回合已取消的调用不再执行。hook agent 的子孙
+  会话的工具调用不再触发 agent hook;`on_error: "block"` 的 agent hook 不再把自己的 hook agent 的
+  工具调用判成失败而全部拦下。
+- **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
+  `customize_session` 装的 tool / prompt middleware、结果变换、模型拦截、恢复策略、compactor、
+  插件场景、记忆存储与召回(连同召回 hook)、任务路由。审计类 middleware 的计数会因此变多;子会话
+  的 WebSearch、WebFetch、压缩、记忆调用也按路由走。
 
-#### 工具与延迟加载
+#### 模型调用与重试
 
-- **会话中途接入的 MCP 工具按场景的 `deferred_tools()` 名单延迟。** 以前延迟只在 `build()` 时对
-  当时已注册的工具生效,会话中途由 MCP 同步接入的工具,即使场景点名要延迟,请求里也带全量 schema;
-  现在同样只发名字和描述,模型经 `ToolSearch` 取 schema。提示词因此变小。要改的:不想让某个 MCP
-  工具延迟的,把它从场景的 `deferred_tools()` 里去掉。
+- **`retry-after` 由两个 client 统一解析**(整数秒、三种 HTTP-date、`retry-after-ms`,过去的时间按 0),
+  OpenAI 兼容侧也读;Anthropic 的过载与服务端错误也带上它,不只 429。有它时它是等待的下限(再加至多
+  10% 抖动),超过 60 秒就放弃;首字节之后的原样重发用同一个上限,超过就以 `ENGINE_ERROR` 结束这一轮,
+  由宿主决定什么时候再发。
+- **响应头之前超时、200 响应开头就是 `error` 事件或 body 为空,都走首字节前的退避阶梯。** 以前前者在
+  Anthropic 侧不重试,后者两层都不重试。
+- **流开始之后的瞬时失败原样重发。** 中途断流、流中途空闲超时以前直接失败;现在引擎自带的恢复策略
+  原样重发至多两次(等服务端给的时长,没给就 2 秒、8 秒),发 `model_retry` 帧;工具已经跑过的照旧直接
+  失败。限流也会切到备用模型(以前只有过载)。一次调用至多恢复 4 次。
+- **遥测 `api_error.error_kind` 取失败分类的名字**(`overloaded`、`context_too_long`、`rate_limited`
+  …),不再是 `api` / `network` / `internal`;`http_status` 对所有带状态码的失败都有值。
+- **录像里失败的 `end` 记录格式变了**(`{error: <分类>, http_status?, retry_after_ms?, message?}`),
+  旧录像里的失败读不回来。
+
+#### 会话与日志
+
+- **写日志失败的一轮照样完成,报 `persisted: false`。** 日志落后的会话不被空闲回收、不被腾位置驱逐;
+  设置变更、`setPrompt`、换厂商的 `setModel` 要重建时先补写,补写失败报 `ENGINE_ERROR`
+  (`kind: "persist_failed"`,可重试),旧引擎照跑。`daemon.doctor` 的 `runtime.sessions[].log.behind`
+  报这种状态。
+- **重建(设置变更、`setPrompt`、换厂商)保留会话状态。** `/cost` 的累计、输出目标、已调用的 skill、
+  `created_at`、未读通知、文件读缓存都留着;驱逐或重启后 `ToolSearch` 加载过的工具随日志回来
+  (`agix.session_state` 的 change 条目多一个 `activated_tools`)。
+- **`agix.context` 条目由引擎写**,`at_ms` 取引擎的时钟(录制回放时是录制的时钟)。
+- **压缩被取消或失败时撤回已经做的老化**,被清掉的工具结果原样留着,不发 `compact` 事件。
+- **会话中途接入的 MCP 工具按场景的 `deferred_tools()` 名单延迟。** 以前只对 `build()` 时已注册的
+  工具生效。要改的:不想让某个 MCP 工具延迟的,把它从场景的 `deferred_tools()` 里去掉。
+- **没有 `origin/HEAD` 的仓库里,快照的主分支回落到本地的 `main` / `master`**(以前回落从不生效,
+  主分支总是空的),系统提示里的 git 段因此多一行。
+- **宿主在内存里改的设置叠到池读入的每份设置上**(别的项目、`config.reload` 以前从盘上重读、丢掉
+  宿主的改动);`config.reload` 重读守护进程自家设置时保留 `--max-tokens` 兜底。
+
+#### 设置文件与插件
+
+- **`settings.json` 里的 `session_dir` 按未知键告警**(以前是"已弃用")。生成的
+  `settings.schema.json` 标题由 `Settings` 改为 `SettingsFile`,`$defs` 的 `PermissionRule` 改名
+  `PermissionRuleEntry`、`PermissionAction` 改为 `RuleBehavior`,接受的值不变;规则条目多一个可选的
+  `match`(只认 `"exact"`,写在 deny / ask 上告警后按模式读)。
+- **`daemon.doctor` 的 `permission_rules_count` 包含 `settings.local.json` 的规则**(以前只数共享层);
+  `settings.tiers` 检查报的是自家项目实际读的那份项目层文件。
+- **插件 manifest 可写 `[plugin] requires_engine`**(如 `">=0.3.12, <0.4"`,不允许 pre-release 比较子)。
+  不满足时加载与安装都失败(`plugin.install` 的错误带出两个版本,缓存里什么都不写);同名包装了多个
+  版本、最高版本不满足时改用满足的次高版本,被跳过的在 `plugins.refused` 里报出。写法见
+  `plugin_packages.md`。
 
 ### RPC 客户端
+
+#### 参数严格读
+
+- **每个方法的 `params` 都按声明的类型读,读不进来一律 `INVALID_PARAMS`**,message 为
+  "invalid params for <method>: <serde 错误>"。以前不少字段类型不对时当作没给或取缺省,现在报错,例:
+  `schedule.create {recurring: "no"}`(以前等于 `true`)、`session.rename {name: 3}`(以前清掉名字)、
+  `session.list {include_children: "yes"}`、`session.history {limit: -1}`(超过 500 仍是截断)、
+  `project.trust {trusted: "yes"}`、`config.getProvider {include_secrets: "yes"}`、
+  `plugin.install {checksum: 3}`、`session.dropMessages {at: [3, "1"]}`(以前悄悄只去掉 3)。缺字段的
+  文案统一为 serde 的 "missing field `…`",枚举取值不对的文案是 serde 的枚举错误
+  (`config.get` 的 `tier`、`plugin.install` 的 `scope`、`mcp.auth.start` 的 `redirect`、
+  `session.updateGoal` 的 `action` 等)。错误码不变的地方只是 message 变了;不要解析 message。
+- **个别反向的变化:** `config.setProvider {config: null}` 以前报 "config must be a JSON object",
+  现在当作没给;无参方法忽略传入的任何 `params`,缺省的 `params` 当作 `{}`。
+- **未启用插件子系统时,类型不对的 `plugin.*` 参数先于 `PLUGINS_DISABLED` 被拒。**
+- `session.options` 仍是宽松读(未知字段进 `ignored_options`,`strict` 时报错),`run_turn` 的
+  `attachments` 里坏条目照旧丢弃。
 
 #### `SESSION_BUSY`
 
 - **`error.data` 多了 `reason`。** 取值 `turn_running`(必带 `current_turn_id`)、`rebuilding`、
-  `background_tasks`(另带 `running_task_ids`)、`previous_engine`,说的是会话此刻在忙什么,不是哪个
-  方法被拒(协议文档 §9.1)。以前只有 `{session_id, current_turn_id}`。要改的:按 `reason` 决定
-  等多久、要不要重试;不认识的取值按"稍后再试"处理,以后可能增加。
-- **以前不带 `data` 的三处 `SESSION_BUSY` 现在带。** 重建时旧引擎未停、上下文请求撞上正在跑的
-  turn、`session.setGoal` 恢复会话时旧引擎未停,现在和其余来源一样带 `data`。以前靠"没有 `data`"
-  区分来源的,改读 `reason`。
-- **`session.startAgent`,以及要先恢复会话的上下文请求(`session.inspectContext` / `dropMessages` /
-  `editMessage`),在上一个引擎还没停下时返回的 `SESSION_BUSY` 也带 `data`:**
-  `{session_id, reason: "previous_engine", current_turn_id: null}`。以前这两处不带 `data`。要改的:
-  同上,按 `reason` 处理,稍后重试。
+  `background_tasks`(另带 `running_task_ids`)、`previous_engine`、`context_operation`,说的是会话
+  此刻在忙什么,不是哪个方法被拒(协议文档 §9.1)。以前只有 `{session_id, current_turn_id}`。要改的:
+  按 `reason` 决定等多久、要不要重试;不认识的取值按"稍后再试"处理,以后可能增加。
+- **以前不带 `data` 的几处 `SESSION_BUSY` 现在带。** 重建时旧引擎未停、上下文请求撞上正在跑的
+  turn、`session.setGoal` / `session.startAgent` / 要先恢复会话的上下文请求在旧引擎未停时
+  (`reason: "previous_engine"`,`current_turn_id: null`)。以前靠"没有 `data`"区分来源的,改读 `reason`。
 - **`message` 文本变了。** `session.setPrompt` / 换厂商的 `session.setModel` 因旧引擎没停下而失败
-  时,`reason` 为 `previous_engine`,message 由 "session is busy" 改为 "session `…` could not be
-  brought back: … is still stopping on its previous engine; try again once it has";
-  `session.inspectContext` / `dropMessages` / `editMessage` 在有回合时由 "session `…` is running
-  turn `…`" 改为 "session is busy"。不要解析 message,认错误码与 `reason`。
+  时,message 由 "session is busy" 改为 "session `…` could not be brought back: … is still stopping on
+  its previous engine; try again once it has";`session.inspectContext` / `dropMessages` /
+  `editMessage` 在有回合时由 "session `…` is running turn `…`" 改为 "session is busy"。认错误码与
+  `reason`。
 - **会话重建期间的拒绝。** `session.setModel`(不换厂商)与 `session.inspectContext` /
-  `dropMessages` / `editMessage` 在重建期间返回 `SESSION_BUSY`(`reason: "rebuilding"`,
-  `current_turn_id` 为 `null`)。以前前者改了规格并发给正在停止的旧引擎,后者报 `ENGINE_ERROR`。
-  `on_busy: "steer"` 的 `session.run_turn` 在重建期间不再往正在停止的旧引擎里 steer,而是等重建
-  结束。要改的:把 `SESSION_BUSY` 当作"稍后重试"的信号,而不是 `ENGINE_ERROR` 那样的失败。
+  `dropMessages` / `editMessage` 在重建期间返回 `SESSION_BUSY`(`reason: "rebuilding"`)。以前前者
+  改了规格并发给正在停止的旧引擎,后者报 `ENGINE_ERROR`。`on_busy: "steer"` 的 `session.run_turn` 在
+  重建期间等重建结束,不再 steer 进正在停止的旧引擎。
+- **上下文请求独占会话。** `inspectContext` / `dropMessages` / `editMessage` 从检查到答复都占着会话:
+  期间到达的 `run_turn{on_busy:"reject"}`、`setModel`、`setPrompt`、另一个上下文请求报
+  `SESSION_BUSY`(`reason: "context_operation"`),`run_turn{on_busy:"queue"}` 等它答完。
 
-#### 中断与回合边界
+#### `ENGINE_ERROR` 与 `error` 帧
 
-- **`session.interrupt` 在回合已占住、消息还没发给引擎时有效。** 以前这段窗口里它返回
-  `interrupted: false`、回合照跑;现在返回 `true`,这一轮以 `stop_reason: "cancelled"` 结束、不调用
-  模型。以前遇到 `false` 就重发 `interrupt` 的客户端可以去掉重试。
-- **会话被 `session.close` 后用同一 id 恢复,旧回合迟到的收尾不再写进新会话。** 以前旧回合的
-  `turn_complete` 可能改写新会话 `session.get` 里的 `context`,首轮自动命名也可能给新会话起名;现在
-  代际号不符时旧回合什么都不写,自动命名结果丢弃。
-
-#### 错误与参数
-
-- **`session.setGoal` / `updateGoal` 撞上已终态的侧链**,message 从 "session X is a finished
-  sub-agent session" 改为与 `session.resume` 相同的 "sidechain session already ran to completion",
-  `data` 同 `SIDECHAIN_TERMINAL`。
-- **`session.run_turn` 的参数校验(缺 `message`、`turn_id` 形式、`on_busy`)先于场景检查。** 两者同时
-  不满足时,以前报 `SCENE_MISMATCH`,现在报 `INVALID_PARAMS`。
+- **`ENGINE_ERROR` 带 `data: {kind, retryable, retry_after_ms, side_effects}`,四项总在。** `kind` 的
+  取值与各自的 `retryable` 见协议文档 §9.1;`side_effects` 为真表示这一轮里已经跑过工具。message 统一
+  为 "<kind>: <描述>",以前的 "turn_error: model error: failed to stream model response: …" 变成如
+  "overloaded: overloaded (HTTP 529)";`engine_stopped`、`engine_unreachable` 的 message 也加了前缀。
+  要改的:按 `data.retryable` / `retry_after_ms` 决定是否、何时重发,不再解析 message。
+- **`error` 帧的 `code` 不再是 `turn_error`**,改为同一组 `kind` 值,并多了 `retryable`、
+  `retry_after_ms`。旁观的订阅者收到的与发起者 `data` 一致。
+- **`kind` 多了 `persist_failed`**(`setPrompt`、换厂商的 `setModel` 重建前补写日志失败,可重试)与
+  `internal`(回合驱动 panic)。
+- **处理请求时 panic 回 `INTERNAL_ERROR`(-32603)**,message 为 "internal error while serving
+  `<method>`",连接与其它请求照常。以前没有响应、客户端一直等。release 构建是 `panic = "abort"`,
+  不适用。
 
 #### 事件帧
 
+- **新帧 `model_retry {step, attempt, delay_ms, reason}`**:流开始之后的失败要原样重发前发出,之后
+  同一 `step` 再发一次 `step_start`。
+- **新帧 `prompt_resolved {prompt_id, resolution}`**:`resolution` 为 `answered` 或 `withdrawn`
+  (超时、回合取消或结束、会话关闭)。每个提问至多一帧,推给全部订阅者(包括答题的连接),回合内带
+  `turn_id`,空闲时为 `null`。`session.subscribe` 的 `pending_prompts` 在这帧之后才去掉那个提问(以前
+  `respondToPrompt` 一到就去掉)。要改的:多个连接同看一个会话的,收到它就收起提问界面。
+- **`turn_complete` 多一个总是出现的 `persisted`**,为 `false` 时日志没写全(见"部署"的会话与日志)。
+- **`session.setModel` 之后不再有 "model set to …" 的 `system` 帧**;选择记在会话上,下一轮开头生效。
+- **`daemon.event` 的 `session_evicted` 多一个 `reason` 取值 `engine_fault`**:回合驱动 panic 后这个
+  引擎不再可用,会话移出内存,下一轮冷恢复。
+- **嵌套仓库被检测到时发 `notification` 帧**(见"部署"的沙箱与执行)。
 - **`subagent_progress.event` 里嵌套的事件走与外层同一个投影。** 嵌套事件不再带 `turn_id`,`kind` 与
-  外层一致(`compact`、`prompt`)。投影为空的嵌套事件整帧不发,以前会发的有:子 Agent 的 `system_init`、
-  子 Agent 的 `system`(如换模型时的 "model set to …"),以及子 Agent 再派生的孙 Agent 的
-  `agent_spawned` 与 `agent_completed`(含 `outcome`)。协议文档 §5.5、§7 已补。其余帧与 0.3.11 逐项相同。
-  要改的:靠嵌套 `agent_completed.outcome` 得知孙 Agent 结局的,改读子 Agent 发起它的那次 `Agent`
-  调用的嵌套 `tool_result`(同一 `agent_label` 下,`id` 与那次嵌套 `tool_use` 的相同):`is_error: true`
-  即以前的 `failed`,否则 `content` 是孙 Agent 的回答;以前的 `cancelled` 在 `tool_result` 上与
-  `completed` 分不开,`content` 是它停下前已有的回答。孙 Agent 的开始看同一次调用的嵌套 `tool_use`。
+  外层一致(`compact`、`prompt`)。投影为空的嵌套事件整帧不发,以前会发的有:子 Agent 的
+  `system_init`、子 Agent 的 `system`,以及孙 Agent 的 `agent_spawned` 与 `agent_completed`(含
+  `outcome`)。要改的:靠嵌套 `agent_completed.outcome` 得知孙 Agent 结局的,改读子 Agent 发起它的
+  那次 `Agent` 调用的嵌套 `tool_result`(同一 `agent_label` 下,`id` 与那次嵌套 `tool_use` 的相同):
+  `is_error: true` 即以前的 `failed`,否则 `content` 是孙 Agent 的回答;以前的 `cancelled` 在
+  `tool_result` 上与 `completed` 分不开。孙 Agent 的开始看同一次调用的嵌套 `tool_use`。
+- **子 Agent 的 `agent_spawned` 带上父会话 id**(fork skill、agent hook、团队成员以前为空串);团队
+  成员的 `agent_*` 遥测 `agent_id` 是成员的会话 id(以前是 `team_id` 与成员名),由 agents 记、带
+  `model`;`team_stage_complete` 遥测的 `session_id` 与轮次取发起 `TeamCreate` 的会话(以前是
+  `team_id` 与 0)。
+
+#### 会话、场景与诊断
+
+- **`session.get` 与 `session.export` 清单的 `turn_state` 多两个取值**:`rebuilding`(原地重建中)、
+  `operating`(被上下文请求独占);以前这两种都报 `idle`,宿主照着放开发送键却得到 `SESSION_BUSY`。
+- **`daemon.doctor` 的结果多一个总是出现的 `runtime` 段**:每个在内存的会话报 `phase`、`generation`、
+  `turn {turn_id, running_ms}`(只在 running 时)、`log {behind}`、`last_failure {kind}`,另有
+  `stopping_engines`。只报数,不判阈值。另见"部署"里新增的 `sandbox.strict_profile` 检查。
+- **`scene.list` / `scene.describe` 的 `tools.allowed`、`tools.disallowed` 是 pattern 的规范写法**:
+  `mcp__<server>` 写成 `mcp__<server>__*`。
+- **`session.interrupt` 在回合已占住、消息还没发给引擎时有效。** 以前这段窗口里它返回
+  `interrupted: false`、回合照跑;现在返回 `true`,这一轮以 `stop_reason: "cancelled"` 结束、不调用模型。
+- **发起回合的那次调用被取消(连接断开、请求被丢下),回合照样跑完、还槽。** 以前会话停在
+  running,之后排队的回合永远等下去。
+- **`on_busy: "steer"` 只在消息真交给了正在跑的回合时答 `Steered`。** 引擎 5 秒内没答复时同一条消息
+  既进正在跑的回合、又排成下一轮的情形没有了;会话正被关闭或停下时按排队处理,会话随后不在表里就
+  报会话不存在。
+- **`session.close` 等进行中的重建或恢复结束后再关**,不再被随后完成的重建复活。会话被关闭后用同一
+  id 恢复,旧回合迟到的收尾不再写进新会话(`context`、自动命名)。
+- **`scene.deactivate` 与建会话不再竞争。** 停用按内存里会话的场景判断并在会话表锁下完成;正在建的
+  会话插表时场景已停用则以 `SCENE_NOT_ACTIVE` 失败。挡路的会话 id 按字典序列出。
+- **`session.startAgent`** 的 `permission_rules` 只取其中的 deny;会话没有装配子 Agent 时报
+  `INVALID_REQUEST`(协议文档 §9)。参数读不进来时 message 由 "session.startAgent: <serde 错误>" 改为
+  统一的 "invalid params for session.startAgent: …"。
+- **`session.setGoal` / `updateGoal` 撞上已终态的侧链**,message 改为与 `session.resume` 相同的
+  "sidechain session already ran to completion",`data` 同 `SIDECHAIN_TERMINAL`。
+- **`session.run_turn` 的参数校验(缺 `message`、`turn_id` 形式、`on_busy`)先于场景检查。** 两者同时
+  不满足时,以前报 `SCENE_MISMATCH`,现在报 `INVALID_PARAMS`。
+- **权限提问的文本**见"部署"的权限判定:提示语用工具自己的问句;子 Agent 与程序发起的调用的拒绝文本
+  变了;`permission_rules` 里 `match: "exact"` 的条目见协议文档 §4.7。
 
 ### 嵌入方
 
+`base::event::AgentEvent` 是封闭的枚举(理由见 `extension_points.md` 的"事件去哪"):这一版加了
+`ModelRetry`、`PromptResolved` 两个变体,`Error`、`TurnComplete` 的字段也变了,在 Rust 里穷尽
+`match` 它的代码要跟着改。另有一批引擎产出、宿主去 `match` 的枚举加了 `#[non_exhaustive]`,见本节末。
+
 #### 路径去向
 
-0.3.11 一节与更早各节里出现、这一版已删除或改名的路径:
+更早各节里出现、这一版已删除或改名的路径:
 
 | 以前 | 现在 |
 |---|---|
-| `base::interface::{event,memory,prompt,rules,settings}::*` | `base::{event,memory,prompt,rules,settings}::*`(那五个重导出本来标着 `#[deprecated]`,但加在 `pub use` 上不触发警告,所以一直没人发现;`base::interface::memory::MemoryStore` 等同理) |
+| `base::interface::{event,memory,prompt,rules,settings}::*` | `base::{event,memory,prompt,rules,settings}::*`(那五个重导出本来标着 `#[deprecated]`,但加在 `pub use` 上不触发警告;`base::interface::memory::MemoryStore` 等同理) |
 | `base::context::PromptCtx` | `base::tool::PromptContext` |
-| `base::frozen::git::{EngineGit, GitSandbox, ENGINE_GIT_OPTIONS}` | `base::engine_exec::{EngineExec, Confinement, GitAccess, Admission, EngineExecError, admit_git, ENGINE_GIT_OPTIONS}` |
+| `base::frozen::git::{EngineGit, GitSandbox, ENGINE_GIT_OPTIONS}` | `base::engine_exec::{EngineExec, Confinement, GitAccess, Admission, EngineExecError, admit_git, read_head, ENGINE_GIT_OPTIONS}` |
 | `platform::env`(曾是 `base::interface::exec::env` 的再导出) | `platform::env` 现在是 `platform` 自己的模块,只有 `apply_subprocess_env(&SubprocessEnv, &mut tokio::process::Command)`;策略类型仍在 `base::interface::exec::env`(也可写 `base::interface::exec::{SubprocessEnv, SubprocessEnvMode, EnvPlan}`),`hold_back_credential`、`is_engine_credential` 留在原处 |
-| `platform::SubprocessEnv`、`platform::SubprocessEnvMode` | 删除,改用 `base::interface::exec::{SubprocessEnv, SubprocessEnvMode}`;0.3.11 迁移表里"整体替换也编得过"的说法不再成立,`mcp`、`hooks` 已按此改 |
-| `SubprocessEnv::apply(&mut Command)` | 删除,改用 `platform::apply_subprocess_env`;`base` 里是 `SubprocessEnv::resolve(host) -> EnvPlan`(纯判定,不读进程环境、不碰 `Command`) |
-| `tools` 的 `exec_capture`(crate 私有) | `base::interface::exec::capture(&dyn Process, spec, cancel) -> Captured`,任何 `Process` 都能用 |
+| `platform::SubprocessEnv`、`platform::SubprocessEnvMode` | 删除,改用 `base::interface::exec::{SubprocessEnv, SubprocessEnvMode}`;0.3.11 一节"整体替换也编得过"的说法不再成立 |
+| `SubprocessEnv::apply(&mut Command)` | `platform::apply_subprocess_env`;`base` 里是 `SubprocessEnv::resolve(host) -> EnvPlan`(纯判定) |
+| `tools` 的 `exec_capture`(crate 私有) | `base::interface::exec::capture(&dyn Process, spec, cancel) -> Captured` |
 | `tools::bash::{engine_git, engine_git_for}` | `tools::bash::{engine_exec, engine_exec_for}`,后者参数 `(settings, &ExecProviders, sandbox_disabled, session_id, ProjectTrust)` |
 | `runtime::turn` 的 `engine_git_from` | `engine_exec_from(config, exec, session_id, trust)` |
-| `tools::deferred::{DeferredTool, apply_deferred_policy}` | 删除,见"延迟加载" |
-| `assembly::session_pool::{RpcError, ResumeError, SetModelError}`(含 0.3.7 的 `SetModelError::Busy`、0.3.11 的 `ResumeError::Busy`) | `PoolError`,见"会话池";线上的 `rpc::RpcError` 仍在,只是池不再产出它 |
+| `tools::deferred::{DeferredTool, apply_deferred_policy}` | 删除,见"Tool 实现方" |
+| `assembly::session_pool::{RpcError, ResumeError, SetModelError}`(含 0.3.7 的 `SetModelError::Busy`、0.3.11 的 `ResumeError::Busy`) | `PoolError`,见"会话池" |
+| `assembly::rpc_schema::{rpc_json_schema, session_event_kinds, daemon_event_kinds, method_names, error_codes}` | `assembly::server::schema::{rpc_json_schema, session_event_kinds, daemon_event_kinds}`;方法表是 `assembly::server::methods()`,错误码是 `rpc::ErrorCode::ALL` |
+| `assembly::rpc::StreamFrame` | `rpc::DaemonEventFrame`(params 为池的 `DaemonEvent` 或 server 的 `ServerDaemonEvent`) |
+| `assembly::rpc::{SessionOptions, RecorderOptions, ClockOptions, TelemetryOptions}` | `assembly::session_pool::api::options::*`;宽松读法(`read_options` 等)留在 `rpc` |
+| `rpc::{PROMPT_TYPE_PERMISSION, PROMPT_TYPE_QUESTION}` | `session_pool::api::AskKind` |
+| `assembly::export::ArchiveFormat` | `assembly::session_pool::api::ArchiveFormat` |
+| `assembly::AllowAllPermission`、`daemon::AllowAllPermission` | 删除,见"权限" |
+| `Assembly.permission` | `Assembly.host_policy`,见"权限" |
+| `Assembly` 的 `mcp_credential_store`、`mcp_oauth_client`、`mcp_enterprise_idp`、`mcp_policy` | `Assembly.mcp: McpOptions`(字段去掉 `mcp_` 前缀),类型在 `assembly::assemble::McpOptions` |
 | `SessionManager::set_token_counter` | `SessionManager::with_token_counter(self, counter)`,另有 `token_counter(&self)` |
 | `base::rules::{default_rule_sources, discover_rules, discover_rules_from, build_rules_prompt}` | `RuleTiers::{new, for_paths}` 与 `render_rules_prompt(&[RuleEntry])` |
-| `AgentTool::with_process_groups` | `AgentTool::with_exec(ExecProviders)` |
+| `AgentTool` 的全部构造与 `with_*` / `set_*`(含 0.3.11 的 `with_process_groups`) | 删除;子 Agent 只经 `AgentsModule` 装配,见"委派" |
+| `base::interface::agent_spawner::*`(`AgentSpawner`、`SpawnRequest`、`SpawnMode`、`AgentRequest`、`StartAgentError`、`StartedAgent`、`TeamSeat`) | `base::interface::delegate::*`,见"委派" |
+| `agents::spawner::RuntimeAgentSpawner` | 删除,用 `Agent::delegator()` |
+| `runtime::hook_executors::AgentSpawnerHookExecutor` | `DelegatorHookExecutor::new(Arc<dyn Delegator>)` |
+| `permissions::gate::{PermissionGate, ManagedPolicy}`、`permissions::rule_set_permission::RuleSetPermission`、`permissions::error::GateError` | `permissions::policy::{Policy, ManagedLayer}`,见"权限" |
+| `base::interface::scene::Scene` | `base::interface::scene::{SceneSpec, ScenePrompt}`,见"场景" |
+| `scene::code::CodeScene`、`scene::harnix::HarnixScene`、`scene::mini::MiniScene`、`scene::DeclarativeScene` | `scene::code::spec(Interaction)`、`scene::harnix::spec()`、`scene::mini::spec()`、`scene::DeclaredScene`;按 id 取 `scene::builtin(id)` |
+| `base::interface::script_adapters::*`、`base::interface::script::{ScriptCarrier, PromptAssemblyScript}` | `script_host::adapters::*`、`script_host::carrier::ScriptCarrier`(`PromptAssemblyScript` 在 `script_host::adapters`) |
+| `compaction::compact` 重导出的 `Aging` 一族 | 只从 `compaction::aging` 导出 |
+| `base::settings::{PermissionAction, PermissionRule}` | `base::permission::RuleBehavior`、`base::settings::PermissionRuleEntry` |
+| `base::tool::{PermissionDecision, PermissionContentKind, ToolPermissionSpec}`、`base::permission::{PermissionDecision, DecisionReason, ValidationResult}` | 删除,见"Tool 实现方";`Tool` 用的是 `base::tool::ValidationResult` |
 | `SessionPool::drop_connection(ConnectionId)`(`assembly::server` 上的同名方法仍在) | `SessionPool::drop_watcher(WatcherId)` |
-| `tests/` 里的 `dependency_direction.rs`、`one_assembly.rs`、`carrier_invariants.rs` 的依赖两条 | `tests/guards/tests/deps.rs`(读 `cargo metadata`)、`SessionPool::new` 的 `pub(crate)` 可见性;进程级状态守卫在 `tests/guards/tests/process_state.rs` |
-
-#### 权限
-
-- **`Permission` 拆成 `PermissionPolicy` 与 `PermissionGrants`。** `base::interface::permission::Permission`
-  删除。`PermissionPolicy` 只有 `decide(&PermissionRequest)` 一个方法,管这次调用让不让跑;
-  `PermissionGrants` 有 `grant(Grant)` 与 `clear(GrantScope)`,管会话里给出的放行记在哪。
-  `GrantScope` 是 `Turn`(skill 的 `allowed-tools`,下一轮清掉)、`Session`、`Project`(再写
-  `settings.local.json`),`Grant` 带工具名、内容与 scope;`GrantError`、`NoGrants`(每次授权回
-  `NotKept`)一并新增。`PermissionSet { policy, grants }` 把两半打包:`PermissionSet::of(x)` 收同时实现
-  两个 trait 的值,`PermissionSet::without_grants(policy)` 只判定、不记放行。要改的:自己实现
-  `Permission` 的,`check` 改名 `decide` 并实现 `PermissionPolicy`;还要记"总是允许"的再实现
-  `PermissionGrants`。
-- **`PermissionRequest` 自带判定要用的状态,晚绑定方法全部删除。** `check_for_delegate`、
-  `bind_tool_registry`、`bind_session_state` 删除:请求里的 `tool` 是分发用的 registry 里查到的工具
-  (`None` 即未知工具,`RuleSetPermission` 对它询问),`session` 是策略所属会话的实时 `SessionState`,
-  `delegate` 是子 Agent、团队成员转来的调用的会话。以前靠 `bind_*` 补状态、按 `check_for_delegate`
-  判子 Agent 的,改读请求的这三个字段;包装别的策略的,转发 `decide` 即可。
-- **授权方法删除。** `add_temporary_allow`、`clear_temporary_allows`、`add_persistent_allow` 删除,
-  改为 `grant(..)` 配 `GrantScope::{Turn, Session, Project}` 与 `clear(GrantScope::Turn)`。
-  `PermitAlways{Local}` 对应 `Project`,`PermitAlways{Session}` 对应 `Session`。
-- **`Builder` 与周边签名。** `runtime::agent::Builder::permission` 收 `PermissionSet`;
-  `Agent::permission()` 返回 `&PermissionSet`;`SessionContext.permission`、`ToolExecCtx.permission`
-  是 `PermissionSet`;`daemon::Assembly.permission` 是 `Option<PermissionSet>`,原来传
-  `Arc::new(AllowAllPermission)` 的改传 `PermissionSet::without_grants(Arc::new(AllowAllPermission))`。
-  `SkillCatalog::expand`、`CommandRegistry::run_prompt_command` 的 permission 参数改为
-  `&dyn PermissionPolicy`;`SkillTool::with_permission`、`skills::tool::register` 收 `PermissionSet`;
-  `AgentTool::set_parent_permission(PermissionSet, Arc<SessionState>)` 多一个参数;
-  `RuleSetPermission::new(gate)` 不再收 registry 与 mode,`from_settings(settings, extra_rules)` 不再收
-  mode 与 registry,新增 `with_local_settings_file`,模式一律取请求里会话的实时模式。
-  `Builder` 的 `local_settings_path` 字段删除;`runtime` 不再依赖 `permissions`(只是 dev-dependency)。
-- **子 Agent 的授权。** 子 Agent 的 `PermissionSet` 在派生处显式组装,授权一侧是 `ParentGrants`:
-  转发 `Session` 与 `Project` 到父会话,丢弃 `Turn`,与以前一致。`DenyRulesFirst`、`NoPrompt`、
-  `ParentPermission` 只实现 `PermissionPolicy`,转发方法没有了。
-- **`Credentials` 由敏感路径登记表取代。** `base::paths::Credentials`(含 `Credentials::hold`)删除,
-  改为 `base::paths::sensitive`:`CREDENTIALS` 表(`Scope` × `Secret`)与 `SensitivePaths`,按会话的状态
-  目录与项目解析一次、各处共享。`is_credential` 判一条路径,`credential_locations` 给沙箱后端用。
-  `ENGINE_CONFIG_*`、`PROJECT_ENGINE_CONFIG_DIRS`、`PROJECT_WORKTREES_DIR`、`STATE_ROOT_*` 搬进
-  `sensitive`,仍可从 `base::paths` 引用;`HOME_CREDENTIAL_STORES` 从 `exec/sandbox.rs` 搬来;
-  `CREDENTIAL_DIR_NAMES` 改为函数 `credential_dir_names()`;过渡用的 `STATE_ROOT_TOKEN_DIRS`、
-  `DAEMON_TOKEN_DIRS`、`STATE_ROOT_KEY_FILE_STEMS`、`PROJECT_KEY_FILES`、`is_state_root_key_file`、
-  `is_project_key_file` 删除。要改的:用 `Credentials::hold` 的,改建一个 `SensitivePaths`,调
-  `is_credential`。
-- **`SandboxPolicyConfig.state_root`、`SandboxSettings.state_root` 换成 `paths: Arc<SensitivePaths>`;
-  `SandboxPolicy.known_scenes` 删除**(从来没有调用方填过)。直接构造这两个结构的,改传
-  `SensitivePaths`;沙箱的场景文件保护不再靠已知场景名单,见"部署"一节。
-- **`PromptFiles` 删掉 `Default` 与 `new(None, ..)`。** 没有状态目录的地方用显式的
-  `PromptFiles::unscoped()`;原 `new(None, Some(dir))` 改为
-  `SensitivePaths::default().prompt_files_within(dir)`。文件工具的 `SessionCredentials` 与插件
-  manifest 的凭据检查同样改用 `SensitivePaths`。
+| `tests/` 里的 `dependency_direction.rs`、`one_assembly.rs`、`carrier_invariants.rs`、`home_is_never_discovered.rs`、`hook_event_wiring.rs` | `tests/guards/tests/` 下的各守卫,见"测试与守卫" |
 
 #### Tool 实现方
 
-0.3.11 一节说"旧方法仍然可用,没有 deprecate""`spec()` 缺省从旧方法读出、旧方法缺省取 `spec()` 的
-字段""`acceptEdits` 的分派缺省是 `is_read_only(input)`""包装器要转发 `accept_edits_allows`
-(`DeferredTool` 已转发)",这几句都不再成立:桥接已删除,`Tool` 收成 11 个方法。
+0.3.11 一节说"旧方法仍然可用,没有 deprecate""`spec()` 缺省从旧方法读出""包装器要转发
+`accept_edits_allows`",这几句都不再成立。
 
-- **`Tool` 只剩 `name`、`description`、`spec`、`input_schema`、`guide`、`call_traits`、
-  `permission_match_content`、`accept_edits_allows`、`check_permissions`、`validate_input`、`call`。**
-  `description()` 与 `spec()` 必须实现(`spec()` 可以只是 `ToolSpec::new()`),没有缺省,也没有
-  互相推导。缺省只剩 `accept_edits_allows → call_traits → spec` 一条链。以前没写 `description()`
-  的实现(八个内建工具:`ListMcpResources`、`ReadMcpResource`、`MCP`、`TeamMemorySave`、
-  `TeamMemoryRead`、`SendMessage`、`ReadMail`、`ListPeers`)现在显式返回空串,请求字节不变。
-- **删除的方法与改法。** `is_read_only`、`is_concurrency_safe`、`is_destructive`、
-  `callable_from_code`、`code_result`、`needs_dispatch`、`short_description`、
-  `permission_content_kind`、`self_allow_overrides_mode`、`leaves_plan_mode`:常量答案写进
-  `spec()`(`ToolSpec::new().read_only(true)…`),看输入才知道的覆写 `call_traits(input) ->
-  CallTraits`。`prompt()`、`detailed_prompt()` 删除,改为 `async fn guide(&self, ctx) ->
-  Option<String>`,没有比 `description()` 更多的内容就返回 `None`(或不实现)。`source`、`is_enabled`、
-  `strict`、`is_dynamic`、`is_direct`、`affected_paths`、`interrupt_behavior` 没有读者,直接删掉
-  (`InterruptBehavior` 枚举也删了,从来没有代码读它)。
+- **`Tool` 正好 9 个方法:`name`、`description`、`spec`、`input_schema`、`guide`、`call_traits`、
+  `permission_facts`、`validate_input`、`call`。** `description()` 与 `spec()` 必须实现(`spec()` 可以只是
+  `ToolSpec::new()`)。写法见 `extension_points.md` 的"实现一个工具"。
+- **权限面只剩 `permission_facts(input, ctx) -> PermissionFacts`。** `check_permissions`、
+  `accept_edits_allows`、`permission_match_content` 删除:工具报这次调用的事实(`Subject` 主体、`Reach`
+  可达范围、`Runs` 是否起命令、要问时的问句),判定归引擎。缺省是 `PermissionFacts::unknown()`,即什么都
+  不声称,**每次调用都会被问,无人值守时拒绝**。原来 `check_permissions` 返回 allow 的,多半写成
+  `Reach::SessionOnly`;返回 ask(问句)的写成 `Reach::Unknown` 加问句;`permission_match_content` 给出的
+  内容改成对应的 `Subject`。
+- **删除的能力方法与改法。** `is_read_only`、`is_concurrency_safe`、`is_destructive`、
+  `callable_from_code`、`code_result`、`needs_dispatch`、`short_description`:常量答案写进 `spec()`
+  (`ToolSpec::new().read_only(true)…`),看输入才知道的覆写 `call_traits(input) -> CallTraits`。
+  `prompt()`、`detailed_prompt()` 改为 `async fn guide(&self, ctx) -> Option<String>`。`source`、
+  `is_enabled`、`strict`、`is_dynamic`、`is_direct`、`affected_paths`、`interrupt_behavior`、
+  `is_deferred`、`full_input_schema`、`prompt_fragment` 直接删掉(`InterruptBehavior` 一并删除)。
+  以前没写 `description()` 的实现显式返回空串。
 - **`fn input_schema(&self)` 改为 `fn input_schema(&self, style: PathStyle)`,`input_schema_for` 删除。**
-  不关心路径风格的工具忽略参数;`Read` / `Write` / `Edit` 按风格改写 `file_path` 的说明。
-- **`ToolSpec` 重排。** `read_only` / `concurrency_safe` / `destructive` → `spec.traits.*`;
-  `permission_content_kind` / `self_allow_overrides_mode` / `leaves_plan_mode` →
-  `spec.permission.*`;`source: String` → `origin: ToolOrigin`(`Builtin`、`Mcp { server }`、
-  `Plugin { name }`,以前按 `"mcp:"` 前缀匹配字符串);去掉 `name`、`description`、`enabled`、
-  `interrupt_behavior`、`strict`、`dynamic`、`direct`、`deferred`。`ToolSpec::defaults_for` 删除,用
-  `ToolSpec::new()` 加链式 setter。`ToolSpec`、`CallTraits`、`ToolOrigin`、`ToolPermissionSpec`
-  都是 `#[non_exhaustive]`:在 `base` 之外不能用结构体字面量构造,对 `ToolOrigin` 做 `match` 要带通配
-  分支;以后加字段不再算破坏性变化。
-- **包装另一个 `Tool` 的包装器**只要转发上面 11 个方法。0.3.11 一节要求转发的 `spec()` 的缺省
-  推导、`accept_edits_allows` 之外的旧能力方法都不存在了;`DeferredTool` 这个唯一的转发式包装器
-  已删除。
-- **`ToolRegistry`。** `all`、`find`、`has_direct_tool` 删除,用 `list`、`get`;实现 `ToolRegistry`
-  必须提供 `list`、`get`、`register`、`replace`、`remove`。`LayeredToolRegistry` 不再用 Tombstone 工具
-  标记隐藏(以前靠"未启用且描述为空"的约定),改为持有隐藏名集合。
-- **插件工具来源。** `ToolOrigin::Plugin { name }` 让 `inspectContext` 里插件工具的来源报
-  `plugin:<name>`,与 `plugin_development.md` 的承诺一致。
+- **`ToolSpec` 重排。** `read_only` / `concurrency_safe` / `destructive` → `spec.traits.*`;`source: String`
+  → `origin: ToolOrigin`(`Builtin`、`Mcp { server }`、`Plugin { name }`);对模式的立场是
+  `.stance(ModeStance::Coordination | ModeStance::LeavesPlan)`,取代 `permission_content_kind` /
+  `self_allow_overrides_mode` / `leaves_plan_mode`,`spec.permission` 整个删除;去掉 `name`、
+  `description`、`enabled`、`interrupt_behavior`、`strict`、`dynamic`、`direct`、`deferred`;
+  `ToolSpec::defaults_for` 删除。`ToolSpec`、`CallTraits`、`ToolOrigin` 是 `#[non_exhaustive]`:在
+  `base` 之外用 `ToolSpec::new()` 加链式 setter 构造,对 `ToolOrigin` 做 `match` 要带通配分支。
+- **`ToolContext` 多了 `confinement`(会话的沙箱兑现程度)、`attendance`(有没有人可问)、
+  `approval`(这次放行的依据与执行 profile,`Option`)、`turn: Arc<TurnScope>`(回合来源与结构化输出)**;
+  `dangerously_disable_sandbox` 删除,沙箱关没关只看 `config.dangerously_disable_sandbox`。用结构体字面
+  量构造 `ToolContext` 的要补上。新增的构造函数:`ToolResult::{blocks, with_error, with_structured,
+  with_mcp_meta, with_new_messages}`、`ProgressUpdate::{with_progress, with_total}`、`ToolDef::new`、
+  `StartedAgent::new`、`TokenBudget::new`、`ExecutionParams::new`、`ModuleSurface::new`、
+  `ReminderContext::new`,`ScenePromptContext` 派生 `Default`。
+- **外部内容围栏由 runtime 加。** `Read` 去掉自己的围栏,`WebFetch` 不再自己加;不经 runtime 分发、
+  直接调用工具的嵌入方拿到的 `Read`、`WebFetch` 结果不再带围栏,需要时自己调
+  `tools::external_content`。
+- **包装另一个 `Tool` 的包装器**只要转发上面 9 个方法;`DeferredTool` 已删除。工具的字段里不能再含
+  `dyn Tool`(守卫 A3)。
+- **延迟是会话属性。** 名单是 `EngineConfig::deferred_tools`,`Builder::build` 按场景填写;要判断
+  一个工具在会话里是否延迟,读 `ToolContext.config.deferred_tools` 或 `Agent::deferred_tools()`。延迟的
+  MCP 工具在 `ToolDef.source` 上报 `mcp:<server>`。
+- **`ToolRegistry`。** `all`、`find`、`has_direct_tool` 删除,用 `list`、`get`;实现 `ToolRegistry` 必须
+  提供 `list`、`get`、`register`、`replace`、`remove`。`LayeredToolRegistry` 改为持有隐藏名集合。
+- **插件工具来源。** `ToolOrigin::Plugin { name }` 让 `inspectContext` 里插件工具的来源报 `plugin:<name>`。
 
-#### 延迟加载
+#### 权限
 
-- **延迟是会话属性,不是工具属性。** `tools::deferred`(`DeferredTool`、`apply_deferred_policy`)
-  删除;`Tool::is_deferred`、`full_input_schema`、`prompt_fragment` 删除,`ToolSpec` 没有 `deferred`
-  字段。名单是 `EngineConfig::deferred_tools`,`Builder::build` 按场景的 `deferred_tools()` 填写(去掉
-  `ToolSearch`;宿主绑定了输出 schema 时去掉 `StructuredOutput`)。要判断一个工具在会话里是否延迟,
-  读 `EngineConfig::deferred_tools`(`ToolContext.config`)或新增的 `Agent::deferred_tools()`。
-  请求的工具表、`ToolSearch`、调用失败时附 schema 都读这份名单;`code` 场景的请求工具表逐字节不变。
-- **延迟的 MCP 工具在 `ToolDef.source` 上报 `mcp:<server>`**(以前被包装器伪造成 `builtin`);这个字段
-  不上线。校验失败或返回 `Schema` / `InvalidInput` / `Validation` 错误时附 schema 的逻辑搬进
-  `tool_exec`,`RunCode` 的子调用走同一条路径。
+- **`Permission` 拆成 `PermissionPolicy`(`decide(&PermissionRequest)`)与 `PermissionGrants`
+  (`grant(Grant)`、`clear(GrantScope)`)。** `PermissionSet { policy, grants }` 打包两半,`grants` 是
+  `Option<Arc<dyn PermissionGrants>>`:`PermissionSet::of(x)` 收同时实现两个 trait 的值,
+  `PermissionSet::without_grants(policy)` 的 `grants` 为 `None`(提示不提供"总是允许")。`GrantScope` 是
+  `Turn`、`Session`、`Project`;`Grant` 新增 `matching: GrantMatch { Pattern, Exact }`,`Grant::new` 按 scope
+  定(Turn 是 Pattern,其余是 Exact)。`add_temporary_allow`、`clear_temporary_allows`、
+  `add_persistent_allow`、`NoGrants`、`GrantError::NotKept` 删除。
+- **引擎的判定是 `permissions::policy::Policy`。** `RuleSetPermission`、`PermissionGate`、
+  `ManagedPolicy`、`GateError` 删除。`Policy::new(RuleSet)` / `empty()` / `from_settings(&LoadedSettings,
+  extra_rules)`,再按需 `with_managed(ManagedLayer)`、`with_sandbox`、`with_local_settings_file`、
+  `with_host`、`with_no_one_to_ask`;`rules` / `add_rules` / `remove_rules_by_source` 照旧。`Policy::decide`
+  不校验输入,直接调它的先 `validate_input`。
+- **`PermissionRequest::new(tool_name, tool, input, facts, ctx, session)`**:`facts`(`ToolFacts::gather`
+  收集)、`ctx` 必填,`hook` 缺省 `HookAnswer::None`、`attendance` 缺省取 `ctx.attendance`,用
+  `with_hook` / `with_attendance` 覆盖;`cwd`、`session_id` 删除,从 `req.ctx` 读。`check_for_delegate`、
+  `bind_tool_registry`、`bind_session_state` 删除。`delegate` 是 `Option<Delegate>`(`Delegate::of(session)`
+  是无附加规则的写法),`Delegate.rules` 里的 deny 在任何模式下都拒,allow 是委派的授予层,只回答模式
+  本来要问的那一问。
+- **`PermissionOutcome` 变形。** `Permit { basis, profile, obligations }`、`Deny { reason: Reason }`、
+  `Prompt { prompt_id, message, paths, reason, answerable }`;`Answerable::PersonOnly` 取代
+  `managed: bool`;新增 `Basis`、`Answerable`、`Reason`、`Stage`、`ExecProfile`、`Obligations`、
+  `Approval` 与 `PermissionOutcome::{deny, prompt, is_permit}`。
+- **宿主自己的策略是 `Policy` 里的一层规则,不再替换引擎的判定。** `Assembly.permission:
+  Option<PermissionSet>` 改为 `Assembly.host_policy: Option<Arc<dyn PermissionPolicy>>`:它的 deny 在
+  任何模式下生效(bypass 下也是),Prompt 是一条 ask 规则,Permit 只等于一条 allow 规则(来源
+  `RuleSource::Host`,序列化为 `"host"`),凭据、deny / ask 规则、模式硬拒照样在它前面。所以宿主的
+  "全部放行"不再跳过凭据检查与计划模式,在 `default` 模式下则会放行原本要问的调用。
+  `AllowAllPermission` 删除。
+- **`runtime::agent::Builder` 不给 `.permission(..)` 时按设置判定,不再全部放行;** 也不给
+  `.elicitation(..)` 时要问的调用一律拒绝。只靠事件通道答 `PermissionPrompt` 的嵌入方显式传
+  `.permission(PermissionSet::of(Arc::new(Policy::from_settings(..))))`。经 `Builder::permission` 自带
+  `PermissionPolicy` 的,收到的请求带 `facts`、`ctx`、`hook`、`attendance`,hook 拦截与"没人可问"要它
+  自己处理(runtime 不再替它把 hook approve 的 Prompt 改成放行),或者改用引擎的 `Policy` 加 `with_host`。
+- **周边签名。** `Agent::permission()` 返回 `&PermissionSet`;`SkillCatalog::expand`、
+  `CommandRegistry::run_prompt_command` 收 `&dyn PermissionPolicy`;`SkillTool::with_permission`、
+  `skills::tool::register` 收 `PermissionSet`;`ChannelElicitation::authorization_options(keeps_grants)`
+  多一个参数;`Elicitation` 新增带缺省实现的 `can_clarify()`,`Builder::elicitation` 设了一个返回
+  `false` 的实现时会话不提供 `AskUserQuestion`;`ruleset::literal_rule_content` 删除,
+  `settings_patch::build_rule_string` 不再转义 URL,新增 `settings_patch::append_exact_allow`、
+  `rule::exact_allows_from`;`settings::PermissionRuleEntry` 新增 `match` 字段。`runtime` 不再依赖
+  `permissions`。
+- **`PermissionMode` 只剩 `base::permission::PermissionMode` 一份**,`base::settings::PermissionMode` 是它
+  的重导出;两者互转的 `.into()` 直接去掉。
+- **`EngineConfig.project_untrusted: bool` 换成 `project_trust: ProjectTrust`**(`NoProject` / `Trusted`
+  / `Untrusted`,`is_untrusted()`)。
+- **遥测。** `PermissionDecisionOutcome::Ask` 删除,新增 `UserAllow`;`PermissionDecisionPayload` 新增
+  `basis`、`stage`,记的是最终结论。
+- **`Credentials` 由敏感路径登记表取代。** `base::paths::Credentials` 删除,改为
+  `base::paths::sensitive`:`CREDENTIALS` 表与 `SensitivePaths`(按会话的状态目录与项目解析一次,
+  `is_credential` 判一条路径,`credential_locations` 给沙箱后端)。`ENGINE_CONFIG_*`、
+  `PROJECT_ENGINE_CONFIG_DIRS`、`PROJECT_WORKTREES_DIR`、`STATE_ROOT_*` 搬进 `sensitive`,仍可从
+  `base::paths` 引用;`CREDENTIAL_DIR_NAMES` 改为函数 `credential_dir_names()`;`STATE_ROOT_TOKEN_DIRS`、
+  `DAEMON_TOKEN_DIRS`、`STATE_ROOT_KEY_FILE_STEMS`、`PROJECT_KEY_FILES`、`is_state_root_key_file`、
+  `is_project_key_file` 删除。`SandboxPolicyConfig.state_root`、`SandboxSettings.state_root` 换成
+  `paths: Arc<SensitivePaths>`,`SandboxPolicy.known_scenes` 删除。`PromptFiles` 删掉 `Default` 与
+  `new(None, ..)`,改用 `PromptFiles::unscoped()` 或 `SensitivePaths::prompt_files_within(dir)`。
+- **沙箱策略。** `SandboxPolicy` 新增 `read: ReadScope`(`Everything` / `Only`)、`env: EnvScope`
+  (`Session` / `Minimal`)与 `egress: Option<ProxyEndpoint>`(出网代理只定了接口
+  `base::interface::exec::egress`,目前恒为 `None`),`SandboxPolicy::strict(可读根, TMPDIR)` 给出严格
+  profile;`ProcessSpec` 新增 `env_scope`;`ConfinementReport` 新增 `strict`。用结构体字面量构造
+  `SandboxPolicy`、`ProcessSpec` 的要补上(或用 `ProcessSpec::new` / `..Default::default()`)。
+  `tools::bash::confine_shell` 返回 `ProcessSpec`(不再是 `Result`);新增
+  `tools::bash::{confinement_report, strict_sandbox_policy}`。
+- **`LocalProcess::spawn` 的取消令牌生效**:句柄存活期间令牌一取消,向整个进程组发 SIGTERM,宽限期后
+  SIGKILL。以前只靠调用方自己 kill 或丢弃句柄。
+
+#### 委派
+
+委派只剩一条路:`base::interface::delegate::Delegator`。设计见 `ARCHITECTURE.md` §3.4,用法见
+`extension_points.md` 的"委派"。
+
+- **`AgentSpawner` 一族删除。** `Delegator::delegate(DelegateRequest) -> Result<Delegated,
+  DelegateError>` 与 `stop_member(&TeamSeat)` 取代它;`DelegateRequest::new(prompt, mode, stops_with)`
+  给出什么都不收窄的缺省,`tools` 是 `ToolSelector`、`deny_rules` 只收 deny、`grants` 是本轮授权、
+  `called_from` 是归属的回合与 `tool_use_id`、`asks` 定要不要问人。`DelegateMode` 是 `Wait`、
+  `Background { notify_parent }`、`TeamMember { seat, permission_mode, lifetime }`、
+  `Host { notify_parent }`、`Hook { judged_session }`,**没有 `#[non_exhaustive]`**(引擎内的唯一分派对
+  它穷尽 `match`),以后加模式算破坏性变化。结果按 `DelegateOutcome` / `DelegateEnd` 报
+  (`Completed`、`CutShort`、`Failed`、`Cancelled`),不再折叠成文本。`DelegateError` 是
+  `#[non_exhaustive]`,新增 `NotJudged`(拒绝给 hook agent 再派裁判)。
+- **模块。** `SessionContext::provide_agent_spawner` / `agent_spawner`、`Agent::agent_spawner()` 删除,
+  改用 `SessionContext::provide_delegator` / `delegator()` 与 `Agent::delegator()`。嵌入方自己写的模块要让
+  fork skill 与 `session.startAgent` 生效,须在 skills 模块之前 `provide_delegator`。
+- **宿主契约一次继承。** `runtime::agent::HostContracts` 收齐宿主为本机、本部署给出的答案(执行层、
+  计数器、规则、环境、权限、日志存储、遥测、任务路由、场景表、记忆存储与召回、指令来源、插件、模块,
+  以及 tool / prompt middleware、结果变换、模型拦截、恢复策略、compactor),`Builder::inherit(HostContracts)`
+  是子会话接收它的唯一入口。`SessionContext` 去掉 `exec`、`token_counter`、`rules`、`history_store`、
+  `telemetry`、`task_router`、`delegate_plugins`、`modules`、`permission`、`scene_registry`、
+  `instruction_file`、`plugin_tools`、`process_groups`,改为 `host: &HostContracts`,模块读
+  `cx.host.<字段>`。
+- **`AgentTool` 只能经 `AgentsModule` 用。** 它的构造、`with_parent_tools`、`with_shared_agent_types`、
+  `with_settings`、`with_subagent_slots`、`with_depth`、`with_exec`、`with_modules`、`with_task_router` 等
+  `with_*` 与全部 `set_*` 删除;`agents::agent_tool` 仍导出 `SubagentSlots` 与
+  `DEFAULT_MAX_CONCURRENT_SUBAGENTS`。
+- **工具收窄。** `Builder::contributed_tool_filter` 与 `runtime::agent::ToolFilter` 删除,改用
+  `Builder::tool_selector(ToolSelector)`;子会话的工具由场景的工具面 ∧ 委派选择器 ∧ 插件放行一处决定。
+  `base::interface::tool_selector::{ToolSelector, ToolPattern}` 是新的选择器类型。
+- **团队。** `MemberLifetime::Stage` 多一个 `stage: String`;`Coordinator` 去掉 `set_event_sender`、
+  `set_telemetry_handle`;`DefaultCoordinator::with_agent_spawner` 改为 `with_delegator(Arc<dyn Delegator>)`,
+  新增 `with_events`、`with_telemetry`;`TeamCreateTool::new(model, config, Box<dyn Coordinator>)`,
+  `with_spawner`、`set_event_sender`、`set_telemetry_handle` 删除;`OrchestrateRequest` 去掉
+  `parent_tools`、`sub_tools`;`aggregate` 多一个 `&CancellationToken`;`persist::TeamEvent::MemberCompleted`
+  多 `cancelled`;新增 `TeamRegistry::update_recorded_member_lifecycle`。
+- **skills。** `SkillTool::with_spawner` 改为 `with_delegator(Arc<dyn Delegator>)`;`skills::tool::register`
+  第四个参数改为 `Option<Arc<dyn Delegator>>`。
+- **assembly。** `StartAgentParams::into_request` 返回 `DelegateRequest`;`SessionPool::start_agent` 收
+  `DelegateRequest`,`mode` 不是 `Host` 时回 `InvalidRequest`。
+- **`base::context::session::TaskLease`**:构造即登记任务,`conclude(status, notice)` 收尾,未收尾就被丢下的记为
+  `Cancelled`。委派任务一律登记在父会话的 `SessionState` 上。
+
+#### hooks
+
+- **`HookRunner::run(event, input, stop: &CancellationToken)`**;`run_elicitation` /
+  `run_elicitation_result` 末尾多 `stop`;`check_rewakes(stop, ambient)`。`PromptHookExecutor::execute` /
+  `AgentHookExecutor::execute` 末尾多 `stop: &CancellationToken`,实现方应在它取消时尽快返回;
+  `AgentHookExecutor::execute` 的错误类型由 `String` 改为 `hooks::runner::AgentHookError { NotJudged,
+  Failed(String) }`。`HookOutcome` 新增 `Cancelled`。
+
+#### 场景
+
+- **`Scene` trait 改成数据 `SceneSpec`,唯一的行为是提示词钩子 `ScenePrompt`**(`system` 与
+  `session_context`,固定文本用 `FixedPrompt`)。`SceneSpec` 是 `#[non_exhaustive]`:`SceneSpec::new(id,
+  name, prompt)` 后改字段。宿主在内建场景上改出自己的场景时改字段即可,不再包一层 trait 逐个转发。
+  `Builder::scene`、`Assembly.scenes`、`SessionPool::register_scene` 收 `Arc<SceneSpec>`。
+- **工具面是 `ToolSurface { allow, deny, deferred }`**,`allow` / `deny` 是一层 `ToolSelector`:黑名单
+  始终生效,`mcp__` pattern 按工具来源匹配(行为变化见"部署")。`ToolPattern` 实现 `Display`。
+- **会话命名改由 `session_naming` 模板(`{first_message}`)给出**,`auto_name_session` /
+  `session_name_prompt` 删除;`memory_extraction_prompt` 改为字段 `memory_extraction_intro`;
+  `declarative::Reminder` 是 `base` 的 `Reminder` 的重导出;`Interaction` 实现 `Default`(`Interactive`)。
+
+#### 设置
+
+- **`Settings` 只描述文件里能写的值,加载结果在 `LoadedSettings`。** `Settings` 去掉 `paths`、
+  `session_dir`、`permission_rules`、`local_permission_rules`、`project_layer`、`ignored_values`、
+  `managed`、`mcp_server_dirs`;`LoadedSettings { values, paths, rules, managed, mcp_server_dirs, ignored }`
+  提供 `load` / `load_from` / `load_without_project` / `new` / `with_managed` / `with_project_layer` 与
+  `trust()`、`requires_trust()`、`bypass_disabled()` 等访问器,值一律经 `.values` 读(没有 `Deref`)。
+  `Settings::load*`、`apply_managed`(改名 `with_managed`,按值)、`bypass_disabled` 移到
+  `LoadedSettings`;`SettingsFile { settings, permission_rules }` 表示单份文件,schema 由它生成;
+  `PermissionRule` 去掉 `tier`,层归属在 `LoadedRule { rule, tier, machine_local }`;
+  `deprecated_settings_keys` 删除;`PathSettings` 实现 `Default`。
+- **改收 `LoadedSettings` 的:** `EngineConfig::from_settings` → `from_loaded`;
+  `permissions::rule::rules_from_all_tiers` → `rules_from`;`ManagedPolicy::from_settings` →
+  `ManagedLayer`;`runtime::agent::Builder::settings`、`Agent::settings()`、`SessionContext.settings`、
+  `base::prompt::assemble_prompt`、agents / skills 的目录函数、`DaemonConfig.settings`。
+- **未信任项目层的归类表是 `base::project_trust::PROJECT_TIER`**,给 `Settings` 加字段而不归类,
+  `every_settings_key_has_an_entry` 就过不了。
+
+#### 会话状态与引擎
+
+- **`SessionState` 不再有 `pub` 字段。** 由设置和场景推出来的 `cwd`、`additional_writable_dirs`、
+  `read_directories`、`read_anywhere`、`cache_directories`、`unattended` 收进 `SessionEnv`,读
+  `state.env().<字段>`;`session_id`、`started_at` 删除(会话 id 以 `SessionManager` 为准)。
+  `SessionState::new` 不再收 `cwd`,建出来的状态没有挂引擎,测试用 `for_tests(cwd)` / `for_tests_in(env)`。
+  `bind_tools`、`bind_exec` 删除,改用 `attach(EngineAttachment::new(env, exec, generation).with_tools(..))`;
+  没挂引擎时 `exec()`、`tool()` 返回 `None`。
+- **跨回合的东西归会话,一个回合的东西归回合。** `set_turn_origin` / `turn_origin` /
+  `set_structured_output` / `take_structured_output` 删除,改用 `ToolContext.turn`(`TurnScope`);spend、
+  输出 token 目标、已调用的 skill 挪进 `SessionState` 的 `SessionLedger`(`Agent.token_budget`、
+  `PromptContext.invoked_skills` 删除);模型选择记在 `SessionState::model_choice` /
+  `set_model_choice`,引擎每轮开头读。`snapshot_file`、`restore_snapshot`、`restore_to_turn`、
+  `bump_turn`、`current_turn`、`carry_session_state_from`、`GoalSlot::carry_arming_from`、
+  `restore_goal`、`restore_durable_state` 删除,后两者改用 `restore_from_log(goal, durable)`;
+  `DurableState` 新增 `activated_tools`。
+- **任务与目标类型化。** `RunningTask::info() -> TaskInfo`、`SessionState::task_infos()`、
+  `subscribe_tasks() -> Receiver<TaskEvent>`、`RunningTask::report_to(Sender<TaskEvent>)`、
+  `goal_view() -> Option<GoalView>`、`goal_create` / `goal_update -> Result<GoalView, GoalError>`、
+  `subscribe_goal() -> Receiver<Option<GoalView>>`、`GoalSlot::view()`,不再是 `serde_json::Value`。
+- **宿主可以持有会话状态跨引擎。** `Builder::session_state(state, generation)` 让引擎在宿主给的状态上跑,
+  `build` 不挂载,宿主在上一代引擎停下后调 `Agent::attach_session`;`Builder::steering(handle)` 让插话
+  队列跨引擎(`SteerHandle` 实现 `Default`)。`Agent::resume_session` 拆成 `load_transcript(id)` 与
+  `restore_state_from_log()`。`Builder::run_slots(..)` 给 `RunCode` 的空位(`runtime::default_run_slots()`
+  每次给一份新的;`ptc::default_run_slots()` 同样不再是进程级共享的一份)。
+- **输入与命令。** `InputMessage::Steer` 去掉 `ack`,要知道是否被收下用 `SteerHandle::offer`;
+  `InputMessage::Context` 的 `reply` 是 `oneshot::Sender<Result<ContextAnswer, ContextError>>`
+  (`ContextAnswer { Inspected(ContextReport), Dropped, Edited }`,`ContextError { Refused, NotRecorded }`);
+  新增 `InputMessage::Flush`;`EngineCommand::UpdateModel` 删除。
+- **事件。** `AgentEvent::Error { failure: TurnFailure, turn_id, persisted }` 取代
+  `{ code: "turn_error", message }`;`AgentEvent::TurnComplete` 多 `persisted`(serde 缺省 `true`);
+  新增 `AgentEvent::ModelRetry` 与 `AgentEvent::PromptResolved { prompt_id, resolution }`
+  (`base::event::PromptResolution`);`runtime::elicitation::OpenPrompt` 是登记待答提问的句柄。
+- **`compaction::aging::Aging` 多一个 `undo: AgingUndo` 字段**:压缩被取消或失败时按它撤回老化。自己
+  实现 `Compactor::age`、用结构体字面量构造 `Aging` 的要补上(它实现 `Default`)。
+
+#### 模型与恢复
+
+- **`ModelError` 从枚举改成 `{ kind: ModelErrorKind, status, retry_after, message }`。** 变体 `Api`、
+  `Auth`、`RateLimited`、`Overloaded`、`Network`、`Cancelled`、`Internal`、`Unsupported`、`NotRecorded`
+  删除:匹配改读 `e.kind`;构造用 `ModelError::new(kind, msg)` 加 `with_status` / `with_retry_after`,或
+  `cancelled()`、`overloaded()`、`rate_limited()`、`auth()`、`transport()`、`timeout()`、
+  `stream_interrupted()`、`protocol()`、`invalid_request()`、`unsupported()`、`not_recorded()`(原来的
+  `Internal` 一般对应 `protocol()`)。文本改为 `<kind>[ (HTTP <status>)][: <message>]`。分类只在 model
+  crate 里做(`model::error::classify`),守卫不许别处构造 `ModelErrorKind`。
+- **恢复策略。** `ModelFailure` 从枚举改成 `{ kind, message, retry_after, after_first_byte }`;
+  `RecoveryPolicy::on_failure(&self, failure: &ModelFailure<'_>, so_far: &CallRecovery) -> Recovery`;
+  `Recovery` 多 `RetrySame { after }`;`RequestFailure`、`ModelError`、`ModelErrorKind`、`ModelFailure` 是
+  `#[non_exhaustive]`。自己实现 `RecoveryPolicy` 的改读 `failure.kind` 并处理 `so_far`。
+- **一轮怎么失败。** `TurnError::Model(ModelError, bool)`(第二项为这一轮是否已跑过工具);
+  `base::event::{TurnFailure, FailureKind}` 是引擎、池、线上共用的描述。
 
 #### 会话池
 
-- **池的错误是 `PoolError`。** 新增 `session_pool::api::{PoolError, Busy, BusyReason, EngineFailure}`;
-  `session_pool::{RpcError, ResumeError, SetModelError}` 删除;`SceneCheck` 与 `check_scene` 改为池内部。
-  原来返回 `Result<_, RpcError>`、`Result<_, ResumeError>`、`Result<_, SetModelError>` 的池方法一律
-  返回 `Result<_, PoolError>`,池里不再出现 `codes::`;错误码、message 与 `data` 形状由
-  `server/errors.rs` 一处 `match` 决定,`Display` 复现原来的 message。忙的情形是 `PoolError::SessionBusy(Busy)`:
-  构造用 `Busy::{turn_running, rebuilding, background_tasks, previous_engine}`,`BusyReason` 是
-  `#[non_exhaustive]`,`turn_running` 必带回合 id。`shutdown_session` 返回 `Result<usize, PoolError>`
-  (场景不符时拒绝);`resume_session` 的结果自带 `scene_inferred`;`task_output` 返回
-  `Result<Value, PoolError>`(会话不存在、任务不存在、偏移越界各是一个变体),不再是
-  `Option<Result<Value, u64>>`;`export::ExportError` 转成 `PoolError`。
-- **场景检查在池里做。** `close`、`delete`、`fork`、`rename`、`subscribe`、`resume`、`interrupt`、
-  `setModel`、`setPrompt`、`setGoal` / `updateGoal`、`appendEntry`、client 发起的 `run_turn`(含
-  compact / clear)由池自己拒绝 `SCENE_MISMATCH`;定时任务与目标轮不检查。直接调池的嵌入方不用再在
-  外面先判。
-- **事件出口是 `SessionWatcher`,池不再持有 `rpc::Client`。** 新增 `session_pool::api::
-  {SessionWatcher, WatcherId, SessionFrame, SessionEvent, AskKind, PendingAsk, Subscribed,
-  emitted_outside_turns}`。`SessionWatcher::deliver(&SessionFrame) -> bool` 在会话的锁下被调用,只能
-  非阻塞入队,返回 `false` 即退订。`subscribe_session` 收 `Arc<dyn SessionWatcher>`、返回 `Subscribed`
-  (待答提问是 `PendingAsk`,不再是拼好的 JSON 帧);`unsubscribe_session` 收 `WatcherId`;
-  `drop_connection` 改名 `drop_watcher(WatcherId)`;`PromptAnswer::prompt_type()` 改为 `kind() ->
-  AskKind`。`SessionEvent::Agent` 是引擎原话、不过滤;线上帧由 `rpc::events::{SessionEventPayload,
-  SessionEventNotification}` 投影,`SessionEventPayload::KINDS` 是 §7 的 kind 全集;
-  `rpc::StreamFrame` 只剩 `daemon_event`。嵌入方要自己的订阅者就实现 `SessionWatcher`;
-  `server/watch.rs` 为 `rpc::Client` 的实现可作参考。
-- **没调 `start_scheduler` 的池现在也转发轮间事件、任务事件和目标事件。** 转发器只持有会话的 hub,
-  不再依赖 `start_scheduler` 设置的 `this`(嵌入方、单元测试因此多收到这些事件)。
-- **`run_turn` 的签名。** `SessionPool::run_turn(TurnRequest, Option<Arc<dyn SessionWatcher>>) ->
-  Result<TurnOutcome, PoolError>`。发起方是可选的订阅者:给了就在这一轮开始时加入订阅、本轮出错时
-  不另收 `error` 帧;定时任务与目标轮传 `None`,它们的帧照样发给全部订阅者(以前为它们造了内部
-  连接)。`TurnRequest` 的发起方由 `&'static str` 改为 `Initiator { Client, Schedule, Goal }`
-  (`daemon.event` 里的字符串不变);`TurnOutcome` 是 `#[non_exhaustive]`,有 `Completed`、
-  `Steered`、`Skipped`;去掉原来的 `id` 参数;`session.run_turn` 的结果 JSON 由 server 从
-  `TurnOutcome` 拼出,字段不变。
-- **`SessionPool::new` 是 `pub(crate)`。** `assembly` 之外不能再直接建池,要池走
-  `assembly::assemble::pool`(daemon 里是 `daemon::assemble::pool`);第二份装配在 `assembly` 之外
-  编不过。
+- **池的错误是 `PoolError`。** `session_pool::{RpcError, ResumeError, SetModelError}` 删除;池方法一律返回
+  `Result<_, PoolError>`,错误码、message 与 `data` 由 `server/errors.rs` 一处决定。忙是
+  `PoolError::SessionBusy(Busy)`(`Busy::{turn_running, rebuilding, background_tasks, previous_engine}`,
+  `BusyReason` 是 `#[non_exhaustive]`,多了 `ContextOperation`);引擎失败是
+  `PoolError::Engine(TurnFailure)`,`EngineStopped`、`EngineUnreachable` 并入它。
+- **池方法返回领域类型,不再是 `serde_json::Value`。** 生命周期(`create_session` → `SessionCreated`、
+  `session_detail` → `SessionDetail`、`resume_session` → `ResumeReport`、`delete_session`、`fork_session`、
+  `rename` / `setModel` / `setPrompt` 各自的结果)、上下文(`context_request` 改为私有,换成
+  `inspect_context` / `drop_messages` / `edit_message`)、任务(`session_tasks` 返回 `Result`,`task_output`
+  返回 `Result<Value, PoolError>`,`message_task` 返回 `Result<MessageDelivery, PoolError>`,`start_agent` →
+  `AgentStarted`)、历史与目标(`session_history` → `HistoryPage`、`append_entry`、`list_entries`、
+  `export_session`、`session_goal` / `change_session_goal` → `Option<GoalView>`)、配置与项目(`ConfigTier`、
+  `ProviderConfigView`、`ProjectStatus` …)、场景(`SceneSummary`、`SceneDescription`、`SceneReload`)、MCP
+  (`McpServerStatus` 等,登录入口收 `McpRedirect`、`McpIdentity`)、插件(`list_plugins`、`reload_plugins`
+  返回 `Result`,scope 是 `PluginScope`)、`doctor_report` → `DoctorReport`(多 `runtime`)、
+  `list_commands` → `CommandInfo`、`schedule_add(NewSchedule)`、`discovery::identity` → `DaemonIdentity`。
+  类型都在 `session_pool::api`。新增 `subscribe_resuming`(不在内存就恢复再订阅)。
+- **事件出口是 `SessionWatcher`,池不再持有 `rpc::Client`。** `subscribe_session` 收
+  `Arc<dyn SessionWatcher>`、返回 `Subscribed`(待答提问是 `PendingAsk`);`unsubscribe_session` 收
+  `WatcherId`;`PromptAnswer::prompt_type()` 改为 `kind() -> AskKind`。`SessionEvent::Task(TaskEvent)`、
+  `GoalChanged(Option<GoalView>)` 带类型。没调 `start_scheduler` 的池也转发轮间、任务与目标事件。
+- **池级通知是 `DaemonEvent`。** `SessionPool::emit_event(DaemonEvent)`、`subscribe_events() ->
+  broadcast::Receiver<DaemonEvent>`;新增 `EvictReason`(多 `EngineFault`)、`CloseReason`、`ImportSource`。
+- **`run_turn(TurnRequest, Option<Arc<dyn SessionWatcher>>) -> Result<TurnOutcome, PoolError>`。**
+  `TurnRequest` 的发起方是 `Initiator { Client, Schedule, Goal }`;`TurnOutcome` 是 `#[non_exhaustive]`。
+  回合由池 spawn 的驱动跑,调用方的 future 被丢下也不影响这一轮。
+- **池的构造。** `SessionPool::new` 是 `pub(crate)`,池只经 `assembly::assemble::pool` 与 `Assembly`
+  得到;池上的 `with_*` 方法删除(crate 外本来就调不到)。新增 `session_pool::MCP_COMPILED`;没编进 MCP
+  的构建里 `mcp_status`、`add_mcp_server` 等方法也存在(返回空或内部错误)。`SessionPool::run_slots()`
+  读出池的 `RunCode` 空位。`start_janitor` / `start_config_watcher` 只持池的弱引用、返回 `JoinHandle`,
+  最后一个外部持有者放手后池被释放,两个循环随之退出。
+- **`Assembly::permission_prompt_timeout` 改为 `Option<Duration>`**,`None` 由会话设置决定。
 - **默认项目只有一个根:`Assembly.cwd`。** 不传 `project_root` 的会话(和显式传这个目录的)以前在
-  `Assembly.cwd` 里干活,项目层设置、`settings.local.json`("总是允许,本项目"写到的地方)、
-  `config.setProvider` / `config.reload` 不带项目时读写的文件却按 `DaemonPaths::project_root` 定。
-  两者不同时现在一律按 `Assembly.cwd`:池按它重读这一对的设置,宿主在内存里改过的值和加的权限规则
-  照样叠上去(规则只叠在这一对上)。两者相同(`agixd` 就是)不受影响。
-- **回合状态收进 `TurnSlot`。** 池内部的 `LiveSession` 不再有 `event_rx`、`idle`、`current_turn`、
-  `turn_initiator`、`turn_watcher`、`turn_terminated`,由阶段 `SessionPhase`(`Idle` / `Running` /
-  `Rebuilding`)与代际号 `Generation` 取代;这些都是池私有的,通过公开 API 的嵌入方看到的只是上面的
-  行为变化(`interrupt`、重建期间的 `SESSION_BUSY`)。设计见 `ARCHITECTURE.md` §3.2.4。
+  `Assembly.cwd` 里干活,项目层设置、`settings.local.json`、`config.setProvider` / `config.reload`
+  不带项目时读写的文件、`daemon.doctor` 的项目层却按 `DaemonPaths::project_root` 定。两者不同时现在一律
+  按 `Assembly.cwd`;宿主在内存里改过的值和加的权限规则照样叠上去。两者相同(`agixd` 就是)不受影响。
+- **回合状态与会话组成。** `api::TurnState` 多 `Rebuilding`、`Operating`;池内部按 `SessionCore`
+  (跨重建不变)、`EngineSlot`(当前这一代引擎)、`TurnSlot` 组织,设计见 `ARCHITECTURE.md` §3.2。
 
 #### `Builder` 的注入口与执行层
 
-- **`Builder::exec(ExecProviders)`:换掉会话的四个执行契约。** `exec.process` /
-  `filesystem` / `network` / `sandbox` 以前写死为本机的一套(`build()` 里解析),宿主没有注入口;现在
-  `build()` 一处解析:只设 `exec` 就用它,都没设走原来的缺省(本机 providers,出网按
-  `sandbox.network_mode`)。**`exec` 与 `process_groups` 同时设置时 `build()` 返回错误**,不再悄悄
-  丢掉一方;要记进程组,就在传入的 providers 里带上台账(`platform::local_providers_with_ledger`)。
-  工具调用、引擎的 `git` 与 `pdftotext`、`Agent::warmup` 的预连接(以前新建
-  `platform::LocalNetwork`,绕过会话的 `exec.network`,现在走它,`Origin::Operator`)都落在传入的
-  providers 上。
-- **`runtime::module::SessionContext`:删掉 `process_groups`,新增 `exec: &ExecProviders`、
-  `token_counter`、`rules`。** 模块里读 `ctx.process_groups` 的改读 `ctx.exec`;`AgentTool::
-  with_process_groups` 删除,改为 `with_exec(ExecProviders)`,`AgentsModule` 把父会话的 `exec`
-  交给它,子会话沿用,不再单独传台账(父会话的 `LocalProcess` 本来就带着)。`ParentPermission` 在子会话
-  还没绑定 providers 时用父会话的那套,不再退回 `platform::local_providers`;`agents` 的普通依赖
-  去掉了 `platform`。
-- **`Builder::token_counter(..)`。** `SessionManager::set_token_counter` 在生产代码里没有调用方,
-  `runtime` 另有几处直接调 `compaction::grouping::estimate_tokens`,宿主换不掉"压缩据以触发的
-  那个数字"。现在 `SessionManager` 的 `token_counter` 是非 `Option` 的 `Arc<dyn TokenCounter>`
-  (缺省 `model::tokens::default_counter()`),换用 `with_token_counter(self, c)`;请求开销估算、
-  `inspectContext` 的逐块与消息计数、`compact_now` 的目标大小都用会话的计数器,与 `token_count()`
-  同一口径。`compaction` 内部的估算不动。子 Agent 沿用父会话的计数器。
-- **`Builder::rule_provider(..)` 与 `RuleTiers`。** `base::rules` 里的 `default_rule_sources`、
-  `discover_rules`、`discover_rules_from`、`build_rules_prompt` 删除,新增 `RuleTiers`(
-  `Vec<Arc<dyn RuleProvider>>`,后来居上合并、按名排序,本身也实现 `RuleProvider`),
-  `RuleTiers::for_paths(&PathSettings)` 给出全局、场景、项目三层,`render_rules_prompt(&[RuleEntry])`
-  只负责渲染。`base::interface::prompt_assembler::AssemblyRequest` 新增 `rules: &[RuleEntry]` 字段
-  (字面量构造的要补上);`base::prompt::assemble_prompt_with` 的参数改为 `&AssemblyRequest`;
-  `DefaultAssembler` 原样转给它;`assemble_prompt` 仍按 `settings.paths` 的三层取。`Builder` 缺省
-  `RuleTiers::for_paths`,每次组装提示词时取一次 `rules()`,与以前每次组装都扫目录的频率一致;子 Agent
-  沿用父会话的 provider。
-- **引擎的 `git` 与辅助程序统一经 `base::engine_exec::EngineExec`。** `EngineExec` 持有会话的
-  `ExecProviders`、`Confinement`(`Unconfined` / `Sandboxed { policy, require_enforcement, tmpdir }`)
-  与 `ProjectTrust`,是引擎起 `git`(`EngineExec::git`)和辅助程序(`EngineExec::helper`)的唯一入口。
-  `FrozenContext::{collect, collect_without_project, collect_with_options, refresh_git,
-  refresh_git_status}` 的 git 参数由 `&EngineGit` 改为 `&EngineExec`;`tools::worktree::
-  {create_worktree, prune_orphan_worktrees}` 同样改收 `&EngineExec`。原来传 `EngineGit::Direct` 的
-  (不想进沙箱),改为 `Confinement::Unconfined`。`read_pdf_text` 改收 `&EngineExec`。
-  **`ExecProviders::in_process()` 的会话不再有 `git` 上下文**:`ScriptedProcess` 对没写脚本的命令
-  返回失败,除非脚本应答——要在测试里得到 git 上下文,给 `ScriptedProcess` 写 `git` 的应答。
-  `.git` 是否为 worktree 链接改经 `exec.filesystem` 读。
-- **`EngineExec` 是会话进程组的一部分。** 引擎的 `git` 进入 `LocalProcess` 的进程组与台账,
-  超时整组停;`setsid` 与无控制终端由 `LocalProcess` 给,0.3.11 为此在旁路上临时补的 `setsid` 与
-  `apply_subprocess_env` 随文件删除。
+- **`Builder::exec(ExecProviders)`:换掉会话的四个执行契约。** 只设 `exec` 就用它,都没设走本机缺省;
+  **`exec` 与 `process_groups` 同时设置时 `build()` 返回错误**,要记进程组就在传入的 providers 里带上
+  台账(`platform::local_providers_with_ledger`)。工具调用、引擎的 `git` 与 `pdftotext`、
+  `Agent::warmup` 的预连接都落在传入的 providers 上;子 Agent 沿用。
+- **`Builder::token_counter(..)`。** 请求开销估算、`inspectContext` 的计数、`compact_now` 的目标大小都用
+  会话的计数器;`SessionManager` 的 `token_counter` 是非 `Option` 的 `Arc<dyn TokenCounter>`(缺省
+  `model::tokens::default_counter()`)。
+- **`Builder::rule_provider(..)` 与 `RuleTiers`。** `RuleTiers::for_paths(&PathSettings)` 给出全局、场景、
+  项目三层,`render_rules_prompt(&[RuleEntry])` 只负责渲染;`AssemblyRequest` 新增 `rules` 字段(字面量
+  构造的要补上),`base::prompt::assemble_prompt_with` 收 `&AssemblyRequest`。
+- **引擎的 `git` 与辅助程序统一经 `base::engine_exec::EngineExec`**(`EngineExec::git` /
+  `EngineExec::helper`),它持有会话的 `ExecProviders`、`Confinement`(`Unconfined` /
+  `Sandboxed { policy, require_enforcement, tmpdir }`)与 `ProjectTrust`,`admit_git` 决定能不能跑。
+  `FrozenContext::{collect, collect_without_project, collect_with_options, refresh_git, refresh_git_status}`、
+  `tools::worktree::{create_worktree, prune_orphan_worktrees}`、`read_pdf_text` 改收 `&EngineExec`;原来传
+  `EngineGit::Direct` 的改为 `Confinement::Unconfined`。**`ExecProviders::in_process()` 的会话不再有 `git`
+  上下文**,除非给 `ScriptedProcess` 写 `git` 的应答。
+- **`script-host` 的 QuickJS 是可选特性 `quickjs`(缺省开)。** 自带 `ScriptEngine` 的宿主可以关掉它。
+- **`memory.storage` 不再列为扩展契约**(`Builder::memory_store` 收具体类型,实际换不掉);扩展点表
+  多一列"接线",写明每个契约经哪些路径接进引擎。
+
+#### 加了 `#[non_exhaustive]` 的枚举
+
+在 crate 外穷尽 `match` 下面这些的,要补 `_` 分支:
+
+- 错误:`ToolError`、`EffectError`、`HttpError`、`ValidationError`、`ExecError`、`EngineExecError`、
+  `ScriptError`、`GoalError`、`MemoryError`、`ImportError`、`IdError`、`SettingsFileError`、`DelegateError`;
+- 引擎交给宿主读的:`ElicitKind`、`HealthStatus`、`CallKind`、`TaskStatus`、`TaskType`、`TurnOrigin`、
+  `BlockOrigin`、`Reminder`、catalog 的 `Kind` / `Frequency` / `Access` / `Wiring`;
+- 来源与状态:`AgentTypeSource`、`OutputStyleSource`、`ImportSource`、`ImportSourceKind`、`GoalPhase`、
+  `GoalAction`、`MemoryType`、`MemoryScope`;
+- `session_pool::api` 里引擎产出的:`CommandKind`、`CommandSource`、`EvictReason`、`CloseReason`、
+  `HistoryOrigin`、`SessionKindName`、`McpServerState`、`McpAuthState`、`SkillOrigin`、`TurnState`、
+  `ScriptCallOutcome`、`ResumeStatus`、`Applies`、`TrustState`;
+- 以及上文提到的 `ModelError` 一族、`BusyReason`、`TurnOutcome`、`SceneSpec`、`ToolSpec` 一族、权限事实
+  类型(`PermissionFacts`、`Subject`、`Reach`、`Runs`、`ModeStance`、`ToolFacts`、`HookAnswer`、
+  `Attendance`)。
+
+不加的(安全裁决、宿主的回答与输入、设置值、会话协议、线上码,以及 `AgentEvent`、`DelegateMode`)由
+守卫 A5 逐个写明为什么封闭。`plugin::PluginError` 新增 `EngineVersion`(没有 `#[non_exhaustive]`,
+crate 外穷尽 `match` 要补分支),`PluginMeta` 新增公开字段 `requires_engine`。
 
 #### 测试与守卫
 
-- **测试支撑。** 用真 `git`、真进程的几条测试(五条快照测试、`capture` 的三条)挪到 `platform` 的
-  integration 测试;`base` 里用 `ExecProviders::in_process()` 与 `ScriptedProcess`。在 `base` 或别的
-  不依赖 `platform` 的 crate 里写类似测试的,照这个办法,不要为了真进程去依赖 `platform`。
-- **架构守卫。** 新增 `tests/guards` 支撑 crate(`cargo metadata` 加模块树加 `syn` 语法树,测试判定
-  看 cfg 谓词)。`dependency_direction.rs`、`one_assembly.rs` 删除,`carrier_invariants.rs` 里依赖相关的
-  两条并入 `deps.rs`;进程级状态守卫改为 `process_state.rs`(默认拒绝:非朴素数据的 `static` 必须
-  登记)。向工作区加 crate 的,要在 `deps.rs` 的 `CRATES` 里给它一个级别。工作区成员数变为 28。
-- **golden。** 新增三份冻结的 golden:`crates/tools/tests/spec_snapshot.rs`(工具声明与权限答案)、
-  `crates/runtime/src/turn/tests/tool_defs_golden.rs`(请求的 tools 数组字节)、
-  `crates/scene/tests/prompt_golden.rs`(场景系统提示字节);会话帧的线上 JSON 冻结在
-  `crates/assembly/testdata/session_events.golden.json`。确实要改时分别用 `UPDATE_GOLDEN=1` 与
-  `AGIX_UPDATE_GOLDEN=1` 重新生成。
+- **测试支撑。** 用真 `git`、真进程的测试挪到 `platform` 的 integration 测试;`base` 里用
+  `ExecProviders::in_process()` 与 `ScriptedProcess`。`base` 自带 `clippy.toml`,禁止起进程与读环境变量;
+  工作区的 `tokio` 去掉了 `process`、`signal`、`net`,用到的 crate 自己声明。
+- **架构守卫在 `tests/guards`。** 依赖方向(`deps.rs`,读 `cargo metadata`)、进程级状态
+  (`process_state.rs`)、源码规则(`sources.rs`)、接线(`wiring.rs`)、未用依赖(`unused_deps.rs`)、
+  尺寸棘轮(`size.rs`)、权限(`permissions.rs`)、委派(`delegation.rs`)、接口表面(`api_surface.rs`)、
+  分层(`layering.rs`)、会话状态(`session_state.rs`)、`base` 的依赖白名单(`base.rs`)。说明见
+  `tests/README.md` 的"架构守卫"。向工作区加 crate 的,要在 `deps.rs` 的 `CRATES` 里给它一个级别;工作区
+  成员数为 28。
+- **golden。** 冻结的 golden:`crates/tools/tests/spec_snapshot.rs`(工具声明与权限事实)、
+  `crates/runtime/src/agent/turn/tests/tool_defs_golden.rs`(请求的 tools 数组字节)、
+  `crates/scene/tests/prompt_golden.rs`(场景系统提示字节)、权限的决策矩阵、
+  `crates/assembly/testdata/session_events.golden.json`(会话帧的线上 JSON)。确实要改时分别用
+  `UPDATE_GOLDEN=1` 与 `AGIX_UPDATE_GOLDEN=1` 重新生成。
