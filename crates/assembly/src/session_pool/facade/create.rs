@@ -260,20 +260,7 @@ impl SessionPool {
         self.stop_live_agent(sid).await?;
         built.agent.attach_session();
         if let Err(e) = self.load_log(&mut built.agent, sid, restore).await {
-            // The old engine is already stopped; an entry left in the map
-            // would take turns it can no longer run.
-            if let Some(live) = self
-                .live
-                .remove_if(sid, |live| live.runs(&core, held.generation))
-                .await
-            {
-                self.evict(sid, &live);
-                live.turn.idle.notify_waiters();
-                self.emit_event(api::DaemonEvent::SessionEvicted {
-                    session_id: sid.to_string(),
-                    reason: api::EvictReason::Rebuild,
-                });
-            }
+            self.drop_unrunnable(sid, &core, held).await;
             return Err(e);
         }
 
@@ -303,6 +290,24 @@ impl SessionPool {
         }
         info!(%sid, generation = generation.get(), "session rebuilt");
         Ok(())
+    }
+
+    /// The old engine is already stopped; an entry left in the map would take
+    /// turns it can no longer run.
+    async fn drop_unrunnable(&self, sid: &str, core: &Arc<SessionCore>, held: &HeldSlot) {
+        let Some(live) = self
+            .live
+            .remove_if(sid, |live| live.runs(core, held.generation))
+            .await
+        else {
+            return;
+        };
+        self.evict(sid, &live);
+        live.turn.idle.notify_waiters();
+        self.emit_event(api::DaemonEvent::SessionEvicted {
+            session_id: sid.to_string(),
+            reason: api::EvictReason::Rebuild,
+        });
     }
 
     /// Have the engine `held` keeps turns off write what `core`'s log lacks,

@@ -107,38 +107,7 @@ impl SessionPool {
                 if initiator == Initiator::Client {
                     self.refuse_scene_mismatch(sid).await?;
                 }
-                // ① Not in memory: resume or create. ② In memory on a binding
-                // that is still current: use it. ③ In memory on a binding a
-                // settings change invalidated: rebuild before this message, so
-                // it is served on the new configuration.
-                //
-                // ③ only rebuilds an idle session. A rebuild replaces the
-                // Agent, and replacing one mid-turn would cut that turn off,
-                // as it would the background tasks running under it; a busy
-                // session is served on the old configuration this once and
-                // checked again next time — its stamp stays behind, so
-                // nothing is missed. So is a session whose log could not be
-                // caught up: the turn's own writes may well do it.
-                let stale = self
-                    .live
-                    .with_live(sid, |live| live.engine.binding.clone())
-                    .await
-                    .map(|stamp| !self.bindings.is_current(&stamp));
-                let resolved = match stale {
-                    None => self.ensure_live(sid, options.as_ref()).await,
-                    Some(false) => Ok(sid.clone()),
-                    Some(true) => match self.rebuild_idle(sid, options.as_ref()).await {
-                        Ok(sid) => Ok(sid),
-                        Err(Rebuild::Busy(_)) => Ok(sid.clone()),
-                        Err(Rebuild::Failed(CreateError::PersistFailed(e))) => {
-                            warn!(%sid, error = %e, "serving the turn on the engine it has");
-                            Ok(sid.clone())
-                        }
-                        Err(Rebuild::NotLive) => self.ensure_live(sid, options.as_ref()).await,
-                        Err(Rebuild::Failed(e)) => Err(e),
-                    },
-                };
-                resolved?
+                self.live_for_turn(sid, options.as_ref()).await?
             }
             None => {
                 let sid = Id::new().to_string();
@@ -292,6 +261,44 @@ impl SessionPool {
                     format!("the turn's driver failed: {e}"),
                 )))
             }
+        }
+    }
+
+    async fn live_for_turn(
+        &self,
+        sid: &String,
+        options: Option<&SessionOptions>,
+    ) -> Result<String, CreateError> {
+        // ① Not in memory: resume or create. ② In memory on a binding
+        // that is still current: use it. ③ In memory on a binding a
+        // settings change invalidated: rebuild before this message, so
+        // it is served on the new configuration.
+        //
+        // ③ only rebuilds an idle session. A rebuild replaces the
+        // Agent, and replacing one mid-turn would cut that turn off,
+        // as it would the background tasks running under it; a busy
+        // session is served on the old configuration this once and
+        // checked again next time — its stamp stays behind, so
+        // nothing is missed. So is a session whose log could not be
+        // caught up: the turn's own writes may well do it.
+        let stale = self
+            .live
+            .with_live(sid, |live| live.engine.binding.clone())
+            .await
+            .map(|stamp| !self.bindings.is_current(&stamp));
+        match stale {
+            None => self.ensure_live(sid, options).await,
+            Some(false) => Ok(sid.clone()),
+            Some(true) => match self.rebuild_idle(sid, options).await {
+                Ok(sid) => Ok(sid),
+                Err(Rebuild::Busy(_)) => Ok(sid.clone()),
+                Err(Rebuild::Failed(CreateError::PersistFailed(e))) => {
+                    warn!(%sid, error = %e, "serving the turn on the engine it has");
+                    Ok(sid.clone())
+                }
+                Err(Rebuild::NotLive) => self.ensure_live(sid, options).await,
+                Err(Rebuild::Failed(e)) => Err(e),
+            },
         }
     }
 
