@@ -100,18 +100,21 @@ impl SessionDirectory {
         store.session_stats(sid).await.unwrap_or_default()
     }
 
-    /// Whether `sid` has a log with entries in it. A log that is not there is
-    /// none, as is one for an id no store could hold; a log that is there but
-    /// does not load is an error, never a session to start over under the
-    /// same id.
-    pub(in crate::session_pool) async fn has_history(&self, sid: &str) -> Result<bool, String> {
+    /// `sid`'s log, empty when it has none. A log that is not there is
+    /// empty, as is one for an id no store could hold; a log that is there
+    /// but does not load is an error, never a session to start over under
+    /// the same id.
+    pub(in crate::session_pool) async fn read_log(
+        &self,
+        sid: &str,
+    ) -> Result<Vec<history::entry::EnvelopedEntry>, String> {
         let (Some(store), Ok(parsed)) = (self.store.as_ref(), base::session::SessionId::parse(sid))
         else {
-            return Ok(false);
+            return Ok(Vec::new());
         };
         match store.load(parsed).await {
-            Ok(entries) => Ok(!entries.is_empty()),
-            Err(history::error::HistoryError::SessionNotFound(_)) => Ok(false),
+            Ok(entries) => Ok(entries),
+            Err(history::error::HistoryError::SessionNotFound(_)) => Ok(Vec::new()),
             Err(e) => Err(format!(
                 "session `{sid}` could not be brought back: its transcript could not be loaded: {e}"
             )),
@@ -123,43 +126,24 @@ impl SessionDirectory {
     /// on disk — all three mean the same thing to `session.resume`'s caller
     /// ("no prior conversation"), so they don't need distinguishing here.
     pub(in crate::session_pool) async fn history_counts(&self, session_id: &str) -> (usize, usize) {
-        match (self.load_entries(session_id).await, self.store.as_ref()) {
-            (Ok(entries), Some(store)) => (
-                history::transcript::project_messages_with(&entries, store.projection()).len(),
-                entries.len(),
-            ),
-            _ => (0, 0),
+        match self.load_entries(session_id).await {
+            Ok(entries) => self.counts_in(&entries),
+            Err(_) => (0, 0),
         }
     }
 
-    /// A session's own recorded `(schema_version, project_root)`, read off
-    /// its `Meta` line — used by `resume_or_create` so resuming a session
-    /// rebuilds it against *its own* project, not this pool's default one.
-    /// `None` covers both "no `Meta` at all" (a session that predates this
-    /// daemon writing one) and "pre-v2 `Meta`" (no `project_root` field
-    /// existed yet) — both mean "nothing recorded, infer the pool default",
-    /// same spirit as `SceneCheck::Inferred`. Distinguishing those from a
-    /// v2 `Meta` that explicitly recorded `project_root: null` (a genuine
-    /// no-project session) is exactly why this returns the raw
-    /// `schema_version` instead of collapsing straight to `Option<PathBuf>`.
-    /// The recorded `scene` rides along because it comes from the same
-    /// `Meta` and reattaching needs both: a session's settings are resolved
-    /// against its own project *and* its own scene tier.
-    pub(in crate::session_pool) async fn recorded_project(
+    /// Projected message count + raw entry count of `entries`.
+    pub(in crate::session_pool) fn counts_in(
         &self,
-        session_id: &str,
-    ) -> Option<(u32, Option<String>, Option<String>)> {
-        let entries = self.load_entries(session_id).await.ok()?;
-        let history::entry::LogEntry::Meta {
-            schema_version,
-            project_root,
-            scene,
-            ..
-        } = find_meta(&entries)?
-        else {
-            return None;
-        };
-        Some((*schema_version, project_root.clone(), scene.clone()))
+        entries: &[history::entry::EnvelopedEntry],
+    ) -> (usize, usize) {
+        match self.store.as_ref() {
+            Some(store) => (
+                history::transcript::project_messages_with(entries, store.projection()).len(),
+                entries.len(),
+            ),
+            None => (0, 0),
+        }
     }
 
     /// Every project this daemon has served a session for: its own, plus each
@@ -214,31 +198,12 @@ impl SessionDirectory {
         }
     }
 
-    /// A sidechain session's parent and how it ended, when its log has a
-    /// `LogEntry::SessionEnd` marker; `None` for a primary session and for a
-    /// sidechain still running or cut off externally.
+    /// [`sidechain_terminal_state`] of `session_id`'s log.
     pub(in crate::session_pool) async fn sidechain_terminal_state(
         &self,
         session_id: &str,
     ) -> Option<(Option<String>, history::entry::SessionEndState)> {
-        let entries = self.load_entries(session_id).await.ok()?;
-        let history::entry::LogEntry::Meta {
-            session_kind,
-            parent_session_id,
-            ..
-        } = find_meta(&entries)?
-        else {
-            return None;
-        };
-        if !matches!(session_kind, history::entry::SessionKind::Sidechain) {
-            return None;
-        }
-        entries.iter().rev().find_map(|env| match &env.entry {
-            history::entry::LogEntry::SessionEnd { state } => {
-                Some((parent_session_id.clone(), *state))
-            }
-            _ => None,
-        })
+        sidechain_terminal_state(&self.load_entries(session_id).await.ok()?)
     }
 }
 
@@ -257,4 +222,55 @@ pub(in crate::session_pool) fn find_meta(
         .iter()
         .map(|env| &env.entry)
         .find(|entry| matches!(entry, history::entry::LogEntry::Meta { .. }))
+}
+
+/// A session's own recorded `(schema_version, project_root)`, read off
+/// its `Meta` line — used by `resume_or_create` so resuming a session
+/// rebuilds it against *its own* project, not this pool's default one.
+/// `None` covers both "no `Meta` at all" (a session that predates this
+/// daemon writing one) and "pre-v2 `Meta`" (no `project_root` field
+/// existed yet) — both mean "nothing recorded, infer the pool default",
+/// same spirit as `SceneCheck::Inferred`. Distinguishing those from a
+/// v2 `Meta` that explicitly recorded `project_root: null` (a genuine
+/// no-project session) is exactly why this returns the raw
+/// `schema_version` instead of collapsing straight to `Option<PathBuf>`.
+/// The recorded `scene` rides along because it comes from the same
+/// `Meta` and reattaching needs both: a session's settings are resolved
+/// against its own project *and* its own scene tier.
+pub(in crate::session_pool) fn recorded_project(
+    entries: &[history::entry::EnvelopedEntry],
+) -> Option<(u32, Option<String>, Option<String>)> {
+    let history::entry::LogEntry::Meta {
+        schema_version,
+        project_root,
+        scene,
+        ..
+    } = find_meta(entries)?
+    else {
+        return None;
+    };
+    Some((*schema_version, project_root.clone(), scene.clone()))
+}
+
+/// A sidechain's parent and how it ended, when `entries` hold a
+/// `LogEntry::SessionEnd` marker; `None` for a primary session and for a
+/// sidechain still running or cut off externally.
+pub(in crate::session_pool) fn sidechain_terminal_state(
+    entries: &[history::entry::EnvelopedEntry],
+) -> Option<(Option<String>, history::entry::SessionEndState)> {
+    let history::entry::LogEntry::Meta {
+        session_kind,
+        parent_session_id,
+        ..
+    } = find_meta(entries)?
+    else {
+        return None;
+    };
+    if !matches!(session_kind, history::entry::SessionKind::Sidechain) {
+        return None;
+    }
+    entries.iter().rev().find_map(|env| match &env.entry {
+        history::entry::LogEntry::SessionEnd { state } => Some((parent_session_id.clone(), *state)),
+        _ => None,
+    })
 }

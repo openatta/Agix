@@ -14,7 +14,7 @@ file  crates/mcp/src/manager.rs                                   -             
 file  crates/mcp/src/oauth/mod.rs                                 -                                      1104
 file  crates/platform/src/sandbox.rs                              -                                      1506
 file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      861
-file  crates/session/src/session.rs                               -                                      835
+file  crates/session/src/session.rs                               -                                      850
 file  crates/team/src/coordinator.rs                              -                                      983
 file  crates/telemetry/src/recorder/mod.rs                        -                                      942
 fn    crates/agents/src/agent_tool/build.rs                       Delegator::build_delegate              92
@@ -28,7 +28,7 @@ fn    crates/assembly/src/assemble.rs                             pool          
 fn    crates/assembly/src/export.rs                               pack                                   100
 fn    crates/assembly/src/rpc/events.rs                           SessionEventPayload::from_agent        278
 fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::build_engine              84
-fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                    129
+fn    crates/assembly/src/session_pool/facade/create.rs           SessionPool::create                    135
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::export_session            115
 fn    crates/assembly/src/session_pool/facade/history_rpc.rs      SessionPool::fork_session              128
 fn    crates/assembly/src/session_pool/facade/listing.rs          SessionPool::list_all                  139

@@ -1,5 +1,6 @@
 //! 会话恢复与重建：恢复、场景校验、空闲会话的重建与 `resume_or_create`。
 
+use crate::session_pool::parts::directory::{recorded_project, sidechain_terminal_state};
 use crate::session_pool::*;
 
 impl SessionPool {
@@ -160,9 +161,15 @@ impl SessionPool {
                 // `docs/daemon_rpc_protocol.md` §3.3: a sidechain that already reached a terminal state has
                 // no continuation semantics — reject before touching engine
                 // state.
-                if let Some((parent_session_id, state)) =
-                    self.sidechain_terminal_state(session_id).await
-                {
+                self.live.wait_until_stopped(session_id).await?;
+                let log = match self.directory.read_log(session_id).await {
+                    Ok(log) => log,
+                    Err(e) => {
+                        self.record_refused_resume(session_id, "unreadable", resume_start);
+                        return Err(PoolError::Internal(e));
+                    }
+                };
+                if let Some((parent_session_id, state)) = sidechain_terminal_state(&log) {
                     self.record_refused_resume(session_id, "sidechain_terminal", resume_start);
                     return Err(PoolError::SidechainTerminal {
                         session_id: session_id.to_string(),
@@ -171,13 +178,7 @@ impl SessionPool {
                     });
                 }
 
-                let has_history = match self.directory.has_history(session_id).await {
-                    Ok(has_history) => has_history,
-                    Err(e) => {
-                        self.record_refused_resume(session_id, "unreadable", resume_start);
-                        return Err(PoolError::Internal(e));
-                    }
-                };
+                let has_history = !log.is_empty();
                 if !has_history && !create_if_missing {
                     self.record_refused_resume(session_id, "not_found", resume_start);
                     return Err(PoolError::session_gone(
@@ -192,7 +193,7 @@ impl SessionPool {
                 let (core, status) = match self.live.core_of(session_id).await {
                     Some(raced) => (raced, api::ResumeStatus::AlreadyActive),
                     None => (
-                        self.resume_or_create(session_id.to_string(), options)
+                        self.resume_or_create_from(session_id.to_string(), options, &log)
                             .await
                             .map_err(PoolError::from)?,
                         api::ResumeStatus::loaded(has_history),
@@ -340,8 +341,21 @@ impl SessionPool {
         sid: String,
         options: Option<&SessionOptions>,
     ) -> Result<Arc<SessionCore>, CreateError> {
+        self.live.wait_until_stopped(&sid).await?;
         let _claim = self.claim_log(&sid).await?;
-        let has_history = self.directory.has_history(&sid).await?;
+        let log = self.directory.read_log(&sid).await?;
+        self.resume_or_create_from(sid, options, &log).await
+    }
+
+    /// [`Self::resume_or_create`] from `log`, the session's log as the caller
+    /// read it once no engine of this process was running the session.
+    async fn resume_or_create_from(
+        &self,
+        sid: String,
+        options: Option<&SessionOptions>,
+        log: &[history::entry::EnvelopedEntry],
+    ) -> Result<Arc<SessionCore>, CreateError> {
+        let _claim = self.claim_log(&sid).await?;
 
         // Rebuild against *this session's own* recorded project, not
         // always the pool default — otherwise a session created under
@@ -349,28 +363,27 @@ impl SessionPool {
         // project Y's settings the moment it needed reattaching (idle
         // eviction, daemon restart, explicit `session.resume`).
         let startup_scene = self.bindings.startup_scene().await;
-        let (binding, project_root_for_meta, scene_id) =
-            match self.directory.recorded_project(&sid).await {
-                Some((schema_version, project_root, scene)) if schema_version >= 2 => {
-                    let scene = scene.unwrap_or_else(|| startup_scene.clone());
-                    match project_root {
-                        Some(p) => {
-                            let path = PathBuf::from(p);
-                            (
-                                self.binding_for(Some(&path), &scene).await,
-                                Some(path),
-                                scene,
-                            )
-                        }
-                        None => (self.binding_for(None, &scene).await, None, scene),
+        let (binding, project_root_for_meta, scene_id) = match recorded_project(log) {
+            Some((schema_version, project_root, scene)) if schema_version >= 2 => {
+                let scene = scene.unwrap_or_else(|| startup_scene.clone());
+                match project_root {
+                    Some(p) => {
+                        let path = PathBuf::from(p);
+                        (
+                            self.binding_for(Some(&path), &scene).await,
+                            Some(path),
+                            scene,
+                        )
                     }
+                    None => (self.binding_for(None, &scene).await, None, scene),
                 }
-                _ => (
-                    self.default_binding().await,
-                    Some(self.cwd().to_path_buf()),
-                    startup_scene.clone(),
-                ),
-            };
+            }
+            _ => (
+                self.default_binding().await,
+                Some(self.cwd().to_path_buf()),
+                startup_scene.clone(),
+            ),
+        };
 
         // The scene this session recorded, not this pool's default. Settings
         // were already resolved against the recorded scene above; handing the
@@ -394,7 +407,7 @@ impl SessionPool {
             binding,
             project_root_for_meta,
             options,
-            has_history,
+            (!log.is_empty()).then_some(log),
         )
         .await
         .map_err(|e| e.context(|e| format!("session `{sid}` could not be brought back: {e}")))

@@ -114,16 +114,16 @@ impl SpecStore {
     }
 
     /// The spec of a session being brought up: the one this process already
-    /// holds, else the one its log recorded (for a resume), else a new one
+    /// holds, else the one `log` recorded (for a resume), else a new one
     /// from `options`. The session is in memory again, so its spec is no
     /// longer one of the kept.
     pub(in crate::session_pool) async fn spec_for(
         &self,
         session_id: &str,
-        resume: bool,
+        log: Option<&[history::entry::EnvelopedEntry]>,
         options: Option<&SessionOptions>,
     ) -> SessionSpec {
-        let spec = self.resolve(session_id, resume, options).await;
+        let spec = self.resolve(session_id, log, options).await;
         self.lock_kept().retain(|k| k != session_id);
         spec
     }
@@ -131,17 +131,14 @@ impl SpecStore {
     async fn resolve(
         &self,
         session_id: &str,
-        resume: bool,
+        log: Option<&[history::entry::EnvelopedEntry]>,
         options: Option<&SessionOptions>,
     ) -> SessionSpec {
         if let Some(spec) = self.get(session_id) {
             return spec;
         }
-        let mut spec = if resume {
-            self.recorded(session_id).await
-        } else {
-            SessionSpec::default()
-        };
+        let resume = log.is_some();
+        let mut spec = log.map(recorded_in).unwrap_or_default();
         // A log written before specs were recorded has none; the options of
         // the call that brought the session back are the best there is, and
         // are recorded so the next resume finds them too.
@@ -190,25 +187,7 @@ impl SpecStore {
             (Some(store), Ok(sid)) => store.load(sid).await.unwrap_or_default(),
             _ => Vec::new(),
         };
-        let recorded = entries
-            .iter()
-            .rev()
-            .find_map(|env| match &env.entry {
-                history::entry::LogEntry::Extension { ns, event, payload }
-                    if ns == SPEC_NS && event == SPEC_EVENT =>
-                {
-                    serde_json::from_value::<RecordedSpec>(payload.clone()).ok()
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
-        SessionSpec {
-            options: recorded.options,
-            model: recorded.model,
-            provider: recorded.provider,
-            prompt: recorded.prompt,
-            recorder: None,
-        }
+        recorded_in(&entries)
     }
 
     pub(in crate::session_pool) async fn persist(&self, session_id: &str, spec: &SessionSpec) {
@@ -314,5 +293,29 @@ impl SpecStore {
     #[cfg(test)]
     pub(in crate::session_pool) fn kept_len(&self) -> usize {
         self.lock_kept().len()
+    }
+}
+
+/// The spec `entries`, a session's log, recorded last; an empty one when they
+/// record none.
+fn recorded_in(entries: &[history::entry::EnvelopedEntry]) -> SessionSpec {
+    let recorded = entries
+        .iter()
+        .rev()
+        .find_map(|env| match &env.entry {
+            history::entry::LogEntry::Extension { ns, event, payload }
+                if ns == SPEC_NS && event == SPEC_EVENT =>
+            {
+                serde_json::from_value::<RecordedSpec>(payload.clone()).ok()
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    SessionSpec {
+        options: recorded.options,
+        model: recorded.model,
+        provider: recorded.provider,
+        prompt: recorded.prompt,
+        recorder: None,
     }
 }

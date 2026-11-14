@@ -409,6 +409,21 @@ impl SessionManager {
             history::error::HistoryError::SessionNotFound(id) => SessionError::NotFound(id),
             other => SessionError::Store(other.to_string()),
         })?;
+        self.resume_from(id, &entries)
+    }
+
+    /// [`Self::resume`] from `entries`, the session's log as the caller
+    /// already read it.
+    pub fn resume_from(
+        &mut self,
+        id: &str,
+        entries: &[history::entry::EnvelopedEntry],
+    ) -> Result<(), SessionError> {
+        let store = match &self.history_store {
+            Some(s) => s.clone(),
+            None => return Err(SessionError::NotFound(id.to_string())),
+        };
+        SessionId::parse(id).map_err(|e| SessionError::Id(e.to_string()))?;
         if entries.is_empty() {
             return Err(SessionError::NotFound(id.to_string()));
         }
@@ -417,7 +432,7 @@ impl SessionManager {
         self.pending_marker = None;
 
         // Extract parent_session_id from the Meta entry if present.
-        for entry in &entries {
+        for entry in entries {
             if let history::entry::LogEntry::Meta {
                 parent_session_id, ..
             } = &entry.entry
@@ -427,7 +442,7 @@ impl SessionManager {
             }
         }
 
-        let projected = history::transcript::project_messages_with(&entries, store.projection());
+        let projected = history::transcript::project_messages_with(entries, store.projection());
         self.messages = projected
             .iter()
             .filter_map(message_to_model_message)
@@ -463,22 +478,6 @@ impl SessionManager {
             )
             .await
             .map_err(|e| SessionError::Store(e.to_string()))
-    }
-
-    /// The payload of the last `ns`/`event` extension entry in this session's
-    /// log.
-    pub async fn latest_extension(&self, ns: &str, event: &str) -> Option<serde_json::Value> {
-        let store = self.history_store.as_ref()?;
-        let sid = SessionId::parse(&self.session_id).ok()?;
-        let entries = store.load(sid).await.ok()?;
-        entries.into_iter().rev().find_map(|env| match env.entry {
-            history::entry::LogEntry::Extension {
-                ns: n,
-                event: e,
-                payload,
-            } if n == ns && e == event => Some(payload),
-            _ => None,
-        })
     }
 
     /// Access the session ID (read-only).
@@ -830,6 +829,22 @@ pub enum SessionError {
     Store(String),
     #[error("invalid id: {0}")]
     Id(String),
+}
+
+/// The payload of the last `ns`/`event` extension entry in `entries`.
+pub fn latest_extension(
+    entries: &[history::entry::EnvelopedEntry],
+    ns: &str,
+    event: &str,
+) -> Option<serde_json::Value> {
+    entries.iter().rev().find_map(|env| match &env.entry {
+        history::entry::LogEntry::Extension {
+            ns: n,
+            event: e,
+            payload,
+        } if n == ns && e == event => Some(payload.clone()),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

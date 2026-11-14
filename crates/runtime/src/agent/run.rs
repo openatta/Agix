@@ -469,41 +469,38 @@ impl Agent {
         self.session.delete_session(id).await
     }
 
-    /// Load a persisted session's messages from `HistoryStore` back into
-    /// this agent's in-memory conversation state. Call before `run()` starts
-    /// processing turns — it's a plain field replacement, not safe to race
-    /// against an active turn.
-    pub async fn load_transcript(
+    /// Load a persisted session's messages from `entries`, its log as read
+    /// from the `HistoryStore`, into this agent's in-memory conversation
+    /// state. Call before `run()` starts processing turns — it's a plain
+    /// field replacement, not safe to race against an active turn.
+    pub fn load_transcript(
         &mut self,
         id: &str,
+        entries: &[history::entry::EnvelopedEntry],
     ) -> Result<(), session::session::SessionError> {
-        self.session.resume(id).await?;
+        self.session.resume_from(id, entries)?;
         self.prompt
             .set_context_injected(crate::turn::holds_session_context(&self.session.messages));
         Ok(())
     }
 
-    /// Put back into the session's state what the loaded transcript's log
-    /// recorded of it: the goal, and plan mode and todos. Only for a state
-    /// no engine has run the session on since it was created; a state kept
-    /// across engines already holds all of it.
-    pub async fn restore_state_from_log(&self) {
-        let goal = self
-            .session
-            .latest_extension(
-                base::context::goal::GOAL_NS,
-                base::context::goal::GOAL_EVENT,
-            )
-            .await
-            .and_then(|payload| serde_json::from_value(payload["goal"].clone()).ok());
-        let durable = self
-            .session
-            .latest_extension(
-                base::context::SESSION_STATE_NS,
-                base::context::SESSION_STATE_EVENT,
-            )
-            .await
-            .and_then(|payload| serde_json::from_value(payload).ok());
+    /// Put back into the session's state what `entries`, the loaded
+    /// transcript's log, recorded of it: the goal, and plan mode and todos.
+    /// Only for a state no engine has run the session on since it was
+    /// created; a state kept across engines already holds all of it.
+    pub fn restore_state_from_log(&self, entries: &[history::entry::EnvelopedEntry]) {
+        let goal = session::session::latest_extension(
+            entries,
+            base::context::goal::GOAL_NS,
+            base::context::goal::GOAL_EVENT,
+        )
+        .and_then(|payload| serde_json::from_value(payload["goal"].clone()).ok());
+        let durable = session::session::latest_extension(
+            entries,
+            base::context::SESSION_STATE_NS,
+            base::context::SESSION_STATE_EVENT,
+        )
+        .and_then(|payload| serde_json::from_value(payload).ok());
         self.session_state.restore_from_log(goal, durable);
     }
 

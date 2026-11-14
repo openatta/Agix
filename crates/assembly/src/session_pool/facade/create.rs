@@ -74,7 +74,7 @@ impl SessionPool {
                 binding,
                 project_root_for_meta.clone(),
                 options,
-                false,
+                None,
             )
             .await?;
 
@@ -88,8 +88,8 @@ impl SessionPool {
         })
     }
 
-    /// Bring `session_id` into memory as a new session, or — `resume` — as
-    /// the session its log holds, and start its first engine.
+    /// Bring `session_id` into memory as a new session, or — given its `log`
+    /// — as the session that log holds, and start its first engine.
     /// `options` only take effect on a session that has no spec yet.
     ///
     /// `binding`/`project_root_for_meta` are the already-resolved binding for
@@ -102,12 +102,13 @@ impl SessionPool {
         binding: Arc<ProjectBinding>,
         project_root_for_meta: Option<PathBuf>,
         options: Option<&SessionOptions>,
-        resume: bool,
+        log: Option<&[history::entry::EnvelopedEntry]>,
     ) -> Result<Arc<SessionCore>, CreateError> {
+        let resume = log.is_some();
         self.live.refuse_while_shutting_down()?;
         self.live.wait_until_stopped(&session_id).await?;
         let claim = self.claim_log(&session_id).await?;
-        let spec = self.specs.spec_for(&session_id, resume, options).await;
+        let spec = self.specs.spec_for(&session_id, log, options).await;
         self.directory.note_served(project_root_for_meta.as_deref());
         let core = SessionCore::new(
             &session_id,
@@ -155,7 +156,12 @@ impl SessionPool {
         // an empty context would carry the conversation on with none of what
         // came before, appended to the very log that holds it.
         if let Some(has_user_turn) = self
-            .load_log(&mut built.agent, &session_id, restore)
+            .load_log(
+                &mut built.agent,
+                &session_id,
+                restore,
+                log.unwrap_or_default(),
+            )
             .await?
         {
             let stored_name = self.directory.stats_of(&session_id).await.title;
@@ -244,8 +250,12 @@ impl SessionPool {
             .ok_or_else(|| format!("session `{sid}` left memory before it was rebuilt"))?;
         self.catch_up_log(&core, held).await?;
         let claim = self.claim_log(sid).await?;
-        let has_history = self.directory.has_history(sid).await?;
-        let spec = self.specs.spec_for(sid, has_history, options).await;
+        let recorded = self.directory.read_log(sid).await?;
+        let has_history = !recorded.is_empty();
+        let spec = self
+            .specs
+            .spec_for(sid, has_history.then_some(&recorded[..]), options)
+            .await;
         let scene_id = core.scene().id.clone();
         let Some(scene) = self.scenes.resolve(Some(&scene_id)) else {
             return Err(format!(
@@ -268,7 +278,13 @@ impl SessionPool {
         self.stop_live_agent(sid).await?;
         built.agent.starts_as(StartSource::Rebuild);
         built.agent.attach_session();
-        if let Err(e) = self.load_log(&mut built.agent, sid, restore).await {
+        // Read again: the old engine may have written to the log until it
+        // stopped just now.
+        let loaded = match self.directory.read_log(sid).await {
+            Ok(log) => self.load_log(&mut built.agent, sid, restore, &log).await,
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = loaded {
             self.drop_unrunnable(sid, &core, held).await;
             return Err(e);
         }
@@ -479,26 +495,22 @@ impl SessionPool {
         }
     }
 
-    /// Read what `restore` says the engine starts from into `agent`. For a
-    /// log read back, whether it holds a turn of the person's.
+    /// Read what `restore` says the engine starts from, out of `entries`
+    /// (the session's log), into `agent`. For a log read back, whether it
+    /// holds a turn of the person's.
     async fn load_log(
         &self,
         agent: &mut runtime::agent::Agent,
         session_id: &str,
         restore: Restore,
+        entries: &[history::entry::EnvelopedEntry],
     ) -> Result<Option<bool>, CreateError> {
         if restore == Restore::New {
             return Ok(None);
         }
         let resume_start = std::time::Instant::now();
-        let resume_result = agent.load_transcript(session_id).await;
-        let (projected_message_count, entry_count) =
-            self.directory.history_counts(session_id).await;
-        let entries = self
-            .directory
-            .load_entries(session_id)
-            .await
-            .unwrap_or_default();
+        let resume_result = agent.load_transcript(session_id, entries);
+        let (projected_message_count, entry_count) = self.directory.counts_in(entries);
         let has_user_turn = entries
             .iter()
             .any(|e| !e.is_sidechain && matches!(e.entry, history::entry::LogEntry::User { .. }));
@@ -532,7 +544,7 @@ impl SessionPool {
             return Err(format!("its transcript could not be loaded: {e}").into());
         }
         if restore == Restore::FromLog {
-            agent.restore_state_from_log().await;
+            agent.restore_state_from_log(entries);
         }
         Ok(Some(has_user_turn))
     }

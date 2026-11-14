@@ -1,4 +1,4 @@
-//! `subscribe_resuming` 读日志的次数与单独恢复一样多。
+//! 恢复一个冷会话读几次日志：单独恢复只读一遍日志、一遍水位，`subscribe_resuming` 不比它多。
 
 use super::mcp_for_project::test_pool_with_store;
 use super::*;
@@ -93,4 +93,18 @@ async fn subscribing_with_resume_reads_the_log_no_more_than_resuming() {
         .await
         .unwrap()
         .is_watched_by(WatcherId(1)));
+}
+
+/// Once to bring the session back, once more for the watermark, which is
+/// read after the subscriber is on (`watched_report`).
+#[tokio::test]
+async fn resuming_a_cold_session_reads_its_log_once_and_its_watermark_once() {
+    let store = Arc::new(CountsLoads::default());
+    let sid = cold_session(&store).await;
+    let (pool, _dir) = test_pool_with_store(Some(store.clone())).await;
+    store.loads.store(0, Ordering::SeqCst);
+
+    let report = pool.resume_session(&sid, false, None).await.unwrap();
+    assert_eq!(report.message_count, 2);
+    assert_eq!(store.loads.load(Ordering::SeqCst), 2);
 }

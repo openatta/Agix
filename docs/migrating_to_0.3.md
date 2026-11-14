@@ -2675,8 +2675,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `subscribe_goal() -> Receiver<Option<GoalView>>`、`GoalSlot::view()`,不再是 `serde_json::Value`。
 - **宿主可以持有会话状态跨引擎。** `Builder::session_state(state, generation)` 让引擎在宿主给的状态上跑,
   `build` 不挂载,宿主在上一代引擎停下后调 `Agent::attach_session`;`Builder::steering(handle)` 让插话
-  队列跨引擎(`SteerHandle` 实现 `Default`)。`Agent::resume_session` 拆成 `load_transcript(id)` 与
-  `restore_state_from_log()`。`Builder::run_slots(..)` 给 `RunCode` 的空位(`runtime::agent::default_run_slots()`
+  队列跨引擎(`SteerHandle` 实现 `Default`)。`Agent::resume_session` 拆成 `load_transcript(id, entries)` 与
+  `restore_state_from_log(entries)`,两者都读调用方已经读出的日志(`HistoryStore::load` 的结果),不再自己
+  读;`Session::resume_from(id, entries)` 是 `Session::resume` 的同类,`Session::latest_extension` 改成
+  自由函数 `session::session::latest_extension(entries, ns, event)`。`Builder::run_slots(..)` 给 `RunCode` 的空位(`runtime::agent::default_run_slots()`
   每次给一份新的;`ptc::default_run_slots()` 同样不再是进程级共享的一份)。
 - **输入与命令。** `InputMessage::Steer` 去掉 `ack`,要知道是否被收下用 `SteerHandle::offer`;
   `InputMessage::Context` 的 `reply` 是 `oneshot::Sender<Result<ContextAnswer, ContextError>>`

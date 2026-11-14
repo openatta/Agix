@@ -117,7 +117,7 @@ impl SessionPool {
                     self.default_binding().await,
                     Some(self.cwd().to_path_buf()),
                     options.as_ref(),
-                    false,
+                    None,
                 )
                 .await?
                 .id()
