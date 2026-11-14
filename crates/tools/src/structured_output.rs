@@ -126,14 +126,8 @@ impl Tool for StructuredOutputTool {
         _: ProgressSender,
     ) -> Result<ToolResult, ToolError> {
         ctx.turn.set_structured_output(input.clone());
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(
-                "Structured output provided successfully".into(),
-            ),
-            is_error: false,
-            structured_content: Some(json!({"structured_output": input})),
-            mcp_meta: None,
-            new_messages: Some(vec![]),
-        })
+        Ok(ToolResult::text("Structured output provided successfully")
+            .with_structured(json!({"structured_output": input}))
+            .with_new_messages(vec![]))
     }
 }

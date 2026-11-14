@@ -9,7 +9,7 @@ use base::interface::exec::{ExecError, FileSystem, Metadata, ProcessSpec};
 use base::interface::permission::{PermissionFacts, Subject};
 use base::tool::{
     PathStyle, ProgressSender, PromptContext, Tool, ToolContext, ToolResult, ToolResultBlock,
-    ToolResultContent, ToolSpec, ValidationResult,
+    ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -341,16 +341,10 @@ async fn read_image(
         dims_str,
     );
 
-    Ok(ToolResult {
-        content: ToolResultContent::Blocks(vec![
-            ToolResultBlock::text(header),
-            ToolResultBlock::image(mime, b64),
-        ]),
-        is_error: false,
-        structured_content: None,
-        mcp_meta: None,
-        new_messages: None,
-    })
+    Ok(ToolResult::blocks(vec![
+        ToolResultBlock::text(header),
+        ToolResultBlock::image(mime, b64),
+    ]))
 }
 
 /// How long `pdftotext` may take over one file.

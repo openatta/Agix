@@ -114,11 +114,8 @@ impl Sink {
             .lines
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-        self.progress.update(ProgressUpdate {
-            message: line.to_string(),
-            progress: Some(seen as f64),
-            total: None,
-        });
+        self.progress
+            .update(ProgressUpdate::text(line).with_progress(seen as f64));
         self.task.append_output(&format!("{line}\n"));
     }
 }

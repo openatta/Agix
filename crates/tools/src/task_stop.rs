@@ -96,15 +96,8 @@ impl Tool for TaskStopTool {
                     .unwrap_or(false);
 
                 if cancelled {
-                    Ok(ToolResult {
-                        content: base::tool::ToolResultContent::Text(format!(
-                            "Successfully stopped task: {id}"
-                        )),
-                        is_error: false,
-                        structured_content: Some(json!({"task_id": id})),
-                        mcp_meta: None,
-                        new_messages: None,
-                    })
+                    Ok(ToolResult::text(format!("Successfully stopped task: {id}"))
+                        .with_structured(json!({"task_id": id})))
                 } else {
                     Ok(ToolResult::error_text(format!("Failed to stop task: {id}")))
                 }

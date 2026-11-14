@@ -188,10 +188,8 @@ async fn workspace_relative_rewords_argument_docs_and_the_read_guide() {
         assert!(doc.contains("absolute path is also accepted"), "{doc}");
         assert!(!doc.contains("The absolute path"), "{doc}");
     }
-    let ctx = PromptContext {
-        path_style: PathStyle::WorkspaceRelative,
-        ..PromptContext::default()
-    };
+    let mut ctx = PromptContext::default();
+    ctx.path_style = PathStyle::WorkspaceRelative;
     let guide = FileReadTool.guide(&ctx).await.unwrap();
     assert!(guide
         .contains("relative to the current working directory; an absolute path is also accepted"));

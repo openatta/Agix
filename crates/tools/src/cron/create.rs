@@ -155,19 +155,15 @@ impl Tool for CronCreateTool {
             now.hour(),
             now.minute()
         );
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(format!(
-                "Scheduled {kind} {id}. {where_str}.{expiry} Use CronDelete to cancel sooner. \
+        Ok(ToolResult::text(format!(
+            "Scheduled {kind} {id}. {where_str}.{expiry} Use CronDelete to cancel sooner. \
                  The schedule is in UTC; it is now {now_utc} UTC."
-            )),
-            is_error: false,
-            structured_content: Some(json!({
+        ))
+        .with_structured(json!({
                 "id": id,
                 "recurring": input.recurring,
-                "durable": input.durable})),
-            mcp_meta: None,
-            new_messages: Some(vec![]),
-        })
+                "durable": input.durable}))
+        .with_new_messages(vec![]))
     }
 }
 

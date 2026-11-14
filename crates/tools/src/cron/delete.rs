@@ -83,27 +83,14 @@ impl Tool for CronDeleteTool {
     ) -> Result<ToolResult, ToolError> {
         let input: CronDeleteInput = serde_json::from_value(input)?;
         if self.store.remove_for(&ctx.session_id, &input.id) {
-            Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text(format!(
-                    "Cancelled job {}.",
-                    input.id
-                )),
-                is_error: false,
-                structured_content: Some(json!({"id": input.id})),
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            })
+            Ok(ToolResult::text(format!("Cancelled job {}.", input.id))
+                .with_structured(json!({"id": input.id}))
+                .with_new_messages(vec![]))
         } else {
-            Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text(format!(
-                    "No job found with id '{}'",
-                    input.id
-                )),
-                is_error: true,
-                structured_content: None,
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            })
+            Ok(
+                ToolResult::error_text(format!("No job found with id '{}'", input.id))
+                    .with_new_messages(vec![]),
+            )
         }
     }
 }

@@ -919,10 +919,8 @@ mod tests {
     async fn the_turn_being_interrupted_stops_it() {
         let dir = TempDir::new().unwrap();
         let turn = CancellationToken::new();
-        let ctx = ToolContext {
-            cancel: turn.clone(),
-            ..ctx_in(dir.path())
-        };
+        let mut ctx = ctx_in(dir.path());
+        ctx.cancel = turn.clone();
         let session = ctx.session.clone();
         start(
             ctx,

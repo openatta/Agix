@@ -144,12 +144,7 @@ impl Tool for AskUserQuestionTool {
             }
         };
 
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(text),
-            is_error: false,
-            structured_content: Some(rendered),
-            ..Default::default()
-        })
+        Ok(ToolResult::text(text).with_structured(rendered))
     }
 }
 

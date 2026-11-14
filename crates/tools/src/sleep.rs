@@ -7,8 +7,7 @@ use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::Tool;
 use base::tool::{
-    PathStyle, ProgressSender, PromptContext, ToolContext, ToolResult, ToolResultContent, ToolSpec,
-    ValidationResult,
+    PathStyle, ProgressSender, PromptContext, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -70,22 +69,11 @@ impl Tool for SleepTool {
         tokio::select! {
             _ = tokio::time::sleep(dur) => {}
             _ = ctx.cancel.cancelled() => {
-                return Ok(ToolResult {
-                    content: ToolResultContent::Text("Sleep cancelled".into()),
-                    is_error: true,
-                    structured_content: None,
-                    mcp_meta: None,
-                    new_messages: None,
-                });
+                return Ok(ToolResult::error_text("Sleep cancelled"));
             }
         }
-        Ok(ToolResult {
-            content: ToolResultContent::Text(format!("Slept {} ms", dur.as_millis())),
-            is_error: false,
-            structured_content: Some(json!({"duration_ms": dur.as_millis()})),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(ToolResult::text(format!("Slept {} ms", dur.as_millis()))
+            .with_structured(json!({"duration_ms": dur.as_millis()})))
     }
 }
 

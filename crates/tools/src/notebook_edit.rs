@@ -147,19 +147,15 @@ impl Tool for NotebookEditTool {
             .map(|a| a.len())
             .unwrap_or(0);
 
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(format!(
-                "{:?} cell at index {} in {}; notebook now has {} cells.",
-                input.mode, input.cell_index, input.file_path, cells_after
-            )),
-            is_error: false,
-            structured_content: Some(json!({
+        Ok(ToolResult::text(format!(
+            "{:?} cell at index {} in {}; notebook now has {} cells.",
+            input.mode, input.cell_index, input.file_path, cells_after
+        ))
+        .with_structured(json!({
                 "file_path": input.file_path,
                 "mode": format!("{:?}", input.mode).to_lowercase(),
-                "cells_after": cells_after})),
-            mcp_meta: None,
-            new_messages: Some(vec![]),
-        })
+                "cells_after": cells_after}))
+        .with_new_messages(vec![]))
     }
 }
 

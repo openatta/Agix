@@ -162,31 +162,19 @@ impl TaskOutputTool {
 }
 
 fn not_found(task_id: &str, message: &str) -> ToolResult {
-    ToolResult {
-        content: base::tool::ToolResultContent::Text(message.to_string()),
-        is_error: true,
-        structured_content: Some(json!({
-            "retrieval_status": "not_found",
-            "task_id": task_id,
-        })),
-        mcp_meta: None,
-        new_messages: None,
-    }
+    ToolResult::error_text(message.to_string()).with_structured(json!({
+        "retrieval_status": "not_found",
+        "task_id": task_id,
+    }))
 }
 
 fn snapshot(task_id: &str, retrieval_status: &str, output: String, status: &str) -> ToolResult {
-    ToolResult {
-        content: base::tool::ToolResultContent::Text(output.clone()),
-        is_error: false,
-        structured_content: Some(json!({
-            "retrieval_status": retrieval_status,
-            "task_id": task_id,
-            "output": output,
-            "status": status,
-        })),
-        mcp_meta: None,
-        new_messages: None,
-    }
+    ToolResult::text(output.clone()).with_structured(json!({
+        "retrieval_status": retrieval_status,
+        "task_id": task_id,
+        "output": output,
+        "status": status,
+    }))
 }
 
 /// Convert a RunningStatus to a serializable &'static str.

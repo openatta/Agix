@@ -8,8 +8,7 @@ use async_trait::async_trait;
 use base::error::ToolError;
 use base::interface::permission::{PermissionFacts, Reach, Subject};
 use base::tool::{
-    PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolResultContent, ToolSpec,
-    ValidationResult,
+    PathStyle, ProgressSender, Tool, ToolContext, ToolResult, ToolSpec, ValidationResult,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -167,13 +166,10 @@ impl Tool for TaskWaitTool {
         if timed_out {
             text.push_str("(the wait timed out)\n");
         }
-        Ok(ToolResult {
-            content: ToolResultContent::Text(text),
-            is_error: false,
-            structured_content: Some(json!({"tasks": report, "timed_out": timed_out})),
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(
+            ToolResult::text(text)
+                .with_structured(json!({"tasks": report, "timed_out": timed_out})),
+        )
     }
 }
 

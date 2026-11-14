@@ -308,15 +308,12 @@ impl Tool for ToolSearchTool {
 }
 
 fn guide_context(ctx: &ToolContext, all: &[Arc<dyn Tool>]) -> PromptContext {
-    PromptContext {
-        cwd: ctx.cwd.clone(),
-        model: String::new(),
-        session_id: ctx.session_id.clone(),
-        is_interactive: false,
-        all_tool_names: all.iter().map(|t| t.name().to_string()).collect(),
-        allowed_agent_types: vec![],
-        path_style: ctx.config.path_style,
-    }
+    let mut guide = PromptContext::default();
+    guide.cwd = ctx.cwd.clone();
+    guide.session_id = ctx.session_id.clone();
+    guide.all_tool_names = all.iter().map(|t| t.name().to_string()).collect();
+    guide.path_style = ctx.config.path_style;
+    guide
 }
 
 fn describe(t: &Arc<dyn Tool>) -> String {
@@ -334,20 +331,17 @@ fn search_result(
     already_loaded: &[String],
     unmatched: &[(String, Vec<String>)],
 ) -> ToolResult {
-    ToolResult {
-        content: base::tool::ToolResultContent::Text(body),
-        is_error,
-        structured_content: Some(json!({
+    ToolResult::text(body)
+        .with_error(is_error)
+        .with_structured(json!({
             "matches": matches.iter().map(|m| m.name.clone()).collect::<Vec<String>>(),
             "activated": activated,
             "already_loaded": already_loaded,
             "unmatched": unmatched.iter().map(|(n, _)| n.clone()).collect::<Vec<String>>(),
             "guides_returned": matches.iter().filter(|m| m.guide.is_some())
                 .map(|m| m.name.clone()).collect::<Vec<String>>(),
-            "query": query})),
-        mcp_meta: None,
-        new_messages: Some(vec![]),
-    }
+            "query": query}))
+        .with_new_messages(vec![])
 }
 
 fn render(

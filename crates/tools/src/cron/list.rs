@@ -64,13 +64,9 @@ impl Tool for CronListTool {
     ) -> Result<ToolResult, ToolError> {
         let jobs = self.store.list_for(&ctx.session_id);
         if jobs.is_empty() {
-            return Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text("No scheduled jobs.".into()),
-                is_error: false,
-                structured_content: Some(json!({"jobs": []})),
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            });
+            return Ok(ToolResult::text("No scheduled jobs.")
+                .with_structured(json!({"jobs": []}))
+                .with_new_messages(vec![]));
         }
         let lines: Vec<String> = jobs
             .iter()
@@ -87,17 +83,11 @@ impl Tool for CronListTool {
                 )
             })
             .collect();
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(format!(
-                "{} job(s):\n{}",
-                jobs.len(),
-                lines.join("\n")
-            )),
-            is_error: false,
-            structured_content: Some(json!({"jobs": jobs})),
-            mcp_meta: None,
-            new_messages: Some(vec![]),
-        })
+        Ok(
+            ToolResult::text(format!("{} job(s):\n{}", jobs.len(), lines.join("\n")))
+                .with_structured(json!({"jobs": jobs}))
+                .with_new_messages(vec![]),
+        )
     }
 }
 

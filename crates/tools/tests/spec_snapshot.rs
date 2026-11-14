@@ -94,11 +94,9 @@ fn fnv1a(text: &str) -> String {
 
 async fn snapshot(tool: &dyn Tool, cwd: &Path) -> Value {
     let spec = tool.spec();
-    let prompt_ctx = PromptContext {
-        cwd: cwd.to_path_buf(),
-        all_tool_names: vec!["Agent".into(), "Bash".into(), "Read".into()],
-        ..PromptContext::default()
-    };
+    let mut prompt_ctx = PromptContext::default();
+    prompt_ctx.cwd = cwd.to_path_buf();
+    prompt_ctx.all_tool_names = vec!["Agent".into(), "Bash".into(), "Read".into()];
     let guide = tool
         .guide(&prompt_ctx)
         .await

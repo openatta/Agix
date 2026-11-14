@@ -122,15 +122,10 @@ impl Tool for EnterWorktreeTool {
         let input: EnterWorktreeInput = serde_json::from_value(input)?;
         // 单 session 只允许一个 active worktree
         if self.registry.current().is_some() {
-            return Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text(
-                    "An active worktree already exists. Call ExitWorktree first.".into(),
-                ),
-                is_error: true,
-                structured_content: None,
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            });
+            return Ok(ToolResult::error_text(
+                "An active worktree already exists. Call ExitWorktree first.",
+            )
+            .with_new_messages(vec![]));
         }
         match crate::worktree::create_worktree(
             &ctx.exec,
@@ -150,22 +145,18 @@ impl Tool for EnterWorktreeTool {
                     .inner
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
-                Ok(ToolResult {
-                    content: base::tool::ToolResultContent::Text(format!(
-                        "Worktree created at {}. Branch: {}. Use this absolute path \
+                Ok(ToolResult::text(format!(
+                    "Worktree created at {}. Branch: {}. Use this absolute path \
                          in subsequent file operations to stay isolated. Call \
                          ExitWorktree when done.",
-                        path.display(),
-                        branch
-                    )),
-                    is_error: false,
-                    structured_content: Some(json!({
+                    path.display(),
+                    branch
+                ))
+                .with_structured(json!({
                         "path": path.display().to_string(),
                         "branch": branch,
-                        "slug": input.slug})),
-                    mcp_meta: None,
-                    new_messages: Some(vec![]),
-                })
+                        "slug": input.slug}))
+                .with_new_messages(vec![]))
             }
             Err(e) => Err(ToolError::exec(format!("EnterWorktree failed: {e}"))),
         }
@@ -229,48 +220,35 @@ impl Tool for ExitWorktreeTool {
         let discard = inp.discard_changes.unwrap_or(false);
 
         let Some(mut handle) = self.take() else {
-            return Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text("No active worktree to exit.".into()),
-                is_error: true,
-                structured_content: None,
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            });
+            return Ok(
+                ToolResult::error_text("No active worktree to exit.").with_new_messages(vec![])
+            );
         };
         let path = handle.path().to_path_buf();
         let branch = handle.branch().to_string();
 
         if action == "keep" {
-            return Ok(ToolResult {
-                content: base::tool::ToolResultContent::Text(format!(
-                    "Exited the worktree session. The worktree stays on disk at {} (branch {}).",
-                    path.display(),
-                    branch,
-                )),
-                is_error: false,
-                structured_content: Some(json!({
+            return Ok(ToolResult::text(format!(
+                "Exited the worktree session. The worktree stays on disk at {} (branch {}).",
+                path.display(),
+                branch,
+            ))
+            .with_structured(json!({
                     "kept_path": path.display().to_string(),
-                    "branch": branch})),
-                mcp_meta: None,
-                new_messages: Some(vec![]),
-            });
+                    "branch": branch}))
+            .with_new_messages(vec![]));
         }
 
         if !discard {
             let unsaved = unsaved_work(&ctx, &path, &branch).await;
             if !unsaved.is_empty() {
                 self.put_back(handle);
-                return Ok(ToolResult {
-                    content: base::tool::ToolResultContent::Text(format!(
-                        "Refused to remove the worktree: it has {}. The worktree session is \
+                return Ok(ToolResult::error_text(format!(
+                    "Refused to remove the worktree: it has {}. The worktree session is \
                          still active. Use discard_changes: true to force removal.",
-                        unsaved.join(" and ")
-                    )),
-                    is_error: true,
-                    structured_content: None,
-                    mcp_meta: None,
-                    new_messages: Some(vec![]),
-                });
+                    unsaved.join(" and ")
+                ))
+                .with_new_messages(vec![]));
             }
         }
         handle.cleanup().await;
@@ -278,20 +256,16 @@ impl Tool for ExitWorktreeTool {
             .strip_prefix("agix/worktree-")
             .unwrap_or("?")
             .to_string();
-        Ok(ToolResult {
-            content: base::tool::ToolResultContent::Text(format!(
-                "Removed worktree {} (branch {}).",
-                path.display(),
-                branch,
-            )),
-            is_error: false,
-            structured_content: Some(json!({
+        Ok(ToolResult::text(format!(
+            "Removed worktree {} (branch {}).",
+            path.display(),
+            branch,
+        ))
+        .with_structured(json!({
                 "removed_path": path.display().to_string(),
                 "removed_branch": branch,
-                "slug": slug})),
-            mcp_meta: None,
-            new_messages: Some(vec![]),
-        })
+                "slug": slug}))
+        .with_new_messages(vec![]))
     }
 }
 
