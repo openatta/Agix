@@ -600,7 +600,7 @@ impl McpManager {
             adapters: self
                 .adapters
                 .iter()
-                .filter(|a| a.spec().origin.mcp_server().is_some_and(&keep))
+                .filter(|a| a.spec().origin.mcp_server().is_some_and(keep))
                 .cloned()
                 .collect(),
             prompts: self
