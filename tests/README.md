@@ -354,7 +354,7 @@ target 从根文件出发沿 `mod` 声明走模块树，只有编译器会读的
 | WIR-1 | hook 接线，与 `UNWIRED_EVENTS` 双向比对 | `HookEvent::ALL` 加 syn | `tests/guards/tests/wiring.rs` | 已落地 |
 | WIR-2 | 每种遥测 kind 都有生产方 | `EventPayload::KINDS` 加 syn | 同上 | 已落地 |
 | WIR-3 | 组合根调用了接线用的函数 | syn | 同上 | 已落地 |
-| WIR-4 | 委派的 spawn 点只有一个，并带上整份继承 | syn | 同上 | 已落地，委派环境改造（D2）后改写 |
+| DLG-1..8 | 会话只在名单上的地方构造、委派只有一个分派、Builder 字段三分类、无晚绑定、`mcp__` 前缀匹配、`DelegateMode` 穷尽、任务只经租约、不造孤儿令牌 | syn | `tests/guards/tests/delegation.rs` | 已落地 |
 | WIR-5 | 只有 tool_policy 询问场景 `permits_tool` | 文本 | `daemon/tests/wiring_coverage.rs` | 保留，归接口收口（D5 S1）改写或删除 |
 | SRC-1 | 只有入口点和机器事实读 `$HOME` | syn | `tests/guards/tests/sources.rs` | 已落地 |
 | SRC-2 | 插件披露不提脚本引擎 | syn | 同上 | 已落地 |

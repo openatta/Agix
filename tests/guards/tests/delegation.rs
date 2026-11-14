@@ -1,5 +1,14 @@
 //! What a delegate's session is built from.
 //!
+//! DLG-1: a session is built from a `runtime::agent::Builder` in few places.
+//! In `agents` exactly one, `build_delegate`, and the same function calls
+//! `inherit`; in `assembly` only the sites that build a root session, named on
+//! a list that goes stale when one of them goes away. No other crate builds one.
+//!
+//! DLG-2: a delegate is built from one call chain. Only the functions on a
+//! short list call `build_delegate`, and the workspace has exactly one
+//! production `impl Delegator` besides the late-bound wrapper.
+//!
 //! DLG-3: every field of `runtime::agent::Builder` (its host, spec and ext
 //! groups) is on exactly one of three
 //! lists — inherited whole through `HostContracts`, decided by each delegate
@@ -577,6 +586,207 @@ fn delegation_and_hooks_make_no_orphan_tokens() {
         if !allowed_seen.contains(*file) {
             problems.push(format!(
                 "{file} makes no token of its own any more: take it off ORPHAN_TOKENS_ALLOWED"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+const BUILD_SITE_FILE: &str = "crates/agents/src/agent_tool/build.rs";
+const BUILD_SITE_FN: &str = "Delegator::build_delegate";
+
+/// `(file, enclosing fn, why)`: where a root session is built.
+const ROOT_SESSION_BUILDERS: &[(&str, &str, &str)] = &[(
+    "crates/assembly/src/session_pool/parts/factory/mod.rs",
+    "EngineFactory::build",
+    "the pool's engine factory, one per session generation",
+)];
+
+fn is_session_builder_new(path: &[String]) -> bool {
+    match path {
+        [.., agent, ty, new] => agent == "agent" && ty == "Builder" && new == "new",
+        [ty, new] => ty == "Builder" && new == "new",
+        _ => false,
+    }
+}
+
+fn enclosing_fn(fns: &[scan::FnSpan], line: usize) -> Option<&scan::FnSpan> {
+    fns.iter()
+        .filter(|s| (s.hit.line..s.hit.line + s.lines).contains(&line))
+        .min_by_key(|s| s.lines)
+}
+
+fn call_name(c: &scan::Call) -> Option<&str> {
+    match &c.callee {
+        scan::Callee::Path(p) => p.last().map(String::as_str),
+        scan::Callee::Method(m) => Some(m.as_str()),
+    }
+}
+
+#[test]
+fn a_session_is_built_only_where_it_is_listed() {
+    let mut problems = Vec::new();
+    let mut agents_sites = Vec::new();
+    let mut roots_seen = BTreeSet::new();
+    let mut scanned = 0;
+    for f in ws()
+        .production()
+        .filter(|f| f.package != "runtime" && !ws().package(&f.package).dir.starts_with("tests/"))
+    {
+        scanned += 1;
+        let fns = scan::fns(f, View::Prod);
+        let calls = scan::calls(f, View::Prod);
+        for c in &calls {
+            let scan::Callee::Path(p) = &c.callee else {
+                continue;
+            };
+            if !is_session_builder_new(p) {
+                continue;
+            }
+            let qual = enclosing_fn(&fns, c.hit.line).map(|s| s.qual.clone());
+            if f.package == "agents" {
+                let inherits = enclosing_fn(&fns, c.hit.line).is_some_and(|s| {
+                    calls.iter().any(|o| {
+                        call_name(o) == Some("inherit")
+                            && (s.hit.line..s.hit.line + s.lines).contains(&o.hit.line)
+                    })
+                });
+                agents_sites.push((f.rel.clone(), qual, inherits, c.hit.clone()));
+            } else if let Some((file, func, _)) = ROOT_SESSION_BUILDERS
+                .iter()
+                .find(|(file, func, _)| *file == f.rel && qual.as_deref() == Some(func))
+            {
+                roots_seen.insert((*file, *func));
+            } else {
+                problems.push(format!(
+                    "{}: builds a session outside `ROOT_SESSION_BUILDERS`; a delegate's goes \
+                     through `Delegator::delegate`",
+                    c.hit
+                ));
+            }
+        }
+    }
+    guards::allow::non_vacuous("delegation::builder_scan_files", scanned, 100);
+    let places: Vec<String> = agents_sites.iter().map(|s| s.3.to_string()).collect();
+    match agents_sites.as_slice() {
+        [(file, Some(func), inherits, hit)] if file == BUILD_SITE_FILE && func == BUILD_SITE_FN => {
+            if !inherits {
+                problems.push(format!(
+                    "{hit}: `{func}` builds a session without calling `inherit` in the same \
+                     function; everything a delegate inherits is in `HostContracts` so a \
+                     spawn site cannot take some of it"
+                ));
+            }
+        }
+        _ => problems.push(format!(
+            "`agents` builds a session at {places:?}; a delegate's session is built in exactly \
+             one place, `{BUILD_SITE_FN}` in {BUILD_SITE_FILE}"
+        )),
+    }
+    for (file, func, _) in ROOT_SESSION_BUILDERS {
+        if !roots_seen.contains(&(*file, *func)) {
+            problems.push(format!(
+                "`{func}` in {file} builds no session any more: take it off ROOT_SESSION_BUILDERS"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// `(file, enclosing fn, why)`: the functions that call `build_delegate`.
+const DELEGATE_BUILDERS: &[(&str, &str, &str)] = &[
+    (
+        "crates/agents/src/agent_tool/build.rs",
+        "Delegator::run_delegate",
+        "a one-shot delegate, waited on or run in the background",
+    ),
+    (
+        "crates/agents/src/delegate/members.rs",
+        "Delegator::spawn_member",
+        "a persistent team member's loop",
+    ),
+];
+
+/// Production `impl Delegator`s: `(file, self type, why)`.
+const DELEGATOR_IMPLS: &[(&str, &str, &str)] = &[
+    (
+        "crates/agents/src/delegate/mod.rs",
+        "Delegator",
+        "the one that builds delegates",
+    ),
+    (
+        "crates/runtime/src/module.rs",
+        "LateDelegator",
+        "forwards to the one above once the agents module has built it",
+    ),
+];
+
+#[test]
+fn a_delegate_is_built_and_dispatched_in_one_place() {
+    let mut problems = Vec::new();
+    let mut callers_seen = BTreeSet::new();
+    let mut impls_seen = BTreeSet::new();
+    let mut scanned = 0;
+    for f in ws().production() {
+        if ws().package(&f.package).dir.starts_with("tests/") {
+            continue;
+        }
+        scanned += 1;
+        if f.package == "agents" {
+            let fns = scan::fns(f, View::Prod);
+            for c in scan::calls(f, View::Prod) {
+                if call_name(&c) != Some("build_delegate") {
+                    continue;
+                }
+                let qual = enclosing_fn(&fns, c.hit.line).map(|s| s.qual.as_str());
+                match DELEGATE_BUILDERS
+                    .iter()
+                    .find(|(file, func, _)| *file == f.rel && qual == Some(func))
+                {
+                    Some((file, func, _)) => {
+                        callers_seen.insert((*file, *func));
+                    }
+                    None => problems.push(format!(
+                        "{}: `build_delegate` called outside `DELEGATE_BUILDERS`; \
+                         go through `Delegator::delegate`",
+                        c.hit
+                    )),
+                }
+            }
+        }
+        for imp in scan::impls(f, View::Prod) {
+            let Some(tp) = &imp.trait_path else { continue };
+            if tp.last().map(String::as_str) != Some("Delegator") {
+                continue;
+            }
+            match DELEGATOR_IMPLS
+                .iter()
+                .find(|(file, ty, _)| *file == f.rel && *ty == imp.self_ty)
+            {
+                Some((file, ty, _)) => {
+                    impls_seen.insert((*file, *ty));
+                }
+                None => problems.push(format!(
+                    "{}: a second production `impl Delegator` for `{}`; delegation has one \
+                     dispatch",
+                    imp.hit, imp.self_ty
+                )),
+            }
+        }
+    }
+    guards::allow::non_vacuous("delegation::dispatch_scan_files", scanned, 100);
+    for (file, func, _) in DELEGATE_BUILDERS {
+        if !callers_seen.contains(&(*file, *func)) {
+            problems.push(format!(
+                "`{func}` in {file} no longer calls `build_delegate`: take it off \
+                 DELEGATE_BUILDERS"
+            ));
+        }
+    }
+    for (file, ty, _) in DELEGATOR_IMPLS {
+        if !impls_seen.contains(&(*file, *ty)) {
+            problems.push(format!(
+                "`impl Delegator for {ty}` in {file} is gone: take it off DELEGATOR_IMPLS"
             ));
         }
     }

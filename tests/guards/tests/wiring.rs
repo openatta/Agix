@@ -4,10 +4,9 @@
 //!
 //! WIR-1 keeps `hooks::UNWIRED_EVENTS` honest in both directions, WIR-2 wants a
 //! producer for every telemetry kind, WIR-3 wants the composition roots to
-//! call the wiring-shaped functions, WIR-4 wants one place that spawns a
-//! delegate's session. All of them read the production syntax tree: a call in
-//! test code, in a comment, or one that merely asks `has_hooks_for` does not
-//! count.
+//! call the wiring-shaped functions. All of them read the production syntax
+//! tree: a call in test code, in a comment, or one that merely asks
+//! `has_hooks_for` does not count.
 
 use std::collections::BTreeSet;
 
@@ -77,9 +76,6 @@ const COMPOSITION_ROOT_FILES: &[&str] = &[
     "crates/skills/src/module.rs",
 ];
 const COMPOSITION_ROOT_DIRS: &[&str] = &["crates/runtime/src/agent/builder/"];
-
-const SPAWN_SITE_FILE: &str = "crates/agents/src/agent_tool/build.rs";
-const SPAWN_INHERITANCE: &str = "inherit";
 
 fn not_test_support(f: &&SourceFile) -> bool {
     !ws().package(&f.package).dir.starts_with("tests/")
@@ -319,39 +315,6 @@ fn every_wiring_check_names_a_function_that_exists() {
     }
 }
 
-fn spawn_sites() -> Vec<(String, Hit, bool)> {
-    par_flat_map(ws().production().filter(|f| f.package == "agents"), |f| {
-        let fns = scan::fns(f, View::Prod);
-        let calls = scan::calls(f, View::Prod);
-        calls
-            .iter()
-            .filter(|c| {
-                matches!(&c.callee, Callee::Path(p)
-                        if matches!(p.as_slice(), [.., ty, new] if ty == "Builder" && new == "new")
-                            && !p.iter().any(|s| s == "thread"))
-            })
-            .map(|spawn| {
-                let line = spawn.hit.line;
-                let enclosing = fns
-                    .iter()
-                    .filter(|s| (s.hit.line..s.hit.line + s.lines).contains(&line))
-                    .min_by_key(|s| s.lines);
-                let inherits = enclosing.is_some_and(|s| {
-                    calls.iter().any(|c| {
-                        callee_name(c) == Some(SPAWN_INHERITANCE)
-                            && (s.hit.line..s.hit.line + s.lines).contains(&c.hit.line)
-                    })
-                });
-                (
-                    enclosing.map_or_else(String::new, |s| s.qual.clone()),
-                    spawn.hit.clone(),
-                    inherits,
-                )
-            })
-            .collect()
-    })
-}
-
 #[test]
 fn a_fire_call_is_told_from_a_question_about_the_event() {
     let src = r#"
@@ -374,24 +337,5 @@ fn a_fire_call_is_told_from_a_question_about_the_event() {
             "StopFailure",
             "TurnStart"
         ]
-    );
-}
-
-#[test]
-fn every_spawn_site_takes_the_whole_inheritance() {
-    let sites = spawn_sites();
-    let places: Vec<String> = sites.iter().map(|(_, h, _)| h.to_string()).collect();
-    assert!(
-        sites.len() == 1 && sites[0].1.file == SPAWN_SITE_FILE,
-        "the agents crate builds a session at {places:?}; a delegated session is assembled in \
-         exactly one place, `Inner::build_delegate` in {SPAWN_SITE_FILE}. Route the new spawn \
-         site through it, with what differs expressed in `DelegatePlan`."
-    );
-    let (function, hit, inherits) = &sites[0];
-    assert!(
-        *inherits,
-        "{hit} builds a session in `{function}` without calling `{SPAWN_INHERITANCE}` in the \
-         same function. Everything a delegated session inherits is in `HostContracts` precisely \
-         so a spawn site cannot take some of it."
     );
 }
