@@ -138,20 +138,68 @@ async fn harmless_and_unindexed_repositories_are_only_mentioned_and_only_once() 
     assert!(tools::nested_repos::scan(&ctx).await.notes.is_empty());
 }
 
+fn declare(path: &str) -> String {
+    format!(
+        "printf '[submodule \"{path}\"]\\n\\tpath = {path}\\n\\turl = ./{path}\\n' >> .gitmodules"
+    )
+}
+
+/// `.gitmodules` is a file the command can write: declaring a submodule
+/// spares it the mention, not the check.
 #[tokio::test]
-async fn a_declared_submodule_is_left_alone() {
+async fn a_declared_submodule_is_not_mentioned_but_still_checked() {
     let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let pwned = elsewhere.path().join("pwned");
     let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
     bash(
         &ctx,
-        "mkdir lib && cd lib && git init -q && touch f && git add f && \
-         git -c user.email=t@example.com -c user.name=T commit -q -m s && \
-         git config core.pager cat && cd .. && git add lib && \
-         printf '[submodule \"lib\"]\\n\\tpath = lib\\n\\turl = ./lib\\n' > .gitmodules",
+        &format!(
+            "mkdir lib && cd lib && git init -q && touch f && git add f && \
+             git -c user.email=t@example.com -c user.name=T commit -q -m s && cd .. && \
+             git add lib && {} && {} && {}",
+            declare("lib"),
+            plant_as("evil", &pwned),
+            declare("evil")
+        ),
     )
     .await;
+    assert_status_runs_it(project.path(), &pwned);
+
     let scan = tools::nested_repos::scan(&ctx).await;
-    assert!(scan.dangerous.is_empty(), "{scan:?}");
+    assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
+    assert!(scan.dangerous[0].git_dir.ends_with("evil/.git"), "{scan:?}");
+    assert!(scan.notes.is_empty(), "{scan:?}");
+    quarantine_all(&ctx, &scan).await;
+    assert_status_no_longer_runs_it(project.path(), &pwned);
+}
+
+/// A submodule's git directory under the project's `.git/modules`, created
+/// by the command and reached through a `gitdir:` file.
+#[tokio::test]
+async fn a_dangerous_git_directory_under_the_projects_modules_is_checked() {
+    let project = project();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let pwned = elsewhere.path().join("pwned");
+    let ctx = platform::tool_context_for_test(project.path().canonicalize().unwrap());
+    bash(
+        &ctx,
+        &format!(
+            "{} && git rm -qf --cached evil && mkdir -p .git/modules && \
+             mv evil/.git .git/modules/evil && \
+             echo 'gitdir: ../.git/modules/evil' > evil/.git && git add evil && {}",
+            plant_as("evil", &pwned),
+            declare("evil")
+        ),
+    )
+    .await;
+    assert_status_runs_it(project.path(), &pwned);
+
+    let scan = tools::nested_repos::scan(&ctx).await;
+    assert_eq!(scan.dangerous.len(), 1, "{scan:?}");
+    assert!(scan.dangerous[0].git_dir.ends_with("evil/.git"), "{scan:?}");
+    quarantine_all(&ctx, &scan).await;
+    assert_status_no_longer_runs_it(project.path(), &pwned);
 }
 
 #[tokio::test]

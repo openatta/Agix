@@ -10,9 +10,10 @@
 //! The user's `git status` enters a nested repository's own gitlinks too, so
 //! they are followed, nesting bounded. A gitlink's `.git` leads to its git
 //! directory as git finds it — the directory itself, a symlink to one, or a
-//! `gitdir:` file naming one, wherever it lies. An undeclared gitlink whose
-//! configuration names a program is dangerous; what to do about it is the
-//! caller's ([`quarantine`] is the remedy). An undeclared one without such
+//! `gitdir:` file naming one, wherever it lies. A gitlink whose configuration
+//! names a program is dangerous, declared in `.gitmodules` or not — the
+//! command can write that file too; what to do about it is the caller's
+//! ([`quarantine`] is the remedy). An undeclared one without such
 //! configuration, and a `.git` directory found anywhere else in the tree, are
 //! only reported. Each is reported once per session, and a repository someone kept
 //! is reported again only once its configuration changes.
@@ -98,13 +99,14 @@ async fn examine_gitlinks(
                 }
                 let nested = worktree.join(&link);
                 let dot_git = nested.join(".git");
-                if !known.insert(dot_git.clone()) || declared.contains(&link) {
+                if !known.insert(dot_git.clone()) {
                     continue;
                 }
                 let Some(git_dir) = resolve_git_dir(ctx, &dot_git).await else {
                     continue;
                 };
-                examine(ctx, top, dot_git, &git_dir, scan).await;
+                let declared = declared.contains(&link);
+                examine(ctx, top, dot_git, &git_dir, declared, scan).await;
                 next.push(nested);
             }
         }
@@ -117,6 +119,7 @@ async fn examine(
     root: &Path,
     dot_git: PathBuf,
     git_dir: &Path,
+    declared: bool,
     scan: &mut Scan,
 ) {
     let config = ctx
@@ -128,7 +131,7 @@ async fn examine(
     let digest = digest(&config);
     let keys = dangerous_keys(&config);
     if keys.is_empty() {
-        if first_report(ctx, &dot_git, digest) {
+        if first_report(ctx, &dot_git, digest) && !declared {
             scan.notes.push(format!(
                 "`{}` is a repository nested in the project and added to its index; its \
                  configuration names no program.",
