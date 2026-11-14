@@ -6,7 +6,7 @@ file  crates/compaction/src/compact.rs                     -                    
 file  crates/core/src/context/session.rs                   -                                        1166
 file  crates/core/src/interface/tool.rs                    -                                        1004
 file  crates/core/src/interface/catalog.rs                   -                                        831
-file  crates/core/src/memory.rs                            -                                        1085
+file  crates/core/src/memory.rs                            -                                        1088
 file  crates/core/src/settings.rs                          -                                        1644
 file  crates/history/src/store.rs                          -                                        1995
 file  crates/mcp/src/connect.rs                            -                                        1328
