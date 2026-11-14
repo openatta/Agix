@@ -386,6 +386,10 @@ pub fn expand_skill_for_command(entry: &SkillEntry, body: Option<String>, args: 
         &body,
         args,
         entry.arguments.as_deref().unwrap_or(&[]),
+        Some(&base::frozen::skill::InvocationVars {
+            skill_md: &entry.path,
+            session_id: None,
+        }),
     );
 
     command_message(&entry.name, args, &expanded)

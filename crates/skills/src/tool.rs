@@ -355,6 +355,10 @@ pub async fn expand_for_invocation(
         &body,
         args,
         info.arguments.as_deref().unwrap_or(&[]),
+        Some(&base::frozen::skill::InvocationVars {
+            skill_md: &info.path,
+            session_id: Some(&ctx.session_id),
+        }),
     );
     let capped = match expanded.char_indices().nth(SKILL_BODY_CHAR_CAP) {
         Some((byte_idx, _)) => format!("{}...[truncated]", &expanded[..byte_idx]),
@@ -1258,6 +1262,44 @@ mod tests {
             ),
             "a project skill's blanket grant must not silence the Bash prompt"
         );
+    }
+
+    /// `${AGIX_SKILL_DIR}` is the folder of the skill's own `SKILL.md`, and
+    /// `${AGIX_SESSION_ID}` the session that invoked it — not the process's
+    /// cwd and environment.
+    #[tokio::test]
+    async fn the_invocation_variables_come_from_the_skill_and_its_session() {
+        let mgr = crate::manager::SkillManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("where-am-i");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let path = skill_dir.join("SKILL.md");
+        std::fs::write(&path, "dir=${AGIX_SKILL_DIR} session=${AGIX_SESSION_ID}").unwrap();
+        mgr.register_bundled(SkillEntry {
+            name: "where-am-i".into(),
+            description: "where".into(),
+            source: FrozenSkillSource::User,
+            path,
+            ..Default::default()
+        });
+        let info = mgr
+            .list()
+            .into_iter()
+            .find(|s| s.name == "where-am-i")
+            .unwrap();
+        let mut ctx = platform::tool_context_for_test(dir.path().to_path_buf());
+        ctx.session_id = "session-of-the-invoker".into();
+
+        let text = expand_for_invocation(&mgr, &info, "", &ctx, None)
+            .await
+            .unwrap()
+            .text;
+
+        assert!(
+            text.contains(&format!("dir={}", skill_dir.display())),
+            "{text}"
+        );
+        assert!(text.contains("session=session-of-the-invoker"), "{text}");
     }
 
     /// Until the project is trusted, its skills grant nothing — not even a

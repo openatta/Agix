@@ -424,7 +424,15 @@ pub fn body_runs_commands(body: &str) -> bool {
 /// 4. If none of 1-3 substituted **anything** and `args` is non-empty, append
 ///    "\n\nUser arguments: {args}" at the end (legacy fallback).
 pub fn expand_skill_vars(body: &str, args: &str) -> String {
-    expand_skill_vars_named(body, args, &[])
+    expand_skill_vars_named(body, args, &[], None)
+}
+
+/// What `${AGIX_SKILL_DIR}` and `${AGIX_SESSION_ID}` stand for in one
+/// invocation.
+pub struct InvocationVars<'a> {
+    /// The skill's `SKILL.md`; its folder is `${AGIX_SKILL_DIR}`.
+    pub skill_md: &'a std::path::Path,
+    pub session_id: Option<&'a str>,
 }
 
 /// Same as `expand_skill_vars`, plus named-argument substitution: for each
@@ -434,7 +442,16 @@ pub fn expand_skill_vars(body: &str, args: &str) -> String {
 /// with no corresponding argument expands to an empty string, unlike an
 /// *indexed* placeholder with no argument, which is left unchanged — that
 /// asymmetry is intentional, not a bug.
-pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> String {
+///
+/// `${AGIX_SKILL_DIR}` and `${AGIX_SESSION_ID}` are replaced from `vars`;
+/// one `vars` does not know — a skill with no folder of its own, a caller
+/// with no session — is left as written.
+pub fn expand_skill_vars_named(
+    body: &str,
+    args: &str,
+    arg_names: &[String],
+    vars: Option<&InvocationVars<'_>>,
+) -> String {
     let positions: Vec<&str> = args.split_whitespace().collect();
     let mut out = body.to_string();
     let mut substituted = false;
@@ -474,25 +491,18 @@ pub fn expand_skill_vars_named(body: &str, args: &str, arg_names: &[String]) -> 
         }
     }
 
-    // ${AGIX_SKILL_DIR} and ${AGIX_SESSION_ID}
-    if out.contains("${AGIX_SKILL_DIR}") {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "known defect: the skill's directory is not the process cwd; kept until the expansion is given the skill's path"
-        )]
-        let skill_dir = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| ".".to_string());
-        out = out.replace("${AGIX_SKILL_DIR}", &skill_dir);
+    let skill_dir = vars
+        .and_then(|v| v.skill_md.parent())
+        .filter(|dir| !dir.as_os_str().is_empty());
+    if let Some(dir) = skill_dir.filter(|_| out.contains("${AGIX_SKILL_DIR}")) {
+        out = out.replace("${AGIX_SKILL_DIR}", &dir.display().to_string());
         substituted = true;
     }
-    if out.contains("${AGIX_SESSION_ID}") {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "known defect: the session id is not in the process environment; kept until the expansion is given the session id"
-        )]
-        let sid = std::env::var("AGIX_SESSION_ID").unwrap_or_else(|_| "unknown".to_string());
-        out = out.replace("${AGIX_SESSION_ID}", &sid);
+    if let Some(sid) = vars
+        .and_then(|v| v.session_id)
+        .filter(|_| out.contains("${AGIX_SESSION_ID}"))
+    {
+        out = out.replace("${AGIX_SESSION_ID}", sid);
         substituted = true;
     }
 
@@ -514,8 +524,15 @@ pub async fn format_skill_invocation(
     //   - `$1`..`$9` -- positional args split on whitespace
     // If none of the above are present and args is non-empty, args is appended
     // verbatim at the end (legacy behavior).
-    let body_with_args =
-        expand_skill_vars_named(&body, args, skill.arguments.as_deref().unwrap_or(&[]));
+    let body_with_args = expand_skill_vars_named(
+        &body,
+        args,
+        skill.arguments.as_deref().unwrap_or(&[]),
+        Some(&InvocationVars {
+            skill_md: &skill.path,
+            session_id: None,
+        }),
+    );
     let mut s = String::with_capacity(body_with_args.len() + 256);
     s.push_str(&format!(
         "Apply the skill `{}` ({}). Follow the playbook below.\n\n",
@@ -815,7 +832,7 @@ mod tests {
             "from".to_string(),
             "to".to_string(),
         ];
-        let r = expand_skill_vars_named(body, "SearchBar React Vue", &names);
+        let r = expand_skill_vars_named(body, "SearchBar React Vue", &names, None);
         assert_eq!(r, "Migrate SearchBar from React to Vue.");
     }
 
@@ -823,7 +840,7 @@ mod tests {
     fn expand_named_arg_with_no_matching_positional_becomes_empty() {
         let body = "value=$only";
         let names = vec!["only".to_string()];
-        let r = expand_skill_vars_named(body, "", &names);
+        let r = expand_skill_vars_named(body, "", &names, None);
         assert_eq!(r, "value=");
     }
 
@@ -831,7 +848,7 @@ mod tests {
     fn expand_skill_vars_with_empty_names_matches_unnamed_variant() {
         let body = "Run with {ARGS}.";
         assert_eq!(
-            expand_skill_vars_named(body, "x y z", &[]),
+            expand_skill_vars_named(body, "x y z", &[], None),
             expand_skill_vars(body, "x y z")
         );
     }

@@ -38,7 +38,7 @@ pub trait SkillCatalog: Send + Sync {
         ctx: &'a ToolContext,
         permission: &'a dyn PermissionPolicy,
     ) -> BoxFuture<'a, Option<Result<SkillExpansion, String>>> {
-        let _ = (ctx, permission);
+        let _ = permission;
         Box::pin(async move {
             let entry = self.get(name)?;
             let body = self.body(name)?;
@@ -46,6 +46,10 @@ pub trait SkillCatalog: Send + Sync {
                 &body,
                 args,
                 entry.arguments.as_deref().unwrap_or(&[]),
+                Some(&crate::frozen::skill::InvocationVars {
+                    skill_md: &entry.path,
+                    session_id: Some(&ctx.session_id),
+                }),
             );
             Some(Ok(SkillExpansion {
                 text,
