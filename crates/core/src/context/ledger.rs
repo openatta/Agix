@@ -57,10 +57,11 @@ impl TokenTarget {
 
     /// Aim at `target` from nothing, for the model to be told of it.
     pub fn aim(&mut self, target: u64) {
-        self.target = Some(target);
-        self.unannounced = true;
-        self.accumulated = 0;
-        self.continuations = 0;
+        *self = Self {
+            target: Some(target),
+            unannounced: true,
+            ..Self::default()
+        };
     }
 
     /// The target the model has not been told of yet, now told.
@@ -88,5 +89,31 @@ impl TokenTarget {
         self.continuations += 1;
         self.last_delta = this_delta;
         self.continuations
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TokenTarget;
+
+    #[test]
+    fn a_new_aim_carries_nothing_over_from_the_last_target() {
+        let mut target = TokenTarget::default();
+        target.aim(5_000);
+        target.add_output(5_000, 700);
+        target.continued(700);
+        target.take_unannounced();
+
+        target.aim(9_000);
+        let progress = target.add_output(9_000, 10);
+        assert_eq!(
+            (
+                target.unannounced,
+                progress.accumulated,
+                progress.continuations,
+                progress.last_delta
+            ),
+            (true, 10, 0, 0)
+        );
     }
 }
