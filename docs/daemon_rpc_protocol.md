@@ -2119,7 +2119,8 @@ Shell 命令、监视器没有收件箱。会话不在内存里 → `SESSION_NOT
 会话不在内存里 → `SESSION_NOT_FOUND`(这个和 `session.close` 不一样:答一个没在跑
 的会话的提问不可能是"已经完成了")。
 
-未在 `--permission-prompt-timeout`(默认 300 秒)内回答的提问**失败关闭**:权限提问按拒绝
+未在 `--permission-prompt-timeout`(没给时取设置 `execution.permission_prompt_timeout_secs`,
+默认 300 秒)内回答的提问**失败关闭**:权限提问按拒绝
 处理,turn 带着一条 error `tool_result` 继续;模型的提问以"用户没有回答"作为
 `AskUserQuestion` 的结果交还模型。都不会挂死。
 
@@ -3018,7 +3019,7 @@ daemon 会话的默认权限模式是 **`default`(ask)**,不是放行一切。
 
 工具调用触发询问时,daemon 推送 `session.event {kind:"prompt"}` 并**阻塞该次工具
 调用**,直到:收到 `session.respondToPrompt`;或超过 `--permission-prompt-timeout`
-(默认 300 秒)→ **按拒绝处理**;或会话被关闭 → 按拒绝处理。
+(没给时取设置 `execution.permission_prompt_timeout_secs`,默认 300 秒)→ **按拒绝处理**;或会话被关闭 → 按拒绝处理。
 
 超时**永远失败关闭**,不会自动放行 —— 无人应答不等于同意。
 

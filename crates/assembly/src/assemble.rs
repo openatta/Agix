@@ -47,7 +47,10 @@ pub struct Assembly {
     /// `extra_scenes` is read, so they can be named there; otherwise they are
     /// available to `scene.activate`.
     pub scenes: Vec<Arc<SceneSpec>>,
-    /// How long an unanswered permission prompt may block a turn.
+    /// How long an unanswered permission prompt may block a turn, over every
+    /// session's `execution.permission_prompt_timeout_secs`. Left at
+    /// [`DEFAULT_PERMISSION_PROMPT_TIMEOUT`] it counts as not given, and the
+    /// settings decide (300 seconds when they say nothing either).
     pub permission_prompt_timeout: Duration,
     /// Where model calls go. `None` builds an Anthropic client keyed from
     /// `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`, else from `credentials`
@@ -184,7 +187,10 @@ pub async fn pool(
         history_store,
         config.paths.clone(),
     )
-    .permission_prompt_timeout(assembly.permission_prompt_timeout)
+    .permission_prompt_timeout(
+        (assembly.permission_prompt_timeout != DEFAULT_PERMISSION_PROMPT_TIMEOUT)
+            .then_some(assembly.permission_prompt_timeout),
+    )
     .credentials(credentials)
     .managed_settings(managed_path, managed)
     .host_changes(&own_settings_on_disk(config), &config.settings)

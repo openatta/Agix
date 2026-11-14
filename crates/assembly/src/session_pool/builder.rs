@@ -16,7 +16,7 @@ pub(crate) struct SessionPoolBuilder {
     credentials: Arc<dyn base::interface::credentials::CredentialSource>,
     managed: Option<(PathBuf, Option<base::managed_settings::ManagedSettings>)>,
     host_overrides: HostOverrides,
-    permission_prompt_timeout: Duration,
+    permission_prompt_timeout: Option<Duration>,
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
     mcp: Option<McpSetup>,
@@ -48,7 +48,7 @@ impl SessionPool {
             credentials: Arc::new(base::interface::credentials::ConfigCredentials),
             managed: None,
             host_overrides: HostOverrides::default(),
-            permission_prompt_timeout: DEFAULT_PERMISSION_PROMPT_TIMEOUT,
+            permission_prompt_timeout: None,
             rust_plugins: Vec::new(),
             customize: None,
             mcp: None,
@@ -89,9 +89,10 @@ impl SessionPoolBuilder {
     }
 
     /// How long an unanswered permission prompt may block a turn before the
-    /// daemon denies it on the client's behalf. `Duration::ZERO` waits
-    /// forever, the engine's own behavior.
-    pub(crate) fn permission_prompt_timeout(mut self, timeout: Duration) -> Self {
+    /// daemon denies it on the client's behalf, over every session's
+    /// `execution.permission_prompt_timeout_secs`; `None` leaves that setting
+    /// to decide. `Duration::ZERO` waits forever, the engine's own behavior.
+    pub(crate) fn permission_prompt_timeout(mut self, timeout: Option<Duration>) -> Self {
         self.permission_prompt_timeout = timeout;
         self
     }

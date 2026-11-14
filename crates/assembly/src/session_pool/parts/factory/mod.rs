@@ -38,8 +38,9 @@ pub(in crate::session_pool) struct EngineFactory {
     rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
     customize: Option<SessionCustomizer>,
     /// How long a `kind:"prompt"` permission ask may sit unanswered before
-    /// the engine answers it with a `Deny`. `Duration::ZERO` waits forever.
-    permission_prompt_timeout: Duration,
+    /// the engine answers it with a `Deny`, over the settings' own value.
+    /// `Duration::ZERO` waits forever.
+    permission_prompt_timeout: Option<Duration>,
     history_store: Option<Arc<dyn history::store::HistoryStore>>,
     /// How many `RunCode` programs this pool's sessions may run at once,
     /// together. One per pool, so a pool filling it leaves the others in the
@@ -109,7 +110,7 @@ impl EngineFactory {
         host_policy: Option<Arc<dyn PermissionPolicy>>,
         rust_plugins: Vec<Arc<dyn runtime::plugin::Plugin>>,
         customize: Option<SessionCustomizer>,
-        permission_prompt_timeout: Duration,
+        permission_prompt_timeout: Option<Duration>,
         history_store: Option<Arc<dyn history::store::HistoryStore>>,
     ) -> Self {
         Self {
@@ -127,8 +128,15 @@ impl EngineFactory {
         &self.run_slots
     }
 
-    pub(in crate::session_pool) fn permission_prompt_timeout(&self) -> Duration {
-        self.permission_prompt_timeout
+    /// The prompt timeout, in seconds, of a session on `settings`.
+    pub(in crate::session_pool) fn permission_prompt_timeout_secs(
+        &self,
+        settings: &LoadedSettings,
+    ) -> u64 {
+        self.permission_prompt_timeout.map_or(
+            settings.values.execution.permission_prompt_timeout_secs,
+            |timeout| timeout.as_secs(),
+        )
     }
 
     pub(in crate::session_pool) fn build(
@@ -237,10 +245,11 @@ impl EngineFactory {
         model_name: Option<&String>,
         session_id: &str,
     ) -> Arc<LoadedSettings> {
-        // The prompt timeout is a daemon-level flag but the wait it bounds
-        // lives in the engine, so it travels as a setting rather than as a
-        // daemon-side wrapper around the permission. `Settings` is behind an
-        // `Arc`, so override on a private clone rather than in place.
+        // A prompt timeout given to the daemon overrides the setting, and the
+        // wait it bounds lives in the engine, so it travels as a setting
+        // rather than as a daemon-side wrapper around the permission.
+        // `Settings` is behind an `Arc`, so override on a private clone rather
+        // than in place.
         // The mode is decided once and written into the snapshot as well:
         // the gate, the hook payloads and `Meta` all read it from there, and a
         // snapshot still holding the settings-file mode made every one of them
@@ -249,7 +258,7 @@ impl EngineFactory {
         {
             let mut snap = base_settings.clone();
             snap.values.execution.permission_prompt_timeout_secs =
-                self.permission_prompt_timeout.as_secs();
+                self.permission_prompt_timeout_secs(base_settings);
             snap.values.permission_mode = permission_mode;
             if let Some(name) = model_name {
                 snap.values.model.model_name = name.clone();

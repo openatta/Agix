@@ -934,3 +934,26 @@ async fn a_reload_keeps_the_max_tokens_fallback() {
     let settings = daemon.effective().await;
     assert_eq!(settings["model"]["max_tokens"], 2000, "{settings}");
 }
+
+/// With no prompt timeout given at assembly, the settings' own
+/// `execution.permission_prompt_timeout_secs` is the one sessions run under.
+#[tokio::test]
+async fn the_settings_prompt_timeout_applies_when_none_is_given_at_assembly() {
+    let daemon = Daemon::start(
+        json!({"execution": {"permission_prompt_timeout_secs": 7}}),
+        json!({}),
+    )
+    .await;
+    let turn = daemon
+        .ok("session.run_turn", json!({"message": "hi"}))
+        .await;
+    let sid = turn["session_id"]
+        .as_str()
+        .expect("a session id")
+        .to_string();
+
+    let report = daemon
+        .ok("session.resume", json!({"session_id": sid}))
+        .await;
+    assert_eq!(report["permission"]["prompt_timeout_secs"], 7, "{report}");
+}
