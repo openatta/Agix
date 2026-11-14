@@ -4,9 +4,9 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
-use base::context::{TaskLease, TaskType};
+use base::context::{RunningTask, SessionState, TaskLease, TaskType};
 use base::interface::delegate::{
     DelegateEnd, DelegateError, Delegated, LiveMember, StartedAgent, TeamSeat,
 };
@@ -43,9 +43,13 @@ pub(crate) struct PersistentMessage {
 /// A member's queue. A message is its task's lease: queuing one registers
 /// the task, and a message that never runs — refused at the door, or left
 /// in the queue when the member stops — ends its task as stopped when it is
-/// dropped.
+/// dropped. Stopping the member ends the tasks of every message not yet
+/// done, the running one too, without waiting for its turn to wind down.
 #[derive(Clone)]
-pub(crate) struct MemberInbox(tokio::sync::mpsc::UnboundedSender<PersistentMessage>);
+pub(crate) struct MemberInbox {
+    tx: tokio::sync::mpsc::UnboundedSender<PersistentMessage>,
+    unfinished: Arc<Mutex<Vec<Arc<RunningTask>>>>,
+}
 
 impl MemberInbox {
     fn open() -> (
@@ -53,7 +57,19 @@ impl MemberInbox {
         tokio::sync::mpsc::UnboundedReceiver<PersistentMessage>,
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (Self(tx), rx)
+        let inbox = Self {
+            tx,
+            unfinished: Default::default(),
+        };
+        (inbox, rx)
+    }
+
+    fn stop_unfinished(&self, session: &SessionState) {
+        let unfinished =
+            std::mem::take(&mut *self.unfinished.lock().unwrap_or_else(|e| e.into_inner()));
+        for task in unfinished {
+            session.cancel_running_task(&task.task_id);
+        }
     }
 
     /// The task id of `prompt` queued for the member stopping on
@@ -74,7 +90,12 @@ impl MemberInbox {
         )
         .notifying(|task| task_notification(task, &DelegateEnd::Cancelled));
         let task_id = lease.task().task_id.clone();
-        match self.0.send(PersistentMessage { prompt, lease }) {
+        {
+            let mut unfinished = self.unfinished.lock().unwrap_or_else(|e| e.into_inner());
+            unfinished.retain(|task| !task.has_ended());
+            unfinished.push(lease.task().clone());
+        }
+        match self.tx.send(PersistentMessage { prompt, lease }) {
             Ok(()) => Some(task_id),
             Err(refused) => {
                 refused
@@ -283,6 +304,7 @@ impl Delegator {
         if let Some(m) = member {
             tracing::debug!(team = %seat.team, member = %seat.member, id = %m.id, "stopping persistent team member");
             m.cancel.cancel();
+            m.inbox.stop_unfinished(&self.env.parent.state);
         }
     }
 

@@ -2257,6 +2257,10 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   会话不被空闲回收或腾位驱逐;以前重建会悄悄停掉成员、丢掉它的上下文。`session.stopTask` 接受
   `member-…` id,按 `TeamDelete` 的方式停掉它。成员空闲超过 `execution.team_member_idle_timeout_secs`
   (默认 1800)就自己停下,不再挡着;以前要等下一次起新成员时才回收。
+- **停掉正在跑一轮的常驻成员,它手上那条消息的任务当场记为 `stopped`。** 经 `TeamDelete`、
+  `session.stopTask`(`member-…` id)停成员时,与 `TaskStop` 停那个任务一样立即结束,不再等那一轮
+  返回;以前模型流不理会取消时,这条任务一直是 `running`,`session.setPrompt` 一直报
+  `SESSION_BUSY{background_tasks}` 并列出它。
 - **`turn_complete` 之后、回合槽归还之前到达的 `session.run_turn` 等槽**,不再按 `on_busy` 报忙或插话。
   `session.setPrompt`、`session.setModel`、`session.inspectContext` / `dropMessages` / `editMessage`
   同样等那一轮还槽,不再报 `SESSION_BUSY`(`reason: "turn_running"`)。

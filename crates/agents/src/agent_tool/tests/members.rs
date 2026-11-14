@@ -855,11 +855,13 @@ async fn a_root_sessions_member_holds_a_slot_only_for_its_turn() {
         ended_status(&agent_tool, &task_id).await,
         base::context::task::TaskStatus::Stopped
     );
-    assert_eq!(
-        slots.running(),
-        0,
-        "a member that is not running holds no slot"
-    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while slots.running() != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a member that is not running holds no slot");
 }
 
 /// A member of a session that runs on a slot itself is refused at the cap,
@@ -1002,6 +1004,76 @@ async fn a_stopped_members_late_turn_leaves_its_replacement_alone() {
         assert_eq!(lifecycle(), Some(TeammateLifecycle::Idle));
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+}
+
+/// A member stopped mid-turn ends its message's task as stopped at once,
+/// though the turn ignores the cancel and runs on: the session is not left
+/// busy with it, and the late turn's end does not change how it ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_member_mid_turn_ends_its_messages_task_at_once() {
+    use base::context::task::TaskStatus;
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let registry = Arc::new(team::registry::TeamRegistry::new());
+    let agent_tool = TestParent {
+        team_registry: Some(registry.clone()),
+        ..TestParent::new(Arc::new(HoldsUntilReleased {
+            mark: "STUCK-MARK",
+            held: held.clone(),
+            release: release.clone(),
+        }))
+    }
+    .agent_tool();
+    let session = agent_tool.parent_state();
+    let task_id = agent_tool
+        .spawn_or_message_team_member(
+            "team".into(),
+            "worker".into(),
+            "STUCK-MARK work".into(),
+            None,
+            std::env::temp_dir(),
+            session.clone(),
+            None,
+        )
+        .await
+        .expect("spawned");
+    let task = session.find_running_task(&task_id).expect("its task");
+    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+        .await
+        .expect("the member's turn reaches the model");
+
+    agent_tool.stop_team_member("team", "worker").await;
+    let status = || {
+        session
+            .task_infos()
+            .into_iter()
+            .find(|t| t.task_id == task_id)
+            .map(|t| t.status)
+    };
+    assert_eq!(status(), Some(TaskStatus::Stopped));
+    assert!(
+        !session.running_background_task_ids().contains(&task_id),
+        "{:?}",
+        session.running_background_task_ids()
+    );
+
+    release.notify_one();
+    let shut_down = || {
+        registry.list().iter().any(|t| {
+            t.members.iter().any(|m| {
+                m.label == "worker" && m.lifecycle == team::coordinator::TeammateLifecycle::Shutdown
+            })
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !shut_down() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the member's loop ends once its turn does");
+    assert!(task.has_ended());
+    assert_eq!(status(), Some(TaskStatus::Stopped));
 }
 
 /// A team deleted while one of its members is mid-turn stays deleted when
