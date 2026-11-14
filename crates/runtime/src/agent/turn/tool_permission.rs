@@ -206,6 +206,19 @@ struct Asked {
 /// Put the policy's question to the host and wait for it. Only the session
 /// going away interrupts the wait; an unanswered prompt within the deadline is
 /// not consent.
+async fn announce_prompt(ctx: &ToolExecCtx, name: &str, input: &serde_json::Value, message: &str) {
+    fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionRequested, |i| {
+        i.with_tool(name, input.clone()).with_reason(message)
+    })
+    .await;
+    // `Notification` rings when a person's attention is needed.
+    fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::Notification, |i| {
+        i.with_tool(name, input.clone())
+            .with_reason(format!("waiting for a permission decision on `{name}`"))
+    })
+    .await;
+}
+
 async fn ask(
     ctx: &ToolExecCtx,
     name: &str,
@@ -224,17 +237,7 @@ async fn ask(
     let refused =
         |refusal: Refusal| Answer::Refused(Reason::new(asked.stage, &refusal.reason), refusal);
     let waited = std::time::Instant::now();
-    fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PermissionRequested, |i| {
-        i.with_tool(name, input.clone())
-            .with_reason(message.clone())
-    })
-    .await;
-    // `Notification` rings when a person's attention is needed.
-    fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::Notification, |i| {
-        i.with_tool(name, input.clone())
-            .with_reason(format!("waiting for a permission decision on `{name}`"))
-    })
-    .await;
+    announce_prompt(ctx, name, input, &message).await;
     let prompt_timeout = ctx.config.permission_prompt_timeout_secs;
     let ask = ctx.elicitation.ask_within(
         base::interface::elicitation::ElicitRequest {

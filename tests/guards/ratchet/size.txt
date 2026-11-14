@@ -13,7 +13,7 @@ file  crates/mcp/src/connect.rs                                   -             
 file  crates/mcp/src/manager.rs                                   -                                      1273
 file  crates/mcp/src/oauth/mod.rs                                 -                                      1104
 file  crates/platform/src/sandbox.rs                              -                                      1498
-file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      854
+file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      855
 file  crates/session/src/session.rs                               -                                      835
 file  crates/team/src/coordinator.rs                              -                                      981
 file  crates/telemetry/src/recorder/mod.rs                        -                                      942
@@ -71,15 +71,15 @@ fn    crates/plugin/src/manifest.rs                               validate      
 fn    crates/ptc/src/lib.rs                                       dispatch_calls                         93
 fn    crates/ptc/src/lib.rs                                       spawn_watchers                         87
 fn    crates/ptc/src/run.rs                                       execute                                96
-fn    crates/runtime/src/agent/builder/build/assemble.rs          Builder::assemble                      81
+fn    crates/runtime/src/agent/builder/build/assemble.rs          Builder::assemble                      82
 fn    crates/runtime/src/agent/builder/build/mod.rs               Builder::build                         99
-fn    crates/runtime/src/agent/builder/build/modules.rs           Builder::run_modules                   91
+fn    crates/runtime/src/agent/builder/build/modules.rs           Builder::run_modules                   92
 fn    crates/runtime/src/agent/builder/build/plugins.rs           PluginLayers::into_chains              94
 fn    crates/runtime/src/agent/builder/build/resolve.rs           Builder::resolve                       84
 fn    crates/runtime/src/agent/turn/compact/mod.rs                Agent::run_compaction                  84
 fn    crates/runtime/src/agent/turn/request.rs                    Agent::recover_call                    97
 fn    crates/runtime/src/agent/turn/tool_exec.rs                  post_tool_use                          81
-fn    crates/runtime/src/agent/turn/tool_permission.rs            ask                                    91
+fn    crates/runtime/src/agent/turn/tool_permission.rs            ask                                    84
 fn    crates/runtime/src/agent/turn/tool_permission.rs            authorize                              95
 fn    crates/runtime/src/plugin.rs                                register_all                           82
 fn    crates/scene/src/declarative.rs                             DeclaredScene::parse                   90
