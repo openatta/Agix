@@ -136,6 +136,32 @@ pub async fn quarantine(
     Ok(to)
 }
 
+/// Settle the scan owed by a command nobody can be asked about: every
+/// dangerous repository is moved aside. One line for each repository found.
+pub async fn settle_unasked(ctx: &ToolContext) -> Vec<String> {
+    let scan = scan(ctx).await;
+    let mut lines = scan.notes;
+    for repo in scan.dangerous {
+        let found = format!(
+            "`{}` is a repository this command nested in the project, whose configuration \
+             names programs ({}) that a `git` run in the project runs outside the sandbox.",
+            shown(&ctx.cwd, &repo.git_dir),
+            repo.keys.join(", ")
+        );
+        lines.push(match quarantine(ctx, &repo.git_dir).await {
+            Ok(to) => format!(
+                "[{found} Moved aside to `{}`; renaming it back restores the repository.]",
+                shown(&ctx.cwd, &to)
+            ),
+            Err(e) => format!(
+                "[{found} It could not be moved aside ({e}): do not run `git` in the project \
+                 until it is removed.]"
+            ),
+        });
+    }
+    lines
+}
+
 /// `git_dir` relative to the project, for a person to read.
 pub fn shown(root: &Path, git_dir: &Path) -> String {
     git_dir

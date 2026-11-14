@@ -11,6 +11,7 @@ description  = "Agix — skill manager + bundled skills"
 base          = { workspace = true }
 runtime       = { workspace = true }
 permissions   = { workspace = true }
+tools         = { workspace = true }
 async-trait   = { workspace = true }
 regex         = { workspace = true }
 serde_json    = { workspace = true }
@@ -20,7 +21,6 @@ globset       = { workspace = true }
 
 [dev-dependencies]
 tokio         = { workspace = true }
-tools    = { workspace = true }
 platform = { workspace = true }
 scene      = { workspace = true }
 tokio-util = { workspace = true }

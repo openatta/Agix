@@ -483,7 +483,9 @@ const UNTRUSTED_PLACEHOLDER: &str = "[shell command not run: this project is not
 /// preprocessing has no one to ask — only what the rules allow, or what
 /// `Bash` itself lets through silently (a read-only command inside the
 /// project), runs. The skill's own `allowed-tools` are not applied yet at
-/// this point. With no permission wired nothing runs.
+/// this point. With no permission wired nothing runs. What the permit owes
+/// once the command has run is settled as for a call nobody can be asked
+/// about: a dangerous repository it nested in the project is moved aside.
 ///
 /// Respects `ctx.config.disable_skill_shell_execution` — when set, every
 /// placeholder is replaced with a fixed disabled-notice string instead of
@@ -549,15 +551,22 @@ async fn expand_dynamic_context(
     out
 }
 
-/// What the policy lets a skill's inline command run on, or why it will not
-/// let it run. Nobody can be asked about one, so its input is checked and it
-/// is judged as a call nobody can approve.
+/// What the policy lets a skill's inline command run on and what it owes
+/// once it has run, or why it will not let it run. Nobody can be asked about
+/// one, so its input is checked and it is judged as a call nobody can
+/// approve.
 async fn inline_command_approval(
     permission: Option<&dyn base::interface::permission::PermissionPolicy>,
     bash: &Arc<dyn base::tool::Tool>,
     input: &serde_json::Value,
     ctx: &ToolContext,
-) -> Result<base::interface::permission::Approval, String> {
+) -> Result<
+    (
+        base::interface::permission::Approval,
+        base::interface::permission::Obligations,
+    ),
+    String,
+> {
     use base::interface::permission::{Approval, Attendance, PermissionOutcome, ToolFacts};
     let Some(permission) = permission else {
         return Err("no permission check is wired for this skill".to_string());
@@ -583,7 +592,11 @@ async fn inline_command_approval(
     )
     .with_attendance(attendance);
     match permission.decide(&request).await {
-        PermissionOutcome::Permit { basis, profile, .. } => Ok(Approval::new(basis, profile)),
+        PermissionOutcome::Permit {
+            basis,
+            profile,
+            obligations,
+        } => Ok((Approval::new(basis, profile), obligations)),
         PermissionOutcome::Deny { reason } => Err(reason.message),
         PermissionOutcome::Prompt { message, .. } => Err(message),
     }
@@ -604,14 +617,18 @@ async fn run_skill_shell_command(
         return format!("[`{command}` not run: this session has no Bash tool]");
     };
     let mut ctx = ctx.clone();
-    ctx.approval = match inline_command_approval(permission, &bash, &input, &ctx).await {
-        Ok(approval) => Some(approval),
+    let obligations = match inline_command_approval(permission, &bash, &input, &ctx).await {
+        Ok((approval, obligations)) => {
+            ctx.approval = Some(approval);
+            obligations
+        }
         Err(reason) => {
             tracing::warn!(command = %command, reason = %reason, "skill inline command not run");
             return format!("[`{command}` not run: {reason}]");
         }
     };
-    match bash.call(input, ctx, ProgressSender::noop("")).await {
+    let after = obligations.scan_nested_repos.then(|| ctx.clone());
+    let mut out = match bash.call(input, ctx, ProgressSender::noop("")).await {
         // Trim exactly one trailing newline, matching shell `$(...)` command
         // substitution semantics — without this, every inline placeholder
         // splice leaves a stray blank line/line-break before whatever
@@ -622,7 +639,14 @@ async fn run_skill_shell_command(
             ToolResultContent::Blocks(_) => String::new(),
         },
         Err(e) => format!("[error running `{command}`: {e}]"),
+    };
+    if let Some(after) = after {
+        for line in tools::nested_repos::settle_unasked(&after).await {
+            out.push_str("\n\n");
+            out.push_str(&line);
+        }
     }
+    out
 }
 
 /// Register the `Skill` tool over `m` in `r`.
@@ -759,6 +783,50 @@ mod dynamic_context_tests {
         )
         .await;
         assert_eq!(out, "hello");
+    }
+
+    /// An inline command is a command like a `Bash` call's: a repository it
+    /// nests in the project with configuration that names a program is moved
+    /// aside before the user's own `git` can enter it, and the skill's
+    /// expansion says so.
+    #[tokio::test]
+    async fn a_repository_an_inline_command_nests_in_the_project_is_moved_aside() {
+        use base::permission::RuleBehavior;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().canonicalize().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.com", "-c", "user.name=T"])
+                .args(args)
+                .current_dir(&project)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(project.join("a"), "a").unwrap();
+        git(&["add", "a"]);
+        git(&["commit", "-qm", "first"]);
+        let (ctx, _tools) = bash_ctx(project.clone());
+        let body = "!`mkdir sub && cd sub && git init -q && touch f && git add f && \
+                    git -c user.email=t@example.com -c user.name=T commit -q -m s && \
+                    git config core.fsmonitor ./x.sh && cd .. && git add sub && echo planted`";
+
+        let allowed = gate(vec![bash_rule(RuleBehavior::Allow, None)]);
+        let out = expand_dynamic_context(
+            body,
+            &ctx,
+            Some(&allowed),
+            crate::manager::SkillSource::User,
+        )
+        .await;
+
+        assert!(out.starts_with("planted"), "{out}");
+        assert!(
+            out.contains("core.fsmonitor") && out.contains("Moved aside"),
+            "{out}"
+        );
+        assert!(!project.join("sub/.git").exists(), "{out}");
     }
 
     #[tokio::test]
