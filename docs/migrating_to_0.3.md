@@ -2456,8 +2456,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 `extension_points.md` 的"委派"。
 
 - **`AgentSpawner` 一族删除。** `Delegator::delegate(DelegateRequest) -> Result<Delegated,
-  DelegateError>` 与 `stop_member(&TeamSeat)` 取代它;`DelegateRequest::new(prompt, mode, stops_with)`
-  给出什么都不收窄的缺省,`tools` 是 `ToolSelector`、`deny_rules` 只收 deny、`grants` 是本轮授权、
+  DelegateError>` 与 `stop_member(&TeamSeat)` 取代它;`DelegateRequest` 是 `#[non_exhaustive]`,
+  `DelegateRequest::new(prompt, mode, stops_with)` 给出什么都不收窄的缺省,再逐字段改;`tools` 是 `ToolSelector`、`deny_rules` 只收 deny、`grants` 是本轮授权、
   `called_from` 是归属的回合与 `tool_use_id`、`asks` 定要不要问人。`DelegateMode` 是 `Wait`、
   `Background { notify_parent }`、`TeamMember { seat, permission_mode, lifetime }`、
   `Host { notify_parent }`、`Hook { judged_session }`,**没有 `#[non_exhaustive]`**(引擎内的唯一分派对
