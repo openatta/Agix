@@ -40,50 +40,20 @@ impl Model for DummyModel {
 
 fn test_settings() -> base::settings::LoadedSettings {
     let dir = std::env::temp_dir().join("agix-skills-module-tests");
-    base::settings::LoadedSettings::new(
-        Settings {
-            model: ModelSettings {
-                api_type: base::provider::ApiType::Anthropic,
-                base_url: String::new(),
-                auth_token: String::new(),
-                model_name: "test".into(),
-                max_tokens: 2000,
-                thinking_mode: ThinkingMode::Auto,
-                effort: None,
-                fallback_model: None,
-            },
-            execution: ExecutionSettings::default(),
-            compaction: CompactionConfig::default(),
-            sandbox: SandboxConfig::default(),
-            plugins: Default::default(),
-            instruction_file: None,
-            prompt_append: None,
-            prompt_override: None,
-            recorder: None,
-            telemetry_url: None,
-            memory_enabled: false,
-            disable_skill_shell_execution: true,
-            path_style: Default::default(),
-            permission_mode: PermissionMode::default(),
-            allow_client_permission_override: false,
-            telemetry_enabled: false,
-            hooks_config: None,
-            project_trust: Default::default(),
-            mcp_servers: Default::default(),
-            providers: Default::default(),
-            default_provider: None,
-            task_models: Default::default(),
-            language: None,
-            scripts: Vec::new(),
-        },
-        PathSettings {
-            user_data_dir: dir.clone(),
-            global_data_dir: dir.clone(),
-            workspace: base::settings::Workspace::project_of(&dir),
-            local_data_dir: dir,
-            scope: "code".into(),
-        },
-    )
+    let mut settings = Settings::defaults_for("test");
+    settings.model.thinking_mode = ThinkingMode::Auto;
+    settings.model.effort = None;
+    settings.model.max_tokens = 2000;
+    settings.memory_enabled = false;
+    settings.telemetry_enabled = false;
+    settings.disable_skill_shell_execution = true;
+    let mut paths = PathSettings::default();
+    paths.user_data_dir = dir.clone();
+    paths.global_data_dir = dir.clone();
+    paths.workspace = base::settings::Workspace::project_of(&dir);
+    paths.local_data_dir = dir;
+    paths.scope = "code".into();
+    base::settings::LoadedSettings::new(settings, paths)
 }
 
 #[test]

@@ -25,3 +25,6 @@ platform = { workspace = true }
 scene      = { workspace = true }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }
+
+[lints.clippy]
+field_reassign_with_default = "allow"

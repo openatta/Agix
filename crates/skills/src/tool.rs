@@ -163,11 +163,7 @@ impl Tool for SkillTool {
             Ok(expansion) => expansion,
             Err(ExpandError::NotFound) => return Err(not_found()),
             Err(ExpandError::Rejected(msg)) => {
-                return Ok(ToolResult {
-                    content: ToolResultContent::Text(msg),
-                    is_error: true,
-                    ..Default::default()
-                });
+                return Ok(ToolResult::error_text(msg));
             }
         };
 
@@ -198,26 +194,18 @@ impl Tool for SkillTool {
         self.grant_for_turn(&expansion.grants).await;
 
         if !self.first_injection(&ctx.session_id, &skill_msg) {
-            return Ok(ToolResult {
-                content: ToolResultContent::Text(format!(
+            return Ok(ToolResult::text(format!(
                     "Skill '{skill_name}' is already loaded in this session with the same content — not re-injected."
-                )),
-                is_error: false,
-                ..Default::default()
-            });
+                )));
         }
 
-        Ok(ToolResult {
-            content: ToolResultContent::Text(format!(
-                "Skill '{skill_name}' invoked. The skill instructions have been loaded."
-            )),
-            is_error: false,
-            new_messages: Some(vec![serde_json::json!({
-                "role": "user",
-                "content": skill_msg,
-            })]),
-            ..Default::default()
-        })
+        Ok(ToolResult::text(format!(
+            "Skill '{skill_name}' invoked. The skill instructions have been loaded."
+        ))
+        .with_new_messages(vec![serde_json::json!({
+            "role": "user",
+            "content": skill_msg,
+        })]))
     }
 }
 
@@ -311,11 +299,7 @@ impl SkillTool {
             ),
             Err(e) => (format!("Skill '{skill_name}' fork failed: {e}"), true),
         };
-        ToolResult {
-            content: ToolResultContent::Text(text),
-            is_error,
-            ..Default::default()
-        }
+        ToolResult::text(text).with_error(is_error)
     }
 }
 
@@ -1066,10 +1050,7 @@ mod tests {
             });
             if background {
                 return Ok(Delegated::Started(
-                    base::interface::delegate::StartedAgent {
-                        task_id: "mock-task-id-1".into(),
-                        agent_session_id: "fork-session".into(),
-                    },
+                    base::interface::delegate::StartedAgent::new("mock-task-id-1", "fork-session"),
                 ));
             }
             super::dynamic_context_tests::finished("forked output")
