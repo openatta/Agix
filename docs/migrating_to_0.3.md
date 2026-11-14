@@ -2001,7 +2001,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **会话不记授权时不再提供"总是允许"。** 宿主配 `PermissionSet::without_grants` 的会话,`Elicitation`
   收到的选项里没有 `permit_always`;万一仍答了,只放行这一次并告警,不写盘。
 - **子 Agent 的询问由子会话自己的 runtime 发出。** 帧仍在父会话上发、`message` 仍带
-  `[sub-agent <id>]` 前缀与 `task_id`;不同的是 `PermissionRequested`、`Notification` hook 在子会话上
+  `[sub-agent <id>]` 前缀与 `task_id`;子 Agent 再起的子 Agent 的询问逐层递到根会话,前缀逐层叠加
+  (`[sub-agent A] [sub-agent B] …`),`task_id` 是根会话里第一层那个任务;不同的是 `PermissionRequested`、`Notification` hook 在子会话上
   触发,超时与取消按子会话的设置与取消令牌,拒绝文本与父会话自己的问题一致(`Denied by permission: …`)。
   子 Agent 答 `permit_always` + `local` 现在写进项目的 `settings.local.json`(以前一律降成本会话)。
   父会话通道已关时的拒绝文本改为 "the parent session closed before it could answer. Original
