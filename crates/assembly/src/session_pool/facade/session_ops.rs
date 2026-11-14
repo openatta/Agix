@@ -203,6 +203,7 @@ impl SessionPool {
         provider: Option<&str>,
     ) -> Result<api::ModelChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
+        self.wait_out_finishing_turn(session_id).await;
         let (project, scene) = self
             .live
             .with_live(session_id, |live| {
@@ -295,6 +296,7 @@ impl SessionPool {
         change: impl FnOnce(&mut runtime::agent::SessionPrompt),
     ) -> Result<api::PromptChoice, PoolError> {
         self.refuse_scene_mismatch(session_id).await?;
+        self.wait_out_finishing_turn(session_id).await;
         if let Some(busy) = self
             .live
             .with_live(session_id, |l| l.turn.busy(session_id))

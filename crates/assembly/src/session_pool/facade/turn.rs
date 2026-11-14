@@ -264,6 +264,37 @@ impl SessionPool {
         }
     }
 
+    /// Wait while `sid`'s turn has sent its last frame but not yet given its
+    /// slot back: to whoever saw that frame the session is idle already.
+    pub(in crate::session_pool) async fn wait_out_finishing_turn(&self, sid: &str) {
+        loop {
+            let Some(idle) = self
+                .live
+                .with_live(sid, |live| live.turn.idle.clone())
+                .await
+            else {
+                return;
+            };
+            let became_idle = idle.notified();
+            tokio::pin!(became_idle);
+            became_idle.as_mut().enable();
+            let finishing = self
+                .live
+                .with_live(sid, |live| {
+                    live.turn.running().is_some_and(|turn| turn.terminated)
+                })
+                .await
+                .unwrap_or(false);
+            if !finishing {
+                return;
+            }
+            tokio::select! {
+                _ = became_idle => {}
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+        }
+    }
+
     async fn live_for_turn(
         &self,
         sid: &String,

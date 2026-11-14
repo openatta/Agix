@@ -2238,6 +2238,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   会话不被空闲回收或腾位驱逐;以前重建会悄悄停掉成员、丢掉它的上下文。`session.stopTask` 接受
   `member-…` id,按 `TeamDelete` 的方式停掉它。
 - **`turn_complete` 之后、回合槽归还之前到达的 `session.run_turn` 等槽**,不再按 `on_busy` 报忙或插话。
+  `session.setPrompt`、`session.setModel`、`session.inspectContext` / `dropMessages` / `editMessage`
+  同样等那一轮还槽,不再报 `SESSION_BUSY`(`reason: "turn_running"`)。
 - **以前不带 `data` 的几处 `SESSION_BUSY` 现在带。** 重建时旧引擎未停、上下文请求撞上正在跑的
   turn、`session.setGoal` / `session.startAgent` / 要先恢复会话的上下文请求在旧引擎未停时
   (`reason: "previous_engine"`,`current_turn_id: null`)。以前靠"没有 `data`"区分来源的,改读 `reason`。

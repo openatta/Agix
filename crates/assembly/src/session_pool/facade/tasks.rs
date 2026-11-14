@@ -352,6 +352,7 @@ impl SessionPool {
             return Err(PoolError::no_session(session_id));
         }
         self.ensure_live(session_id, None).await?;
+        self.wait_out_finishing_turn(session_id).await;
         let (input_tx, core, generation) = self
             .live
             .with_live_mut(session_id, |live| {

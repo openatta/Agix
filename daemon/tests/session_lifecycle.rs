@@ -2369,6 +2369,110 @@ async fn a_turn_sent_on_turn_complete_finds_the_session_free() {
     srv.stop().await;
 }
 
+/// The calls refused while a turn runs are not refused once it has sent
+/// `turn_complete`: each is sent the moment a goal's last round completes,
+/// while the round is still writing the goal's end down, on a session of its
+/// own.
+#[tokio::test]
+async fn a_change_sent_on_turn_complete_finds_the_session_free() {
+    let (srv, _seen) = start_scripted_server(
+        vec![text_round("done")],
+        ask_settings_no_memory(),
+        Duration::ZERO,
+    )
+    .await;
+
+    let calls: [(&str, fn(&str) -> serde_json::Value); 6] = [
+        (
+            "session.setPrompt",
+            |sid| serde_json::json!({"session_id": sid, "append": "Be brief."}),
+        ),
+        (
+            "session.setModel",
+            |sid| serde_json::json!({"session_id": sid, "model": "claude-haiku-4-5"}),
+        ),
+        (
+            "session.inspectContext",
+            |sid| serde_json::json!({"session_id": sid}),
+        ),
+        (
+            "session.dropMessages",
+            |sid| serde_json::json!({"session_id": sid, "at": []}),
+        ),
+        (
+            "session.editMessage",
+            |sid| serde_json::json!({"session_id": sid, "at": 0, "text": "rewritten"}),
+        ),
+        (
+            "session.compact",
+            |sid| serde_json::json!({"session_id": sid}),
+        ),
+    ];
+    let send = |id: u64, method: &str, params: serde_json::Value| {
+        format!(
+            "{}\n",
+            serde_json::json!({"jsonrpc": "2.0", "method": method, "id": id, "params": params})
+        )
+    };
+    for (method, params) in calls {
+        for n in 0..20u64 {
+            let created = rpc(
+                &srv.sock,
+                r#"{"jsonrpc":"2.0","method":"session.create","id":1,"params":{}}"#,
+            )
+            .await;
+            let sid = created["result"]["session_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{created}"))
+                .to_string();
+            let (read, mut write) = UnixStream::connect(&srv.sock).await.unwrap().into_split();
+            let mut lines = BufReader::new(read).lines();
+            let subscribe = send(
+                1,
+                "session.subscribe",
+                serde_json::json!({"session_id": sid}),
+            );
+            write.write_all(subscribe.as_bytes()).await.unwrap();
+            until_response(&mut lines, 1).await;
+            let goal = send(
+                2,
+                "session.setGoal",
+                serde_json::json!({"session_id": sid, "objective": "tidy up", "max_rounds": 1}),
+            );
+            write.write_all(goal.as_bytes()).await.unwrap();
+
+            let call = send(3, method, params(&sid));
+            let mut sent = false;
+            let answer = tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    let line = lines.next_line().await.unwrap().expect("connection open");
+                    let frame: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    if frame["id"] == 3 {
+                        return frame;
+                    }
+                    let goal_round_over = frame["params"]["event"]["kind"] == "turn_complete"
+                        && frame["params"]["turn_id"]
+                            .as_str()
+                            .is_some_and(|t| t.starts_with("goal-"));
+                    if goal_round_over && !sent {
+                        sent = true;
+                        write.write_all(call.as_bytes()).await.unwrap();
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{method} sent on turn_complete was answered"));
+            assert_ne!(
+                answer["error"]["code"],
+                codes::SESSION_BUSY,
+                "{method}, round {n}: {answer}"
+            );
+        }
+    }
+
+    srv.stop().await;
+}
+
 #[tokio::test]
 async fn a_project_bound_sessions_memories_land_in_its_own_project() {
     // The scripted client repeats its last round forever, so the background
