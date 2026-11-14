@@ -97,7 +97,8 @@ async fn a_filter_the_repository_names_runs_inside_the_sessions_sandbox() {
             tmpdir: None,
         },
         ProjectTrust::Trusted,
-    );
+    )
+    .with_min_deadline(std::time::Duration::from_secs(60));
     let mut ctx = FrozenContext::collect(
         project.to_path_buf(),
         &test_paths(state_root),
@@ -120,11 +121,14 @@ async fn a_filter_the_repository_names_runs_inside_the_sessions_sandbox() {
 
     // Unsandboxed, the same status does run it, so the check above is
     // looking at something that would happen.
-    ctx.refresh_git_status(&EngineExec::new(
-        platform::local_providers(),
-        Confinement::Unconfined,
-        ProjectTrust::Trusted,
-    ))
+    ctx.refresh_git_status(
+        &EngineExec::new(
+            platform::local_providers(),
+            Confinement::Unconfined,
+            ProjectTrust::Trusted,
+        )
+        .with_min_deadline(std::time::Duration::from_secs(60)),
+    )
     .await;
     assert!(ctx.git_status.is_some());
     assert!(marker.exists());

@@ -21,6 +21,7 @@ fn direct() -> EngineExec {
         Confinement::Unconfined,
         ProjectTrust::Trusted,
     )
+    .with_min_deadline(std::time::Duration::from_secs(60))
 }
 
 #[tokio::test]

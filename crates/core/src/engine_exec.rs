@@ -40,6 +40,7 @@ pub struct EngineExec {
     exec: ExecProviders,
     confinement: Confinement,
     trust: ProjectTrust,
+    min_deadline: Duration,
 }
 
 /// Whether the engine's subprocesses run in the session's sandbox.
@@ -177,7 +178,14 @@ impl EngineExec {
             exec,
             confinement,
             trust,
+            min_deadline: Duration::ZERO,
         }
+    }
+
+    /// Every call may take at least `floor`, whatever deadline it asks for.
+    pub fn with_min_deadline(mut self, floor: Duration) -> Self {
+        self.min_deadline = floor;
+        self
     }
 
     pub fn exec(&self) -> &ExecProviders {
@@ -231,6 +239,7 @@ impl EngineExec {
         deadline: Duration,
     ) -> Result<Captured, EngineExecError> {
         let spec = self.confine(spec, writable, program)?;
+        let deadline = deadline.max(self.min_deadline);
         let captured = tokio::time::timeout(
             deadline,
             capture(&*self.exec.process, spec, CancellationToken::new()),
