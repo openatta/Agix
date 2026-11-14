@@ -2051,12 +2051,18 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`daemon.doctor` 新增检查 `sandbox.strict_profile`。** 机器兑现不了严格 profile(没有沙箱后端、
   Linux 没有 `bwrap`、开着 `dangerously_disable_sandbox`)时为 `degraded`,`doctor` 的总状态随之是
   `degraded`。
+  `PATH` 上第一个 `git` 在可读根之外(asdf、`~/bin` 等 shim),或 git 配置 `include` 了可读根之外的
+  文件时,严格 profile 跑不起引擎的 `git`,现在同样报为未兑现并列出每一条;以前报 Full。
+- **Linux:只写指定根的策略(沙箱会话里引擎自己的 `git` 及其 filter driver)也整目录遮挡状态目录的
+  凭据**,会话 `TMPDIR` 挖洞挂回;以前逐文件遮挡,rename 重写的密钥文件读得到。
 - **命令之后检查嵌套仓库。** 每条不在严格 profile 里跑的命令(同步命令在结果之前,后台 `Monitor`
   在任务结束时)多跑一次 `git ls-files -s` 和一次有界目录遍历(跳过 `node_modules`、`target` 等依赖
   与构建目录)。命令在项目里留下未在 `.gitmodules` 声明、`config` 会拉起程序的嵌套仓库时:有人值守
   问"保留 / 移开",超时、拒答、取消按移开;无人值守或没人可问直接把它的 `.git` 改名为
   `.git.agix-quarantine-<UTC 时间>`(改回原名即可还原)。两种都在工具结果末尾附一行说明,发
   `Notification` hook 与 `notification` 帧;无害的嵌套 `.git`、未声明的 gitlink 只提示一次。
+  skill 里的内联命令(`!` 前缀)跑完同样检查,它无人可问,危险的直接移开。改名走会话的
+  `exec.filesystem`,远程执行环境里改的是远端那份。
 - **外部内容围栏按可达范围统一加。** MCP 工具的结果(含错误)、`WebFetch` / `Ping` 的结果(含 HTTP
   错误页与重定向说明,`[HTTP 200 | …]` 结果头现在在围栏里面)、写到或读到可读根之外的
   `Grep` / `Glob` / `Edit` / `Write` / `NotebookEdit`(以前只有 `Read`)都放进
@@ -2124,6 +2130,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   agent hook 的裁判子 Agent 停下;`PreToolUse` 跑完时回合已取消的调用不再执行。hook agent 的子孙
   会话的工具调用不再触发 agent hook;`on_error: "block"` 的 agent hook 不再把自己的 hook agent 的
   工具调用判成失败而全部拦下。
+- **只通知的 hook 不再被取消掐掉。** 不回答引擎的事件(`PostToolUse`、`SubagentStop`、`SessionEnd`
+  等)的 hook,在回合被中断、会话结束后照样跑到它自己的超时;`PostToolUse` 不再拿回合的取消令牌。
+  代价:被中断的回合要等这些 hook 跑完才结束,最长到 hook 的超时。
 - **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
   `customize_session` 装的 tool / prompt middleware、结果变换、模型拦截、恢复策略、compactor、
   插件场景、记忆存储与召回(连同召回 hook)、任务路由。审计类 middleware 的计数会因此变多;子会话
@@ -2144,6 +2153,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   …),不再是 `api` / `network` / `internal`;`http_status` 对所有带状态码的失败都有值。
 - **录像里失败的 `end` 记录格式变了**(`{error: <分类>, http_status?, retry_after_ms?, message?}`),
   旧录像里的失败读不回来。
+- **换模型重试、压缩后重发带上失败那次请求的 `cache_edits`**(以前置空)。
+- **尺寸被拒后压缩重试也失败时,报摘要失败的分类**(如 `rate_limited`,可重试),`context_too_long`
+  写进消息;以前总报 `context_too_long`。
 
 #### 会话与日志
 
@@ -2156,6 +2168,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   (`agix.session_state` 的 change 条目多一个 `activated_tools`)。
 - **`agix.context` 条目由引擎写**,`at_ms` 取引擎的时钟(录制回放时是录制的时钟)。
 - **压缩被取消或失败时撤回已经做的老化**,被清掉的工具结果原样留着,不发 `compact` 事件。
+  撤回的是整步:工具结果预算的裁剪、预测式压缩一并放回,它们的上报与断路器计数在整步成功后才算。
+  自动压缩时摘要失败、级联也没东西可丢,以前保留老化结果,现在整步撤回并退避。
 - **会话中途接入的 MCP 工具按场景的 `deferred_tools()` 名单延迟。** 以前只对 `build()` 时已注册的
   工具生效。要改的:不想让某个 MCP 工具延迟的,把它从场景的 `deferred_tools()` 里去掉。
 - **没有 `origin/HEAD` 的仓库里,快照的主分支回落到本地的 `main` / `master`**(以前回落从不生效,
@@ -2175,6 +2189,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   不满足时加载与安装都失败(`plugin.install` 的错误带出两个版本,缓存里什么都不写);同名包装了多个
   版本、最高版本不满足时改用满足的次高版本,被跳过的在 `plugins.refused` 里报出。写法见
   `plugin_packages.md`。
+- **skill 变量 `${AGIX_SKILL_DIR}` 取 SKILL.md 所在目录、`${AGIX_SESSION_ID}` 取调用它的会话**;
+  拿不到时原样保留,不再填 daemon 进程的工作目录与环境。
 
 ### RPC 客户端
 
@@ -2236,8 +2252,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 
 - **新帧 `model_retry {step, attempt, delay_ms, reason}`**:流开始之后的失败要原样重发前发出,之后
   同一 `step` 再发一次 `step_start`。
-- **新帧 `prompt_resolved {prompt_id, resolution}`**:`resolution` 为 `answered` 或 `withdrawn`
-  (超时、回合取消或结束、会话关闭)。每个提问至多一帧,推给全部订阅者(包括答题的连接),回合内带
+- **新帧 `prompt_resolved {prompt_id, resolution, reason?}`**:`resolution` 为 `answered` 或 `withdrawn`;
+  `withdrawn` 时 `reason` 为 `timed_out`(超时没人答)或 `cancelled`(回合取消或结束、会话关闭)。回答与
+  超时同时到时只有先到的一方算数,不会既执行回答又报撤回。每个提问至多一帧,推给全部订阅者(包括答题的连接),回合内带
   `turn_id`,空闲时为 `null`。`session.subscribe` 的 `pending_prompts` 在这帧之后才去掉那个提问(以前
   `respondToPrompt` 一到就去掉)。要改的:多个连接同看一个会话的,收到它就收起提问界面。
 - **`turn_complete` 多一个总是出现的 `persisted`**,为 `false` 时日志没写全(见"部署"的会话与日志)。
@@ -2421,7 +2438,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `CommandRegistry::run_prompt_command` 收 `&dyn PermissionPolicy`;`SkillTool::with_permission`、
   `skills::tool::register` 收 `PermissionSet`;`ChannelElicitation::authorization_options(keeps_grants)`
   多一个参数;`Elicitation` 新增带缺省实现的 `can_clarify()`,`Builder::elicitation` 设了一个返回
-  `false` 的实现时会话不提供 `AskUserQuestion`;`ruleset::literal_rule_content` 删除,
+  `false` 的实现时会话不提供 `AskUserQuestion`;`Elicitation` 新增带缺省实现的 `ask_within(..)`,超时由
+  提问自己处理(谁先把提问从待答表取走谁算数),自己实现 `Elicitation` 又要单一胜者语义的覆盖它;`ruleset::literal_rule_content` 删除,
   `settings_patch::build_rule_string` 不再转义 URL,新增 `settings_patch::append_exact_allow`、
   `rule::exact_allows_from`;`settings::PermissionRuleEntry` 新增 `match` 字段。`runtime` 不再依赖
   `permissions`。
@@ -2443,10 +2461,15 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **沙箱策略。** `SandboxPolicy` 新增 `read: ReadScope`(`Everything` / `Only`)、`env: EnvScope`
   (`Session` / `Minimal`)与 `egress: Option<ProxyEndpoint>`(出网代理只定了接口
   `base::interface::exec::egress`,目前恒为 `None`),`SandboxPolicy::strict(可读根, TMPDIR)` 给出严格
-  profile;`ProcessSpec` 新增 `env_scope`;`ConfinementReport` 新增 `strict`。用结构体字面量构造
+  profile;`ProcessSpec` 新增 `env_scope`;`ConfinementReport` 新增 `strict`、`session_unmet`、`strict_unmet`
+  (兑现不了的逐条明细),不再是 `Copy`。用结构体字面量构造
   `SandboxPolicy`、`ProcessSpec` 的要补上(或用 `ProcessSpec::new` / `..Default::default()`)。
   `tools::bash::confine_shell` 返回 `ProcessSpec`(不再是 `Result`);新增
   `tools::bash::{confinement_report, strict_sandbox_policy}`。
+- **`FileSystem` 新增带缺省实现的 `rename`**(缺省返回失败、什么都不动;本机与内存实现已有),转发型
+  替身要转发它。`tools::nested_repos::quarantine(ctx, git_dir) -> Result<PathBuf, ExecError>` 经会话的文件
+  系统改名;新增 `tools::nested_repos::settle_unasked`(没人可问时按许可移开危险仓库)。`skills` 改为正常
+  依赖 `tools`。
 - **`LocalProcess::spawn` 的取消令牌生效**:句柄存活期间令牌一取消,向整个进程组发 SIGTERM,宽限期后
   SIGKILL。以前只靠调用方自己 kill 或丢弃句柄。
 
@@ -2501,6 +2524,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `AgentHookExecutor::execute` 末尾多 `stop: &CancellationToken`,实现方应在它取消时尽快返回;
   `AgentHookExecutor::execute` 的错误类型由 `String` 改为 `hooks::runner::AgentHookError { NotJudged,
   Failed(String) }`。`HookOutcome` 新增 `Cancelled`。
+- **`HookRunner::run` 对不回答引擎的事件不理会 `stop`**,hook 跑到自己的超时;要掐掉它们的宿主改用
+  hook 自己的 `timeout`。
 
 #### 场景
 
@@ -2563,10 +2588,12 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   新增 `InputMessage::Flush`;`EngineCommand::UpdateModel` 删除。
 - **事件。** `AgentEvent::Error { failure: TurnFailure, turn_id, persisted }` 取代
   `{ code: "turn_error", message }`;`AgentEvent::TurnComplete` 多 `persisted`(serde 缺省 `true`);
-  新增 `AgentEvent::ModelRetry` 与 `AgentEvent::PromptResolved { prompt_id, resolution }`
-  (`base::event::PromptResolution`);`runtime::elicitation::OpenPrompt` 是登记待答提问的句柄。
-- **`compaction::aging::Aging` 多一个 `undo: AgingUndo` 字段**:压缩被取消或失败时按它撤回老化。自己
-  实现 `Compactor::age`、用结构体字面量构造 `Aging` 的要补上(它实现 `Default`)。
+  新增 `AgentEvent::ModelRetry` 与 `AgentEvent::PromptResolved { prompt_id, resolution, reason }`
+  (`base::event::PromptResolution`、`WithdrawalReason { TimedOut, Cancelled }`);`runtime::elicitation::OpenPrompt` 是登记待答提问的句柄。
+- **`compaction::aging::Aging` 多一个 `undo: AgingUndo` 字段**(它实现 `Default`),用结构体字面量构造
+  `Aging` 的要补上。引擎撤回压缩改用整步检查点,不再读它。
+- **`base::frozen::skill::expand_skill_vars_named` 多一个 `vars: Option<&InvocationVars>`**,
+  `${AGIX_SKILL_DIR}`、`${AGIX_SESSION_ID}` 从它取,`None` 时原样保留。
 
 #### 模型与恢复
 
@@ -2581,6 +2608,7 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `RecoveryPolicy::on_failure(&self, failure: &ModelFailure<'_>, so_far: &CallRecovery) -> Recovery`;
   `Recovery` 多 `RetrySame { after }`;`RequestFailure`、`ModelError`、`ModelErrorKind`、`ModelFailure` 是
   `#[non_exhaustive]`。自己实现 `RecoveryPolicy` 的改读 `failure.kind` 并处理 `so_far`。
+- **`compaction::CompactError` 新增 `Model(ModelError)`**:摘要模型的调用、流、超时失败原样带出。
 - **一轮怎么失败。** `TurnError::Model(ModelError, bool)`(第二项为这一轮是否已跑过工具);
   `base::event::{TurnFailure, FailureKind}` 是引擎、池、线上共用的描述。
 
