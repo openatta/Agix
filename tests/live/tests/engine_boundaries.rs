@@ -122,6 +122,30 @@ async fn a_recording_replays_a_turn_and_its_sub_agent_without_the_model() -> any
     Ok(())
 }
 
+/// A clock the host pins for a session holds for its sub-agents too: a
+/// recording made with one replays on any later day (Harnix 22, #44).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_reads_the_date_its_parent_session_was_pinned_to() -> anyhow::Result<()> {
+    let stub = ProviderStub::start().await?;
+    let mut run = stubbed("pinned-clock", &stub).start().await?;
+    stub.script(delegation("SUB-DONE", "PARENT-DONE"));
+    let session = run
+        .session_with(json!({ "options": { "clock": { "start": "2026-11-09T09:00:00Z" } } }))
+        .await?;
+    run.turn(&session, "delegate it").await?;
+    let calls = turn_calls(&stub);
+    assert_eq!(calls.len(), 3, "parent, sub-agent, parent");
+    for (i, call) in calls.iter().enumerate() {
+        let dated = |needle: &str| call.system_contains(needle) || call.messages_contain(needle);
+        assert!(
+            dated("Today's date is 2026-11-09"),
+            "call {i} is not on the pinned day: {}",
+            call.system_text()
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_turns_telemetry_names_its_calls_and_its_tools() -> anyhow::Result<()> {
     let stub = ProviderStub::start().await?;
