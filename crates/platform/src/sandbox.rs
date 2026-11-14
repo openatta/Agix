@@ -3048,6 +3048,19 @@ mod tests {
             ..Default::default()
         }
         .strict([s.project.clone()], Some(s.tmp.clone()));
+        let unmet = read_scope::unmet(
+            &policy.read,
+            home_dir().as_deref(),
+            std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        );
+        if !unmet.is_empty() {
+            eprintln!("skipped: the strict profile cannot run this machine's git: {unmet:?}");
+            return;
+        }
         let run = |command: &str| {
             let confined = PlatformSandbox.confine(
                 ProcessSpec::new("bash", &s.project).args(["-c", command]),
