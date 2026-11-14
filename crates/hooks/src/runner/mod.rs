@@ -26,6 +26,9 @@ use tokio_util::sync::CancellationToken;
 /// 不改，除非它写了 `on_error: "block"`。
 pub const DEFAULT_HOOK_TIMEOUT_MS: u64 = 60_000;
 
+/// 任何 hook 最多跑多久（10 分钟），`timeout` 写得再大也到此为止。
+pub const MAX_HOOK_TIMEOUT_MS: u64 = 600_000;
+
 #[derive(Debug, Clone)]
 pub enum HookOutcome {
     /// hook 跑了，并给出 response
@@ -69,6 +72,22 @@ fn judged(mut outcome: HookOutcome, may_approve: bool) -> HookOutcome {
         }
     }
     outcome
+}
+
+fn warn_of_timeouts_past_the_cap(settings: &HooksSettings) {
+    for (event, configs) in settings {
+        for cfg in configs {
+            if let Some(timeout) = cfg.timeout().filter(|t| *t > MAX_HOOK_TIMEOUT_MS) {
+                tracing::warn!(
+                    event = ?event,
+                    hook = %cfg.describe(),
+                    timeout_ms = timeout,
+                    max_ms = MAX_HOOK_TIMEOUT_MS,
+                    "hook timeout is past the cap; it runs at most the cap"
+                );
+            }
+        }
+    }
 }
 
 /// 一次 `run` 的聚合结果。便于上层短路 / 统计。
@@ -159,6 +178,7 @@ pub struct HookRunner {
 impl HookRunner {
     /// Construct a new instance.
     pub fn new(settings: HooksSettings) -> Self {
+        warn_of_timeouts_past_the_cap(&settings);
         Self {
             settings: Arc::new(settings),
             default_timeout: Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS),
@@ -591,6 +611,7 @@ impl HookRunner {
         configured_ms
             .map(Duration::from_millis)
             .unwrap_or(self.default_timeout)
+            .min(Duration::from_millis(MAX_HOOK_TIMEOUT_MS))
     }
 
     /// Execute an Agent-type hook. Delegates to the injected AgentHookExecutor.
@@ -1403,6 +1424,19 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(result.outcomes[0].is_error(), "{:?}", result.outcomes);
         assert!(result.blocked().is_none());
+    }
+
+    #[test]
+    fn no_hook_runs_longer_than_the_cap_whatever_its_timeout_says() {
+        let r = one_command_hook("true", 3_600_000);
+        let cap = Duration::from_millis(MAX_HOOK_TIMEOUT_MS);
+        assert_eq!(r.timeout_of(Some(3_600_000)), cap);
+        assert_eq!(r.timeout_of(Some(u64::MAX)), cap);
+        assert_eq!(r.timeout_of(Some(5_000)), Duration::from_millis(5_000));
+        assert_eq!(
+            r.timeout_of(None),
+            Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS)
+        );
     }
 
     #[cfg(unix)]

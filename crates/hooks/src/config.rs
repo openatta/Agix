@@ -19,7 +19,7 @@ pub enum HookConfig {
         /// 默认 bash；Windows 上可指定 powershell
         #[serde(default)]
         shell: Option<String>,
-        /// 毫秒；不填用 `DEFAULT_HOOK_TIMEOUT_MS`
+        /// 毫秒；不填用 `DEFAULT_HOOK_TIMEOUT_MS`，最多 `MAX_HOOK_TIMEOUT_MS`
         #[serde(default)]
         timeout: Option<u64>,
         /// 权限规则风格的过滤模式，例如 "Bash(git push:*)"。命中才跑。
@@ -127,6 +127,15 @@ impl HookConfig {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn timeout(&self) -> Option<u64> {
+        match self {
+            HookConfig::Command { timeout, .. }
+            | HookConfig::Prompt { timeout, .. }
+            | HookConfig::Http { timeout, .. }
+            | HookConfig::Agent { timeout, .. } => *timeout,
+        }
     }
 
     pub(crate) fn on_error(&self) -> OnError {
