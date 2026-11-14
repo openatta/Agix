@@ -61,19 +61,23 @@ pub(super) fn mask_plan(root: &Path, locs: &[Located], holes: &[PathBuf]) -> Vec
     plan
 }
 
-/// The state root a project lives in, and what has to stay writable in
-/// it — the project and the writable roots under the root — when the
-/// root can be masked around them: none of them is the root or a
-/// directory a credential lies in or below.
+/// The state root no fence shuts — one a project lives in, or any under a
+/// policy that writes only its named roots — and what has to stay writable
+/// in it — the project, when it is writable, and the writable roots under
+/// the root — when the root can be masked around them: the root is in the
+/// sandbox at all (`shown`), and none of them is the root or a directory a
+/// credential lies in or below.
 pub(super) fn holes_in_state_root<'a>(
     roots: &'a super::Roots,
     secrets: &[Located],
+    shown: impl Fn(&Path) -> bool,
 ) -> Option<(&'a Path, Vec<PathBuf>)> {
-    let root = roots
-        .state_root
-        .as_deref()
-        .filter(|root| !roots.only_additional && roots.project_in(root) && root.is_dir())?;
-    let holes: Vec<PathBuf> = std::iter::once(&roots.cwd)
+    let root = roots.state_root.as_deref().filter(|root| {
+        (roots.only_additional || roots.project_in(root)) && shown(root) && root.is_dir()
+    })?;
+    let holes: Vec<PathBuf> = (!roots.only_additional)
+        .then_some(&roots.cwd)
+        .into_iter()
         .chain(roots.writable.iter().filter(|p| p.starts_with(root)))
         .cloned()
         .collect();
@@ -330,6 +334,37 @@ mod tests {
         assert!(!readable(&plan, &state.join("settings.json")));
         assert!(!readable(&plan, &state.join("settings.local.json")));
         assert!(!readable(&plan, &state.join("scenes/code/settings.json")));
+    }
+
+    /// A command that writes only its named roots — the engine's own git,
+    /// a filter driver it runs — is no reason to bind the state root's
+    /// credentials shut one by one, where a key file rename-written later
+    /// slips out from under its bind: the root is masked, the named roots
+    /// in it bound back. One its read scope leaves out is not in the sandbox
+    /// at all.
+    #[test]
+    fn a_policy_writing_only_its_named_roots_masks_the_state_root_around_them() {
+        use base::interface::exec::SandboxPolicy;
+        let (_dir, state) = state();
+        write(&state.join("settings.local.json"));
+        let tmp = state.join("tmp/session");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            only_additional_writable: true,
+            ..Default::default()
+        };
+        let roots =
+            super::super::Roots::resolve(project.path(), std::slice::from_ref(&tmp), &policy);
+        let locs = roots.paths.credential_locations(&[]);
+
+        let (root, holes) = holes_in_state_root(&roots, &locs, |_| true).expect("masked");
+        assert_eq!(
+            (root, holes.as_slice()),
+            (state.as_path(), [tmp].as_slice())
+        );
+        assert!(holes_in_state_root(&roots, &locs, |_| false).is_none());
     }
 
     #[test]

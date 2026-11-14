@@ -1055,7 +1055,7 @@ fn expose_state_root(
 ) {
     match (
         roots.fenced_state_root(),
-        mask::holes_in_state_root(roots, secrets),
+        mask::holes_in_state_root(roots, secrets, |root| read.shows(root)),
     ) {
         (Some(root), _) if root.is_dir() => {
             expose_state_root_masked(args, root, secrets, &[]);
@@ -1066,15 +1066,16 @@ fn expose_state_root(
                 bind(args, "--bind-try", dir);
             }
         }
-        // The project lives in the state root: the root is masked as above,
-        // the project and the writable roots inside it bound back over it.
+        // The project lives in the state root, or nothing but the named
+        // roots is writable: the root is masked as above, the project and
+        // the writable roots inside it bound back over it.
         (_, Some((root, holes))) => {
             expose_state_root_masked(args, root, secrets, &holes);
         }
         // The project is the state root itself, or sits where a credential
-        // lies below it, or nothing but the named roots is writable: a tmpfs
-        // there would mask what has to stay writable, so the credentials are
-        // bound shut one by one. A key file the engine rewrites through a
+        // lies below it, or the read scope leaves the root out: a tmpfs
+        // there would mask what has to stay writable or put the root in the
+        // sandbox, so the credentials are bound shut one by one. A key file the engine rewrites through a
         // rename can slip back out from under its bind; that residual is
         // left to these rare cases.
         _ => {
