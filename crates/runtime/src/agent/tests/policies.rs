@@ -302,12 +302,9 @@ async fn a_result_transformer_is_the_last_thing_to_touch_a_tool_result() {
             _ctx: base::tool::ToolContext,
             _progress: base::tool::ProgressSender,
         ) -> Result<base::tool::ToolResult, base::error::ToolError> {
-            Ok(base::tool::ToolResult {
-                content: base::tool::ToolResultContent::Text(
-                    "ANTHROPIC_API_KEY=sk-live-abc123".into(),
-                ),
-                ..Default::default()
-            })
+            Ok(base::tool::ToolResult::text(
+                "ANTHROPIC_API_KEY=sk-live-abc123",
+            ))
         }
     }
 

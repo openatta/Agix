@@ -4,50 +4,19 @@ use base::interface::model::ModelMessage;
 use base::settings::ThinkingMode;
 
 pub(super) fn recall_test_settings(root: &std::path::Path) -> base::settings::LoadedSettings {
-    base::settings::LoadedSettings::new(
-        base::settings::Settings {
-            model: base::settings::ModelSettings {
-                api_type: base::provider::ApiType::Anthropic,
-                base_url: "https://api.example.com".into(),
-                auth_token: "test".into(),
-                model_name: "test-model".into(),
-                max_tokens: 4096,
-                thinking_mode: ThinkingMode::Off,
-                effort: None,
-                fallback_model: None,
-            },
-            execution: Default::default(),
-            compaction: Default::default(),
-            sandbox: Default::default(),
-            plugins: Default::default(),
-            instruction_file: None,
-            prompt_append: None,
-            prompt_override: None,
-            recorder: None,
-            telemetry_url: None,
-            memory_enabled: true,
-            disable_skill_shell_execution: false,
-            path_style: Default::default(),
-            permission_mode: base::settings::PermissionMode::Default,
-            allow_client_permission_override: false,
-            telemetry_enabled: false,
-            hooks_config: None,
-            project_trust: Default::default(),
-            mcp_servers: Default::default(),
-            providers: Default::default(),
-            default_provider: None,
-            task_models: Default::default(),
-            language: None,
-            scripts: Vec::new(),
-        },
-        base::settings::PathSettings {
-            user_data_dir: root.join("user-data"),
-            global_data_dir: root.join("global-data"),
-            workspace: base::settings::Workspace::project_of(&root.join("local-data")),
-            local_data_dir: root.join("local-data"),
-            scope: "code".into(),
-        },
-    )
+    let mut values = base::settings::Settings::defaults_for("test-model");
+    values.model.base_url = "https://api.example.com".into();
+    values.model.auth_token = "test".into();
+    values.model.max_tokens = 4096;
+    values.model.thinking_mode = ThinkingMode::Off;
+    values.model.effort = None;
+    values.telemetry_enabled = false;
+    let mut paths = base::settings::PathSettings::default();
+    paths.user_data_dir = root.join("user-data");
+    paths.global_data_dir = root.join("global-data");
+    paths.workspace = base::settings::Workspace::project_of(&root.join("local-data"));
+    paths.local_data_dir = root.join("local-data");
+    base::settings::LoadedSettings::new(values, paths)
 }
 
 /// Answers directly and reports a caller-controlled `Usage`, so budget

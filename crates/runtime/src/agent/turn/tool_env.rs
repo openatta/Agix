@@ -241,84 +241,69 @@ fn confinement_of(
 /// and for judging it as for running it.
 pub(super) fn tool_context_for(ctx: &ToolExecCtx, tool: &Arc<dyn base::tool::Tool>) -> ToolContext {
     let additional_writable_dirs = ctx.session_state.env().additional_writable_dirs.clone();
-    ToolContext {
-        cwd: ctx.cwd.clone(),
-        session_id: ctx.session_id.clone(),
-        turn_no: ctx.turn_no,
-        sandbox: sandbox_settings_from(&ctx.config),
-        cancel: ctx.cancel.clone(),
-        additional_writable_dirs,
-        snapshot_file: None,
-        effects: None,
-        running_tasks: Some(ctx.session_state.clone()),
-        max_file_read_bytes: ctx.config.file_limits.max_file_read_bytes as usize,
-        // The *live* mode, not the session's opening value — plan mode is
-        // entered and left mid-session.
-        permission_mode: ctx.session_state.permission_mode(),
-        config: ctx.config.clone(),
-        session: ctx.session_state.clone(),
-        tool_use_id: ctx.tool_use_id.clone(),
-        agent: None,
-        parent_messages: None,
-        agent_depth: ctx.agent_depth,
-        events_tx: None,
-        elicitation: Some(Arc::clone(&ctx.elicitation)),
-        exec: ctx.exec.clone(),
-        dispatch: tool.spec().needs_dispatch.then(|| {
-            Arc::new(SubCallDispatcher::new(ctx))
-                as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
-        }),
-        from_code: ctx.from_code,
-        confinement: confinement_of(
-            &ctx.session_state,
-            &ctx.config,
-            &ctx.exec,
-            &ctx.cwd,
-            &ctx.session_id,
-        ),
-        attendance: attendance_of(&ctx.session_state, ctx.from_code),
-        approval: None,
-        turn: ctx.turn.clone(),
-    }
+    let mut tool_ctx = ToolContext::new(
+        ctx.cwd.clone(),
+        ctx.cancel.clone(),
+        ctx.exec.clone(),
+        ctx.config.clone(),
+        ctx.session_state.clone(),
+    );
+    tool_ctx.session_id = ctx.session_id.clone();
+    tool_ctx.turn_no = ctx.turn_no;
+    tool_ctx.sandbox = sandbox_settings_from(&ctx.config);
+    tool_ctx.additional_writable_dirs = additional_writable_dirs;
+    tool_ctx.running_tasks = Some(ctx.session_state.clone());
+    // The *live* mode, not the session's opening value — plan mode is
+    // entered and left mid-session.
+    tool_ctx.permission_mode = ctx.session_state.permission_mode();
+    tool_ctx.tool_use_id = ctx.tool_use_id.clone();
+    tool_ctx.agent_depth = ctx.agent_depth;
+    tool_ctx.elicitation = Some(Arc::clone(&ctx.elicitation));
+    tool_ctx.dispatch = tool.spec().needs_dispatch.then(|| {
+        Arc::new(SubCallDispatcher::new(ctx))
+            as Arc<dyn base::interface::tool_dispatch::ToolDispatch>
+    });
+    tool_ctx.from_code = ctx.from_code;
+    tool_ctx.confinement = confinement_of(
+        &ctx.session_state,
+        &ctx.config,
+        &ctx.exec,
+        &ctx.cwd,
+        &ctx.session_id,
+    );
+    tool_ctx.attendance = attendance_of(&ctx.session_state, ctx.from_code);
+    tool_ctx.turn = ctx.turn.clone();
+    tool_ctx
 }
 
 impl Agent {
     /// What a skill's `` !`cmd` `` runs with when a `/name` command expands
     /// it outside any tool call: the context a `Bash` call this turn would get.
     pub(super) fn skill_invocation_context(&self, cancel: CancellationToken) -> ToolContext {
-        ToolContext {
-            cwd: self.settings.paths.working_dir().to_path_buf(),
-            session_id: self.session.session_id.clone(),
-            turn_no: self.session.turn_count,
-            sandbox: sandbox_settings_from(&self.config),
+        let mut ctx = ToolContext::new(
+            self.settings.paths.working_dir().to_path_buf(),
             cancel,
-            additional_writable_dirs: self.session_state.env().additional_writable_dirs.clone(),
-            snapshot_file: None,
-            effects: None,
-            running_tasks: Some(self.session_state.clone()),
-            max_file_read_bytes: self.config.file_limits.max_file_read_bytes as usize,
-            permission_mode: self.session_state.permission_mode(),
-            config: self.config.clone(),
-            session: self.session_state.clone(),
-            tool_use_id: String::new(),
-            agent: None,
-            parent_messages: None,
-            agent_depth: self.identity.agent_depth(),
-            events_tx: None,
-            elicitation: Some(Arc::clone(self.gate.elicitation())),
-            exec: self.exec.clone(),
-            dispatch: None,
-            from_code: false,
-            confinement: confinement_of(
-                &self.session_state,
-                &self.config,
-                &self.exec,
-                self.settings.paths.working_dir(),
-                &self.session.session_id,
-            ),
-            attendance: attendance_of(&self.session_state, false),
-            approval: None,
-            turn: self.turn.scope.clone(),
-        }
+            self.exec.clone(),
+            self.config.clone(),
+            self.session_state.clone(),
+        );
+        ctx.session_id = self.session.session_id.clone();
+        ctx.turn_no = self.session.turn_count;
+        ctx.sandbox = sandbox_settings_from(&self.config);
+        ctx.additional_writable_dirs = self.session_state.env().additional_writable_dirs.clone();
+        ctx.running_tasks = Some(self.session_state.clone());
+        ctx.permission_mode = self.session_state.permission_mode();
+        ctx.agent_depth = self.identity.agent_depth();
+        ctx.elicitation = Some(Arc::clone(self.gate.elicitation()));
+        ctx.confinement = confinement_of(
+            &self.session_state,
+            &self.config,
+            &self.exec,
+            self.settings.paths.working_dir(),
+            &self.session.session_id,
+        );
+        ctx.attendance = attendance_of(&self.session_state, false);
+        ctx.turn = self.turn.scope.clone();
+        ctx
     }
 }

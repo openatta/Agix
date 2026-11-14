@@ -361,6 +361,43 @@ impl TurnScope {
 }
 
 impl ToolContext {
+    pub fn new(
+        cwd: PathBuf,
+        cancel: CancellationToken,
+        exec: crate::interface::exec::ExecProviders,
+        config: Arc<crate::context::EngineConfig>,
+        session: Arc<crate::context::SessionState>,
+    ) -> Self {
+        Self {
+            cwd,
+            session_id: String::new(),
+            turn_no: 0,
+            sandbox: SandboxSettings::default(),
+            cancel,
+            additional_writable_dirs: vec![],
+            snapshot_file: None,
+            effects: None,
+            running_tasks: None,
+            max_file_read_bytes: config.file_limits.max_file_read_bytes as usize,
+            permission_mode: PermissionMode::default(),
+            config,
+            session,
+            tool_use_id: String::new(),
+            agent: None,
+            parent_messages: None,
+            agent_depth: 0,
+            events_tx: None,
+            elicitation: None,
+            exec,
+            dispatch: None,
+            from_code: false,
+            confinement: Default::default(),
+            attendance: crate::interface::permission::Attendance::Attended,
+            approval: None,
+            turn: Arc::default(),
+        }
+    }
+
     pub fn for_test_with(cwd: PathBuf, exec: crate::interface::exec::ExecProviders) -> Self {
         let mut config = crate::context::EngineConfig::defaults_for("test");
         config.dangerously_disable_sandbox = true;

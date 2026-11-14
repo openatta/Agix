@@ -345,16 +345,12 @@ fn settings(dir: &Path) -> LoadedSettings {
     values.model.base_url = MODEL_ENDPOINT.into();
     values.memory_enabled = false;
     values.telemetry_enabled = false;
-    LoadedSettings::new(
-        values,
-        PathSettings {
-            user_data_dir: dir.join("user"),
-            global_data_dir: dir.join("global"),
-            workspace: base::settings::Workspace::project_of(dir),
-            local_data_dir: dir.to_path_buf(),
-            scope: "code".into(),
-        },
-    )
+    let mut paths = PathSettings::default();
+    paths.user_data_dir = dir.join("user");
+    paths.global_data_dir = dir.join("global");
+    paths.workspace = base::settings::Workspace::project_of(dir);
+    paths.local_data_dir = dir.to_path_buf();
+    LoadedSettings::new(values, paths)
 }
 
 fn builder(dir: &Path, prompts: Arc<Mutex<Vec<String>>>) -> Builder {

@@ -138,14 +138,8 @@ pub(super) fn bare_scene(id: &str) -> SceneSpec {
 
 pub(super) fn narrowing_scene(modules: Option<Vec<String>>, disabled: Vec<String>) -> SceneSpec {
     let mut s = bare_scene("narrowing");
-    s.token_budget = base::interface::scene::TokenBudget {
-        compact_threshold: 0,
-        compact_keep_recent: 10,
-    };
-    s.modules = base::interface::scene::ModuleSurface {
-        allow: modules,
-        deny: disabled,
-    };
+    s.token_budget = base::interface::scene::TokenBudget::new(0, 10);
+    s.modules = base::interface::scene::ModuleSurface::new(modules, disabled);
     s
 }
 

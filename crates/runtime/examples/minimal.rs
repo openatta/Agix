@@ -27,51 +27,20 @@ fn settings(
     data_dir: std::path::PathBuf,
     project: std::path::PathBuf,
 ) -> base::settings::LoadedSettings {
-    base::settings::LoadedSettings::new(
-        Settings {
-            model: ModelSettings {
-                api_type: base::provider::ApiType::Anthropic,
-                base_url: String::new(),
-                auth_token: String::new(),
-                model_name,
-                max_tokens: 8192,
-                thinking_mode: ThinkingMode::Auto,
-                effort: None,
-                fallback_model: None,
-            },
-            execution: ExecutionSettings::default(),
-            compaction: CompactionConfig::default(),
-            sandbox: SandboxConfig::default(),
-            plugins: Default::default(),
-            instruction_file: None,
-            prompt_append: None,
-            prompt_override: None,
-            recorder: None,
-            telemetry_url: None,
-            memory_enabled: false,
-            disable_skill_shell_execution: true,
-            path_style: Default::default(),
-            permission_mode: PermissionMode::default(),
-            allow_client_permission_override: false,
-            telemetry_enabled: false,
-            hooks_config: None,
-            project_trust: Default::default(),
-            mcp_servers: Default::default(),
-            providers: Default::default(),
-            default_provider: None,
-            task_models: Default::default(),
-            language: None,
-            scripts: Vec::new(),
-        },
-        PathSettings {
-            user_data_dir: data_dir.clone(),
-            global_data_dir: data_dir,
-            // The project is the directory this lives in.
-            workspace: base::settings::Workspace::project_of(&project.join(".agix")),
-            local_data_dir: project.join(".agix"),
-            scope: "code".into(),
-        },
-    )
+    let mut values = Settings::defaults_for(&model_name);
+    values.model.max_tokens = 8192;
+    values.model.thinking_mode = ThinkingMode::Auto;
+    values.model.effort = None;
+    values.memory_enabled = false;
+    values.disable_skill_shell_execution = true;
+    values.telemetry_enabled = false;
+    let mut paths = PathSettings::default();
+    paths.user_data_dir = data_dir.clone();
+    paths.global_data_dir = data_dir;
+    // The project is the directory this lives in.
+    paths.workspace = base::settings::Workspace::project_of(&project.join(".agix"));
+    paths.local_data_dir = project.join(".agix");
+    base::settings::LoadedSettings::new(values, paths)
 }
 
 #[tokio::main]

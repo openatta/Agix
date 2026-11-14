@@ -114,9 +114,7 @@ fn scene_with(allowed: Vec<String>, max_api_calls: u32) -> SceneSpec {
         Arc::new(FixedPrompt(vec![PromptBlock::system("skeleton")])),
     );
     s.tools = ToolSurface::allowing(&allowed);
-    s.execution = ExecutionParams {
-        max_api_calls_per_turn: max_api_calls,
-    };
+    s.execution = ExecutionParams::new(max_api_calls);
     s
 }
 
@@ -126,50 +124,18 @@ fn test_scene(allowed: Vec<String>) -> Arc<SceneSpec> {
 
 fn test_settings(root: &std::path::Path) -> base::settings::LoadedSettings {
     use base::settings::*;
-    base::settings::LoadedSettings::new(
-        Settings {
-            model: ModelSettings {
-                api_type: base::provider::ApiType::Anthropic,
-                base_url: String::new(),
-                auth_token: String::new(),
-                model_name: "test".into(),
-                max_tokens: 2000,
-                thinking_mode: ThinkingMode::Auto,
-                effort: None,
-                fallback_model: None,
-            },
-            execution: ExecutionSettings::default(),
-            compaction: CompactionConfig::default(),
-            sandbox: SandboxConfig::default(),
-            plugins: Default::default(),
-            instruction_file: None,
-            prompt_append: None,
-            prompt_override: None,
-            recorder: None,
-            telemetry_url: None,
-            memory_enabled: false,
-            disable_skill_shell_execution: false,
-            path_style: Default::default(),
-            permission_mode: PermissionMode::default(),
-            allow_client_permission_override: false,
-            telemetry_enabled: false,
-            hooks_config: None,
-            project_trust: Default::default(),
-            mcp_servers: Default::default(),
-            providers: Default::default(),
-            default_provider: None,
-            task_models: Default::default(),
-            language: None,
-            scripts: Vec::new(),
-        },
-        PathSettings {
-            user_data_dir: root.to_path_buf(),
-            global_data_dir: root.to_path_buf(),
-            workspace: base::settings::Workspace::project_of(root),
-            local_data_dir: root.to_path_buf(),
-            scope: "code".into(),
-        },
-    )
+    let mut values = Settings::defaults_for("test");
+    values.model.max_tokens = 2000;
+    values.model.thinking_mode = ThinkingMode::Auto;
+    values.model.effort = None;
+    values.memory_enabled = false;
+    values.telemetry_enabled = false;
+    let mut paths = PathSettings::default();
+    paths.user_data_dir = root.to_path_buf();
+    paths.global_data_dir = root.to_path_buf();
+    paths.workspace = base::settings::Workspace::project_of(root);
+    paths.local_data_dir = root.to_path_buf();
+    base::settings::LoadedSettings::new(values, paths)
 }
 
 /// An `Agent` wired with `GuidedTool`, `PlainTool` and the real

@@ -13,50 +13,19 @@ use std::sync::Arc;
 
 #[test]
 fn prompt_context_includes_os() {
-    let settings = base::settings::LoadedSettings::new(
-        base::settings::Settings {
-            model: base::settings::ModelSettings {
-                api_type: base::provider::ApiType::Anthropic,
-                base_url: "https://api.example.com".into(),
-                auth_token: "test".into(),
-                model_name: "test-model".into(),
-                max_tokens: 4096,
-                thinking_mode: ThinkingMode::Auto,
-                effort: None,
-                fallback_model: None,
-            },
-            execution: Default::default(),
-            compaction: Default::default(),
-            sandbox: Default::default(),
-            plugins: Default::default(),
-            instruction_file: None,
-            prompt_append: None,
-            prompt_override: None,
-            recorder: None,
-            telemetry_url: None,
-            memory_enabled: true,
-            disable_skill_shell_execution: false,
-            path_style: Default::default(),
-            permission_mode: base::settings::PermissionMode::Default,
-            allow_client_permission_override: false,
-            telemetry_enabled: false,
-            hooks_config: None,
-            project_trust: Default::default(),
-            mcp_servers: Default::default(),
-            providers: Default::default(),
-            default_provider: None,
-            task_models: Default::default(),
-            language: None,
-            scripts: Vec::new(),
-        },
-        base::settings::PathSettings {
-            user_data_dir: "/tmp/user".into(),
-            global_data_dir: "/tmp/global".into(),
-            workspace: base::settings::Workspace::project_of(std::path::Path::new("/tmp/local")),
-            local_data_dir: "/tmp/local".into(),
-            scope: "code".into(),
-        },
-    );
+    let mut values = base::settings::Settings::defaults_for("test-model");
+    values.model.base_url = "https://api.example.com".into();
+    values.model.auth_token = "test".into();
+    values.model.max_tokens = 4096;
+    values.model.thinking_mode = ThinkingMode::Auto;
+    values.model.effort = None;
+    values.telemetry_enabled = false;
+    let mut paths = base::settings::PathSettings::default();
+    paths.user_data_dir = "/tmp/user".into();
+    paths.global_data_dir = "/tmp/global".into();
+    paths.workspace = base::settings::Workspace::project_of(std::path::Path::new("/tmp/local"));
+    paths.local_data_dir = "/tmp/local".into();
+    let settings = base::settings::LoadedSettings::new(values, paths);
     let ctx = build_prompt_context(
         &settings,
         None,
@@ -224,10 +193,7 @@ async fn max_budget_tokens_stops_the_turn_on_reported_usage() {
         Arc::new(scene::code::spec(scene::code::Interaction::Interactive));
 
     let mut settings = recall_test_settings(tmp.path());
-    settings.values.execution = base::settings::ExecutionSettings {
-        max_budget_tokens: Some(1000),
-        ..Default::default()
-    };
+    settings.values.execution.max_budget_tokens = Some(1000);
 
     let (telemetry_tx, mut telemetry_rx) = tokio::sync::mpsc::channel(16);
     let (mut agent, _event_rx, _input_tx) = crate::agent::Builder::new()

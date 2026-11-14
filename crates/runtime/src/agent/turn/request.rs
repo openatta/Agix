@@ -260,15 +260,12 @@ impl Agent {
         // it — `ToolSearch` can be filtered out by a scene whitelist, and a
         // pointer to a tool that isn't there is worse than no pointer.
         let can_fetch_guides = selected.iter().any(|t| t.name() == TOOL_SEARCH_NAME);
-        let prompt_ctx = base::tool::PromptContext {
-            cwd: self.settings.paths.working_dir().to_path_buf(),
-            model: self.settings.values.model.model_name.clone(),
-            session_id: self.session.session_id.clone(),
-            is_interactive: false,
-            all_tool_names: selected.iter().map(|t| t.name().to_string()).collect(),
-            allowed_agent_types: vec![],
-            path_style: self.config.path_style,
-        };
+        let mut prompt_ctx = base::tool::PromptContext::default();
+        prompt_ctx.cwd = self.settings.paths.working_dir().to_path_buf();
+        prompt_ctx.model = self.settings.values.model.model_name.clone();
+        prompt_ctx.session_id = self.session.session_id.clone();
+        prompt_ctx.all_tool_names = selected.iter().map(|t| t.name().to_string()).collect();
+        prompt_ctx.path_style = self.config.path_style;
 
         let mut defs = Vec::with_capacity(selected.len());
         for t in selected {
@@ -292,12 +289,10 @@ impl Agent {
             } else {
                 base::tool::compact_schema(t.input_schema(self.config.path_style))
             };
-            defs.push(base::interface::model::ToolDef {
-                name: t.name().to_string(),
-                description,
-                input_schema,
-                source: Some(t.spec().origin.wire()),
-            });
+            defs.push(
+                base::interface::model::ToolDef::new(t.name(), description, input_schema)
+                    .with_source(t.spec().origin.wire()),
+            );
         }
         defs
     }

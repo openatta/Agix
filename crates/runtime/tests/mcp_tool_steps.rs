@@ -13,7 +13,7 @@ use base::interface::model::{
     Model, ModelError, ModelEvent, ModelMessage, ModelStream, StreamParams, ToolDef,
 };
 use base::prompt::PromptBlock;
-use base::settings::{PathSettings, Settings};
+use base::settings::Settings;
 use base::tool::{InMemoryToolRegistry, Tool};
 use runtime::agent::Builder;
 use runtime::module::{Module, ModuleError, SessionContext};
@@ -125,13 +125,10 @@ async fn a_tool_step_does_not_relist_tools_without_an_announcement() {
         Settings::defaults_for("test-model"),
         base::settings::PathSettings::default(),
     );
-    settings.paths = PathSettings {
-        user_data_dir: dir.path().to_path_buf(),
-        global_data_dir: dir.path().to_path_buf(),
-        workspace: base::settings::Workspace::project_of(dir.path()),
-        local_data_dir: dir.path().to_path_buf(),
-        scope: "code".into(),
-    };
+    settings.paths.user_data_dir = dir.path().to_path_buf();
+    settings.paths.global_data_dir = dir.path().to_path_buf();
+    settings.paths.workspace = base::settings::Workspace::project_of(dir.path());
+    settings.paths.local_data_dir = dir.path().to_path_buf();
     settings.values.memory_enabled = false;
     settings.values.telemetry_enabled = false;
 

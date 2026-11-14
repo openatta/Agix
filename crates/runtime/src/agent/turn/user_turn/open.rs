@@ -221,21 +221,19 @@ impl Agent {
         // turn, and the git slice it reads was refreshed just above, so the
         // status shown is this turn's, not the session's opening snapshot.
         if let Some(frozen) = self.prompt.frozen() {
-            let ctx = base::interface::scene::ReminderContext {
-                cwd: std::borrow::Cow::Owned(
-                    self.settings
-                        .paths
-                        .working_dir()
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                git_status: frozen.git_status.as_deref().map(std::borrow::Cow::Borrowed),
-                memory_summary: frozen
-                    .memory_index
-                    .as_deref()
-                    .filter(|m| self.settings.values.memory_enabled && !m.is_empty())
-                    .map(std::borrow::Cow::Borrowed),
-            };
+            let mut ctx = base::interface::scene::ReminderContext::new(
+                self.settings
+                    .paths
+                    .working_dir()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+            ctx.git_status = frozen.git_status.as_deref().map(std::borrow::Cow::Borrowed);
+            ctx.memory_summary = frozen
+                .memory_index
+                .as_deref()
+                .filter(|m| self.settings.values.memory_enabled && !m.is_empty())
+                .map(std::borrow::Cow::Borrowed);
             let reminder = self.scene.reminder(&ctx);
             if !reminder.is_empty() {
                 self.session.push_message(ModelMessage {

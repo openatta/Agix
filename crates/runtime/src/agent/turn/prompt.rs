@@ -222,42 +222,41 @@ pub(super) fn build_prompt_context<'a>(
         } else {
             (false, None, false, None, None, None, None, None)
         };
-    ScenePromptContext {
-        cwd: Cow::Owned(settings.paths.working_dir().display().to_string()),
-        os: Cow::Borrowed(std::env::consts::OS),
-        // `FrozenContext::collect` always sets `shell` (falls back to
-        // `/bin/bash` itself when `$SHELL` is unset), so this fallback only
-        // matters before the first turn's collection has happened.
-        shell: Cow::Owned(shell.unwrap_or_else(|| "/bin/bash".to_string())),
-        // From the environment snapshot, same as `shell` — a fact about the
-        // machine, collected once where a test can replace it.
-        home_dir: Cow::Owned(home_dir.unwrap_or_else(|| "/home/user".to_string())),
-        date: Cow::Owned(chrono_now(env)),
-        // The model actually being called this turn, not the configured
-        // default — after an overloaded-fallback switch these diverge, and
-        // the prompt should describe reality (knowledge cutoff, model
-        // recommendations, etc. downstream all key off this).
-        model_name: Cow::Owned(effective_model.to_string()),
-        skills_text: skills_text.map(|s| Cow::Owned(s.to_string())),
-        mcp_instructions: mcp_instructions.map(|s| Cow::Owned(s.to_string())),
-        session_memory: memory_index.map(Cow::Owned),
-        is_git,
-        git_branch: git_branch.map(Cow::Owned),
-        git_status: git_status.map(Cow::Owned),
-        is_worktree,
-        language: settings.values.language.clone().map(Cow::Owned),
-        // `local_data_dir` is already the `.agix/` dir (flat, no scope
-        // segment) — no need to prepend another `.agix/`.
-        scratchpad_dir: settings
-            .paths
-            .local_data_dir
-            .join("scratchpad")
-            .to_str()
-            .map(|s| Cow::Owned(s.to_string())),
-        output_style_content: output_style.map(Cow::Owned),
-        available_tools: None, // populated by caller if needed
-        tool_results_ever_cleared,
-    }
+    let mut ctx = ScenePromptContext::default();
+    ctx.cwd = Cow::Owned(settings.paths.working_dir().display().to_string());
+    ctx.os = Cow::Borrowed(std::env::consts::OS);
+    // `FrozenContext::collect` always sets `shell` (falls back to
+    // `/bin/bash` itself when `$SHELL` is unset), so this fallback only
+    // matters before the first turn's collection has happened.
+    ctx.shell = Cow::Owned(shell.unwrap_or_else(|| "/bin/bash".to_string()));
+    // From the environment snapshot, same as `shell` — a fact about the
+    // machine, collected once where a test can replace it.
+    ctx.home_dir = Cow::Owned(home_dir.unwrap_or_else(|| "/home/user".to_string()));
+    ctx.date = Cow::Owned(chrono_now(env));
+    // The model actually being called this turn, not the configured
+    // default — after an overloaded-fallback switch these diverge, and
+    // the prompt should describe reality (knowledge cutoff, model
+    // recommendations, etc. downstream all key off this).
+    ctx.model_name = Cow::Owned(effective_model.to_string());
+    ctx.skills_text = skills_text.map(|s| Cow::Owned(s.to_string()));
+    ctx.mcp_instructions = mcp_instructions.map(|s| Cow::Owned(s.to_string()));
+    ctx.session_memory = memory_index.map(Cow::Owned);
+    ctx.is_git = is_git;
+    ctx.git_branch = git_branch.map(Cow::Owned);
+    ctx.git_status = git_status.map(Cow::Owned);
+    ctx.is_worktree = is_worktree;
+    ctx.language = settings.values.language.clone().map(Cow::Owned);
+    // `local_data_dir` is already the `.agix/` dir (flat, no scope
+    // segment) — no need to prepend another `.agix/`.
+    ctx.scratchpad_dir = settings
+        .paths
+        .local_data_dir
+        .join("scratchpad")
+        .to_str()
+        .map(|s| Cow::Owned(s.to_string()));
+    ctx.output_style_content = output_style.map(Cow::Owned);
+    ctx.tool_results_ever_cleared = tool_results_ever_cleared;
+    ctx
 }
 
 pub(super) fn chrono_now(env: &dyn base::interface::environment::Environment) -> String {
