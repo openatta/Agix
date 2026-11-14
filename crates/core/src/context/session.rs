@@ -1,4 +1,4 @@
-//! 会话可变状态 + 副作用注入接口。
+//! 会话可变状态。
 
 use crate::permission::PermissionMode;
 use std::collections::{HashMap, HashSet};
@@ -7,7 +7,6 @@ use std::time::SystemTime;
 
 use super::goal::{GoalError, GoalView};
 use super::ledger::SessionLedger;
-use super::prompt::SystemMessage;
 use super::task::{
     RunningStatus, RunningTask, TaskEvent, TaskInfo, TaskType, TodoItem, TodoStatus,
 };
@@ -980,20 +979,6 @@ impl SessionState {
         }
     }
 }
-
-/// 副作用注入：工具想发 OS 通知、想往 transcript 加 system message 时走这里。
-pub trait ToolEffects: Send + Sync {
-    /// OS 级通知（iTerm2 / Kitty / Ghostty / 终端 bell）；headless 阶段无操作。
-    fn os_notify(&self, _message: &str, _kind: &str) {}
-
-    /// 往 transcript 追加一条 UI-only 的 system message（不进 API）。
-    fn append_system_message(&self, _msg: SystemMessage) {}
-}
-
-/// 啥都不干的 ToolEffects：测试 / 一次性 print 模式 / 启动时占位。
-pub struct NoopEffects;
-
-impl ToolEffects for NoopEffects {}
 
 impl crate::interface::tool::RunningTasksCallback for SessionState {
     fn find(&self, tid: &str) -> Option<(String, Vec<String>, RunningStatus)> {

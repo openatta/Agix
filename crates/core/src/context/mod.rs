@@ -1,22 +1,15 @@
-//! 工具调用时透传的上下文：`ToolCtx` + `EngineConfig` + `SessionState` +
-//! `ToolEffects`（注入回调）。
-//!
-//! 按读写性质拆开，而不是一个什么都装的上下文对象：
+//! 会话的配置与状态，按读写性质拆开，而不是一个什么都装的上下文对象：
 //! - **只读配置** → `Arc<EngineConfig>`
 //! - **可变运行期** → `Arc<SessionState>`（内部按需 split lock）
-//! - **副作用注入** → `Arc<dyn ToolEffects>`
-//! - **取消** → `CancellationToken`
 
 pub mod config;
 pub mod goal;
 pub mod ledger;
-pub mod prompt;
 pub mod session;
 pub mod task;
 
 pub use self::config::*;
 pub use self::ledger::*;
-pub use self::prompt::*;
 pub use self::session::*;
 pub use self::task::*;
 
@@ -26,7 +19,6 @@ mod wire_golden;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Message, SystemKind};
     use std::path::PathBuf;
 
     #[test]
@@ -46,37 +38,6 @@ mod tests {
         let blocking = default_blocking_limit("deepseek-v4-flash", 65535);
         assert!(blocking > auto);
         assert!(auto > 900_000);
-    }
-
-    #[test]
-    fn tool_ctx_for_test_constructs() {
-        let ctx = ToolCtx::for_test(PathBuf::from("/tmp"));
-        assert_eq!(ctx.session.env().cwd, PathBuf::from("/tmp"));
-        assert_eq!(ctx.config.model, "claude-sonnet-4-6");
-    }
-
-    #[test]
-    fn cancel_token_propagates() {
-        let ctx = ToolCtx::for_test(PathBuf::from("/tmp"));
-        assert!(!ctx.cancel.is_cancelled());
-        ctx.cancel.cancel();
-        assert!(ctx.cancel.is_cancelled());
-    }
-
-    #[test]
-    fn system_message_into_message() {
-        let m = SystemMessage {
-            kind: SystemKind::Notice,
-            content: "compacted".into(),
-        };
-        let msg: Message = m.into();
-        match msg {
-            Message::System { kind, content } => {
-                assert_eq!(kind, SystemKind::Notice);
-                assert_eq!(content, "compacted");
-            }
-            _ => panic!(),
-        }
     }
 
     fn task_events(rx: &mut tokio::sync::broadcast::Receiver<TaskEvent>) -> Vec<serde_json::Value> {

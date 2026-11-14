@@ -34,7 +34,7 @@ impl fmt::Display for SessionId {
     }
 }
 
-/// 子 agent 上下文。主线程 ToolCtx 的 `agent` 字段在主 agent 时是 None。
+/// 子 agent 上下文。主线程 ToolContext 的 `agent` 字段在主 agent 时是 None。
 #[derive(Debug, Clone)]
 pub struct AgentContext {
     pub agent_id: Id,
