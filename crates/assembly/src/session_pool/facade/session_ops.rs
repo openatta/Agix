@@ -238,18 +238,7 @@ impl SessionPool {
                 let switching_provider =
                     provider.is_some_and(|p| current_provider.as_deref() != Some(p));
                 let change = |spec: &mut SessionSpec| {
-                    if let Some(p) = provider {
-                        spec.provider = Some(p.to_string());
-                        // A model chosen for the old provider means nothing to
-                        // the new one; without a new choice the new provider's
-                        // default applies.
-                        if switching_provider {
-                            spec.model = None;
-                        }
-                    }
-                    if let Some(m) = model {
-                        spec.model = Some(m.to_string());
-                    }
+                    choose_model(spec, model, provider, switching_provider)
                 };
 
                 // A provider is a different client, which an engine is built
@@ -358,5 +347,24 @@ impl SessionPool {
             override_text: prompt.override_text,
             applies: api::Applies::NextTurn,
         })
+    }
+}
+
+fn choose_model(
+    spec: &mut SessionSpec,
+    model: Option<&str>,
+    provider: Option<&str>,
+    switching_provider: bool,
+) {
+    if let Some(p) = provider {
+        spec.provider = Some(p.to_string());
+        // A model chosen for the old provider means nothing to the new one;
+        // without a new choice the new provider's default applies.
+        if switching_provider {
+            spec.model = None;
+        }
+    }
+    if let Some(m) = model {
+        spec.model = Some(m.to_string());
     }
 }

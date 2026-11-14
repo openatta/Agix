@@ -48,7 +48,7 @@ fn    crates/core/src/prompt.rs                                   assemble_promp
 fn    crates/core/src/provider.rs                                 resolve_task_models                    85
 fn    crates/core/src/settings/loaded.rs                          LoadedSettings::load_from              98
 fn    crates/history/src/transcript.rs                            apply_entry_to_messages                84
-fn    crates/hooks/src/catalog.rs                                 HookEvent::spec                        183
+fn    crates/hooks/src/catalog.rs                                 HookEvent::spec                        187
 fn    crates/hooks/src/runner/executor.rs                         HookRunner::exec_command               93
 fn    crates/hooks/src/runner/executor.rs                         project_supplied                       90
 fn    crates/hooks/src/runner/rewake.rs                           HookRunner::check_rewakes              81
