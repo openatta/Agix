@@ -73,30 +73,25 @@ impl Agent {
         // Same turn_no every `turn_complete` emitted below this point uses
         // (`self.session.turn_count` isn't incremented until the very end of
         // this function, see `increment_turn()`).
-        let _ = self
-            .telemetry
-            .telemetry_handle
-            .record(telemetry::TelemetryEvent::turn_start(
+        self.telemetry.record(telemetry::TelemetryEvent::turn_start(
+            &self.session.session_id,
+            self.session.turn_count,
+            Some(self.current_turn_id.clone()),
+            telemetry::TurnStartPayload {
+                resumed: false,
+                is_retry: false,
+            },
+        ));
+        self.telemetry
+            .record(telemetry::TelemetryEvent::user_prompt_submit(
                 &self.session.session_id,
                 self.session.turn_count,
                 Some(self.current_turn_id.clone()),
-                telemetry::TurnStartPayload {
-                    resumed: false,
-                    is_retry: false,
+                telemetry::UserPromptSubmitPayload {
+                    char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
+                    attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
                 },
             ));
-        let _ =
-            self.telemetry
-                .telemetry_handle
-                .record(telemetry::TelemetryEvent::user_prompt_submit(
-                    &self.session.session_id,
-                    self.session.turn_count,
-                    Some(self.current_turn_id.clone()),
-                    telemetry::UserPromptSubmitPayload {
-                        char_count: u32::try_from(content.chars().count()).unwrap_or(u32::MAX),
-                        attachment_count: u32::try_from(attachments.len()).unwrap_or(u32::MAX),
-                    },
-                ));
 
         // A skill's `allowed_tools` (see `SkillTool::call`) pre-approves
         // tools only for the rest of the turn it was invoked in — clear
@@ -185,7 +180,7 @@ impl Agent {
                 // earlier is now wrong — but a host cannot read the
                 // conversation, and its slash-command view resolves through
                 // the catalog that just changed underneath it.
-                let _ = self.channels.event_tx.send(AgentEvent::SkillsChanged {
+                self.emit(AgentEvent::SkillsChanged {
                     added: added.iter().map(|n| (*n).clone()).collect(),
                     removed: removed.iter().map(|n| (*n).clone()).collect(),
                     turn_id: self.current_turn_id.clone(),

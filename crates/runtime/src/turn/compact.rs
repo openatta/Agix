@@ -438,8 +438,8 @@ impl Agent {
             Err(e) => {
                 tracing::warn!(error = %e, "failed to compact messages, continuing with full context");
                 let tokens = self.context_tokens() as u64;
-                let _ = self.telemetry.telemetry_handle.record(
-                    telemetry::TelemetryEvent::compact_action(
+                self.telemetry
+                    .record(telemetry::TelemetryEvent::compact_action(
                         &self.session.session_id,
                         self.session.turn_count,
                         Some(self.current_turn_id.clone()),
@@ -452,8 +452,7 @@ impl Agent {
                             success: false,
                             latency_ms: compact_start.elapsed().as_millis() as u64,
                         },
-                    ),
-                );
+                    ));
                 Err(NotCompacted::Failed(e.to_string()))
             }
         }
@@ -666,7 +665,7 @@ impl Agent {
         projection: Option<&compaction::compact::SnipProjection>,
         started: std::time::Instant,
     ) {
-        let _ = self.channels.event_tx.send(AgentEvent::CompactAction {
+        self.emit(AgentEvent::CompactAction {
             strategy: summary.strategy.clone(),
             messages_before: summary.messages_before,
             messages_after: summary.messages_after,
@@ -677,9 +676,7 @@ impl Agent {
             tokens_before: summary.tokens_before,
             tokens_after: summary.tokens_after,
         });
-        let _ = self
-            .telemetry
-            .telemetry_handle
+        self.telemetry
             .record(telemetry::TelemetryEvent::compact_action(
                 &self.session.session_id,
                 self.session.turn_count,

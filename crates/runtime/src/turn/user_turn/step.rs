@@ -136,7 +136,7 @@ impl Agent {
         // 2. Assemble the request
         let step = state.api_calls;
         state.api_calls += 1;
-        let _ = self.channels.event_tx.send(AgentEvent::StepStart {
+        self.emit(AgentEvent::StepStart {
             step,
             turn_id: self.current_turn_id.clone(),
         });
@@ -215,7 +215,7 @@ impl Agent {
                     )
                 }
             };
-            let _ = self.channels.event_tx.send(AgentEvent::StepStart {
+            self.emit(AgentEvent::StepStart {
                 step,
                 turn_id: self.current_turn_id.clone(),
             });
@@ -287,7 +287,7 @@ impl Agent {
             session_id: self.session.session_id.clone(),
             turn_no: self.session.turn_count,
             agent_depth: self.identity.agent_depth,
-            telemetry_handle: self.telemetry.telemetry_handle.clone(),
+            telemetry_handle: self.telemetry.handle().clone(),
             turn_id: self.current_turn_id.clone(),
             cancel: cancel.clone(),
             hooks: Arc::clone(&self.gate.hooks),
@@ -328,7 +328,7 @@ impl Agent {
         if let Err(e) = self.session.persist().await {
             tracing::warn!(error = %e, "failed to persist session");
         }
-        let _ = self.channels.event_tx.send(AgentEvent::StepEnd {
+        self.emit(AgentEvent::StepEnd {
             step: call.step,
             stop_reason: stop_reason.clone(),
             usage,
@@ -341,9 +341,7 @@ impl Agent {
         // per turn, and a turn is several calls — so this is the event a
         // cost can be computed from, and the only one that says which model
         // the spending went to when a turn switched models partway.
-        let _ = self
-            .telemetry
-            .telemetry_handle
+        self.telemetry
             .record(telemetry::TelemetryEvent::api_request(
                 &self.session.session_id,
                 self.session.turn_count,
@@ -431,8 +429,8 @@ impl Agent {
                     budget = limit,
                     "approaching token budget limit; injecting continue reminder"
                 );
-                let _ = self.telemetry.telemetry_handle.record(
-                    telemetry::TelemetryEvent::budget_enforced(
+                self.telemetry
+                    .record(telemetry::TelemetryEvent::budget_enforced(
                         &self.session.session_id,
                         self.session.turn_count,
                         Some(self.current_turn_id.clone()),
@@ -441,8 +439,7 @@ impl Agent {
                             total_tokens_used,
                             budget: limit,
                         },
-                    ),
-                );
+                    ));
                 self.session.push_message(ModelMessage {
                     role: MessageRole::User,
                     content: vec![ModelContentBlock::Text { text: reminder }],
@@ -450,8 +447,8 @@ impl Agent {
             }
             base::interface::budget_policy::Spending::Exhausted { limit } => {
                 tracing::warn!(total_tokens_used, budget = limit, "token budget exceeded");
-                let _ = self.telemetry.telemetry_handle.record(
-                    telemetry::TelemetryEvent::budget_enforced(
+                self.telemetry
+                    .record(telemetry::TelemetryEvent::budget_enforced(
                         &self.session.session_id,
                         self.session.turn_count,
                         Some(self.current_turn_id.clone()),
@@ -460,8 +457,7 @@ impl Agent {
                             total_tokens_used,
                             budget: limit,
                         },
-                    ),
-                );
+                    ));
                 return ControlFlow::Break(());
             }
         }

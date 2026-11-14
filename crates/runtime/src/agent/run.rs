@@ -192,7 +192,7 @@ impl Agent {
                 description: t.description().to_string(),
             })
             .collect();
-        let _ = self.channels.event_tx.send(AgentEvent::SystemInit {
+        self.emit(AgentEvent::SystemInit {
             scene: self.scene.id.clone(),
             tools,
             mcp_servers: vec![],
@@ -364,7 +364,7 @@ impl Agent {
                                 // ended, with what its log took.
                                 Err(_) if user_turn.is_some() => {}
                                 Err(e) => {
-                                    let _ = self.channels.event_tx.send(AgentEvent::Error {
+                                    self.emit(AgentEvent::Error {
                                         failure: e.failure(),
                                         turn_id: self.current_turn_id.clone(),
                                         persisted: true,
@@ -401,9 +401,7 @@ impl Agent {
 
         let duration_ms = run_started.elapsed().as_millis() as i64;
         let spent = self.session_state.ledger().spent;
-        let _ = self
-            .telemetry
-            .telemetry_handle
+        self.telemetry
             .record(telemetry::TelemetryEvent::session_end(
                 &self.session.session_id,
                 0,
@@ -561,7 +559,7 @@ impl Agent {
 
     /// Access the performance collector.
     pub fn perf(&self) -> &PerfCollector {
-        &self.telemetry.perf
+        self.telemetry.perf()
     }
 
     /// Access the tool registry (read-only).
@@ -586,7 +584,7 @@ impl Agent {
 
     /// Access telemetry recorder for external event recording.
     pub fn telemetry(&self) -> &dyn TelemetryRecorder {
-        &self.telemetry.telemetry_handle
+        self.telemetry.handle()
     }
 
     /// Recorder status — None when no recording is configured.

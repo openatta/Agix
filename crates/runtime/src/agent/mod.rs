@@ -22,9 +22,11 @@ use tracing;
 
 mod builder;
 mod commands;
+mod instruments;
 mod messages;
 mod run;
 pub use builder::{default_run_slots, Builder, HostContracts, HostLayers};
+use instruments::Telemetry;
 pub use messages::*;
 
 /// The `task_models` key that routes `WebSearch` to a provider of its own.
@@ -206,12 +208,6 @@ pub(crate) struct Compaction {
     pub(crate) auto_backoff: crate::turn::AutoCompactBackoff,
 }
 
-/// Where this session's telemetry goes and how long its parts took.
-pub(crate) struct Telemetry {
-    pub(crate) telemetry_handle: TelemetryHandle,
-    pub(crate) perf: Arc<PerfCollector>,
-}
-
 /// How input reaches this session and events leave it.
 pub(crate) struct Channels {
     pub(crate) input_rx: InputReceiver,
@@ -263,6 +259,12 @@ impl TurnCancel {
         if self.turn_id == turn_id {
             self.ended = true;
         }
+    }
+}
+
+impl Agent {
+    pub(crate) fn emit(&self, event: AgentEvent) {
+        let _ = self.channels.event_tx.send(event);
     }
 }
 

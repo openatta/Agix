@@ -326,7 +326,7 @@ impl Agent {
     ) -> Arc<dyn base::interface::model::Model> {
         Arc::new(telemetry::model::TelemetryModel::new(
             model,
-            self.telemetry.telemetry_handle.clone(),
+            self.telemetry.handle().clone(),
             self.settings.values.model.model_name.clone(),
         ))
     }
@@ -554,16 +554,13 @@ impl Agent {
                     error = %failure.error,
                     "sending the same request again"
                 );
-                let _ = self
-                    .channels
-                    .event_tx
-                    .send(base::event::AgentEvent::ModelRetry {
-                        step,
-                        attempt: call.so_far.same_retries,
-                        delay_ms: after.as_millis() as u64,
-                        reason: failure.error.to_string(),
-                        turn_id: self.current_turn_id.clone(),
-                    });
+                self.emit(base::event::AgentEvent::ModelRetry {
+                    step,
+                    attempt: call.so_far.same_retries,
+                    delay_ms: after.as_millis() as u64,
+                    reason: failure.error.to_string(),
+                    turn_id: self.current_turn_id.clone(),
+                });
                 tokio::select! {
                     _ = cancel.cancelled() => return Ok(None),
                     _ = tokio::time::sleep(after) => {}

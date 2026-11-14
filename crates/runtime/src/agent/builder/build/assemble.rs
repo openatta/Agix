@@ -76,10 +76,7 @@ impl Builder {
             last_had_tool_uses: true,
             slash_skill_grants: Vec::new(),
             repeat_guard: Default::default(),
-            telemetry: Telemetry {
-                telemetry_handle: w.resolved.telemetry_handle,
-                perf: Arc::new(PerfCollector::new()),
-            },
+            telemetry: Telemetry::new(w.resolved.telemetry_handle),
             channels: Channels {
                 input_rx: w.input_rx,
                 event_tx: w.events.tx,

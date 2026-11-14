@@ -77,7 +77,7 @@ impl Agent {
             ControlFlow::Break(blocked) => return Ok(blocked),
         };
 
-        let _timer = self.telemetry.perf.start_timer("turn", "total");
+        let _timer = self.telemetry.timer("turn", "total");
         let mut state = TurnLoopState::new(&self.settings);
 
         self.prepare_turn().await;

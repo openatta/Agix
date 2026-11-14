@@ -190,7 +190,7 @@ impl Agent {
             }
             EngineCommand::SetSessionId => {
                 self.session.set_session_id(content);
-                let _ = self.channels.event_tx.send(AgentEvent::SessionChanged {
+                self.emit(AgentEvent::SessionChanged {
                     session_id: self.session.session_id.clone(),
                 });
                 Ok(TurnOutcome::default())
@@ -224,7 +224,7 @@ impl Agent {
         self.adopt_model_choice();
         self.current_turn_id = turn_id;
         self.session.set_turn_id(Some(self.current_turn_id.clone()));
-        let _ = self.channels.event_tx.send(AgentEvent::TurnStart {
+        self.emit(AgentEvent::TurnStart {
             turn_id: self.current_turn_id.clone(),
         });
         if let Some(sc) = crate::commands::parse_slash_command(&content) {
@@ -380,7 +380,7 @@ impl Agent {
             "cost" => self.handle_cost_command(),
             _ => format!("Unknown local command: {name}"),
         };
-        let _ = self.channels.event_tx.send(AgentEvent::TextDelta {
+        self.emit(AgentEvent::TextDelta {
             text: result_text,
             turn_id: self.current_turn_id.clone(),
         });
@@ -462,13 +462,10 @@ impl Agent {
             .await;
         let undelivered = crate::steering::lock(&self.channels.steering).close();
         if !undelivered.is_empty() {
-            let _ = self
-                .channels
-                .event_tx
-                .send(AgentEvent::UserMessagesReturned {
-                    messages: undelivered,
-                    turn_id: self.current_turn_id.clone(),
-                });
+            self.emit(AgentEvent::UserMessagesReturned {
+                messages: undelivered,
+                turn_id: self.current_turn_id.clone(),
+            });
         }
         self.finish_turn(outcome).await
     }
@@ -518,18 +515,15 @@ impl Agent {
                             },
                             history::entry::MessageOrigin::Steer,
                         );
-                        let _ = self
-                            .channels
-                            .event_tx
-                            .send(AgentEvent::UserMessageDelivered {
-                                message_id: m.message_id,
-                                content,
-                                turn_id: self.current_turn_id.clone(),
-                            });
+                        self.emit(AgentEvent::UserMessageDelivered {
+                            message_id: m.message_id,
+                            content,
+                            turn_id: self.current_turn_id.clone(),
+                        });
                         delivered = true;
                     }
                     PromptScreen::Blocked(message) => {
-                        let _ = self.channels.event_tx.send(AgentEvent::UserMessageRefused {
+                        self.emit(AgentEvent::UserMessageRefused {
                             message_id: m.message_id,
                             content: m.content,
                             message,
@@ -688,7 +682,7 @@ impl Agent {
         crate::agent::lock_turn_cancel(&self.channels.current_turn_cancel)
             .ended(&self.current_turn_id);
         if let Err(e) = &outcome {
-            let _ = self.channels.event_tx.send(AgentEvent::Error {
+            self.emit(AgentEvent::Error {
                 failure: e.failure(),
                 turn_id: self.current_turn_id.clone(),
                 persisted,
@@ -701,7 +695,7 @@ impl Agent {
                 spent.api_calls = spent.api_calls.saturating_add(o.api_calls);
                 spent.tool_calls = spent.tool_calls.saturating_add(o.tool_calls);
             }
-            let _ = self.channels.event_tx.send(AgentEvent::TurnComplete {
+            self.emit(AgentEvent::TurnComplete {
                 stop_reason: o.stop_reason.clone(),
                 api_calls: o.api_calls,
                 tool_calls: o.tool_calls,
