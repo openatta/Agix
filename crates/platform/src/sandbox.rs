@@ -3623,6 +3623,64 @@ mod tests {
         );
     }
 
+    /// `~/.config/git` is read file by file as well: its `credentials` stay
+    /// unreadable under a policy whose `deny_read` does not name them.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_strict_profile_reads_the_git_files_under_dot_config_but_not_their_credentials() {
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let project = root.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let git = home.join(".config/git");
+        write_file(&git.join("config"), "[user]\n\tname = FromDotConfig\n");
+        write_file(&git.join("ignore"), "ignored\n");
+        write_file(&git.join("attributes"), "*.bin binary\n");
+        write_file(&git.join("credentials"), "https://u:s3cret@example.com\n");
+        let policy = SandboxPolicy {
+            deny_read: Vec::new(),
+            ..Default::default()
+        }
+        .strict([project.clone()], None);
+        let run = |command: &str| {
+            let mut spec = ProcessSpec::new("bash", &project).args(["-c", command]);
+            spec.env.extend([
+                ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+                ("HOME".to_string(), home.display().to_string()),
+            ]);
+            let confined = PlatformSandbox.confine(spec, &policy);
+            assert_eq!(confined.enforcement, Enforcement::Full, "{confined:?}");
+            std::process::Command::new(&confined.spec.program)
+                .args(&confined.spec.args)
+                .env_clear()
+                .envs(confined.spec.env.iter().map(|(k, v)| (k, v)))
+                .current_dir(&project)
+                .output()
+                .unwrap()
+        };
+
+        let name = run("git config --global --get user.name");
+        assert_eq!(
+            String::from_utf8_lossy(&name.stdout).trim(),
+            "FromDotConfig",
+            "{name:?}"
+        );
+        for file in ["ignore", "attributes"] {
+            let out = run(&format!("cat \"$HOME/.config/git/{file}\""));
+            assert!(out.status.success(), "{file}: {out:?}");
+        }
+        let creds = run("cat \"$HOME/.config/git/credentials\"");
+        assert!(
+            !creds.status.success() && !String::from_utf8_lossy(&creds.stdout).contains("s3cret"),
+            "{creds:?}"
+        );
+    }
+
     /// `command` under the real backend, in `cwd`, with `env` added.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[allow(clippy::unwrap_used)]

@@ -49,13 +49,16 @@ const SYSTEM_READ_ROOTS: &[&str] = &[
 /// the user's text encoding.
 const HOME_READ_ROOTS: &[&str] = &[
     ".gitconfig",
-    ".config/git",
+    ".config/git/config",
+    ".config/git/ignore",
+    ".config/git/attributes",
     #[cfg(target_os = "macos")]
     ".CFUserTextEncoding",
 ];
 
-/// Under `$XDG_CONFIG_HOME`, when it is set: git's own files there, one by
-/// one, so that `git/credentials` beside them stays unreadable.
+/// Under `$XDG_CONFIG_HOME`, when it is set. Like `~/.config/git` above, git's
+/// own files one by one, so that `git/credentials` beside them stays
+/// unreadable whatever `deny_read` says.
 const XDG_CONFIG_READ_ROOTS: &[&str] = &["git/config", "git/ignore", "git/attributes"];
 
 /// Where `xcode-select` points, which need not be one of the table's.

@@ -1328,8 +1328,8 @@ bubblewrap)就和别的未授权调用一样被拒。沙箱只限写不限网,�
   读 `ReadScope::Only`——可读根(`security::readable_roots`)、`sandbox.cache_directories` 与会话的
   `TMPDIR`,加后端自己的一张表:系统目录(macOS 的 `/usr /bin /sbin /System /Library/Developer/CommandLineTools
   /Applications/Xcode.app/Contents/Developer /private/etc /private/var/db/timezone /opt/homebrew /usr/local /dev`,Linux 的
-  `/usr /bin /sbin /lib* /etc /opt /nix/store`)与用户的 `~/.gitconfig`、`~/.config/git`、`$XDG_CONFIG_HOME/git/`
-  下的 `config ignore attributes` 三个文件(`HOME`、`XDG_CONFIG_HOME` 先取命令自己环境里的),其余路径命令只看得到名字与元数据、
+  `/usr /bin /sbin /lib* /etc /opt /nix/store`)与用户的 `~/.gitconfig`,以及 `~/.config/git/`、`$XDG_CONFIG_HOME/git/`
+  下的 `config ignore attributes` 三个文件(同目录的 `credentials` 不在其中;`HOME`、`XDG_CONFIG_HOME` 先取命令自己环境里的),其余路径命令只看得到名字与元数据、
   读不到内容,`deny_read` 与引擎的凭据在范围之内照样读不到;环境 `EnvScope::Minimal`,只留
   `PATH HOME USER LOGNAME SHELL TERM LANG LC_* TZ TMPDIR`,`subprocess_env.allow` 加不进去,引擎的凭据照剔;
   `deny_ipc_escapes`。macOS 写成 `(deny file-read*)` 加 `(allow file-read-metadata)` 再按根逐个放开;Linux 不再

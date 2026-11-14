@@ -2060,10 +2060,12 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   命令自己的环境)本身或它 `include` 的文件在可读根之外时,严格 profile 跑不起引擎的 `git`,现在同样
   报为未兑现并列出每一条;以前报 Full。
 - **严格 profile 放开的 git 配置位置,与上面的检查用同一个 `HOME`。** 命令自己的环境设了 `HOME`
-  时,profile 放开的是那个 home 下的 `~/.gitconfig`、`~/.config/git`;以前放开的是 daemon 进程的,
-  检查说能跑,命令里的 git 却读不到配置。设了 `XDG_CONFIG_HOME` 时,`$XDG_CONFIG_HOME/git/` 下的
-  `config`、`ignore`、`attributes` 现在可读(逐个文件,同目录的 `credentials` 照旧读不到),那里放
-  git 配置的用户的只读命令不再因此报未兑现。
+  时,profile 放开的是那个 home 下的 git 配置;以前放开的是 daemon 进程的,检查说能跑,命令里的
+  git 却读不到配置。设了 `XDG_CONFIG_HOME` 时,`$XDG_CONFIG_HOME/git/` 下的 `config`、`ignore`、
+  `attributes` 现在可读,那里放 git 配置的用户的只读命令不再因此报未兑现。
+- **严格 profile 里 `~/.config/git` 不再整个目录可读**,只放开 `config`、`ignore`、`attributes`
+  三个文件(`$XDG_CONFIG_HOME/git/` 同样);同目录的 `credentials` 即使自定义 `sandbox.deny_read`
+  没列它也读不到。只读命令读那里的别的文件会失败。
 - **Linux:只写指定根的策略(沙箱会话里引擎自己的 `git` 及其 filter driver)也整目录遮挡状态目录的
   凭据**,会话 `TMPDIR` 挖洞挂回;以前逐文件遮挡,rename 重写的密钥文件读得到。
 - **命令之后检查嵌套仓库。** 每条不在严格 profile 里跑的命令(同步命令在结果之前,后台 `Monitor`
