@@ -54,12 +54,12 @@ impl Delegator {
     /// How the delegate `delegate_id` asks about its calls: of the parent's
     /// policy, with `rules` — its deny rules and the grants it starts with —
     /// besides; its questions go to the parent's host as `task`'s, or are
-    /// refused when `asks` says nobody can be asked.
+    /// refused for the reason `no_one_to_ask` gives.
     pub(crate) fn relay(
         &self,
         delegate_id: &str,
         task: Option<Arc<base::context::RunningTask>>,
-        asks: AskRoute,
+        no_one_to_ask: Option<&'static str>,
         rules: Vec<base::permission::PermissionRule>,
     ) -> Relay {
         let env = &self.env;
@@ -69,7 +69,7 @@ impl Delegator {
                 policy: Arc::new(DelegateRelay {
                     parent: env.host.permission.policy.clone(),
                     parent_session: env.parent.state.clone(),
-                    asks,
+                    no_one_to_ask,
                     rules,
                     turn_grants: turn_grants.clone(),
                 }),

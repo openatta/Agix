@@ -24,7 +24,9 @@ pub(crate) struct DelegateRelay {
     pub(crate) parent: Arc<dyn PermissionPolicy>,
     /// The session `parent` belongs to.
     pub(crate) parent_session: Arc<base::context::SessionState>,
-    pub(crate) asks: AskRoute,
+    /// Why nobody can be asked about its calls; `None` when its questions go
+    /// to the parent's host.
+    pub(crate) no_one_to_ask: Option<&'static str>,
     /// What the delegation adds on top of the parent's rules: its deny rules
     /// and the grants it was started with.
     pub(crate) rules: Vec<base::permission::PermissionRule>,
@@ -32,8 +34,13 @@ pub(crate) struct DelegateRelay {
     pub(crate) turn_grants: Arc<TurnGrants>,
 }
 
-const NO_ONE_TO_ASK: &str = "a sub-agent started from a program cannot ask for the user's \
-                             approval — leave this step out of the program and run it directly";
+pub(crate) const PROGRAM_HAS_NO_ONE_TO_ASK: &str =
+    "a sub-agent started from a program cannot ask for the user's approval — leave this step \
+     out of the program and run it directly";
+
+pub(crate) const HOOK_JUDGE_HAS_NO_ONE_TO_ASK: &str =
+    "an agent hook's judge cannot ask for the user's approval — it decides with what it may do \
+     without asking";
 
 #[async_trait]
 impl PermissionPolicy for DelegateRelay {
@@ -50,8 +57,10 @@ impl PermissionPolicy for DelegateRelay {
         let rules = [inner, &self.rules, &self.turn_grants.now()].concat();
         let mut relayed = req.for_delegate(Delegate::new(session, mode, &rules));
         relayed.session = &self.parent_session;
-        if self.asks == AskRoute::Refuse && relayed.attendance != Attendance::Unattended {
-            relayed.attendance = Attendance::NoOneToAsk(NO_ONE_TO_ASK);
+        if let Some(why) = self.no_one_to_ask {
+            if relayed.attendance != Attendance::Unattended {
+                relayed.attendance = Attendance::NoOneToAsk(why);
+            }
         }
         self.parent.decide(&relayed).await
     }

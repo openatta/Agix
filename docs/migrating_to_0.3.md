@@ -2011,7 +2011,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **程序发起的调用要问时直接拒绝。** `RunCode` 的子调用不再走 elicitation,文本为
   "Denied by permission: <问句> — this call needs the user's approval, which a program cannot
   ask for — …";程序起的子 Agent 被拒时文本为 "<问句> — a sub-agent started from a program cannot
-  ask for the user's approval — leave this step out of the program and run it directly"。
+  ask for the user's approval — leave this step out of the program and run it directly";agent hook
+  的裁判子 Agent 被拒时为 "<问句> — an agent hook's judge cannot ask for the user's approval — it
+  decides with what it may do without asking"。
 - **fork skill 的 `allowed-tools` 在 fork 出的子会话里生效。** 它只回答模式本来要问的那一问:deny、
   ask 规则、managed ask、plan / dontAsk 的拒绝、凭据都不受影响;无人值守的 fork 里被授权的命令也能跑。
   授权不写进父会话,fork 结束后父会话里同一条命令照样要问。子 Agent 内联运行的 skill 的

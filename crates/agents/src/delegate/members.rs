@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use base::context::{TaskLease, TaskType};
 use base::interface::delegate::{
-    AskRoute, DelegateEnd, DelegateError, Delegated, LiveMember, StartedAgent, TeamSeat,
+    DelegateEnd, DelegateError, Delegated, LiveMember, StartedAgent, TeamSeat,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -203,7 +203,7 @@ impl Delegator {
                 &spec,
                 depth,
                 Vec::new(),
-                self.relay(&spec.session_id, None, AskRoute::Host, Vec::new()),
+                self.relay(&spec.session_id, None, None, Vec::new()),
                 true,
             )
             .await

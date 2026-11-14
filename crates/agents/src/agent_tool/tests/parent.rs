@@ -152,8 +152,7 @@ impl AgentTool {
     }
 
     pub(super) fn sub_relay(&self, task: Option<Arc<base::context::RunningTask>>) -> Relay {
-        self.delegator
-            .relay("sub", task, AskRoute::Host, Vec::new())
+        self.delegator.relay("sub", task, None, Vec::new())
     }
 
     pub(super) fn sub_settings(&self, model_name: Option<&str>) -> LoadedSettings {
@@ -305,7 +304,7 @@ impl AgentTool {
                 &spec,
                 depth,
                 Vec::new(),
-                d.relay(&spec.session_id, None, AskRoute::Host, Vec::new()),
+                d.relay(&spec.session_id, None, None, Vec::new()),
                 true,
             )
             .await?;

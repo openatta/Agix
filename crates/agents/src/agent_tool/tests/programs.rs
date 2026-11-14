@@ -353,3 +353,45 @@ async fn audit2_a_one_shot_sub_agent_does_not_start_a_memory_extraction_it_then_
         );
     }
 }
+
+/// Who the parent's policy was told cannot be asked, call by call.
+struct RecordsAttendance(Arc<std::sync::Mutex<Vec<String>>>);
+
+#[async_trait]
+impl PermissionPolicy for RecordsAttendance {
+    async fn decide(
+        &self,
+        req: &base::interface::permission::PermissionRequest<'_>,
+    ) -> base::interface::permission::PermissionOutcome {
+        self.0.lock().unwrap().push(format!("{:?}", req.attendance));
+        base::interface::permission::PermissionOutcome::deny(
+            base::interface::permission::Stage::Rule,
+            "recorded",
+        )
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hook_judges_refusal_names_the_hook_not_a_program() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (parent, _tools, _runs, dir) = wired_parent("code");
+    let agent_tool = wire_parent(parent, Arc::new(RecordsAttendance(seen.clone()))).agent_tool();
+    let mut req = DelegateRequest::new(
+        "judge",
+        DelegateMode::Hook {
+            judged_session: "parent-session".into(),
+        },
+        StopsWith::Call(tokio_util::sync::CancellationToken::new()),
+    );
+    req.workdir = Workdir::At(dir.clone());
+    req.asks = AskRoute::Refuse;
+    let _ = agent_tool.delegator.delegate(req).await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let seen = seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "the judge's call reached no policy");
+    for attendance in &seen {
+        assert!(attendance.contains("agent hook"), "{attendance}");
+        assert!(!attendance.contains("from a program"), "{attendance}");
+    }
+}

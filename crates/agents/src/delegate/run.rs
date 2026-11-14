@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use super::Delegator;
 use crate::agent_tool::{
     bg_task_id, conclude, task_notification, without_panics, OneShot, Relay, Spec,
+    HOOK_JUDGE_HAS_NO_ONE_TO_ASK, PROGRAM_HAS_NO_ONE_TO_ASK,
 };
 
 /// Where the delegate's questions go, and the deny rules and grants its
@@ -36,7 +37,8 @@ impl Delegator {
         task: Option<Arc<base::context::RunningTask>>,
         ask: &Ask,
     ) -> Relay {
-        self.relay(&spec.session_id, task, ask.asks, ask.rules.clone())
+        let no_one_to_ask = (ask.asks == AskRoute::Refuse).then_some(PROGRAM_HAS_NO_ONE_TO_ASK);
+        self.relay(&spec.session_id, task, no_one_to_ask, ask.rules.clone())
     }
 
     fn lease(
@@ -229,7 +231,12 @@ impl Delegator {
         let _running = self.limits.hook_agents.enter(spec.session_id.clone());
         let session_id = spec.session_id.clone();
         let shot = OneShot {
-            relay: self.relay_for(&spec, None, &ask),
+            relay: self.relay(
+                &spec.session_id,
+                None,
+                (ask.asks == AskRoute::Refuse).then_some(HOOK_JUDGE_HAS_NO_ONE_TO_ASK),
+                ask.rules,
+            ),
             spec,
             prompt,
             cancel: stop,
