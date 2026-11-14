@@ -25,6 +25,7 @@ mod instruments;
 mod messages;
 mod run;
 mod tooling;
+pub mod turn;
 use crate::turn::{Compaction, Gate, Memory, ModelRoute, PromptContext};
 pub use builder::{default_run_slots, Builder, HostContracts, HostLayers};
 use instruments::Telemetry;
@@ -64,42 +65,42 @@ impl Drop for SessionEnd {
 }
 
 pub struct Agent {
-    pub(crate) scene: Arc<SceneSpec>,
-    pub(crate) settings: Arc<LoadedSettings>,
+    scene: Arc<SceneSpec>,
+    settings: Arc<LoadedSettings>,
     /// Derived from `settings`; every tool call's `ToolExecCtx.config` is a
     /// clone of this, so tools see the configured sandbox/permission/shell
     /// settings rather than defaults.
-    pub(crate) config: Arc<base::context::EngineConfig>,
-    pub(crate) session: SessionManager,
+    config: Arc<base::context::EngineConfig>,
+    session: SessionManager,
     /// Distinct from `session`: `SessionManager` owns the *transcript*, this
     /// owns everything tools read and write across calls. One instance for the
     /// whole session, handed to every `ToolContext` — see `Builder::build()`.
-    pub(crate) session_state: Arc<base::context::SessionState>,
+    session_state: Arc<base::context::SessionState>,
     /// How this session's tool calls reach the machine: built once from
     /// `config` and the builder's process-group ledger, and bound to
     /// `session_state` for the permission that judges those calls.
-    pub(crate) exec: base::interface::exec::ExecProviders,
+    exec: base::interface::exec::ExecProviders,
     /// Outlives the turn it names: what is announced between turns (a
     /// `/compact`, a turn error) carries the last turn's id.
-    pub(crate) current_turn_id: String,
+    current_turn_id: String,
     session_end: SessionEnd,
-    pub(crate) identity: Identity,
-    pub(crate) llm: ModelRoute,
-    pub(crate) tooling: Tooling,
-    pub(crate) gate: Gate,
-    pub(crate) prompt: PromptContext,
-    pub(crate) policies: Policies,
-    pub(crate) memory: Memory,
-    pub(crate) compaction: Compaction,
-    pub(crate) turn: crate::turn::TurnState,
+    identity: Identity,
+    llm: ModelRoute,
+    tooling: Tooling,
+    gate: Gate,
+    prompt: PromptContext,
+    policies: Policies,
+    memory: Memory,
+    compaction: Compaction,
+    turn: crate::turn::TurnState,
     /// Read by the *next* turn, to decide whether to rescan for skills; starts
     /// `true` so the first turn scans.
-    pub(crate) last_had_tool_uses: bool,
+    last_had_tool_uses: bool,
     /// Keyed by `session.turn_count`, which only a completed turn advances, so
     /// a cancelled turn's counts carry into the next.
-    pub(crate) repeat_guard: crate::repeat_guard::RepeatGuard,
-    pub(crate) telemetry: Telemetry,
-    pub(crate) channels: Channels,
+    repeat_guard: crate::repeat_guard::RepeatGuard,
+    telemetry: Telemetry,
+    channels: Channels,
 }
 
 /// Who this session is among others: its place in delegation and teams.

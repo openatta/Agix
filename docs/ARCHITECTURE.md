@@ -191,7 +191,7 @@ systemd(`Restart=on-failure`)。systemd 下要设 `KillMode=process`:`daemon.shu
 
 ## 2. 一轮是什么
 
-`crates/runtime/src/turn/` 是引擎的主循环。**步骤顺序是骨架,不开放**;
+`crates/runtime/src/agent/turn/` 是引擎的主循环。**步骤顺序是骨架,不开放**;
 每一步上"选哪条路"的判断是决策,**开放**。
 
 ```

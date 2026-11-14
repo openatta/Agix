@@ -167,7 +167,7 @@ const PERMITS: &[(&str, &str)] = &[
         "the policy, which is where a call is let through",
     ),
     (
-        "crates/runtime/src/turn/tool_permission.rs::ask",
+        "crates/runtime/src/agent/turn/tool_permission.rs::ask",
         "the answering step: the person the runtime asked approved the call",
     ),
 ];
@@ -200,7 +200,7 @@ fn only_the_policy_and_the_person_asked_let_a_call_through() {
 }
 
 const READS_UNATTENDED: &[(&str, &str)] = &[(
-    "crates/runtime/src/turn/tool_env.rs::attendance_of",
+    "crates/runtime/src/agent/turn/tool_env.rs::attendance_of",
     "the attendance of a session's calls, worked out once per call",
 )];
 

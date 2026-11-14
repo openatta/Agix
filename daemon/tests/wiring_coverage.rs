@@ -66,7 +66,7 @@ fn only_the_tool_policy_asks_the_scene_which_tools_are_permitted() {
     assert!(
         elsewhere.is_empty(),
         "crates/runtime/src reads the scene's tool lists at {elsewhere:?}. Read the session's \
-         `ToolPolicy` instead (`self.tooling.tool_policy.permits(..)`), or the tools a \
+         `ToolPolicy` instead (`self.tooling.tool_policy().permits(..)`), or the tools a \
          plugin admits with `Registrar::admit_tools` disappear on that path."
     );
 }

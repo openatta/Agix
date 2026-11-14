@@ -258,7 +258,7 @@ at every depth.
 
 ### What a turn is
 
-`crates/runtime/src/turn/` is the main loop. **The order of the steps is the
+`crates/runtime/src/agent/turn/` is the main loop. **The order of the steps is the
 skeleton and is fixed; the decision at each step is open.**
 
 ```

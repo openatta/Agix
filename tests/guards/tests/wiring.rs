@@ -36,12 +36,12 @@ const WRAPPER_DISPATCH: &[(&str, &str)] = &[
 const INDIRECT_FIRES: &[(&str, &str, &str)] = &[
     (
         "WorktreeCreate",
-        "crates/runtime/src/turn/tool_exec.rs",
+        "crates/runtime/src/agent/turn/tool_exec.rs",
         "picked from the tool's name, then handed to `fire_ctx_lifecycle_hook` as a variable",
     ),
     (
         "WorktreeRemove",
-        "crates/runtime/src/turn/tool_exec.rs",
+        "crates/runtime/src/agent/turn/tool_exec.rs",
         "picked from the tool's name, then handed to `fire_ctx_lifecycle_hook` as a variable",
     ),
 ];
@@ -76,7 +76,7 @@ const COMPOSITION_ROOT_FILES: &[&str] = &[
     "crates/mcp/src/module.rs",
     "crates/skills/src/module.rs",
 ];
-const COMPOSITION_ROOT_DIRS: &[&str] = &["crates/runtime/src/agent/"];
+const COMPOSITION_ROOT_DIRS: &[&str] = &["crates/runtime/src/agent/builder/"];
 
 const SPAWN_SITE_FILE: &str = "crates/agents/src/agent_tool/build.rs";
 const SPAWN_INHERITANCE: &str = "inherit";

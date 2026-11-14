@@ -191,7 +191,7 @@ let (mut agent, events, input) = runtime::agent::Builder::new()
 
 ### 一轮是什么
 
-`crates/runtime/src/turn/` 是主循环。**步骤顺序是骨架,写死;每一步上的决策开放。**
+`crates/runtime/src/agent/turn/` 是主循环。**步骤顺序是骨架,写死;每一步上的决策开放。**
 
 ```
 用户消息 ─ UserPromptSubmit hook · 斜杠命令 · 记忆召回 · 待读的通知
