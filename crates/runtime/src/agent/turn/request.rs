@@ -384,9 +384,12 @@ impl Agent {
     /// a fallback model still gets the skills inventory and MCP guidance the
     /// primary one got.
     ///
-    /// Neither the overhead estimate nor the cache edits are redone: the
-    /// estimate belongs to the call that failed, and the edits it carried are
-    /// still pending for the next step's request.
+    /// The overhead estimate is not redone: it belongs to the call that
+    /// failed. The cache edits that call carried go out again with the retry,
+    /// as they would with a resend of the same request: the messages already
+    /// have those results blanked, and without the edits the retry would not
+    /// match the provider's cached prefix.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn prepare_retry(
         &self,
         model: &str,
@@ -395,6 +398,7 @@ impl Agent {
         messages: Vec<ModelMessage>,
         fallback_model: Option<String>,
         origin: Option<base::interface::model::CallOrigin>,
+        cache_edits: Vec<String>,
     ) -> ModelRequest {
         let input_map = self.resolve_input_map(&messages);
         ModelRequest {
@@ -407,7 +411,7 @@ impl Agent {
                 thinking_mode: self.settings.values.model.thinking_mode.clone(),
                 effort: self.settings.values.model.effort,
                 fallback_model,
-                cache_edits: Vec::new(),
+                cache_edits,
                 origin,
                 input_map,
                 provider_search: None,
@@ -509,6 +513,7 @@ impl Agent {
         call.recoveries += 1;
         let max_tokens = failed.params.max_tokens;
         let origin = failed.params.origin.clone();
+        let cache_edits = failed.params.cache_edits.clone();
         let next = match recovery {
             Recovery::Fail => {
                 return Err(super::TurnError::Model(
@@ -529,6 +534,7 @@ impl Agent {
                     failed.messages,
                     None,
                     origin,
+                    cache_edits,
                 )
                 .await
             }
@@ -554,6 +560,7 @@ impl Agent {
                     pair_dangling_tool_uses(self.session.messages().to_vec()),
                     fallback,
                     origin,
+                    cache_edits,
                 )
                 .await
             }

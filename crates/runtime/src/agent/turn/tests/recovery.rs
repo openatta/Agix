@@ -30,6 +30,7 @@ enum Answer {
 struct Scripted {
     answers: Mutex<VecDeque<Answer>>,
     calls: Mutex<u32>,
+    cache_edits: Mutex<Vec<Vec<String>>>,
 }
 
 impl Scripted {
@@ -37,11 +38,17 @@ impl Scripted {
         Arc::new(Self {
             answers: Mutex::new(answers.into()),
             calls: Mutex::new(0),
+            cache_edits: Mutex::new(Vec::new()),
         })
     }
 
     fn calls(&self) -> u32 {
         *self.calls.lock().unwrap()
+    }
+
+    /// The cache edits each of the conversation's calls carried.
+    fn cache_edits(&self) -> Vec<Vec<String>> {
+        self.cache_edits.lock().unwrap().clone()
     }
 }
 
@@ -70,6 +77,10 @@ impl Model for Scripted {
             return Ok(Box::new(futures::stream::iter(vec![Ok(ended())])));
         }
         *self.calls.lock().unwrap() += 1;
+        self.cache_edits
+            .lock()
+            .unwrap()
+            .push(params.cache_edits.clone());
         let answer = {
             let mut answers = self.answers.lock().unwrap();
             match answers.len() {
@@ -103,6 +114,21 @@ struct AlwaysRetrySame {
 impl RecoveryPolicy for AlwaysRetrySame {
     fn on_failure(&self, _failure: &ModelFailure<'_>, _so_far: &CallRecovery) -> Recovery {
         Recovery::RetrySame { after: self.after }
+    }
+
+    fn on_early_stop(&self, _reason: &str, _attempt: &RecoveryAttempt) -> StopRecovery {
+        StopRecovery::Accept
+    }
+}
+
+/// Retries against another model, every time it is asked.
+struct SwitchModel;
+
+impl RecoveryPolicy for SwitchModel {
+    fn on_failure(&self, _failure: &ModelFailure<'_>, _so_far: &CallRecovery) -> Recovery {
+        Recovery::RetryWith {
+            model: "fallback-model".into(),
+        }
     }
 
     fn on_early_stop(&self, _reason: &str, _attempt: &RecoveryAttempt) -> StopRecovery {
@@ -295,4 +321,28 @@ async fn a_cancel_while_waiting_to_resend_ends_the_turn_cancelled() {
     assert_eq!(model.calls(), 1);
     drop(agent);
     assert!(watcher.await.unwrap(), "no model_retry was announced");
+}
+
+/// A retry is the request that failed, sent again: the cache edits it
+/// carried go with it, whichever model it goes to.
+#[tokio::test(start_paused = true)]
+async fn a_retry_carries_the_cache_edits_of_the_call_that_failed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = Scripted::new(vec![
+        Answer::Refused(ModelError::overloaded()),
+        Answer::Text("answered by the fallback"),
+    ]);
+    let (mut agent, _events) = agent(model.clone(), Some(Arc::new(SwitchModel)), tmp.path());
+    agent.compaction.pend_cache_edits(vec!["toolu_old".into()]);
+
+    let outcome = turn(&mut agent, CancellationToken::new())
+        .await
+        .expect("the retry succeeded");
+
+    assert_eq!(outcome.stop_reason, "end_turn");
+    assert_eq!(
+        model.cache_edits(),
+        vec![vec!["toolu_old".to_string()], vec!["toolu_old".to_string()]]
+    );
+    assert!(agent.compaction.lend_cache_edits().is_empty());
 }

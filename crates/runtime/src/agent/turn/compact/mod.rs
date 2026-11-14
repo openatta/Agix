@@ -79,6 +79,11 @@ impl Compaction {
     }
 
     #[cfg(test)]
+    pub(crate) fn pend_cache_edits(&mut self, ids: Vec<String>) {
+        self.cached_mc.record_pass(ids);
+    }
+
+    #[cfg(test)]
     pub(crate) fn backoff_misses(&self) -> u32 {
         self.auto_backoff.misses()
     }
