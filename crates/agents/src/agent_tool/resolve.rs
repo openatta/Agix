@@ -4,14 +4,6 @@
 use super::*;
 
 impl Delegator {
-    /// `prompt` under the system prompt of `agent_type`, when it names one.
-    pub(crate) fn build_prompt(&self, agent_type: Option<&str>, prompt: &str) -> String {
-        match agent_type.and_then(|name| self.agent_type_def(name)) {
-            Some(def) => format!("{}\n\nTask: {prompt}", def.system_prompt),
-            None => prompt.to_string(),
-        }
-    }
-
     pub(crate) async fn fire_subagent_hook(
         &self,
         event: hooks::HookEvent,

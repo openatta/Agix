@@ -186,9 +186,10 @@ impl Delegator {
         let agent_type = spec.agent_type.as_deref();
         let prompt = match &def {
             Some(d) if !d.skills.is_empty() => {
-                preload_skills_text(self.env.skills.as_ref(), &d.skills) + &prompt
+                preload_skills_text(self.env.skills.as_ref(), &d.skills) + &typed_prompt(d, &prompt)
             }
-            _ => prompt,
+            Some(d) => typed_prompt(d, &prompt),
+            None => prompt,
         };
         let called_from = spec.called_from.as_ref();
         let tag = SubagentTag::new(self, &sid, agent_type, called_from).for_task(task.as_ref());
@@ -244,4 +245,9 @@ impl Delegator {
         mark_sidechain_terminal(history_store.as_ref(), &sid, &end).await;
         (text, end)
     }
+}
+
+/// `prompt` under the system prompt of the delegate's type.
+fn typed_prompt(def: &AgentTypeDefinition, prompt: &str) -> String {
+    format!("{}\n\nTask: {prompt}", def.system_prompt)
 }

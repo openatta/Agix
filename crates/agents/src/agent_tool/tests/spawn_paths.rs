@@ -837,3 +837,42 @@ async fn a_host_started_agent_of_a_type_is_given_the_types_prompt() {
         "{seen:?}"
     );
 }
+
+/// A forked skill naming an `agent:` and a team stage's member naming a type
+/// ask the delegator directly, not through the `Agent` tool; their delegate is
+/// told the type's prompt ahead of the task all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_typed_fork_and_stage_member_are_given_the_types_prompt() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent_tool = TestParent {
+        plugin_agent_types: vec![AgentTypeDefinition {
+            name: "typed".into(),
+            description: "typed".into(),
+            system_prompt: "TYPE-PROMPT".into(),
+            ..Default::default()
+        }],
+        ..TestParent::new(Arc::new(MessageTextModel { seen: seen.clone() }))
+    }
+    .agent_tool();
+    let stage = DelegateMode::TeamMember {
+        seat: TeamSeat {
+            team: "team".into(),
+            member: "member".into(),
+        },
+        permission_mode: None,
+        lifetime: MemberLifetime::Stage {
+            stage: "stage".into(),
+            extra_tools: Vec::new(),
+        },
+    };
+    for (task, mode) in [("FORK-TASK", DelegateMode::Wait), ("STAGE-TASK", stage)] {
+        let stop = StopsWith::Call(tokio_util::sync::CancellationToken::new());
+        let mut req = DelegateRequest::new(task, mode, stop);
+        req.agent_type = Some("typed".into());
+        req.workdir = Workdir::At(std::env::temp_dir());
+        finished_text(agent_tool.delegate(req).await).expect("the delegate finishes");
+        let typed = format!("TYPE-PROMPT\n\nTask: {task}");
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|t| t.contains(&typed)), "{task}: {seen:?}");
+    }
+}

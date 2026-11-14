@@ -297,9 +297,7 @@ impl base::tool::Tool for AgentTool {
         if inp.team_name.is_some() || inp.name.is_some() {
             return self.message_member(inp, req).await;
         }
-        req.prompt = self
-            .delegator
-            .build_prompt(inp.subagent_type.as_deref(), &inp.prompt);
+        req.prompt = inp.prompt;
         let worktree = match &inp.worktree {
             Some(slug) => {
                 let git = tools::bash::engine_exec(&ctx);
