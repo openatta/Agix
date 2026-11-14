@@ -219,46 +219,55 @@ impl SessionPool {
             .await
             .ok_or_else(|| PoolError::session_not_found(session_id))??;
 
-        let current_provider = self.specs.get(session_id).and_then(|spec| spec.provider());
-        let binding = self.binding_for(project.as_deref(), &scene).await;
-        binding
-            .check_model_choice(provider.or(current_provider.as_deref()), model)
-            .map_err(PoolError::InvalidRequest)?;
+        // Under the session lock, as every change to a session's spec is: a
+        // rebuild's change and this one land, and are undone, one at a time.
+        let spec = self
+            .live
+            .with_session_lock(session_id, async {
+                let current_provider = self.specs.get(session_id).and_then(|spec| spec.provider());
+                let binding = self.binding_for(project.as_deref(), &scene).await;
+                binding
+                    .check_model_choice(provider.or(current_provider.as_deref()), model)
+                    .map_err(PoolError::InvalidRequest)?;
 
-        let switching_provider = provider.is_some_and(|p| current_provider.as_deref() != Some(p));
-        let change = |spec: &mut SessionSpec| {
-            if let Some(p) = provider {
-                spec.provider = Some(p.to_string());
-                // A model chosen for the old provider means nothing to the new
-                // one; without a new choice the new provider's default applies.
+                let switching_provider =
+                    provider.is_some_and(|p| current_provider.as_deref() != Some(p));
+                let change = |spec: &mut SessionSpec| {
+                    if let Some(p) = provider {
+                        spec.provider = Some(p.to_string());
+                        // A model chosen for the old provider means nothing to
+                        // the new one; without a new choice the new provider's
+                        // default applies.
+                        if switching_provider {
+                            spec.model = None;
+                        }
+                    }
+                    if let Some(m) = model {
+                        spec.model = Some(m.to_string());
+                    }
+                };
+
+                // A provider is a different client, which an engine is built
+                // around rather than handed mid-life: rebuild the session on
+                // the new spec. The turn slot is taken before the change is
+                // made, so a turn that started since the check above refuses
+                // both rather than being cut off or finding the change applied
+                // by some later rebuild.
                 if switching_provider {
-                    spec.model = None;
+                    let held = self
+                        .hold_for_rebuild(session_id)
+                        .await
+                        .map_err(|e| e.into_error(session_id))?;
+                    self.rebuild_on_changed_spec(session_id, held, change)
+                        .await
+                        .map_err(|e| e.into_error(session_id))
+                } else {
+                    let spec = self.update_spec(session_id, change).await;
+                    self.specs.persist(session_id, &spec).await;
+                    Ok(spec)
                 }
-            }
-            if let Some(m) = model {
-                spec.model = Some(m.to_string());
-            }
-        };
-
-        // A provider is a different client, which an engine is built around
-        // rather than handed mid-life: rebuild the session on the new spec.
-        // The turn slot is taken before the change is made, so a turn that
-        // started since the check above refuses both rather than being cut
-        // off or finding the change applied by some later rebuild.
-        if switching_provider {
-            self.live
-                .with_session_lock(session_id, async {
-                    let held = self.hold_for_rebuild(session_id).await?;
-                    self.rebuild_on_changed_spec(session_id, held, change).await
-                })
-                .await
-                .map_err(|e| e.into_error(session_id))?;
-        } else {
-            let spec = self.update_spec(session_id, change).await;
-            self.specs.persist(session_id, &spec).await;
-        }
-
-        let spec = self.specs.get(session_id).unwrap_or_default();
+            })
+            .await?;
         Ok(api::ModelChoice {
             session_id: session_id.to_string(),
             model: spec.model(),

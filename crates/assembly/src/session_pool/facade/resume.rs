@@ -466,7 +466,8 @@ impl SessionPool {
     /// Rebuild `sid` on its spec as `change` leaves it, recording the spec in
     /// its log once the rebuild has taken it. A failed rebuild leaves the
     /// spec as it was, so the session, wherever it is now, is not left
-    /// running on one spec while its log says another.
+    /// running on one spec while its log says another. Callers hold `sid`'s
+    /// session lock, which every change to its spec takes.
     pub(in crate::session_pool) async fn rebuild_on_changed_spec(
         &self,
         sid: &str,
@@ -483,11 +484,8 @@ impl SessionPool {
             }
             return Err(e);
         }
-        // A `setModel` that passed its idle check before this rebuild took the
-        // slot may have changed the spec since `update`.
-        let spec = self.specs.get(sid).unwrap_or(changed);
-        self.specs.persist(sid, &spec).await;
-        Ok(spec)
+        self.specs.persist(sid, &changed).await;
+        Ok(changed)
     }
 
     /// Rebuild `sid` while `held` keeps turns off it. A failed rebuild puts

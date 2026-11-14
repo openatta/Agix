@@ -86,9 +86,29 @@ impl base::interface::model::Model for RecordsTheModel {
     }
 }
 
-/// Choose a model for `sid` while a `setPrompt` rebuild takes the session:
+/// Until the `setPrompt` rebuild spawned last has `sid`, or waits for it
+/// behind a `setModel` that has it.
+async fn until_the_rebuild_is_on_its_way(pool: &SessionPool, sid: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let rebuilding = pool
+                .live
+                .with_live(sid, |live| !live.turn.is_idle())
+                .await
+                .unwrap_or(false);
+            if rebuilding || pool.live.session_lock_holders(sid).await >= 3 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the rebuild reached the session");
+}
+
+/// Choose a model for `sid` while a `setPrompt` rebuild is on its way:
 /// `setModel` passes its idle check, then waits on the bindings until the
-/// rebuild has read the spec.
+/// rebuild has reached the session.
 async fn choose_a_model_while_a_rebuild_takes_the_session(pool: &Arc<SessionPool>, sid: &str) {
     let bindings = pool.bindings.hold().await;
     let chosen = {
@@ -110,19 +130,7 @@ async fn choose_a_model_while_a_rebuild_takes_the_session(pool: &Arc<SessionPool
                 .map(|_| ())
         })
     };
-    let mut rebuilding = false;
-    for _ in 0..1000 {
-        tokio::task::yield_now().await;
-        rebuilding = pool
-            .live
-            .with_live(sid, |live| !live.turn.is_idle())
-            .await
-            .unwrap_or(false);
-        if rebuilding {
-            break;
-        }
-    }
-    assert!(rebuilding, "the rebuild took the session");
+    until_the_rebuild_is_on_its_way(pool, sid).await;
     for _ in 0..64 {
         tokio::task::yield_now().await;
     }
@@ -184,5 +192,69 @@ async fn a_model_chosen_while_a_rebuild_is_on_its_way_is_the_one_the_log_records
         recorded.prompt.and_then(|p| p.append).as_deref(),
         Some("Answer briefly."),
         "and the prompt the rebuild was for"
+    );
+}
+
+/// A rebuild that fails puts back only its own change to the spec: a model
+/// chosen while it was on its way stays chosen, and the log never records the
+/// prompt the failed rebuild was for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_rebuild_keeps_a_model_chosen_while_it_was_on_its_way() {
+    let store: Arc<dyn history::store::HistoryStore> =
+        Arc::new(history::store::InMemoryHistoryStore::new());
+    let (pool, _dir) = test_pool_with_store(Some(store)).await;
+    answered_by(&pool, Arc::new(RecordsTheModel::default())).await;
+    let sid = pool
+        .create_session(None, ProjectSelector::Default, None)
+        .await
+        .expect("a session")
+        .session_id;
+
+    let bindings = pool.bindings.hold().await;
+    let chosen = {
+        let (pool, sid) = (pool.clone(), sid.clone());
+        tokio::spawn(async move {
+            pool.set_session_model(&sid, Some("claude-opus-4-6"), None)
+                .await
+                .map(|_| ())
+        })
+    };
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+    let rebuilt = {
+        let (pool, sid) = (pool.clone(), sid.clone());
+        tokio::spawn(async move {
+            pool.set_session_prompt(&sid, |p| p.append = Some("Answer briefly.".into()))
+                .await
+                .map(|_| ())
+        })
+    };
+    until_the_rebuild_is_on_its_way(&pool, &sid).await;
+    let shutdown = {
+        let pool = pool.clone();
+        tokio::spawn(async move { pool.shutdown_all().await })
+    };
+    while pool.live.refuse_while_shutting_down().is_ok() {
+        tokio::task::yield_now().await;
+    }
+    drop(bindings);
+
+    assert!(chosen.await.unwrap().is_ok(), "the choice was taken");
+    assert!(
+        rebuilt.await.unwrap().is_err(),
+        "rebuilt during the shutdown"
+    );
+    shutdown.await.unwrap();
+    let recorded = pool.specs.recorded(&sid).await;
+    assert_eq!(
+        recorded.model.as_deref(),
+        Some("claude-opus-4-6"),
+        "the log records the model chosen"
+    );
+    assert_eq!(
+        recorded.prompt.and_then(|p| p.append),
+        None,
+        "and not the prompt of the rebuild that failed"
     );
 }
