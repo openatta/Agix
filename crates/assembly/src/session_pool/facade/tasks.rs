@@ -104,6 +104,16 @@ impl SessionPool {
         }
         let state = self.live_state(session_id).await;
         let mut tasks = state.as_ref().map(|s| s.task_infos()).unwrap_or_default();
+        let members = self
+            .live
+            .with_live(session_id, |live| live.live_members())
+            .await
+            .unwrap_or_default();
+        let member_entries: Vec<_> = members
+            .into_iter()
+            .map(|member| member_task(member, &tasks))
+            .collect();
+        tasks.extend(member_entries);
         tasks.extend(
             self.scheduler
                 .list(Some(session_id))
@@ -418,4 +428,35 @@ fn unexpected_answer(answer: runtime::agent::ContextAnswer) -> PoolError {
     PoolError::Internal(format!(
         "the engine answered a different context request: {answer:?}"
     ))
+}
+
+/// A live persistent member as `session.tasks` lists it: running while one
+/// of the `teammate` tasks of its seat is.
+fn member_task(
+    member: base::interface::delegate::LiveMember,
+    tasks: &[base::context::TaskInfo],
+) -> base::context::TaskInfo {
+    use base::context::{TaskStatus, TaskType};
+    let detail = serde_json::json!({"team": member.seat.team, "member": member.seat.member});
+    let running = tasks.iter().any(|t| {
+        t.kind == TaskType::Teammate
+            && matches!(t.status, TaskStatus::Running | TaskStatus::Waiting)
+            && t.detail == detail
+    });
+    base::context::TaskInfo {
+        task_id: member.id,
+        kind: TaskType::Member,
+        status: if running {
+            TaskStatus::Running
+        } else {
+            TaskStatus::Idle
+        },
+        started_ms: 0,
+        ended_ms: None,
+        detail,
+        error: None,
+        waiting_for: Vec::new(),
+        usage: None,
+        structured_output: None,
+    }
 }

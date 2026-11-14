@@ -2354,6 +2354,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   不满足时,以前报 `SCENE_MISMATCH`,现在报 `INVALID_PARAMS`。
 - **权限提问的文本**见"部署"的权限判定:提示语用工具自己的问句;子 Agent 与程序发起的调用的拒绝文本
   变了;`permission_rules` 里 `match: "exact"` 的条目见协议文档 §4.7。
+- **`session.tasks` 列出活着的常驻团队成员**:`kind: "member"`,`task_id` 为 `member-…`(即
+  `SESSION_BUSY` 的 `running_task_ids` 与 `session.stopTask` 认的那个 id),`status` 为 `idle` 或
+  `running`,`detail` 为 `{team, member}`。`kind` 与 `status` 各多一个取值,按枚举穷尽处理的客户端要跟着改。
 - **`mcp.status` 列出项目自己声明、因用了项目不能用的东西而没启动的 server**(`"grant": "enterprise"`、
   `client_secret_env`、`private_key_jwt` 的 `key_env` / `key_file`),`state` 为 `denied`,`error` 说明原因。
   以前这样的 server 在 `mcp.status` 里不出现。

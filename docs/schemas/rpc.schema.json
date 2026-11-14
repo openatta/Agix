@@ -5290,7 +5290,7 @@
           ]
         },
         "kind": {
-          "description": "`agent`, `teammate`, `shell`, `monitor`, `cron` or `code`.",
+          "description": "`agent`, `teammate`, `member`, `shell`, `monitor`, `cron` or `code`.",
           "type": "string"
         },
         "started_ms": {
@@ -5461,6 +5461,11 @@
             "stopped",
             "failed"
           ],
+          "type": "string"
+        },
+        {
+          "const": "idle",
+          "description": "Alive with nothing to do: a persistent team member between messages.",
           "type": "string"
         },
         {

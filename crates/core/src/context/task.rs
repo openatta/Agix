@@ -17,6 +17,9 @@ pub enum TaskType {
     Monitor,
     /// A program the model wrote (`RunCode`).
     Code,
+    /// A persistent team member, alive between the messages it is handed;
+    /// each message it runs is a `Teammate` task of its own.
+    Member,
 }
 
 impl TaskType {
@@ -28,6 +31,7 @@ impl TaskType {
             TaskType::CronJob => "cron",
             TaskType::Monitor => "monitor",
             TaskType::Code => "code",
+            TaskType::Member => "member",
         }
     }
 
@@ -40,6 +44,7 @@ impl TaskType {
             TaskType::CronJob => "cj",
             TaskType::Monitor => "mo",
             TaskType::Code => "cd",
+            TaskType::Member => "member",
         }
     }
 }
@@ -381,7 +386,7 @@ impl RunningTask {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, schemars::JsonSchema)]
 pub struct TaskInfo {
     pub task_id: String,
-    /// `agent`, `teammate`, `shell`, `monitor`, `cron` or `code`.
+    /// `agent`, `teammate`, `member`, `shell`, `monitor`, `cron` or `code`.
     #[serde(serialize_with = "wire_kind")]
     #[schemars(with = "String")]
     pub kind: TaskType,
@@ -413,6 +418,8 @@ fn wire_kind<S: serde::Serializer>(kind: &TaskType, s: S) -> Result<S::Ok, S::Er
 #[non_exhaustive]
 pub enum TaskStatus {
     Running,
+    /// Alive with nothing to do: a persistent team member between messages.
+    Idle,
     /// Running, and waiting on the host to answer a question.
     Waiting,
     Done,
@@ -424,6 +431,7 @@ impl TaskStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Idle => "idle",
             Self::Waiting => "waiting",
             Self::Done => "done",
             Self::Stopped => "stopped",

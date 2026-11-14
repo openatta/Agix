@@ -1505,6 +1505,62 @@ async fn a_team_member_idle_past_its_bound_no_longer_holds_off_a_rebuild() {
     );
 }
 
+#[tokio::test]
+async fn a_live_team_member_is_one_of_its_sessions_tasks() {
+    let model = Arc::new(MockAnthropicClient::new());
+    model.push_turn(ask_member("a1", "remember PELICAN"));
+    model.push_turn(text_round("noted"));
+    model.push_turn(text_round("asked"));
+    let daemon = Daemon::start_configured(model.clone(), |settings, _| {
+        settings.execution.team_enabled = true;
+    })
+    .await;
+    let session = daemon.ok("session.create", serde_json::json!({})).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    daemon
+        .ok(
+            "session.run_turn",
+            serde_json::json!({"session_id": session, "message": "brief the scribe"}),
+        )
+        .await;
+    let member = eventually!("the member be listed idle", {
+        let tasks = daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await;
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["kind"] == "member" && t["status"] == "idle")
+            .cloned()
+    });
+    let id = member["task_id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("member-"), "{member}");
+    assert_eq!(member["detail"]["team"], "crew", "{member}");
+    assert_eq!(member["detail"]["member"], "scribe", "{member}");
+
+    let stopped = daemon
+        .ok(
+            "session.stopTask",
+            serde_json::json!({"session_id": session, "task_id": id}),
+        )
+        .await;
+    assert_eq!(stopped["stopped"], true, "{stopped}");
+    eventually!("the stopped member leave the list", {
+        let tasks = daemon
+            .ok("session.tasks", serde_json::json!({"session_id": session}))
+            .await;
+        tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["kind"] != "member")
+            .then_some(())
+    });
+}
+
 fn asks_to_run(command: &str) -> Arc<MockAnthropicClient> {
     let model = Arc::new(MockAnthropicClient::new());
     model.push_turn(tool_round(

@@ -1938,7 +1938,7 @@ recordings/<name>/calls.jsonl, blobs/    只在 include 列了 "recording" 时
 
 这个会话里在会话之外继续跑的工作:子 Agent(前台的和后台的)、团队成员、执行中的
 Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用 `TaskOutput` / `TaskStop`
-看到的是同一份。
+看到的是同一份,另外列出活着的常驻团队成员。
 
 ```jsonc
 // → params
@@ -1947,11 +1947,11 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 { "active": true,           // 引擎是否在内存里;不在时只有定时任务
   "tasks": [
     { "task_id": "…",
-      "kind": "agent",      // agent | teammate | shell | monitor | cron | code
-      "status": "running",  // running | waiting | done | failed | stopped;定时任务总是 waiting
+      "kind": "agent",      // agent | teammate | member | shell | monitor | cron | code
+      "status": "running",  // running | waiting | done | failed | stopped;定时任务总是 waiting;member 为 idle | running
       "started_ms": 0, "ended_ms": null,
       "detail": { },        // agent:{agent_type,description,background,tool_use_id,agent_session_id,tag?}
-                            // teammate:{team,member};shell:{command,tool_use_id}
+                            // teammate / member:{team,member};shell:{command,tool_use_id}
                             // monitor:{command,description,persistent,tool_use_id}
                             // code:{description,background,tool_use_id}(RunCode 的程序,docs/ptc.md)
                             // cron:{cron,prompt,recurring,durable,expires_ms}
@@ -1971,6 +1971,10 @@ Shell 命令与监视器,以及安排给它的定时任务(§6.7)。和模型用
 
 子 Agent 有询问在等宿主回答(§10)时是 `waiting`,`waiting_for` 列出这些询问的
 `prompt_id`;答完(或超时)回到 `running`。它仍在跑:`stopTask`、`messageTask` 照常。
+
+`member` 是一个活着的常驻团队成员(`id` 形如 `member-…`):它交给的每条消息各是一个 `teammate`
+任务,其中一个在跑时它是 `running`,否则 `idle`;`started_ms` 为 0。活着的成员会挡住重建
+(`SESSION_BUSY`,`reason: "background_tasks"`),`session.stopTask` 拿它的 `id` 停掉它,之后它不再列出。
 
 正在跑的全列出,已经结束的保留最近 20 个。会话不存在 → `SESSION_NOT_FOUND`。
 
