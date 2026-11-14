@@ -570,14 +570,21 @@ async fn an_authorization_endpoint_that_is_not_a_web_page_is_never_handed_to_the
     assert_eq!(conn.status("docs").await["auth"]["state"], "required");
 }
 
+/// A port the daemon is told to listen on later. One from the ephemeral range
+/// (what binding port 0 hands out) can be taken in between as the source port
+/// of another test's outgoing connection.
+fn free_port_outside_the_ephemeral_range() -> u16 {
+    let start = (std::process::id() as u16).wrapping_mul(7919) % 20_000;
+    (0..20_000)
+        .map(|i| 20_000 + (start + i) % 20_000)
+        .find(|&port| std::net::TcpListener::bind(("127.0.0.1", port)).is_ok())
+        .expect("a free port between 20000 and 40000")
+}
+
 #[tokio::test]
 async fn a_sign_in_on_a_fixed_callback_port_can_be_started_again() {
     let (mcp, _auth) = McpServer::start().await;
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let port = free_port_outside_the_ephemeral_range();
     let d = Daemon::start(serde_json::json!({"docs": {
         "type": "streamable_http",
         "url": mcp.url,
