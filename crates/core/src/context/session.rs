@@ -32,10 +32,8 @@ pub struct SessionState {
     /// The [`DurableState`] the session log last had; `None` once a write
     /// of it failed, so the next one writes it whatever it is.
     recorded_durable: std::sync::Mutex<Option<DurableState>>,
-    /// 本会话已激活的 deferred 工具名集合。`EngineConfig::deferred_tools`
-    /// 里的工具在请求的工具表里只有 name + description；模型用 `ToolSearch`
-    /// 命中后 schema 留在转录里、名字记进这里，工具表不变（保住 prompt cache），
-    /// 压缩后的恢复提醒按这份名单让模型重新取 schema。
+    /// 本会话用 `ToolSearch` 取过 schema 的 deferred 工具。schema 留在转录里，
+    /// 工具表不变（保住 prompt cache）；压缩后的恢复提醒按这份名单让模型重新取。
     activated_tools: std::sync::Mutex<HashSet<String>>,
     /// 后台跑的 sub-agent 任务。AgentTool 在 background=true 时把每个
     /// 任务塞进来；TaskOutput 工具按 id 查；TaskStop 触发 cancel。

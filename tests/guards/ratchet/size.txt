@@ -13,7 +13,7 @@ file  crates/mcp/src/connect.rs                                   -             
 file  crates/mcp/src/manager.rs                                   -                                      1273
 file  crates/mcp/src/oauth/mod.rs                                 -                                      1104
 file  crates/platform/src/sandbox.rs                              -                                      1498
-file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      855
+file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      861
 file  crates/session/src/session.rs                               -                                      835
 file  crates/team/src/coordinator.rs                              -                                      981
 file  crates/telemetry/src/recorder/mod.rs                        -                                      942
