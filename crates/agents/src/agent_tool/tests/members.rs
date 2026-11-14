@@ -1076,6 +1076,69 @@ async fn stopping_a_member_mid_turn_ends_its_messages_task_at_once() {
     assert_eq!(status(), Some(TaskStatus::Stopped));
 }
 
+/// A member stopped with a message running and one queued tells the parent
+/// each message's task was stopped, once each, though the running turn
+/// ignores the cancel and ends later.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_a_member_tells_the_parent_each_message_was_stopped() {
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let registry = Arc::new(team::registry::TeamRegistry::new());
+    let agent_tool = TestParent {
+        team_registry: Some(registry.clone()),
+        ..TestParent::new(Arc::new(HoldsUntilReleased {
+            mark: "STUCK-MARK",
+            held: held.clone(),
+            release: release.clone(),
+        }))
+    }
+    .agent_tool();
+    let session = agent_tool.parent_state();
+    let message = |prompt: &'static str| {
+        agent_tool.spawn_or_message_team_member(
+            "team".into(),
+            "worker".into(),
+            prompt.into(),
+            None,
+            std::env::temp_dir(),
+            session.clone(),
+            None,
+        )
+    };
+    let running = message("STUCK-MARK work").await.expect("spawned");
+    tokio::time::timeout(std::time::Duration::from_secs(10), held.notified())
+        .await
+        .expect("the member's turn reaches the model");
+    let queued = message("more work").await.expect("queued");
+
+    agent_tool.stop_team_member("team", "worker").await;
+    release.notify_one();
+    let shut_down = || {
+        registry.list().iter().any(|t| {
+            t.members.iter().any(|m| {
+                m.label == "worker" && m.lifecycle == team::coordinator::TeammateLifecycle::Shutdown
+            })
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !shut_down() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the member's loop ends once its turn does");
+
+    let notices = session.take_notices();
+    for task_id in [&running, &queued] {
+        let told: Vec<_> = notices
+            .iter()
+            .filter(|n| n.contains(&format!("<task-id>{task_id}</task-id>")))
+            .collect();
+        assert_eq!(told.len(), 1, "{task_id}: {notices:?}");
+        assert!(told[0].contains("<status>stopped</status>"), "{told:?}");
+    }
+}
+
 /// A team deleted while one of its members is mid-turn stays deleted when
 /// that turn ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

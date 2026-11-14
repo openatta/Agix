@@ -46,7 +46,8 @@ pub(crate) struct PersistentMessage {
 /// the task, and a message that never runs — refused at the door, or left
 /// in the queue when the member stops — ends its task as stopped when it is
 /// dropped. Stopping the member ends the tasks of every message not yet
-/// done, the running one too, without waiting for its turn to wind down.
+/// done, the running one too, without waiting for its turn to wind down,
+/// and tells the parent each was stopped.
 #[derive(Clone)]
 pub(crate) struct MemberInbox {
     tx: tokio::sync::mpsc::UnboundedSender<PersistentMessage>,
@@ -69,7 +70,14 @@ impl MemberInbox {
     fn stop_unfinished(&self, session: &SessionState) {
         let unfinished =
             std::mem::take(&mut *self.unfinished.lock().unwrap_or_else(|e| e.into_inner()));
-        for task in unfinished {
+        for task in unfinished.iter().filter(|task| !task.has_ended()) {
+            // Before the task ends, as a lease's own notice is: whoever wakes
+            // on the end finds it there to withdraw. Its lease, ending later,
+            // sees the task ended and posts none.
+            session.post_notice(
+                Some(task.task_id.clone()),
+                task_notification(task, &DelegateEnd::Cancelled),
+            );
             session.cancel_running_task(&task.task_id);
         }
     }
