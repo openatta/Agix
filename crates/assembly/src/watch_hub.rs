@@ -13,7 +13,7 @@ use notify::{recommended_watcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::broadcast;
 
 /// Which config-layer tier a watched directory belongs to.
@@ -135,7 +135,7 @@ impl WatchHub {
         .map_err(|e| format!("notify watcher creation failed: {e}"))?;
         *inner.watcher.lock().unwrap() = Some(watcher);
 
-        let inner_for_thread = inner.clone();
+        let inner_for_thread = Arc::downgrade(&inner);
         std::thread::Builder::new()
             .name("watch-hub".into())
             .spawn(move || drain_events(rx, inner_for_thread))
@@ -335,10 +335,16 @@ fn content_hash(path: &Path) -> Option<u64> {
     Some(hasher.finish())
 }
 
-fn drain_events(rx: std::sync::mpsc::Receiver<notify::Result<Event>>, inner: Arc<Inner>) {
+/// Holds the hub weakly: the hub owns the `notify` watcher whose callback
+/// feeds `rx`, so dropping the last hub handle drops the sender and ends this
+/// thread.
+fn drain_events(rx: std::sync::mpsc::Receiver<notify::Result<Event>>, inner: Weak<Inner>) {
     loop {
         match rx.recv() {
             Ok(Ok(event)) => {
+                let Some(inner) = inner.upgrade() else {
+                    break;
+                };
                 for path in &event.paths {
                     for key in inner.keys_for_event_path(path) {
                         inner.schedule_notify(key);
@@ -379,6 +385,26 @@ mod tests {
     /// its own short budget, because there the wait is the assertion.
     fn settle() -> Duration {
         DEBOUNCE + Duration::from_secs(15)
+    }
+
+    #[tokio::test]
+    async fn dropping_the_hub_and_its_tokens_lets_its_state_and_thread_go() {
+        let hub = WatchHub::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let token = hub.subscribe(
+            WatchKey {
+                tier: Tier::Global,
+                target: WatchTarget::Settings,
+            },
+            dir.path(),
+        );
+        let inner = Arc::downgrade(&hub.inner);
+        drop(token);
+        drop(hub);
+        assert!(
+            inner.upgrade().is_none(),
+            "the watcher thread still holds the hub"
+        );
     }
 
     #[tokio::test]
