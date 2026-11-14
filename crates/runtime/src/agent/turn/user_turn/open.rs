@@ -49,6 +49,9 @@ impl Agent {
             input.with_turn_id(self.current_turn_id.clone())
         })
         .await;
+        // Here rather than only before the first tool runs: taking it there
+        // puts a `git` call between a stream's concurrent tool starts.
+        tools::nested_repos::take_baseline(&self.skill_invocation_context(cancel.clone())).await;
 
         // `turn_count` is incremented only at the end of the turn, so this
         // is the turn_no every later `turn_complete` carries.
