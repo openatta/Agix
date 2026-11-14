@@ -645,131 +645,116 @@ pub(crate) fn truncate_str_at_char_boundary(s: &str, max_bytes: usize) -> &str {
 /// lose its bearings.
 pub fn build_post_compact_recovery(ctx: &PostCompactContext) -> Vec<ModelMessage> {
     let mut recovery = Vec::new();
+    recovery.extend(recent_files_reminder(&ctx.recent_files));
+    recovery.extend(invoked_skills_reminder(&ctx.invoked_skills));
 
-    // 1. Recently read files
-    if !ctx.recent_files.is_empty() {
-        let files: Vec<_> = ctx
-            .recent_files
-            .iter()
-            .take(MAX_RECOVER_FILES)
-            .map(|(path, content)| {
-                let truncated = if content.len() > MAX_CHARS_PER_FILE {
-                    format!(
-                        "{}...\n[content truncated]",
-                        truncate_str_at_char_boundary(content, MAX_CHARS_PER_FILE)
-                    )
-                } else {
-                    content.clone()
-                };
-                format!("## {path}\n\n{truncated}")
-            })
-            .collect();
-        if !files.is_empty() {
-            let body = format!(
-                "The following files were read before context compaction and may still be relevant:\n\n{}",
-                files.join("\n\n---\n\n")
-            );
-            recovery.push(ModelMessage {
-                role: MessageRole::User,
-                content: vec![ModelContentBlock::Text {
-                    text: format!("<system-reminder>\n{body}\n</system-reminder>"),
-                }],
-            });
-        }
-    }
-
-    // 2. Invoked skills — re-attach actual body content (not just names),
-    // most-recently-invoked first, within the shared budget: up to the first
-    // 5,000 tokens of each skill, within a combined 25,000-token budget,
-    // starting from the most recently invoked skill so older skills can be
-    // dropped entirely once the budget runs out.
-    if !ctx.invoked_skills.is_empty() {
-        let mut by_recency = ctx.invoked_skills.clone();
-        by_recency.sort_by_key(|s| std::cmp::Reverse(s.last_seq));
-
-        let mut sections = Vec::new();
-        let mut spent = 0usize;
-        let mut dropped_names = Vec::new();
-        for skill in &by_recency {
-            let Some(content) = &skill.content else {
-                dropped_names.push(skill.name.clone());
-                continue;
-            };
-            let capped = if content.len() > MAX_CHARS_PER_SKILL {
-                format!(
-                    "{}...[truncated]",
-                    truncate_str_at_char_boundary(content, MAX_CHARS_PER_SKILL)
-                )
-            } else {
-                content.clone()
-            };
-            if spent + capped.len() > MAX_CHARS_SKILLS_TOTAL {
-                dropped_names.push(skill.name.clone());
-                continue;
-            }
-            spent += capped.len();
-            sections.push(format!("## {}\n\n{}", skill.name, capped));
-        }
-
-        let mut body = String::from(
-            "The following skills were invoked before compaction — their instructions may still apply. Full content for the most recently used ones is repeated below; re-invoke any skill via the Skill tool if you need the exact steps again.\n\n",
-        );
-        body.push_str(&sections.join("\n\n---\n\n"));
-        if !dropped_names.is_empty() {
-            body.push_str(&format!(
-                "\n\n(Also invoked before compaction, but dropped here for budget — re-invoke if needed: {})",
-                dropped_names.join(", ")
-            ));
-        }
-        recovery.push(ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: format!("<system-reminder>\n{body}\n</system-reminder>"),
-            }],
-        });
-    }
-
-    // 3. Plan mode
     if ctx.in_plan_mode {
-        recovery.push(ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: "<system-reminder>\nPlan mode is still active: only read-only tools will run. When your plan is ready, present it and call ExitPlanMode.\n</system-reminder>".to_string(),
-            }],
-        });
+        recovery.push(reminder(
+            "Plan mode is still active: only read-only tools will run. When your plan is ready, present it and call ExitPlanMode.",
+        ));
     }
 
-    // 4. Background running tasks
     if !ctx.running_tasks.is_empty() {
         let tasks_lines: Vec<_> = ctx
             .running_tasks
             .iter()
             .map(|(id, status)| format!("- task:{id} — {status}"))
             .collect();
-        let body = format!(
+        recovery.push(reminder(&format!(
             "The following background tasks are still running:\n\n{}",
             tasks_lines.join("\n")
-        );
-        recovery.push(ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: format!("<system-reminder>\n{body}\n</system-reminder>"),
-            }],
-        });
+        )));
     }
 
-    // 5. Activated deferred tools
     if !ctx.activated_tools.is_empty() {
         let tools_text = ctx.activated_tools.join(", ");
-        recovery.push(ModelMessage {
-            role: MessageRole::User,
-            content: vec![ModelContentBlock::Text {
-                text: format!("<system-reminder>\nThese deferred tools were loaded earlier with ToolSearch: {tools_text}. If a schema it returned is no longer in the conversation, load it again with ToolSearch (select:<name>) before calling that tool.\n</system-reminder>"),
-            }],
-        });
+        recovery.push(reminder(&format!(
+            "These deferred tools were loaded earlier with ToolSearch: {tools_text}. If a schema it returned is no longer in the conversation, load it again with ToolSearch (select:<name>) before calling that tool."
+        )));
     }
 
     recovery
+}
+
+fn reminder(body: &str) -> ModelMessage {
+    ModelMessage {
+        role: MessageRole::User,
+        content: vec![ModelContentBlock::Text {
+            text: format!("<system-reminder>\n{body}\n</system-reminder>"),
+        }],
+    }
+}
+
+fn recent_files_reminder(recent_files: &[(String, String)]) -> Option<ModelMessage> {
+    let files: Vec<_> = recent_files
+        .iter()
+        .take(MAX_RECOVER_FILES)
+        .map(|(path, content)| {
+            let truncated = if content.len() > MAX_CHARS_PER_FILE {
+                format!(
+                    "{}...\n[content truncated]",
+                    truncate_str_at_char_boundary(content, MAX_CHARS_PER_FILE)
+                )
+            } else {
+                content.clone()
+            };
+            format!("## {path}\n\n{truncated}")
+        })
+        .collect();
+    if files.is_empty() {
+        return None;
+    }
+    Some(reminder(&format!(
+        "The following files were read before context compaction and may still be relevant:\n\n{}",
+        files.join("\n\n---\n\n")
+    )))
+}
+
+/// Re-attaches the skills' actual bodies, most recently invoked first: up to
+/// the first 5,000 tokens of each, within a combined 25,000-token budget, so
+/// older skills drop out entirely once the budget runs out.
+fn invoked_skills_reminder(invoked_skills: &[InvokedSkillRecord]) -> Option<ModelMessage> {
+    if invoked_skills.is_empty() {
+        return None;
+    }
+    let mut by_recency = invoked_skills.to_vec();
+    by_recency.sort_by_key(|s| std::cmp::Reverse(s.last_seq));
+
+    let mut sections = Vec::new();
+    let mut spent = 0usize;
+    let mut dropped_names = Vec::new();
+    for skill in &by_recency {
+        let Some(content) = &skill.content else {
+            dropped_names.push(skill.name.clone());
+            continue;
+        };
+        let capped = if content.len() > MAX_CHARS_PER_SKILL {
+            format!(
+                "{}...[truncated]",
+                truncate_str_at_char_boundary(content, MAX_CHARS_PER_SKILL)
+            )
+        } else {
+            content.clone()
+        };
+        if spent + capped.len() > MAX_CHARS_SKILLS_TOTAL {
+            dropped_names.push(skill.name.clone());
+            continue;
+        }
+        spent += capped.len();
+        sections.push(format!("## {}\n\n{}", skill.name, capped));
+    }
+
+    let mut body = String::from(
+        "The following skills were invoked before compaction — their instructions may still apply. Full content for the most recently used ones is repeated below; re-invoke any skill via the Skill tool if you need the exact steps again.\n\n",
+    );
+    body.push_str(&sections.join("\n\n---\n\n"));
+    if !dropped_names.is_empty() {
+        body.push_str(&format!(
+            "\n\n(Also invoked before compaction, but dropped here for budget — re-invoke if needed: {})",
+            dropped_names.join(", ")
+        ));
+    }
+    Some(reminder(&body))
 }
 
 /// Tool names whose results are file reads worth recovering after compaction.
