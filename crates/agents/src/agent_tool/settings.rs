@@ -110,52 +110,16 @@ pub(super) fn fallback_settings(
     fallback_model: Option<String>,
     local_data_dir: std::path::PathBuf,
 ) -> LoadedSettings {
-    LoadedSettings::new(
-        Settings {
-            model: ModelSettings {
-                api_type: base::provider::ApiType::Anthropic,
-                base_url: String::new(),
-                auth_token: String::new(),
-                model_name,
-                max_tokens,
-                thinking_mode: ThinkingMode::Auto,
-                effort: None,
-                fallback_model,
-            },
-            execution: ExecutionSettings::default(),
-            compaction: Default::default(),
-            sandbox: SandboxConfig::default(),
-            plugins: Default::default(),
-            instruction_file: None,
-            prompt_append: None,
-            prompt_override: None,
-            recorder: None,
-            telemetry_url: None,
-            memory_enabled: true,
-            disable_skill_shell_execution: false,
-            path_style: Default::default(),
-            permission_mode: PermissionMode::default(),
-            allow_client_permission_override: false,
-            telemetry_enabled: true,
-            hooks_config: None,
-            project_trust: Default::default(),
-            mcp_servers: Default::default(),
-            providers: Default::default(),
-            default_provider: None,
-            task_models: Default::default(),
-            language: None,
-            // A sub-agent inherits no script bindings: a script bound in the
-            // parent's configuration applies to the parent's prompt, and quietly
-            // running it against every spawned agent's prompt too would be a
-            // scope nobody asked for.
-            scripts: Vec::new(),
-        },
-        PathSettings {
-            user_data_dir: local_data_dir.join("scenes").join("code"),
-            global_data_dir: local_data_dir.clone(),
-            workspace: base::settings::Workspace::project_of(&local_data_dir),
-            local_data_dir,
-            scope: "code".to_string(),
-        },
-    )
+    let mut settings = Settings::defaults_for(&model_name);
+    settings.model.max_tokens = max_tokens;
+    settings.model.thinking_mode = ThinkingMode::Auto;
+    settings.model.effort = None;
+    settings.model.fallback_model = fallback_model;
+    let mut paths = PathSettings::default();
+    paths.user_data_dir = local_data_dir.join("scenes").join("code");
+    paths.global_data_dir = local_data_dir.clone();
+    paths.workspace = base::settings::Workspace::project_of(&local_data_dir);
+    paths.local_data_dir = local_data_dir;
+    paths.scope = "code".to_string();
+    LoadedSettings::new(settings, paths)
 }

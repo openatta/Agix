@@ -140,10 +140,7 @@ impl Delegator {
             lease = lease.notifying(|task| task_notification(task, &DelegateEnd::Cancelled));
         }
         let task = lease.task().clone();
-        let agent = StartedAgent {
-            task_id: task.task_id.clone(),
-            agent_session_id: spec.session_id.clone(),
-        };
+        let agent = StartedAgent::new(task.task_id.clone(), spec.session_id.clone());
         let shot = OneShot {
             relay: self.relay_for(&spec, Some(task.clone()), &ask),
             spec,

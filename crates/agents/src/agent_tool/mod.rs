@@ -23,12 +23,9 @@ use base::interface::scene::SceneSpec;
 use base::paths::PromptFiles;
 use base::settings::{Effort, LoadedSettings, Settings};
 #[cfg(test)]
-use base::settings::{
-    ExecutionSettings, ModelSettings, PathSettings, PermissionMode, SandboxConfig, ThinkingMode,
-};
+use base::settings::{PathSettings, ThinkingMode};
 use base::tool::ProgressSender;
 use base::tool::ToolContext;
-use base::tool::ToolResultContent;
 use base::tool::{PathStyle, ToolSpec};
 use history::store::HistoryStore;
 use runtime::agent::{Agent, Builder, EventReceiver, InputMessage, InputSender};
@@ -222,13 +219,7 @@ pub(crate) fn tool_error(e: DelegateError) -> base::error::ToolError {
 }
 
 fn sub_agent_error(e: impl std::fmt::Display) -> base::tool::ToolResult {
-    base::tool::ToolResult {
-        content: ToolResultContent::Text(format!("sub-agent error: {e}")),
-        is_error: true,
-        structured_content: None,
-        mcp_meta: None,
-        new_messages: None,
-    }
+    base::tool::ToolResult::error_text(format!("sub-agent error: {e}"))
 }
 
 #[async_trait]
@@ -326,13 +317,11 @@ impl base::tool::Tool for AgentTool {
         Ok(match delegated {
             Ok(Delegated::Finished(outcome)) => match outcome.end {
                 DelegateEnd::Failed(e) => sub_agent_error(e),
-                _ => base::tool::ToolResult {
-                    content: ToolResultContent::Text(outcome.text),
-                    is_error: false,
-                    structured_content: outcome.structured,
-                    mcp_meta: None,
-                    new_messages: None,
-                },
+                _ => {
+                    let mut result = base::tool::ToolResult::text(outcome.text);
+                    result.structured_content = outcome.structured;
+                    result
+                }
             },
             Ok(Delegated::Started(_)) => sub_agent_error("it was started instead of waited on"),
             Err(e) => sub_agent_error(tool_error(e)),

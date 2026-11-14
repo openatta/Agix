@@ -110,13 +110,7 @@ pub(crate) fn task_notification(task: &base::context::RunningTask, end: &Delegat
 }
 
 pub(crate) fn bg_result(task_id: &str, status: &str) -> base::tool::ToolResult {
-    base::tool::ToolResult {
-        content: ToolResultContent::Text(format!(
-            "background task spawned (task_id: {task_id}, status: {status})"
-        )),
-        is_error: false,
-        structured_content: None,
-        mcp_meta: None,
-        new_messages: None,
-    }
+    base::tool::ToolResult::text(format!(
+        "background task spawned (task_id: {task_id}, status: {status})"
+    ))
 }

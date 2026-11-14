@@ -182,13 +182,7 @@ impl base::tool::Tool for AskingProbe {
         _progress: ProgressSender,
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
         self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(base::tool::ToolResult {
-            content: ToolResultContent::Text("probed".into()),
-            is_error: false,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(base::tool::ToolResult::text("probed"))
     }
 }
 

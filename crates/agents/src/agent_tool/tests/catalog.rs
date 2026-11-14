@@ -477,13 +477,7 @@ impl base::tool::Tool for NamedTool {
         _ctx: ToolContext,
         _progress: ProgressSender,
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
-        Ok(base::tool::ToolResult {
-            content: ToolResultContent::Text("ok".into()),
-            is_error: false,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(base::tool::ToolResult::text("ok"))
     }
 }
 

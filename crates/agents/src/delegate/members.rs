@@ -148,10 +148,10 @@ impl Delegator {
             .map(|m| (m.inbox.clone(), m.cancel.clone(), m.session_id.clone()));
         if let Some((inbox, cancel, session_id)) = &existing {
             if let Some(task_id) = inbox.deliver(self, &seat, cancel, prompt.clone()) {
-                return Ok(Delegated::Started(StartedAgent {
+                return Ok(Delegated::Started(StartedAgent::new(
                     task_id,
-                    agent_session_id: session_id.clone(),
-                }));
+                    session_id.clone(),
+                )));
             }
             // Its loop has ended since; spawn afresh under the same key.
             live.write().unwrap_or_else(|e| e.into_inner()).remove(&key);
@@ -264,10 +264,10 @@ impl Delegator {
             session_ended: me.env.parent.ended.clone(),
             spawned,
         }));
-        Ok(Delegated::Started(StartedAgent {
+        Ok(Delegated::Started(StartedAgent::new(
             task_id,
-            agent_session_id: spec.session_id,
-        }))
+            spec.session_id,
+        )))
     }
 
     /// Stop a member, idle or mid-turn, and forget it, so a later message

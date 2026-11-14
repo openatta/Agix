@@ -38,3 +38,4 @@ time     = { workspace = true }
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"
+field_reassign_with_default = "allow"

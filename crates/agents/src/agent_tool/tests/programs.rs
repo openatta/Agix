@@ -1,6 +1,7 @@
 //! Tests: programs.
 
 use super::*;
+use base::tool::ToolResultContent;
 
 /// A wired `AgentTool` in an attended scene whose parent's policy asks
 /// about every probe, with the events it sends up.

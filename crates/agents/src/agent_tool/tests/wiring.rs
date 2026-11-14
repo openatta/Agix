@@ -19,13 +19,11 @@ pub(super) fn parent_settings_for_test(scope: &str) -> (LoadedSettings, std::pat
         Settings::defaults_for("test-model"),
         base::settings::PathSettings::default(),
     );
-    s.paths = PathSettings {
-        user_data_dir: dir.clone(),
-        global_data_dir: dir.clone(),
-        workspace: base::settings::Workspace::project_of(&dir),
-        local_data_dir: dir.clone(),
-        scope: scope.to_string(),
-    };
+    s.paths.user_data_dir = dir.clone();
+    s.paths.global_data_dir = dir.clone();
+    s.paths.workspace = base::settings::Workspace::project_of(&dir);
+    s.paths.local_data_dir = dir.clone();
+    s.paths.scope = scope.to_string();
     // Keep the turn from making an extra post-turn extraction call.
     s.values.memory_enabled = false;
     (s, dir)
@@ -149,13 +147,7 @@ impl base::tool::Tool for CountingProbeTool {
         _progress: ProgressSender,
     ) -> Result<base::tool::ToolResult, base::error::ToolError> {
         self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(base::tool::ToolResult {
-            content: ToolResultContent::Text("probed".into()),
-            is_error: false,
-            structured_content: None,
-            mcp_meta: None,
-            new_messages: None,
-        })
+        Ok(base::tool::ToolResult::text("probed"))
     }
 }
 
