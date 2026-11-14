@@ -120,6 +120,8 @@ impl Sink {
     }
 }
 
+const READY_AFTER_STOP: usize = 256;
+
 /// Drain the tagged output stream into one buffer per pipe, until it ends or
 /// `stop` fires.
 ///
@@ -136,17 +138,30 @@ pub(super) async fn drain_output(
 ) -> (String, String) {
     use base::interface::exec::OutputStream;
     let (mut out, mut err) = (Lines::default(), Lines::default());
+    let mut keep = |chunk: base::interface::exec::OutputChunk| match chunk.stream {
+        OutputStream::Stdout => out.feed(&chunk.bytes, &sink),
+        OutputStream::Stderr => err.feed(&chunk.bytes, &sink),
+    };
     loop {
         let next = tokio::select! {
             biased;
             _ = stop.cancelled() => None,
             n = output.next() => n,
         };
-        let Some(chunk) = next else { break };
-        let Ok(chunk) = chunk else { break };
-        match chunk.stream {
-            OutputStream::Stdout => out.feed(&chunk.bytes, &sink),
-            OutputStream::Stderr => err.feed(&chunk.bytes, &sink),
+        match next {
+            Some(Ok(chunk)) => keep(chunk),
+            Some(Err(_)) => break,
+            None => {
+                // On a loaded machine the grace can run out with the last output
+                // already read off the pipe but not yet taken; keep that much.
+                for _ in 0..READY_AFTER_STOP {
+                    match futures::FutureExt::now_or_never(output.next()) {
+                        Some(Some(Ok(chunk))) => keep(chunk),
+                        _ => break,
+                    }
+                }
+                break;
+            }
         }
     }
     (out.finish(&sink), err.finish(&sink))

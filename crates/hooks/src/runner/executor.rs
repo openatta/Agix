@@ -9,7 +9,7 @@ use crate::payload::{HookDecision, HookInput, HookResponse};
 use base::interface::exec::{
     ExecError, OutputChunk, OutputStream, Process, ProcessSpec, OUTPUT_GRACE_AFTER_EXIT,
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -557,21 +557,37 @@ fn response_for_exit(
     }
 }
 
+const READY_AFTER_STOP: usize = 256;
+
 async fn collect_output(
     mut output: futures::stream::BoxStream<'static, Result<OutputChunk, ExecError>>,
     stop: CancellationToken,
 ) -> (String, String) {
     let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut keep = |chunk: OutputChunk| match chunk.stream {
+        OutputStream::Stdout => out.extend(chunk.bytes),
+        OutputStream::Stderr => err.extend(chunk.bytes),
+    };
     loop {
         let next = tokio::select! {
             biased;
             _ = stop.cancelled() => None,
             n = output.next() => n,
         };
-        let Some(Ok(chunk)) = next else { break };
-        match chunk.stream {
-            OutputStream::Stdout => out.extend(chunk.bytes),
-            OutputStream::Stderr => err.extend(chunk.bytes),
+        match next {
+            Some(Ok(chunk)) => keep(chunk),
+            Some(Err(_)) => break,
+            None => {
+                // On a loaded machine the grace can run out with the last output
+                // already read off the pipe but not yet taken; keep that much.
+                for _ in 0..READY_AFTER_STOP {
+                    match output.next().now_or_never() {
+                        Some(Some(Ok(chunk))) => keep(chunk),
+                        _ => break,
+                    }
+                }
+                break;
+            }
         }
     }
     (
