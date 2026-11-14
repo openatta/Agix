@@ -77,6 +77,8 @@ pub enum TeammateLifecycle {
     Completed,
     /// Agent shut down (cleanup complete).
     Shutdown,
+    /// Agent stopped before it finished.
+    Cancelled,
 }
 
 /// How one stage member's run ended, as the team counts it.
@@ -494,12 +496,12 @@ impl Coordinator for DefaultCoordinator {
                 });
                 let results = futures::future::join_all(futs).await;
 
-                // Bulk-mark every agent in this stage Completed after the join.
-                for agent_spec in &stage.agents {
-                    lifecycles.insert(agent_spec.label.clone(), TeammateLifecycle::Completed);
-                }
-
                 for (label, text, end) in results {
+                    let lifecycle = match end {
+                        MemberEnd::Cancelled => TeammateLifecycle::Cancelled,
+                        MemberEnd::Done | MemberEnd::Failed => TeammateLifecycle::Completed,
+                    };
+                    lifecycles.insert(label.clone(), lifecycle);
                     let is_error = end != MemberEnd::Done;
                     match end {
                         MemberEnd::Done => {}
@@ -2000,6 +2002,15 @@ mod tests {
             .expect("member_completed is recorded");
         assert_eq!(completed["cancelled"], true, "{completed}");
         assert_eq!(completed["is_error"], true, "{completed}");
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(team_dir.join("state.json")).expect("state.json"),
+        )
+        .expect("state.json is json");
+        assert_eq!(state["members"][0]["lifecycle"], "cancelled", "{state}");
+        assert_eq!(
+            registry.list()[0].members[0].lifecycle,
+            TeammateLifecycle::Cancelled
+        );
     }
 
     /// A stage's telemetry belongs to the lead's session, not to the team.

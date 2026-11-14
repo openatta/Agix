@@ -15,7 +15,7 @@ file  crates/mcp/src/oauth/mod.rs                                 -             
 file  crates/platform/src/sandbox.rs                              -                                      1506
 file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      861
 file  crates/session/src/session.rs                               -                                      835
-file  crates/team/src/coordinator.rs                              -                                      981
+file  crates/team/src/coordinator.rs                              -                                      983
 file  crates/telemetry/src/recorder/mod.rs                        -                                      942
 fn    crates/agents/src/agent_tool/build.rs                       Delegator::build_delegate              92
 fn    crates/agents/src/agent_tool/build.rs                       Delegator::run_delegate                89

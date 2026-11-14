@@ -2563,7 +2563,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   新增 `with_events`、`with_telemetry`;`TeamCreateTool::new(model, config, Box<dyn Coordinator>)`,
   `with_spawner`、`set_event_sender`、`set_telemetry_handle` 删除;`OrchestrateRequest` 去掉
   `parent_tools`、`sub_tools`;`aggregate` 多一个 `&CancellationToken`;`persist::TeamEvent::MemberCompleted`
-  多 `cancelled`;新增 `TeamRegistry::update_recorded_member_lifecycle`。
+  多 `cancelled`;新增 `TeamRegistry::update_recorded_member_lifecycle`。`TeammateLifecycle` 新增
+  `Cancelled`:被取消的阶段成员在 `state.json` 与 `TeamList` 里记为 `cancelled`,不再记成 `completed`。
 - **skills。** `SkillTool::with_spawner` 改为 `with_delegator(Arc<dyn Delegator>)`;`skills::tool::register`
   第四个参数改为 `Option<Arc<dyn Delegator>>`。
 - **assembly。** `StartAgentParams::into_request` 返回 `DelegateRequest`;`SessionPool::start_agent` 收
