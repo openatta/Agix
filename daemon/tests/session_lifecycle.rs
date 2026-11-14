@@ -2382,31 +2382,22 @@ async fn a_change_sent_on_turn_complete_finds_the_session_free() {
     )
     .await;
 
-    let calls: [(&str, fn(&str) -> serde_json::Value); 6] = [
+    let calls = [
         (
             "session.setPrompt",
-            |sid| serde_json::json!({"session_id": sid, "append": "Be brief."}),
+            serde_json::json!({"append": "Be brief."}),
         ),
         (
             "session.setModel",
-            |sid| serde_json::json!({"session_id": sid, "model": "claude-haiku-4-5"}),
+            serde_json::json!({"model": "claude-haiku-4-5"}),
         ),
-        (
-            "session.inspectContext",
-            |sid| serde_json::json!({"session_id": sid}),
-        ),
-        (
-            "session.dropMessages",
-            |sid| serde_json::json!({"session_id": sid, "at": []}),
-        ),
+        ("session.inspectContext", serde_json::json!({})),
+        ("session.dropMessages", serde_json::json!({"at": []})),
         (
             "session.editMessage",
-            |sid| serde_json::json!({"session_id": sid, "at": 0, "text": "rewritten"}),
+            serde_json::json!({"at": 0, "text": "rewritten"}),
         ),
-        (
-            "session.compact",
-            |sid| serde_json::json!({"session_id": sid}),
-        ),
+        ("session.compact", serde_json::json!({})),
     ];
     let send = |id: u64, method: &str, params: serde_json::Value| {
         format!(
@@ -2414,7 +2405,7 @@ async fn a_change_sent_on_turn_complete_finds_the_session_free() {
             serde_json::json!({"jsonrpc": "2.0", "method": method, "id": id, "params": params})
         )
     };
-    for (method, params) in calls {
+    for (method, extra) in calls {
         for n in 0..20u64 {
             let created = rpc(
                 &srv.sock,
@@ -2441,7 +2432,9 @@ async fn a_change_sent_on_turn_complete_finds_the_session_free() {
             );
             write.write_all(goal.as_bytes()).await.unwrap();
 
-            let call = send(3, method, params(&sid));
+            let mut params = extra.clone();
+            params["session_id"] = serde_json::json!(sid);
+            let call = send(3, method, params);
             let mut sent = false;
             let answer = tokio::time::timeout(Duration::from_secs(20), async {
                 loop {
