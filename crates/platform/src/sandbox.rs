@@ -1700,7 +1700,7 @@ mod without_the_feature {
 mod tests {
     use super::*;
 
-    #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
     const INHERITED: CommandEnv<'static> = CommandEnv {
         set: &[],
         scope: EnvScope::Session,
