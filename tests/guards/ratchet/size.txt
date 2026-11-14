@@ -51,7 +51,6 @@ fn    crates/platform/src/sandbox.rs                       build_macos_profile  
 fn    crates/platform/src/sandbox.rs                       linux_wrap                               162
 fn    crates/ptc/src/lib.rs                                RunCodeTool::call                        101
 fn    crates/ptc/src/lib.rs                                execute                                  181
-fn    crates/runtime/src/turn/tool_exec.rs                 execute_tool_inner                       220
 fn    crates/script-host/src/lib.rs                        bindings::install                        123
 fn    crates/skills/src/bundled.rs                         bundled_skills                           135
 fn    crates/skills/src/tool.rs                            SkillTool::call                          155

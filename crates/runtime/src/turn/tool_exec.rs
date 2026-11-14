@@ -277,6 +277,43 @@ pub(super) async fn execute_tool_inner(
         .then(|| tool_ctx.clone());
 
     let input_for_post_hook = input.clone();
+    let (result, latency_ms, input_json_size) =
+        call_tool(ctx, name, &tool, input, tool_ctx, deferred).await;
+
+    let mut outcome = answer_of(ctx, result);
+    fence_external(name, &authorized.facts, ctx.from_code, &mut outcome);
+    if let Some(after) = owed {
+        super::obligations::fulfil(
+            ctx,
+            name,
+            &input_for_post_hook,
+            after,
+            authorized.facts.runs.is_some_and(|r| r.background),
+            &mut outcome,
+        )
+        .await;
+    }
+    let measured = (latency_ms, input_json_size, user_approved);
+    record_execution(ctx, name, &outcome, measured);
+
+    post_tool_use(ctx, name, &input_for_post_hook, &mut outcome).await;
+    fire_tool_lifecycle(ctx, name, &input_for_post_hook, &outcome).await;
+
+    apply_result_transformers(ctx, name, &input_for_post_hook, outcome)
+}
+
+async fn call_tool(
+    ctx: &ToolExecCtx,
+    name: &str,
+    tool: &Arc<dyn base::tool::Tool>,
+    input: serde_json::Value,
+    tool_ctx: base::tool::ToolContext,
+    deferred: bool,
+) -> (
+    Result<base::tool::ToolResult, base::error::ToolError>,
+    u64,
+    u64,
+) {
     let input_json_size = serde_json::to_string(&input)
         .map(|s| s.len() as u64)
         .unwrap_or(0);
@@ -319,23 +356,15 @@ pub(super) async fn execute_tool_inner(
     }
     drop(gate);
     let latency_ms = tool_start.elapsed().as_millis() as u64;
+    (result, latency_ms, input_json_size)
+}
 
-    let mut outcome = answer_of(ctx, result);
-    fence_external(name, &authorized.facts, ctx.from_code, &mut outcome);
-    if let Some(after) = owed {
-        super::obligations::fulfil(
-            ctx,
-            name,
-            &input_for_post_hook,
-            after,
-            authorized.facts.runs.is_some_and(|r| r.background),
-            &mut outcome,
-        )
-        .await;
-    }
-    let measured = (latency_ms, input_json_size, user_approved);
-    record_execution(ctx, name, &outcome, measured);
-
+async fn post_tool_use(
+    ctx: &ToolExecCtx,
+    name: &str,
+    input_for_post_hook: &serde_json::Value,
+    outcome: &mut base::interface::tool_middleware::ToolOutcome,
+) {
     // PostToolUse: the tool already ran, but this can still act two ways.
     //
     // 1. `continue: false` requests the whole turn end. That's a turn-level
@@ -359,7 +388,7 @@ pub(super) async fn execute_tool_inner(
     // that only cares about failures doesn't have to subscribe to every tool
     // call and filter on `is_error`. Fires before PostToolUse, which still
     // sees the failure too (with `is_error: true`) and can still rewrite it.
-    if let Err(ref e) = outcome {
+    if let Err(e) = &*outcome {
         let err = e.clone();
         let inp = input_for_post_hook.clone();
         fire_ctx_lifecycle_hook(ctx, hooks::HookEvent::PostToolUseFailure, |i| {
@@ -394,7 +423,7 @@ pub(super) async fn execute_tool_inner(
             .run(hooks::HookEvent::PostToolUse, &post_input, &ctx.cancel)
             .await;
         if let Some(response) = hook_result.blocked() {
-            outcome = Err(format!(
+            *outcome = Err(format!(
                 "Denied by PostToolUse hook: {}",
                 response.message.as_deref().unwrap_or("no reason given")
             ));
@@ -404,7 +433,14 @@ pub(super) async fn execute_tool_inner(
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
+}
 
+async fn fire_tool_lifecycle(
+    ctx: &ToolExecCtx,
+    name: &str,
+    input_for_post_hook: &serde_json::Value,
+    outcome: &base::interface::tool_middleware::ToolOutcome,
+) {
     // Tool-shaped lifecycle events. `WorktreeCreate` and `WorktreeRemove`
     // describe things a *tool* does, but tools have no access to the `HookRunner` — `ToolContext` deliberately
     // carries no hooks handle, and threading one through every tool for this
@@ -431,8 +467,6 @@ pub(super) async fn execute_tool_inner(
             notify_host(ctx, &input_for_post_hook).await;
         }
     }
-
-    apply_result_transformers(ctx, name, &input_for_post_hook, outcome)
 }
 
 /// What a tool's result becomes for the model: its text, with the images it
