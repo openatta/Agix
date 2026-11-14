@@ -512,6 +512,7 @@ impl Coordinator for DefaultCoordinator {
                         crate::persist::TeamEvent::MemberCompleted {
                             label: label.clone(),
                             is_error,
+                            cancelled: end == MemberEnd::Cancelled,
                         },
                         crate::persist::EventsRetention::default(),
                     )
@@ -583,8 +584,8 @@ impl Coordinator for DefaultCoordinator {
             );
             if let Some(handle) = &self.telemetry {
                 let _ = handle.record(telemetry::TelemetryEvent::team_stage_complete(
-                    &team_id,
-                    0,
+                    &ctx.session_id,
+                    ctx.turn_no,
                     None,
                     telemetry::TeamStageCompletePayload {
                         stage_name: stage.name.clone(),
@@ -1944,6 +1945,69 @@ mod tests {
             assert_eq!(last["kind"], "team_completed", "{end:?}: {log}");
             assert_eq!(last["status"], "cancelled", "{end:?}: {log}");
         }
+    }
+
+    /// `events.jsonl` tells a member that was cancelled from one that failed
+    /// or finished.
+    #[tokio::test]
+    async fn a_cancelled_member_is_recorded_as_cancelled() {
+        let (_dir, ctx) = make_ctx();
+        let delegator = Arc::new(CancelsTheLead {
+            lead: ctx.cancel.clone(),
+            end: DelegateEnd::Cancelled,
+            spawned: Default::default(),
+        });
+        let stage = TeamStage {
+            name: "one".into(),
+            agents: vec![TeamAgentSpec {
+                label: "first".into(),
+                prompt: "first".into(),
+                agent_type: None,
+            }],
+            aggregate: None,
+        };
+        let registry = Arc::new(crate::registry::TeamRegistry::new());
+        DefaultCoordinator::with_delegator(delegator)
+            .with_registry(registry.clone())
+            .orchestrate(make_request(ctx, vec![stage]))
+            .await
+            .expect("orchestrate returns a result");
+
+        let team_dir = registry.list()[0].team_dir.clone();
+        let log = std::fs::read_to_string(team_dir.join("events.jsonl")).unwrap();
+        let completed: serde_json::Value = log
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|e| e["kind"] == "member_completed")
+            .expect("member_completed is recorded");
+        assert_eq!(completed["cancelled"], true, "{completed}");
+        assert_eq!(completed["is_error"], true, "{completed}");
+    }
+
+    /// A stage's telemetry belongs to the lead's session, not to the team.
+    #[tokio::test]
+    async fn team_stage_telemetry_is_the_leads_sessions() {
+        let stage = TeamStage {
+            name: "only".into(),
+            agents: vec![TeamAgentSpec {
+                label: "a".into(),
+                prompt: "0".into(),
+                agent_type: None,
+            }],
+            aggregate: None,
+        };
+        let (_dir, ctx) = make_ctx();
+        let lead_session = ctx.session_id.clone();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        DefaultCoordinator::with_delegator(Arc::new(FakeDelegator::new()))
+            .with_telemetry(telemetry::TelemetryHandle::new(tx))
+            .orchestrate(make_request(ctx, vec![stage]))
+            .await
+            .expect("orchestrate ok");
+
+        let event = rx.try_recv().expect("team_stage_complete is recorded");
+        assert_eq!(event.kind(), "team_stage_complete");
+        assert_eq!(event.session_id, lead_session);
     }
 
     /// A member still waiting for the stage's permit when the lead's call is

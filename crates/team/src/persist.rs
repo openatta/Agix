@@ -166,6 +166,8 @@ pub enum TeamEvent {
     MemberCompleted {
         label: String,
         is_error: bool,
+        #[serde(default)]
+        cancelled: bool,
     },
     StageCompleted {
         index: usize,
@@ -529,6 +531,7 @@ mod tests {
                 TeamEvent::MemberCompleted {
                     label: format!("m{i}"),
                     is_error: false,
+                    cancelled: false,
                 },
                 retention,
             )
@@ -568,6 +571,7 @@ mod tests {
                 TeamEvent::MemberCompleted {
                     label: format!("m{i}"),
                     is_error: false,
+                    cancelled: false,
                 },
                 retention,
             )
@@ -592,6 +596,7 @@ mod tests {
             TeamEvent::MemberCompleted {
                 label: "m11".into(),
                 is_error: false,
+                cancelled: false,
             },
             retention,
         )
@@ -635,6 +640,7 @@ mod tests {
             event: TeamEvent::MemberCompleted {
                 label: "a".into(),
                 is_error: false,
+                cancelled: false,
             },
         })
         .unwrap();
