@@ -773,8 +773,8 @@ impl Coordinator for DefaultCoordinator {
         let latency_ms = start.elapsed().as_millis() as u64;
         if let Some(handle) = &self.telemetry {
             let _ = handle.record(telemetry::TelemetryEvent::resume_action(
-                task_id,
-                0,
+                &ctx.session_id,
+                ctx.turn_no,
                 None,
                 telemetry::ResumeActionPayload {
                     outcome: telemetry::ResumeOutcome::Succeeded,
@@ -1774,8 +1774,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_coordinator_records_resume_action() {
-        let (dir, ctx) = make_ctx();
+    async fn resume_coordinator_records_resume_action_on_the_leads_turn() {
+        let (dir, mut ctx) = make_ctx();
+        ctx.session_id = "lead-session".into();
+        ctx.turn_no = 7;
         let team_dir = dir.path().join(".agix/teams/task-1");
         tokio::fs::create_dir_all(&team_dir).await.unwrap();
         tokio::fs::write(team_dir.join("SCRATCHPAD.md"), "## stage-one\n\nnotes\n")
@@ -1796,6 +1798,10 @@ mod tests {
             .try_recv()
             .expect("resume_action should have been recorded");
         assert_eq!(event.kind(), "resume_action");
+        assert_eq!(
+            (event.session_id.as_str(), event.turn_no),
+            ("lead-session", 7)
+        );
     }
 
     /// A failing member is named in the stage's completion event, so the
