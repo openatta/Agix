@@ -12,7 +12,7 @@ file  crates/history/src/store.rs                                 -             
 file  crates/mcp/src/connect.rs                                   -                                      1328
 file  crates/mcp/src/manager.rs                                   -                                      1293
 file  crates/mcp/src/oauth/mod.rs                                 -                                      1104
-file  crates/platform/src/sandbox.rs                              -                                      1526
+file  crates/platform/src/sandbox.rs                              -                                      1651
 file  crates/runtime/src/agent/turn/compact/mod.rs                -                                      861
 file  crates/session/src/session.rs                               -                                      850
 file  crates/team/src/coordinator.rs                              -                                      983
@@ -66,7 +66,7 @@ fn    crates/permissions/src/path_safety.rs                       check_write_fo
 fn    crates/permissions/src/shell.rs                             lex                                    119
 fn    crates/platform/src/process.rs                              LocalProcess::spawn                    82
 fn    crates/platform/src/sandbox.rs                              build_macos_profile                    157
-fn    crates/platform/src/sandbox.rs                              linux_wrap                             129
+fn    crates/platform/src/sandbox.rs                              linux_wrap                             132
 fn    crates/plugin/src/manifest.rs                               validate                               95
 fn    crates/ptc/src/lib.rs                                       dispatch_calls                         93
 fn    crates/ptc/src/lib.rs                                       spawn_watchers                         87

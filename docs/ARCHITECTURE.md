@@ -1377,11 +1377,20 @@ strict policy 兑现不了时(没有后端,Windows,Linux 上没有 bubblewrap):`
 状态目录与各 `scenes/<场景>/` 下的 `settings.json`、`scene.json`、`prompt.md` 是一条正则。Linux 的状态目录遮挡由
 `platform::sandbox::mask::mask_plan` 生成 tmpfs 与只读 bind 的序列(不分操作系统,可在 macOS 上单测):
 每个含凭据或通向凭据的目录先盖一层 tmpfs,再把其余条目只读绑回;之后写进去的凭据落在 tmpfs 里,
-读不到。通向凭据的条目若不是真目录(符号链接的场景、`scenes/` 里的普通文件)保持遮住。撤掉围栏、
-或项目在状态目录里时整块盖 tmpfs 会连项目一起盖住,改为按 `Located::existing()` 逐个遮挡(它跟随
-符号链接列场景目录);这种情况下
-状态目录也按配置根保护:它的 `ENGINE_CONFIG_FILES` 与 `ENGINE_CONFIG_DIRS` 对沙箱命令只读(cwd 所在的
-那个配置目录除外)。
+读不到。通向凭据的条目若不是真目录(符号链接的场景、`scenes/` 里的普通文件)保持遮住。项目在状态
+目录里、或策略只写指定的根时,整块照样盖 tmpfs,项目与可写根挖洞挂回可写;项目里本身有凭据的(把某个
+场景目录当项目打开),洞里的凭据按 `Located::existing()` 逐个遮挡。项目就是状态目录本身时根不能盖
+(盖了项目根下新建的条目都落进 tmpfs),只把本来就只读、又含凭据的配置目录(`scenes/`、`mcp/`)各自
+整块盖上并重新挂成只读,其余凭据逐个遮挡;这种情况下状态目录也按配置根保护:它的 `ENGINE_CONFIG_FILES`
+与 `ENGINE_CONFIG_DIRS` 对沙箱命令只读(cwd 所在的那个配置目录除外)。项目自己的 `.agix` 是真目录时
+同样按 `mask_plan` 盖上(tmpfs 挂成只读,配置条目只读绑回、工作条目可写绑回),之后写进来的
+`settings.local.json`、`mcp.local.json` 读不到。
+
+逐个遮挡的 `/dev/null` 绑定钉在挂载那一刻的文件上:引擎之后新建、或用临时文件 rename 覆盖的密钥文件,
+命令留在后台的进程读得到。这是 Linux 上的已知缺口(`sandbox.rs` 模块头"已知出路"第 6 条),只剩可写
+目录里直接放着凭据的几种布局——项目就是状态目录时它顶层的密钥文件与尚不存在的 `daemon/auth`,项目是
+某个场景目录时那个场景的密钥文件与尚不存在的 `mcp/oauth`,以及 `.agix` 是符号链接的项目的密钥文件;
+要堵就得把项目目录本身盖住,项目就没法用了。macOS 的读拒绝按路径正则匹配,没有这个缺口。
 
 保护只到项目自己的 `.git`。沙箱里的命令可以在子目录里 `git init` 一个新仓库、写它的
 `.git/config`(`core.fsmonitor` 之类),再 `git add` 成一个 gitlink 登记进项目的 index;

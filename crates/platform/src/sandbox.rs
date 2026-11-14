@@ -71,8 +71,9 @@
 //! and MCP OAuth tokens, its own and every scene's, the daemons' socket
 //! tokens under `daemon/auth/`, and the project's `.agix/settings.local.json`
 //! and `.agix/mcp.local.json`. macOS writes a pattern for each; Linux covers
-//! the state root with the mounts of `mask::mask_plan` and hides each of the
-//! project's key files.
+//! the state root and the project's `.agix` with the mounts of
+//! `mask::mask_plan`, which a credential written later does not climb out
+//! of, except where escape path 6 says.
 //!
 //! A policy whose `read` is `ReadScope::Only` narrows that further
 //! (`read_scope`).
@@ -154,6 +155,19 @@
 //!    `.git` moved aside unless the person attending keeps it. What it does
 //!    not catch is what a command starts that outlives it and plants one
 //!    later.
+//! 6. **A credential written later directly into a writable directory, on
+//!    Linux**: a `/dev/null` bind is pinned to the file there at wrap time, so
+//!    a key file the engine creates afterwards, or rename-writes over the old
+//!    one, is readable by what a command left running. A tmpfs over the
+//!    directory would close this, and swallow every new entry the project
+//!    makes in it. That is the state root's own key files, and `daemon/auth`
+//!    while it does not exist, when the project is the state root; a scene's
+//!    key files, and its `mcp/oauth` while it does not exist, when the
+//!    project is that scene directory; and the key files of a project whose
+//!    `.agix` is a symbolic link. What lies outside the project, the
+//!    configuration directories a command cannot write anyway and a real
+//!    `.agix` directory are masked whole. macOS matches its denials by path
+//!    and has no such gap.
 //!
 //! Not among them, measured on bubblewrap 0.8: `/proc` is mounted afresh for
 //! the command's PID namespace, so it shows neither the host's processes nor
@@ -984,7 +998,8 @@ fn writable_by_us(dir: &Path) -> bool {
 /// bwrap has no deny rule, only mounts, and a read-only bind of a file that
 /// does not exist yet is skipped rather than refused. So `.agix` — and
 /// `.claude` where it exists — is mounted read-only as a whole and its
-/// working entries are opened again one by one;
+/// working entries are opened again one by one (a real `.agix` directory is
+/// held by [`mask_project_agix`] instead, to the same effect);
 /// a configuration file that is not there yet cannot be created because its
 /// directory is read-only. `.git` cannot be treated that way — git creates
 /// its lock files directly in it — so it is bound onto itself, which makes it
@@ -997,7 +1012,7 @@ fn writable_by_us(dir: &Path) -> bool {
 /// left alone: binding it writable would open it, and a mount point for an
 /// absent entry cannot be made on a read-only parent.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
-fn guard_project(args: &mut Vec<String>, roots: &Roots) {
+fn guard_project(args: &mut Vec<String>, roots: &Roots, agix_masked: bool) {
     let git = roots.cwd.join(REPOSITORY_CONFIG_DIR);
     if git.is_dir() {
         let open = roots.opens(&git);
@@ -1033,20 +1048,12 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
         // project, which for `.agix` is the engine's own and for `.claude`
         // would be litter in every project.
         let held = *name == ".agix" || root.symlink_metadata().is_ok();
-        if !held || !roots.opens(&root) {
+        if !held || !roots.opens(&root) || (*name == ".agix" && agix_masked) {
             continue;
         }
         read_only(args, &root);
-        if let Ok(entries) = std::fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let configures = name.to_str().is_some_and(|n| {
-                    ENGINE_CONFIG_FILES.contains(&n) || ENGINE_CONFIG_DIRS.contains(&n)
-                });
-                if !configures && entry.file_type().is_ok_and(|t| !t.is_symlink()) {
-                    bind(args, "--bind", &entry.path());
-                }
-            }
+        for entry in working_entries(&root) {
+            bind(args, "--bind", &entry);
         }
     }
     for dir in PROJECT_ENGINE_CONFIG_DIRS {
@@ -1075,6 +1082,63 @@ fn guard_project(args: &mut Vec<String>, roots: &Roots) {
     }
 }
 
+/// The entries of a configuration root `root` that are not configuration
+/// and not symbolic links: what a command may write in it.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn working_entries(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let configures = entry.file_name().to_str().is_some_and(|n| {
+                ENGINE_CONFIG_FILES.contains(&n) || ENGINE_CONFIG_DIRS.contains(&n)
+            });
+            !configures && entry.file_type().is_ok_and(|t| !t.is_symlink())
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// The project's `.agix`, where it is a real directory in the sandbox,
+/// masked around the project's key files as the state root is — a key file
+/// the engine writes or rename-writes there later lands under a read-only
+/// tmpfs — with the rest bound back: its working entries and the writable
+/// roots in it writable where they are writable at all, everything else
+/// read-only, and nothing new creatable directly in it, as
+/// [`guard_project`] holds it otherwise. Whether it was masked.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn mask_project_agix(
+    args: &mut Vec<String>,
+    roots: &Roots,
+    secrets: &[base::paths::Located],
+    read: &read_scope::LinuxReadScope<'_>,
+) -> bool {
+    let agix = roots.cwd.join(".agix");
+    if !read.shows(&agix) || !agix.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        return false;
+    }
+    let working = if roots.opens(&agix) {
+        working_entries(&agix)
+    } else {
+        Vec::new()
+    };
+    let holes: Vec<PathBuf> = working
+        .into_iter()
+        .chain(
+            roots
+                .writable
+                .iter()
+                .filter(|p| p.starts_with(&agix) && **p != agix)
+                .cloned(),
+        )
+        .collect();
+    let plan = mask::mask_plan(&agix, secrets, &holes);
+    apply_mask(args, &plan, true);
+    !plan.is_empty()
+}
+
 /// The state root inside the sandbox: masked around its credentials, its
 /// working directories (or the project in it) writable again.
 #[cfg(all(feature = "sandbox", target_os = "linux"))]
@@ -1099,41 +1163,83 @@ fn expose_state_root(
         }
         // The project lives in the state root, or nothing but the named
         // roots is writable: the root is masked as above, the project and
-        // the writable roots inside it bound back over it.
+        // the writable roots inside it bound back over it. A scene directory
+        // opened as a project keeps its scene files read-only.
         (_, Some((root, holes))) => {
             expose_state_root_masked(args, root, secrets, &holes);
-        }
-        // The project is the state root itself, or sits where a credential
-        // lies below it, or the read scope leaves the root out: a tmpfs
-        // there would mask what has to stay writable or put the root in the
-        // sandbox, so the credentials are bound shut one by one. A key file the engine rewrites through a
-        // rename can slip back out from under its bind; that residual is
-        // left to these rare cases.
-        _ => {
-            if let Some(state_root) = &roots.state_root {
-                // A path the read scope leaves out is not in the sandbox at
-                // all: binding it read-only would put it there.
-                let (config_files, config_dirs) = roots.unfenced_state_root_config();
-                for file in config_files.iter().filter(|p| read.shows(p)) {
-                    bind(args, "--ro-bind-try", file);
-                }
-                for dir in config_dirs.iter().filter(|p| read.shows(p)) {
-                    read_only(args, dir);
-                }
-                for dir in std::iter::once(state_root).chain(&roots.paths.scene_dirs()) {
-                    for file in base::paths::STATE_ROOT_SCENE_FILES {
-                        let file = dir.join(file);
-                        if read.shows(&file) {
-                            bind(args, "--ro-bind-try", &file);
-                        }
-                    }
-                }
-                for p in secrets.iter().flat_map(|l| l.existing()) {
-                    hide(args, &p);
+            for file in state_root_scene_files(roots) {
+                if roots.opens(&file) && !roots.paths.is_credential(&file) {
+                    bind(args, "--ro-bind-try", &file);
                 }
             }
         }
+        // The project is the state root itself, or the read scope leaves
+        // the root out: a tmpfs over the root would mask the project's new
+        // entries or put the root in the sandbox. Its configuration
+        // directories, read-only anyway, are masked on their own; the key
+        // files directly in it and `daemon/auth` are bound shut one by one,
+        // and a key file the engine rename-writes there afterwards is
+        // readable (the module header's escape path 6).
+        _ => expose_unfenced_state_root(args, roots, secrets, read),
     }
+}
+
+/// The per-file shape of [`expose_state_root`], for a state root that is
+/// the project or outside the read scope.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn expose_unfenced_state_root(
+    args: &mut Vec<String>,
+    roots: &Roots,
+    secrets: &[base::paths::Located],
+    read: &read_scope::LinuxReadScope<'_>,
+) {
+    let Some(state_root) = &roots.state_root else {
+        return;
+    };
+    // A path the read scope leaves out is not in the sandbox at all:
+    // binding it read-only would put it there.
+    let (config_files, config_dirs) = roots.unfenced_state_root_config();
+    for file in config_files.iter().filter(|p| read.shows(p)) {
+        bind(args, "--ro-bind-try", file);
+    }
+    let mut masked = Vec::new();
+    for dir in config_dirs.iter().filter(|p| read.shows(p)) {
+        let plan = mask::mask_below(state_root, secrets, dir);
+        if plan.is_empty() {
+            read_only(args, dir);
+        } else {
+            apply_mask(args, &plan, true);
+            masked.push(dir);
+        }
+    }
+    let unmasked = |p: &Path| !masked.iter().any(|dir| p.starts_with(dir));
+    for file in state_root_scene_files(roots) {
+        if read.shows(&file) && unmasked(&file) {
+            bind(args, "--ro-bind-try", &file);
+        }
+    }
+    for p in secrets.iter().flat_map(|l| l.existing()) {
+        if unmasked(&p) {
+            hide(args, &p);
+        }
+    }
+}
+
+/// `base::paths::STATE_ROOT_SCENE_FILES` in the state root and in each of
+/// its scene directories as they are now.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn state_root_scene_files(roots: &Roots) -> Vec<PathBuf> {
+    roots
+        .state_root
+        .iter()
+        .cloned()
+        .chain(roots.paths.scene_dirs())
+        .flat_map(|dir| {
+            base::paths::STATE_ROOT_SCENE_FILES
+                .iter()
+                .map(move |file| dir.join(file))
+        })
+        .collect()
 }
 
 /// Expose the state root read-only while keeping its credentials masked
@@ -1159,11 +1265,27 @@ fn expose_state_root_masked(
     secrets: &[base::paths::Located],
     holes: &[PathBuf],
 ) {
-    for mount in mask::mask_plan(root, secrets, holes) {
+    apply_mask(args, &mask::mask_plan(root, secrets, holes), false);
+}
+
+/// `plan` as bwrap arguments; `read_only` remounts each of its tmpfs
+/// read-only once everything is bound onto it, so that nothing new can be
+/// created directly in a masked directory.
+#[cfg(all(feature = "sandbox", target_os = "linux"))]
+fn apply_mask(args: &mut Vec<String>, plan: &[mask::Mount], read_only: bool) {
+    for mount in plan {
         match mount {
             mask::Mount::Tmpfs(at) => args.extend(["--tmpfs".into(), at.display().to_string()]),
-            mask::Mount::RoBind(at) => bind(args, "--ro-bind", &at),
-            mask::Mount::Bind(at) => bind(args, "--bind-try", &at),
+            mask::Mount::RoBind(at) => bind(args, "--ro-bind-try", at),
+            mask::Mount::Bind(at) => bind(args, "--bind-try", at),
+            mask::Mount::Hide(at) => hide(args, at),
+        }
+    }
+    if read_only {
+        for mount in plan {
+            if let mask::Mount::Tmpfs(at) = mount {
+                args.extend(["--remount-ro".into(), at.display().to_string()]);
+            }
         }
     }
 }
@@ -1342,9 +1464,12 @@ fn linux_wrap(
         .into_iter()
         .partition(|located| roots.state_root.as_ref() == Some(&located.base));
     expose_state_root(&mut args, &roots, &state_root_secrets, &read);
-    guard_project(&mut args, &roots);
-    for p in project_secrets.iter().flat_map(|l| l.existing()) {
-        hide(&mut args, &p);
+    let agix_masked = mask_project_agix(&mut args, &roots, &project_secrets, &read);
+    guard_project(&mut args, &roots, agix_masked);
+    if !agix_masked {
+        for p in project_secrets.iter().flat_map(|l| l.existing()) {
+            hide(&mut args, &p);
+        }
     }
     for socket in daemon_sockets(roots.state_root.as_deref()) {
         bind_over(&mut args, Path::new("/dev/null"), &socket);
@@ -1797,17 +1922,12 @@ mod tests {
             .to_string();
         let end = cmd.spec.args.iter().position(|a| a == "--").unwrap();
         let args = &cmd.spec.args[..end];
-        assert!(
-            args.windows(3)
-                .any(|w| w[0] == "--ro-bind" && w[1] == agix && w[2] == agix),
-            "{args:?}"
-        );
+        let at = |pair: [&str; 2]| args.windows(2).position(|w| w == pair);
         let scratchpad = format!("{agix}/scratchpad");
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "--bind" && w[1] == scratchpad),
-            "{args:?}"
-        );
+        let masked = at(["--tmpfs", &agix]).unwrap_or_else(|| panic!("{args:?}"));
+        let opened = at(["--bind-try", &scratchpad]).unwrap_or_else(|| panic!("{args:?}"));
+        let shut = at(["--remount-ro", &agix]).unwrap_or_else(|| panic!("{args:?}"));
+        assert!(masked < opened && opened < shut, "{args:?}");
         assert!(
             !args.iter().any(|a| a.ends_with("settings.local.json")),
             "{args:?}"
@@ -4205,6 +4325,171 @@ mod tests {
             );
         }
         assert_eq!(cat(&agix.join("settings.json")), (true, "fine".to_string()));
+    }
+
+    /// What a process a confined command left running in `project` reads of
+    /// `paths` after each of them is written — the engine's way, a
+    /// temporary file renamed over it — once it is running.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[allow(clippy::unwrap_used)]
+    fn read_after_the_fact(project: &Path, policy: &SandboxPolicy, paths: &[PathBuf]) -> String {
+        let listed: Vec<String> = paths.iter().map(|p| format!("'{}'", p.display())).collect();
+        let command = format!(
+            "( until [ -e go ]; do sleep 0.02; done; \
+              for f in {}; do cat \"$f\"; echo; done > out 2>/dev/null; \
+              touch done ) & exit 0",
+            listed.join(" ")
+        );
+        let confined = PlatformSandbox.confine(
+            ProcessSpec::new("bash", project).args(["-c", &command].map(String::from)),
+            policy,
+        );
+        assert_eq!(
+            confined.enforcement,
+            Enforcement::Full,
+            "{:?}",
+            confined.unmet
+        );
+        let mut child = std::process::Command::new(&confined.spec.program)
+            .args(&confined.spec.args)
+            .current_dir(project)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let _ = child.wait();
+        for path in paths {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let tmp = path.with_file_name(".agix-rename.tmp");
+            std::fs::write(&tmp, "agix-after-the-fact-secret").unwrap();
+            std::fs::rename(&tmp, path).unwrap();
+        }
+        std::fs::write(project.join("go"), "").unwrap();
+        let done = (0..500).any(|_| {
+            if project.join("done").exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            false
+        });
+        assert!(done, "the background reader never finished");
+        std::fs::read_to_string(project.join("out")).unwrap_or_default()
+    }
+
+    /// The layouts that keep the state root from being masked as a whole —
+    /// the project is the state root, or a scene directory in it — and the
+    /// project's own `.agix`: a credential the engine writes there after a
+    /// command started, or rename-writes over an old one, does not reach
+    /// what that command left running. On Linux the key files directly in
+    /// a project that is the state root or a scene directory are the known
+    /// limit (`mask`'s header) and not asserted; macOS denies them by
+    /// pattern.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_credential_written_later_stays_unreadable_where_the_project_holds_credentials() {
+        if !a_backend_runs() {
+            return;
+        }
+        let pattern_held = cfg!(target_os = "macos");
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+
+        let state = base.join("state-is-project");
+        write_file(&state.join("scenes/code/settings.local.json"), "{}");
+        write_file(&state.join("scenes/code/scene.json"), "fine");
+        write_file(&state.join("mcp/servers.json"), "fine");
+        write_file(&state.join("settings.local.json"), "{}");
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        let mut later = vec![
+            state.join("scenes/code/settings.local.json"),
+            state.join("scenes/new/settings.json"),
+            state.join("mcp/oauth/server.json"),
+            state.join(".agix/settings.local.json"),
+        ];
+        if pattern_held {
+            later.push(state.join("settings.local.json"));
+        }
+        let saw = read_after_the_fact(&state, &policy, &later);
+        assert!(
+            !saw.contains("after-the-fact"),
+            "project = state root: {saw:?}"
+        );
+
+        let state = base.join("state");
+        let scene = state.join("scenes/code");
+        write_file(&state.join("settings.local.json"), "{}");
+        write_file(&state.join("scenes/triage/settings.json"), "{}");
+        write_file(&scene.join("settings.local.json"), "{}");
+        write_file(&scene.join("scene.json"), "{}");
+        let policy = SandboxPolicy {
+            state_root: Some(state.clone()),
+            ..Default::default()
+        };
+        let mut later = vec![
+            state.join("settings.local.json"),
+            state.join("settings.json"),
+            state.join("scenes/triage/settings.json"),
+            state.join("scenes/new/settings.json"),
+            scene.join(".agix/mcp.local.json"),
+        ];
+        if pattern_held {
+            later.push(scene.join("settings.local.json"));
+        }
+        let saw = read_after_the_fact(&scene, &policy, &later);
+        assert!(!saw.contains("after-the-fact"), "project = scene: {saw:?}");
+        assert!(
+            run_confined(
+                &scene,
+                &policy,
+                &[],
+                "echo x > notes.md && ! echo x > scene.json"
+            )
+            .status
+            .success(),
+            "a scene opened as a project keeps its scene files read-only, the rest writable"
+        );
+
+        let project = base.join("project");
+        write_file(&project.join(".agix/settings.json"), "fine");
+        write_file(&project.join(".agix/settings.local.json"), "{}");
+        std::fs::create_dir_all(project.join(".agix/scratchpad")).unwrap();
+        let policy = SandboxPolicy {
+            state_root: Some(base.join("elsewhere")),
+            ..Default::default()
+        };
+        let later = [
+            project.join(".agix/settings.local.json"),
+            project.join(".agix/mcp.local.json"),
+        ];
+        let saw = read_after_the_fact(&project, &policy, &later);
+        assert!(
+            !saw.contains("after-the-fact"),
+            "the project's .agix: {saw:?}"
+        );
+        assert!(
+            run_confined(
+                &project,
+                &policy,
+                &[],
+                "cat .agix/settings.json && echo x > .agix/scratchpad/n"
+            )
+            .status
+            .success(),
+            "the project's .agix keeps its other entries, the working ones writable"
+        );
+        if cfg!(target_os = "linux") {
+            assert!(
+                !run_confined(&project, &policy, &[], "echo x > .agix/new")
+                    .status
+                    .success(),
+                "a new entry directly in .agix was created"
+            );
+        }
     }
 
     /// A process an earlier command left running cannot read a credential the
