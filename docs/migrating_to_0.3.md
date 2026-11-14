@@ -2138,9 +2138,11 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   agent hook 判,以前拿父会话的全部工具、权限询问照常问宿主:被注入的裁判能替模型把被拦的命令跑掉。
   现在只给 `Read`、`Grep`、`Glob`(外加 `ToolSearch`),要批准的调用直接拒,不问人;它也起不了
   子 Agent。
-- **只通知的 hook 不再被取消掐掉。** 不回答引擎的事件(`PostToolUse`、`SubagentStop`、`SessionEnd`
-  等)的 hook,在回合被中断、会话结束后照样跑到它自己的超时;`PostToolUse` 不再拿回合的取消令牌。
-  代价:被中断的回合要等这些 hook 跑完才结束,最长到 hook 的超时。
+- **只通知的 hook 不再被取消掐掉,也不拖住停止。** 不回答引擎的事件(`SubagentStop`、`SessionEnd`、
+  `TurnStart`、`Notification` 等)的 hook,回合被中断、引擎停下、会话关闭或重建时转到后台,跑到它自己
+  的超时;回合结束、`session.close`、`setPrompt` 不再等它们。daemon 进程退出时还没跑完的被终止。重建或
+  驱逐之后,新引擎的 `SessionStart` 可能比旧引擎的 `SessionEnd` 先跑完。回答能起作用的事件(`PreToolUse`、
+  `Stop`、`UserPromptSubmit`、`PreCompact`)照旧随回合取消。
 - **子 Agent 继承宿主为这台机器给出的全部契约**:时钟(`environment`)、指令来源、宿主经
   `customize_session` 装的 tool / prompt middleware、结果变换、模型拦截、恢复策略、compactor、
   插件场景、记忆存储与召回(连同召回 hook)、任务路由。审计类 middleware 的计数会因此变多;子会话
@@ -2225,6 +2227,11 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `background_tasks`(另带 `running_task_ids`)、`previous_engine`、`context_operation`,说的是会话
   此刻在忙什么,不是哪个方法被拒(协议文档 §9.1)。以前只有 `{session_id, current_turn_id}`。要改的:
   按 `reason` 决定等多久、要不要重试;不认识的取值按"稍后再试"处理,以后可能增加。
+- **活着的常驻团队成员算后台任务。** 会话里有常驻成员(空闲的也算)时,`session.setPrompt`、换厂商的
+  `session.setModel` 报 `SESSION_BUSY`(`reason: "background_tasks"`,`running_task_ids` 里是 `member-…`),
+  会话不被空闲回收或腾位驱逐;以前重建会悄悄停掉成员、丢掉它的上下文。`session.stopTask` 接受
+  `member-…` id,按 `TeamDelete` 的方式停掉它。
+- **`turn_complete` 之后、回合槽归还之前到达的 `session.run_turn` 等槽**,不再按 `on_busy` 报忙或插话。
 - **以前不带 `data` 的几处 `SESSION_BUSY` 现在带。** 重建时旧引擎未停、上下文请求撞上正在跑的
   turn、`session.setGoal` / `session.startAgent` / 要先恢复会话的上下文请求在旧引擎未停时
   (`reason: "previous_engine"`,`current_turn_id: null`)。以前靠"没有 `data`"区分来源的,改读 `reason`。
@@ -2265,6 +2272,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   超时同时到时只有先到的一方算数,不会既执行回答又报撤回。每个提问至多一帧,推给全部订阅者(包括答题的连接),回合内带
   `turn_id`,空闲时为 `null`。`session.subscribe` 的 `pending_prompts` 在这帧之后才去掉那个提问(以前
   `respondToPrompt` 一到就去掉)。要改的:多个连接同看一个会话的,收到它就收起提问界面。
+- **回答已经拿走的询问一定算数。** 回答与回合取消同时到达时按回答处理(`permit_always` 的授权照存),
+  报 `answered`;只有回答还没到时取消才报 `withdrawn`(`reason: "cancelled"`)。
 - **`turn_complete` 多一个总是出现的 `persisted`**,为 `false` 时日志没写全(见"部署"的会话与日志)。
 - **`session.setModel` 之后不再有 "model set to …" 的 `system` 帧**;选择记在会话上,下一轮开头生效。
 - **`daemon.event` 的 `session_evicted` 多一个 `reason` 取值 `engine_fault`**:回合驱动 panic 后这个
@@ -2489,6 +2498,9 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 委派只剩一条路:`base::interface::delegate::Delegator`。设计见 `ARCHITECTURE.md` §3.4,用法见
 `extension_points.md` 的"委派"。
 
+- **`Delegator::live_members() -> Vec<LiveMember>`**(带缺省实现,返回空):池靠它知道会话里有没有活着的
+  常驻成员。包装 `Delegator` 的实现要转发它,否则重建会停掉成员。
+
 - **`AgentSpawner` 一族删除。** `Delegator::delegate(DelegateRequest) -> Result<Delegated,
   DelegateError>` 与 `stop_member(&TeamSeat)` 取代它;`DelegateRequest` 是 `#[non_exhaustive]`,
   `DelegateRequest::new(prompt, mode, stops_with)` 给出什么都不收窄的缺省,再逐字段改;`tools` 是 `ToolSelector`、`deny_rules` 只收 deny、`grants` 是本轮授权、
@@ -2535,8 +2547,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `AgentHookExecutor::execute` 末尾多 `stop: &CancellationToken`,实现方应在它取消时尽快返回;
   `AgentHookExecutor::execute` 的错误类型由 `String` 改为 `hooks::runner::AgentHookError { NotJudged,
   Failed(String) }`。`HookOutcome` 新增 `Cancelled`。
-- **`HookRunner::run` 对不回答引擎的事件不理会 `stop`**,hook 跑到自己的超时;要掐掉它们的宿主改用
-  hook 自己的 `timeout`。
+- **`HookRunner::run` 对不回答引擎的事件,`stop` 取消时立即返回**,hook 在后台跑到自己的超时;要掐掉
+  它们的宿主改用 hook 自己的 `timeout`。
 
 #### 场景
 
@@ -2584,6 +2596,8 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   `bump_turn`、`current_turn`、`carry_session_state_from`,连同类型 `FileSnapshot`、`FileSnapshotRegistry`、`GoalSlot::carry_arming_from`、
   `restore_goal`、`restore_durable_state` 删除,后两者改用 `restore_from_log(goal, durable)`;
   `DurableState` 新增 `activated_tools`。
+- **`SessionLedger` 新增 `nested_repos_at_start`**:会话第一次工具调用前记下的嵌套仓库与配置摘要,
+  配置没变的不再询问或移开。
 - **任务与目标类型化。** `RunningTask::info() -> TaskInfo`、`SessionState::task_infos()`、
   `subscribe_tasks() -> Receiver<TaskEvent>`、`RunningTask::report_to(Sender<TaskEvent>)`、
   `goal_view() -> Option<GoalView>`、`goal_create` / `goal_update -> Result<GoalView, GoalError>`、
