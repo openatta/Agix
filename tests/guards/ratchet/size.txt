@@ -28,9 +28,7 @@ fn    crates/assembly/src/session_pool/parts/mcp_hub/connect.rs SessionPool::wri
 fn    crates/assembly/src/session_pool/facade/resume.rs           SessionPool::resume_unchecked            147
 fn    crates/assembly/src/session_pool/facade/settings_reload.rs  SessionPool::set_provider                117
 fn    crates/assembly/src/session_pool/facade/turn.rs             SessionPool::run_turn                    345
-fn    crates/core/src/context/goal.rs                      GoalSlot::update                         110
 fn    crates/script-host/src/adapters/prompt_assembly.rs   PromptAssemblyScript::on_assemble_async  145
-fn    crates/core/src/settings/loaded.rs                   LoadedSettings::load_from                198
 fn    crates/hooks/src/catalog.rs                          HookEvent::spec                          179
 fn    crates/mcp/src/manager.rs                            McpManager::connect_all_within           105
 fn    crates/model/src/adapter.rs                          map_stream_event                         173

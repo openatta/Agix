@@ -229,87 +229,11 @@ impl GoalSlot {
             GoalAction::Edit {
                 objective,
                 max_rounds,
-            } => {
-                require_human(origin, "edit a goal")?;
-                if goal.phase == GoalPhase::Complete {
-                    return Err(GoalError::BadTransition {
-                        action: "edit",
-                        phase: goal.phase,
-                    });
-                }
-                if let Some(objective) = objective {
-                    goal.objective = non_empty(objective)?;
-                }
-                if let Some(max) = max_rounds {
-                    goal.max_rounds = checked_max_rounds(max)?;
-                }
-                goal.rounds_since_armed = 0;
-            }
-            GoalAction::Pause => {
-                require_human(origin, "pause a goal")?;
-                if goal.phase != GoalPhase::Active {
-                    return Err(GoalError::BadTransition {
-                        action: "pause",
-                        phase: goal.phase,
-                    });
-                }
-                goal.phase = GoalPhase::Paused;
-                self.armed = false;
-            }
-            GoalAction::Resume => {
-                require_human(origin, "resume a goal")?;
-                let resumable = matches!(goal.phase, GoalPhase::Paused | GoalPhase::Blocked)
-                    || (goal.phase == GoalPhase::Active && !self.armed);
-                if !resumable {
-                    return Err(GoalError::BadTransition {
-                        action: "resume",
-                        phase: goal.phase,
-                    });
-                }
-                if goal.rounds_started >= goal.max_rounds {
-                    return Err(GoalError::NotAllowed(format!(
-                        "all {} rounds are used; edit the goal to raise max_rounds before resuming",
-                        goal.max_rounds
-                    )));
-                }
-                goal.phase = GoalPhase::Active;
-                goal.blocked_reason = None;
-                goal.rounds_since_armed = 0;
-                self.armed = true;
-            }
-            GoalAction::Complete => {
-                require_human_or_this_round(origin, goal.revision, "complete a goal")?;
-                if goal.phase == GoalPhase::Complete {
-                    return Err(GoalError::BadTransition {
-                        action: "complete",
-                        phase: goal.phase,
-                    });
-                }
-                goal.phase = GoalPhase::Complete;
-                self.armed = false;
-            }
-            GoalAction::Blocked { reason } => {
-                require_human_or_this_round(origin, goal.revision, "mark a goal blocked")?;
-                if goal.phase != GoalPhase::Active {
-                    return Err(GoalError::BadTransition {
-                        action: "block",
-                        phase: goal.phase,
-                    });
-                }
-                if matches!(origin, TurnOrigin::GoalRound { .. })
-                    && goal.rounds_since_armed < BLOCKED_MIN_ROUNDS
-                {
-                    return Err(GoalError::NotAllowed(format!(
-                        "a goal can be marked blocked only after the same blocker has held for \
-                         {BLOCKED_MIN_ROUNDS} consecutive rounds (this is round {}); keep \
-                         working on it, or describe the blocker and let the next round retry",
-                        goal.rounds_since_armed
-                    )));
-                }
-                goal.phase = GoalPhase::Blocked;
-                goal.blocked_reason = Some(non_empty(reason)?);
-                self.armed = false;
-            }
+            } => edit_goal(goal, origin, objective, max_rounds)?,
+            GoalAction::Pause => pause_goal(goal, &mut self.armed, origin)?,
+            GoalAction::Resume => resume_goal(goal, &mut self.armed, origin)?,
+            GoalAction::Complete => complete_goal(goal, &mut self.armed, origin)?,
+            GoalAction::Blocked { reason } => block_goal(goal, &mut self.armed, origin, reason)?,
         }
         goal.revision += 1;
         self.pending_round = None;
@@ -450,6 +374,107 @@ fn checked_max_rounds(n: u32) -> Result<u32, GoalError> {
             "max_rounds must be between 1 and {MAX_ROUNDS_LIMIT}"
         )))
     }
+}
+
+fn edit_goal(
+    goal: &mut Goal,
+    origin: TurnOrigin,
+    objective: Option<String>,
+    max_rounds: Option<u32>,
+) -> Result<(), GoalError> {
+    require_human(origin, "edit a goal")?;
+    if goal.phase == GoalPhase::Complete {
+        return Err(GoalError::BadTransition {
+            action: "edit",
+            phase: goal.phase,
+        });
+    }
+    if let Some(objective) = objective {
+        goal.objective = non_empty(objective)?;
+    }
+    if let Some(max) = max_rounds {
+        goal.max_rounds = checked_max_rounds(max)?;
+    }
+    goal.rounds_since_armed = 0;
+    Ok(())
+}
+
+fn pause_goal(goal: &mut Goal, armed: &mut bool, origin: TurnOrigin) -> Result<(), GoalError> {
+    require_human(origin, "pause a goal")?;
+    if goal.phase != GoalPhase::Active {
+        return Err(GoalError::BadTransition {
+            action: "pause",
+            phase: goal.phase,
+        });
+    }
+    goal.phase = GoalPhase::Paused;
+    *armed = false;
+    Ok(())
+}
+
+fn resume_goal(goal: &mut Goal, armed: &mut bool, origin: TurnOrigin) -> Result<(), GoalError> {
+    require_human(origin, "resume a goal")?;
+    let resumable = matches!(goal.phase, GoalPhase::Paused | GoalPhase::Blocked)
+        || (goal.phase == GoalPhase::Active && !*armed);
+    if !resumable {
+        return Err(GoalError::BadTransition {
+            action: "resume",
+            phase: goal.phase,
+        });
+    }
+    if goal.rounds_started >= goal.max_rounds {
+        return Err(GoalError::NotAllowed(format!(
+            "all {} rounds are used; edit the goal to raise max_rounds before resuming",
+            goal.max_rounds
+        )));
+    }
+    goal.phase = GoalPhase::Active;
+    goal.blocked_reason = None;
+    goal.rounds_since_armed = 0;
+    *armed = true;
+    Ok(())
+}
+
+fn complete_goal(goal: &mut Goal, armed: &mut bool, origin: TurnOrigin) -> Result<(), GoalError> {
+    require_human_or_this_round(origin, goal.revision, "complete a goal")?;
+    if goal.phase == GoalPhase::Complete {
+        return Err(GoalError::BadTransition {
+            action: "complete",
+            phase: goal.phase,
+        });
+    }
+    goal.phase = GoalPhase::Complete;
+    *armed = false;
+    Ok(())
+}
+
+fn block_goal(
+    goal: &mut Goal,
+    armed: &mut bool,
+    origin: TurnOrigin,
+    reason: String,
+) -> Result<(), GoalError> {
+    require_human_or_this_round(origin, goal.revision, "mark a goal blocked")?;
+    if goal.phase != GoalPhase::Active {
+        return Err(GoalError::BadTransition {
+            action: "block",
+            phase: goal.phase,
+        });
+    }
+    if matches!(origin, TurnOrigin::GoalRound { .. })
+        && goal.rounds_since_armed < BLOCKED_MIN_ROUNDS
+    {
+        return Err(GoalError::NotAllowed(format!(
+            "a goal can be marked blocked only after the same blocker has held for \
+             {BLOCKED_MIN_ROUNDS} consecutive rounds (this is round {}); keep \
+             working on it, or describe the blocker and let the next round retry",
+            goal.rounds_since_armed
+        )));
+    }
+    goal.phase = GoalPhase::Blocked;
+    goal.blocked_reason = Some(non_empty(reason)?);
+    *armed = false;
+    Ok(())
 }
 
 #[cfg(test)]

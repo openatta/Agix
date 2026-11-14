@@ -178,34 +178,25 @@ impl LoadedSettings {
         scope: &str,
         default_model: &str,
     ) -> Self {
-        use crate::project_trust::{gate_layer, ProjectTrustSettings};
+        use crate::project_trust::ProjectTrustSettings;
 
         let base = Settings::defaults_for(default_model);
-        let mut merged_json = serde_json::to_value(&base).unwrap_or_else(|_| serde_json::json!({}));
-
-        let mut loaded_rules: Vec<LoadedRule> = Vec::new();
+        let merged_json = serde_json::to_value(&base).unwrap_or_else(|_| serde_json::json!({}));
 
         let layers = source.layers();
         let own_project =
             crate::project_trust::is_own_project_dir(&local_dir, &global_dir, &scene_dir);
-        // Two tiers sharing a directory are read once, at the higher tier: a
-        // project rooted at `$HOME` reads `~/.agix` as its project tier, and
-        // those files are still the user's global settings.
-        let scene_is_global = crate::project_trust::same_dir(&scene_dir, &global_dir);
-        let project_is_global =
-            !own_project && crate::project_trust::same_dir(&local_dir, &global_dir);
-        let is_global = |tier: Tier| match tier {
-            Tier::Global => true,
-            Tier::Scene => scene_is_global,
-            Tier::Project => project_is_global,
-            Tier::Managed => false,
+        let tiers = TierView {
+            own_project,
+            scene_is_global: crate::project_trust::same_dir(&scene_dir, &global_dir),
+            project_is_global: !own_project
+                && crate::project_trust::same_dir(&local_dir, &global_dir),
         };
-        let is_own_project = |tier: Tier| tier == Tier::Project && own_project;
 
         let project_trust = ProjectTrustSettings::from_layers(
             layers
                 .iter()
-                .filter(|l| is_global(l.tier))
+                .filter(|l| tiers.is_global(l.tier))
                 .map(|l| &l.value),
         );
         let (trust, matched) = if own_project {
@@ -214,112 +205,37 @@ impl LoadedSettings {
             (ProjectTrust::NoProject, None)
         };
         let withhold = trust.is_untrusted();
-        let mut project_layer = ProjectLayer {
-            trust,
-            matched,
-            ..Default::default()
+        let mut fold = LayerFold {
+            tiers,
+            withhold,
+            global_dir: &global_dir,
+            scene_dir: &scene_dir,
+            local_dir: &local_dir,
+            merged_json,
+            loaded_rules: Vec::new(),
+            project_layer: ProjectLayer {
+                trust,
+                matched,
+                ..Default::default()
+            },
+            ignored: Vec::new(),
+            managed: None,
+            mcp_server_dirs: HashMap::new(),
+            mcp_secret_vars: Vec::new(),
         };
-        let mut ignored = Vec::new();
-        let mut managed: Option<ManagedSettings> = None;
-        let mut mcp_server_dirs: HashMap<String, PathBuf> = HashMap::new();
-        let mut mcp_secret_vars: Vec<String> = Vec::new();
-
         for layer in layers {
-            if layer.tier == Tier::Managed {
-                let this = ManagedSettings::from_value(layer.origin, layer.value);
-                managed = Some(match managed {
-                    Some(earlier) => earlier.followed_by(this),
-                    None => this,
-                });
-                continue;
-            }
-            for key in unknown_settings_keys(&layer.value) {
-                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
-            }
-            let mut layer_json = layer.value;
-            if let Some(obj) = layer_json.as_object_mut() {
-                obj.remove("paths");
-                if !is_global(layer.tier) && obj.remove("project_trust").is_some() {
-                    tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, "project_trust is read from the global tier only, ignoring it here");
-                }
-                if is_own_project(layer.tier) {
-                    for (name, server) in obj
-                        .get("mcp_servers")
-                        .and_then(|v| v.as_object())
-                        .into_iter()
-                        .flatten()
-                    {
-                        let entry = project_layer
-                            .mcp_servers
-                            .entry(name.clone())
-                            .or_insert(serde_json::Value::Null);
-                        merge_json_values(entry, server.clone());
-                    }
-                    let gated = gate_layer(obj, &merged_json, withhold);
-                    if withhold && !gated.is_empty() {
-                        tracing::warn!(origin = %layer.origin, withheld = ?gated, "project is not trusted; settings only a trusted project may set are ignored");
-                    }
-                    project_layer.requires_trust.extend(gated);
-                }
-                if let Some(rules) = obj.remove("permission_rules") {
-                    let (rules, unread) = read_permission_rules(rules);
-                    for (key, error) in unread {
-                        tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "permission rule does not read, ignoring it");
-                        ignored.push(IgnoredValue {
-                            tier: layer.tier.name(),
-                            origin: layer.origin.clone(),
-                            key,
-                            error,
-                        });
-                    }
-                    for rule in rules {
-                        if is_own_project(layer.tier) && rule.action == RuleBehavior::Allow {
-                            project_layer
-                                .requires_trust
-                                .push(format!("permission_rules.allow({})", rule.tool));
-                            if withhold {
-                                continue;
-                            }
-                        }
-                        loaded_rules.push(LoadedRule::new(rule, layer.tier, layer.machine_local));
-                    }
-                }
-            }
-            let declared_in = if is_global(layer.tier) {
-                &global_dir
-            } else if is_own_project(layer.tier) {
-                local_dir.parent().unwrap_or(&local_dir)
-            } else {
-                &scene_dir
-            };
-            for (name, server) in layer_json
-                .get("mcp_servers")
-                .and_then(|v| v.as_object())
-                .into_iter()
-                .flatten()
-            {
-                if server.get("command").is_some() || !mcp_server_dirs.contains_key(name) {
-                    mcp_server_dirs.insert(name.clone(), declared_in.to_path_buf());
-                }
-                // A project's own servers read nothing from this process's
-                // environment (`confined_to_own_env`), so the names they
-                // write are not secrets of the daemon's.
-                if !is_own_project(layer.tier) {
-                    mcp_secret_vars.extend(
-                        crate::interface::exec::env::variables_an_mcp_server_reads(server),
-                    );
-                }
-            }
-            for (key, error) in merge_fitting(&mut merged_json, layer_json) {
-                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "settings value does not fit its setting, ignoring it");
-                ignored.push(IgnoredValue {
-                    tier: layer.tier.name(),
-                    origin: layer.origin.clone(),
-                    key,
-                    error,
-                });
-            }
+            fold.apply(layer);
         }
+        let LayerFold {
+            merged_json,
+            loaded_rules,
+            mut project_layer,
+            ignored,
+            managed,
+            mcp_server_dirs,
+            mcp_secret_vars,
+            ..
+        } = fold;
         let mut seen = std::collections::HashSet::new();
         project_layer
             .requires_trust
@@ -328,23 +244,7 @@ impl LoadedSettings {
         // Every merge step above was checked to deserialize.
         let mut values: Settings = serde_json::from_value(merged_json).unwrap_or(base);
         values.project_trust = project_trust;
-
-        // Before any session these settings start runs a child process: a
-        // provider key is not read until a client is built, an MCP secret not
-        // until its server connects, and a hook or `Bash` can run before that.
-        for name in values
-            .providers
-            .values()
-            .filter_map(|p| p.api_key_env.as_deref())
-            .chain(mcp_secret_vars.iter().map(String::as_str))
-        {
-            crate::interface::exec::env::hold_back_credential(name);
-        }
-
-        if let Err(reason) = values.validate() {
-            tracing::warn!("Settings validation: {reason}");
-            values.permission_mode = PermissionMode::default();
-        }
+        guard_loaded_values(&mut values, &mcp_secret_vars);
 
         let paths = PathSettings {
             user_data_dir: scene_dir,
@@ -421,5 +321,181 @@ impl LoadedSettings {
         self.managed
             .as_ref()
             .is_some_and(|m| m.disable_bypass_permissions_mode)
+    }
+}
+
+/// Two tiers sharing a directory are read once, at the higher tier: a project
+/// rooted at `$HOME` reads `~/.agix` as its project tier, and those files are
+/// still the user's global settings.
+struct TierView {
+    own_project: bool,
+    scene_is_global: bool,
+    project_is_global: bool,
+}
+
+impl TierView {
+    fn is_global(&self, tier: Tier) -> bool {
+        match tier {
+            Tier::Global => true,
+            Tier::Scene => self.scene_is_global,
+            Tier::Project => self.project_is_global,
+            Tier::Managed => false,
+        }
+    }
+
+    fn is_own_project(&self, tier: Tier) -> bool {
+        tier == Tier::Project && self.own_project
+    }
+}
+
+struct LayerFold<'a> {
+    tiers: TierView,
+    withhold: bool,
+    global_dir: &'a std::path::Path,
+    scene_dir: &'a std::path::Path,
+    local_dir: &'a std::path::Path,
+    merged_json: serde_json::Value,
+    loaded_rules: Vec<LoadedRule>,
+    project_layer: ProjectLayer,
+    ignored: Vec<IgnoredValue>,
+    managed: Option<ManagedSettings>,
+    mcp_server_dirs: HashMap<String, PathBuf>,
+    mcp_secret_vars: Vec<String>,
+}
+
+impl LayerFold<'_> {
+    fn apply(&mut self, layer: crate::interface::config_source::ConfigLayer) {
+        use crate::project_trust::gate_layer;
+        if layer.tier == Tier::Managed {
+            let this = ManagedSettings::from_value(layer.origin, layer.value);
+            self.managed = Some(match self.managed.take() {
+                Some(earlier) => earlier.followed_by(this),
+                None => this,
+            });
+            return;
+        }
+        for key in unknown_settings_keys(&layer.value) {
+            tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, "settings key not recognised, ignoring it");
+        }
+        let is_global = self.tiers.is_global(layer.tier);
+        let is_own_project = self.tiers.is_own_project(layer.tier);
+        let mut layer_json = layer.value;
+        if let Some(obj) = layer_json.as_object_mut() {
+            obj.remove("paths");
+            if !is_global && obj.remove("project_trust").is_some() {
+                tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, "project_trust is read from the global tier only, ignoring it here");
+            }
+            if is_own_project {
+                for (name, server) in obj
+                    .get("mcp_servers")
+                    .and_then(|v| v.as_object())
+                    .into_iter()
+                    .flatten()
+                {
+                    let entry = self
+                        .project_layer
+                        .mcp_servers
+                        .entry(name.clone())
+                        .or_insert(serde_json::Value::Null);
+                    merge_json_values(entry, server.clone());
+                }
+                let gated = gate_layer(obj, &self.merged_json, self.withhold);
+                if self.withhold && !gated.is_empty() {
+                    tracing::warn!(origin = %layer.origin, withheld = ?gated, "project is not trusted; settings only a trusted project may set are ignored");
+                }
+                self.project_layer.requires_trust.extend(gated);
+            }
+            if let Some(rules) = obj.remove("permission_rules") {
+                self.take_permission_rules(&layer.origin, layer.tier, layer.machine_local, rules);
+            }
+        }
+        self.note_mcp_servers(layer.tier, &layer_json);
+        for (key, error) in merge_fitting(&mut self.merged_json, layer_json) {
+            tracing::warn!(layer = layer.tier.name(), origin = %layer.origin, key, error, "settings value does not fit its setting, ignoring it");
+            self.ignored.push(IgnoredValue {
+                tier: layer.tier.name(),
+                origin: layer.origin.clone(),
+                key,
+                error,
+            });
+        }
+    }
+
+    fn take_permission_rules(
+        &mut self,
+        origin: &str,
+        tier: Tier,
+        machine_local: bool,
+        rules: serde_json::Value,
+    ) {
+        let (rules, unread) = read_permission_rules(rules);
+        for (key, error) in unread {
+            tracing::warn!(layer = tier.name(), origin = %origin, key, error, "permission rule does not read, ignoring it");
+            self.ignored.push(IgnoredValue {
+                tier: tier.name(),
+                origin: origin.to_string(),
+                key,
+                error,
+            });
+        }
+        for rule in rules {
+            if self.tiers.is_own_project(tier) && rule.action == RuleBehavior::Allow {
+                self.project_layer
+                    .requires_trust
+                    .push(format!("permission_rules.allow({})", rule.tool));
+                if self.withhold {
+                    continue;
+                }
+            }
+            self.loaded_rules
+                .push(LoadedRule::new(rule, tier, machine_local));
+        }
+    }
+
+    fn note_mcp_servers(&mut self, tier: Tier, layer_json: &serde_json::Value) {
+        let declared_in = if self.tiers.is_global(tier) {
+            self.global_dir
+        } else if self.tiers.is_own_project(tier) {
+            self.local_dir.parent().unwrap_or(self.local_dir)
+        } else {
+            self.scene_dir
+        };
+        for (name, server) in layer_json
+            .get("mcp_servers")
+            .and_then(|v| v.as_object())
+            .into_iter()
+            .flatten()
+        {
+            if server.get("command").is_some() || !self.mcp_server_dirs.contains_key(name) {
+                self.mcp_server_dirs
+                    .insert(name.clone(), declared_in.to_path_buf());
+            }
+            // A project's own servers read nothing from this process's
+            // environment (`confined_to_own_env`), so the names they
+            // write are not secrets of the daemon's.
+            if !self.tiers.is_own_project(tier) {
+                self.mcp_secret_vars.extend(
+                    crate::interface::exec::env::variables_an_mcp_server_reads(server),
+                );
+            }
+        }
+    }
+}
+
+/// Before any session these settings start runs a child process: a provider
+/// key is not read until a client is built, an MCP secret not until its server
+/// connects, and a hook or `Bash` can run before that.
+fn guard_loaded_values(values: &mut Settings, mcp_secret_vars: &[String]) {
+    for name in values
+        .providers
+        .values()
+        .filter_map(|p| p.api_key_env.as_deref())
+        .chain(mcp_secret_vars.iter().map(String::as_str))
+    {
+        crate::interface::exec::env::hold_back_credential(name);
+    }
+    if let Err(reason) = values.validate() {
+        tracing::warn!("Settings validation: {reason}");
+        values.permission_mode = PermissionMode::default();
     }
 }
