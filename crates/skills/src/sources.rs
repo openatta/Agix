@@ -312,12 +312,11 @@ mod tests {
     fn an_mcp_server_answers_for_its_own_bodies() {
         let source = McpSkills::new(
             "files",
-            vec![ToolDef {
-                name: "read".into(),
-                description: "Read a file".into(),
-                input_schema: serde_json::json!({"type": "object"}),
-                source: None,
-            }],
+            vec![ToolDef::new(
+                "read",
+                "Read a file",
+                serde_json::json!({"type": "object"}),
+            )],
         );
         let entries = source.skills();
         assert_eq!(entries.len(), 1);

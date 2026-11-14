@@ -921,12 +921,11 @@ mod tests {
 
     #[test]
     fn get_skill_content_resolves_mcp_sentinel_path() {
-        let tool = base::interface::model::ToolDef {
-            name: "search".into(),
-            description: "search things".into(),
-            input_schema: serde_json::json!({"type": "object"}),
-            source: None,
-        };
+        let tool = base::interface::model::ToolDef::new(
+            "search",
+            "search things",
+            serde_json::json!({"type": "object"}),
+        );
         let mgr = SkillManager::new();
         mgr.register_mcp_skills("test-server-get-skill-content", &[tool]);
         let content = mgr.get_skill_content("mcp__test-server-get-skill-content__search");

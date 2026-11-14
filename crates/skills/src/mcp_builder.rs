@@ -87,17 +87,16 @@ mod tests {
     use serde_json::json;
 
     fn make_tool(name: &str, desc: &str) -> ToolDef {
-        ToolDef {
-            name: name.into(),
-            description: desc.into(),
-            input_schema: json!({
+        ToolDef::new(
+            name,
+            desc,
+            json!({
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"}
                 }
             }),
-            source: None,
-        }
+        )
     }
 
     #[test]
@@ -145,12 +144,7 @@ mod tests {
             },
             "required": ["url"]
         });
-        let tool = ToolDef {
-            name: "fetch".into(),
-            description: "Fetch a URL".into(),
-            input_schema: schema,
-            source: None,
-        };
+        let tool = ToolDef::new("fetch", "Fetch a URL", schema);
         let body = build_tool_prompt("fetcher", &tool);
         assert!(body.contains("fetch"));
         assert!(body.contains("\"url\""));
