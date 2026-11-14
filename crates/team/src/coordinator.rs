@@ -551,6 +551,7 @@ impl Coordinator for DefaultCoordinator {
                     .await;
                 }
             }
+            cancelled |= ctx.cancel.is_cancelled();
 
             let mut md = format!("\n## {}_{}\n\n", si + 1, stage.name);
             for (l, b, e) in &sections {
@@ -2003,6 +2004,67 @@ mod tests {
         ) -> Result<ModelStream, ModelError> {
             Ok(Box::new(futures::stream::pending()))
         }
+    }
+
+    /// Cancels the lead's call when asked to judge, then never answers.
+    struct CancelsTheLeadWhenJudging {
+        lead: tokio_util::sync::CancellationToken,
+    }
+
+    #[async_trait]
+    impl Model for CancelsTheLeadWhenJudging {
+        fn api_type(&self) -> ApiType {
+            ApiType::Anthropic
+        }
+        async fn stream(
+            &self,
+            _prompt_blocks: Vec<PromptBlock>,
+            _tools: Vec<base::interface::model::ToolDef>,
+            _messages: Vec<base::interface::model::ModelMessage>,
+            _params: StreamParams,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<ModelStream, ModelError> {
+            self.lead.cancel();
+            Ok(Box::new(futures::stream::pending()))
+        }
+    }
+
+    /// The last stage's members all finished but its judging was cut off by
+    /// the lead's cancel: the team did not complete, and says so.
+    #[tokio::test]
+    async fn a_team_interrupted_while_its_last_stage_is_judged_ends_cancelled() {
+        let (_dir, ctx) = make_ctx();
+        let lead = ctx.cancel.clone();
+        let stage = TeamStage {
+            name: "only".into(),
+            agents: ["a", "b"]
+                .into_iter()
+                .map(|label| TeamAgentSpec {
+                    label: label.into(),
+                    prompt: "0".into(),
+                    agent_type: None,
+                })
+                .collect(),
+            aggregate: Some(AggregateMode::Aggregate),
+        };
+        let registry = Arc::new(crate::registry::TeamRegistry::new());
+        let request = OrchestrateRequest {
+            model: Arc::new(CancelsTheLeadWhenJudging { lead }),
+            ..make_request(ctx, vec![stage])
+        };
+        let result = DefaultCoordinator::with_delegator(Arc::new(FakeDelegator::new()))
+            .with_registry(registry.clone())
+            .orchestrate(request)
+            .await
+            .expect("orchestrate returns a result");
+
+        assert!(result.is_error, "an interrupted team is not a success");
+        let team_dir = registry.list()[0].team_dir.clone();
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(team_dir.join("state.json")).expect("state.json"),
+        )
+        .expect("state.json is json");
+        assert_eq!(state["status"], "cancelled", "{state}");
     }
 
     /// A judge that would never answer stops with the lead's call, even when
