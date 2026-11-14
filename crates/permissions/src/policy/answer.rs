@@ -23,7 +23,7 @@ impl Policy {
         hook: &HookAnswer,
         attendance: Attendance,
     ) -> PermissionOutcome {
-        let confinement = ctx.confinement;
+        let confinement = &ctx.confinement;
         let (reason, answerable) = match verdict {
             Verdict::Permit(basis) => return permit(basis, facts, attendance),
             Verdict::Deny(reason) => return PermissionOutcome::Deny { reason },

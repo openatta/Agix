@@ -2,13 +2,16 @@
 //! names, the system directories programs load from (`SYSTEM_READ_ROOTS`)
 //! and the user's git configuration (`HOME_READ_ROOTS`). macOS denies
 //! `file-read*` and allows it back under each root, metadata everywhere;
-//! Linux binds each root read-only in place of the whole filesystem.
+//! Linux binds each root read-only in place of the whole filesystem. A git
+//! those roots leave out — a shim under the home directory, a configuration
+//! file included from elsewhere — is reported unmet (`unmet`).
 //!
 //! The tables were measured on macOS with `ls`, `cat`, git directly and
 //! through the xcrun shim; the Linux one is the design's, not yet measured.
 
 use super::resolve_path;
 use base::interface::exec::ReadScope;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "macos")]
@@ -81,6 +84,97 @@ fn scope_read_roots(scope: &[PathBuf], home: Option<&Path>) -> Vec<PathBuf> {
         .chain(scope.iter().cloned())
         .map(|p| resolve_path(&p))
         .collect()
+}
+
+/// What a command under `read` would expect of git and cannot have, one line
+/// each: the `git` first on `path` lies outside what it reads, or the user's
+/// git configuration includes a file from outside it, which git stops on.
+/// Empty for `Everything`.
+pub(super) fn unmet(read: &ReadScope, home: Option<&Path>, path: Option<&OsStr>) -> Vec<String> {
+    let ReadScope::Only(scope) = read else {
+        return Vec::new();
+    };
+    let roots = strict_read_roots(scope, home);
+    let readable = |p: &Path| roots.iter().any(|root| p.starts_with(root));
+    let mut unmet = Vec::new();
+    if let Some(git) = path.and_then(git_on_path) {
+        let real = resolve_path(&git);
+        if !readable(&real) {
+            unmet.push(format!(
+                "git: the `git` on PATH is {}, which a command under the strict profile cannot \
+                 read, so git does not run there",
+                real.display()
+            ));
+        }
+    }
+    let mut seen = Vec::new();
+    let configs = home
+        .iter()
+        .flat_map(|h| [h.join(".gitconfig"), h.join(".config/git/config")]);
+    for config in configs {
+        for included in git_includes(&config, home, &mut seen) {
+            if !readable(&included) {
+                unmet.push(format!(
+                    "git: the user's git configuration includes {}, which a command under the \
+                     strict profile cannot read, so git stops there",
+                    included.display()
+                ));
+            }
+        }
+    }
+    unmet
+}
+
+fn git_on_path(path: &OsStr) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path)
+        .map(|dir| dir.join("git"))
+        .find(|git| {
+            std::fs::metadata(git).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+}
+
+/// The existing files `config` includes, its includes' includes among them,
+/// resolved. `seen` keeps a file from being read twice.
+fn git_includes(config: &Path, home: Option<&Path>, seen: &mut Vec<PathBuf>) -> Vec<PathBuf> {
+    let config = resolve_path(config);
+    if seen.contains(&config) {
+        return Vec::new();
+    }
+    seen.push(config.clone());
+    let Ok(text) = std::fs::read_to_string(&config) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    let mut including = false;
+    for line in text.lines().map(str::trim) {
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header
+                .split(|c: char| c == ']' || c.is_whitespace() || c == '"')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            including = name == "include" || name == "includeif";
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !including || !key.trim().eq_ignore_ascii_case("path") {
+            continue;
+        }
+        let value = value.trim().trim_matches('"');
+        let named = match (value.strip_prefix("~/"), home) {
+            (Some(rest), Some(home)) => home.join(rest),
+            _ => config.parent().unwrap_or(Path::new("/")).join(value),
+        };
+        let included = resolve_path(&named);
+        if included.is_file() {
+            found.extend(git_includes(&included, home, seen));
+            found.push(included);
+        }
+    }
+    found
 }
 
 /// The profile rules for `read`, to go before the deny list so that it stays

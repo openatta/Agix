@@ -232,13 +232,17 @@ pub trait Sandbox: Send + Sync {
 /// What the session's sandbox holds a command to, found once when the session
 /// is built. The permission policy reads it and never probes the sandbox
 /// itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ConfinementReport {
     /// How much of the session's policy holds a command.
     pub session: Enforcement,
+    /// What of the session's policy does not hold, as [`Confined::unmet`].
+    pub session_unmet: Vec<String>,
     /// How much of the strict policy ([`SandboxPolicy::strict`]) holds one.
     pub strict: Enforcement,
+    /// What of the strict policy does not hold, as [`Confined::unmet`].
+    pub strict_unmet: Vec<String>,
     /// The model cannot reach whatever host it likes.
     pub network_restricted: bool,
     pub require_enforcement: bool,
@@ -250,7 +254,9 @@ impl Default for ConfinementReport {
     fn default() -> Self {
         Self {
             session: Enforcement::None,
+            session_unmet: Vec::new(),
             strict: Enforcement::None,
+            strict_unmet: Vec::new(),
             network_restricted: false,
             require_enforcement: false,
             unattended_requires_network_policy: false,
@@ -268,11 +274,13 @@ impl ConfinementReport {
         require_enforcement: bool,
         unattended_requires_network_policy: bool,
     ) -> Self {
+        let strict = sandbox.confine(probe.clone(), &policy.strict(Vec::new(), None));
+        let session = sandbox.confine(probe, policy);
         Self {
-            strict: sandbox
-                .confine(probe.clone(), &policy.strict(Vec::new(), None))
-                .enforcement,
-            session: sandbox.confine(probe, policy).enforcement,
+            session: session.enforcement,
+            session_unmet: session.unmet,
+            strict: strict.enforcement,
+            strict_unmet: strict.unmet,
             network_restricted: !matches!(policy.network_mode, NetworkMode::Unrestricted),
             require_enforcement,
             unattended_requires_network_policy,

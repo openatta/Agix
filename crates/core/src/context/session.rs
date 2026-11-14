@@ -930,7 +930,7 @@ impl SessionState {
     ) -> crate::interface::exec::ConfinementReport {
         let kept = read(&self.engine).as_ref().map(|e| e.confinement.clone());
         match kept {
-            Some(kept) => *kept.get_or_init(probe),
+            Some(kept) => kept.get_or_init(probe).clone(),
             None => probe(),
         }
     }

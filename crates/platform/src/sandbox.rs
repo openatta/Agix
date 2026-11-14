@@ -1414,6 +1414,25 @@ impl Sandbox for PlatformSandbox {
         } = spec;
         let inner = ProcessSpec::new(program, Path::new(".")).args(args);
         let mut confined = wrap_program(inner, &cwd, &policy.additional_writable, policy);
+        #[cfg(all(feature = "sandbox", any(target_os = "macos", target_os = "linux")))]
+        if matches!(
+            confined.mode,
+            SandboxMode::MacOSSandboxExec | SandboxMode::LinuxBwrap
+        ) {
+            let var = |name: &str| {
+                env.iter()
+                    .rev()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| std::ffi::OsString::from(v))
+                    .or_else(|| std::env::var_os(name))
+            };
+            let home = var("HOME").map(PathBuf::from);
+            let unmet = read_scope::unmet(&policy.read, home.as_deref(), var("PATH").as_deref());
+            if !unmet.is_empty() {
+                confined.unmet.extend(unmet);
+                confined.enforcement = Enforcement::Partial;
+            }
+        }
         confined.spec.cwd = cwd;
         confined.spec.env = env;
         confined.spec.env_scope = match policy.env {
@@ -3267,6 +3286,89 @@ mod tests {
             );
         }
         works
+    }
+
+    /// A `git` that is a shim under the home directory (asdf, `~/bin`) and a
+    /// git configuration that includes a file from elsewhere are outside
+    /// what the strict profile reads, so git does not run under it: the
+    /// profile is reported as not fully held, with what is missing. The
+    /// session's own policy, which reads everything, holds.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn the_strict_profile_reports_a_git_it_cannot_run_as_unmet() {
+        use std::os::unix::fs::PermissionsExt;
+        if !a_backend_runs() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap().join("home");
+        let shims = home.join(".asdf/shims");
+        write_file(&shims.join("git"), "#!/bin/sh\necho shim-ran\n");
+        std::fs::set_permissions(shims.join("git"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        write_file(
+            &home.join(".gitconfig"),
+            "[user]\n\tname = T\n[include]\n\tpath = ~/dotfiles/gitconfig\n",
+        );
+        write_file(&home.join("dotfiles/gitconfig"), "");
+        let spec = || {
+            let mut spec = ProcessSpec::new("bash", dir.path()).args(["-c", "git"]);
+            spec.env.extend([
+                (
+                    "PATH".to_string(),
+                    format!("{}:/usr/bin:/bin", shims.display()),
+                ),
+                ("HOME".to_string(), home.display().to_string()),
+            ]);
+            spec
+        };
+        let strict = SandboxPolicy::default().strict(Vec::new(), None);
+
+        let confined = PlatformSandbox.confine(spec(), &strict);
+        assert_eq!(confined.enforcement, Enforcement::Partial, "{confined:?}");
+        let says = |what: &Path| {
+            confined
+                .unmet
+                .iter()
+                .any(|line| line.contains(&what.display().to_string()))
+        };
+        assert!(says(&shims.join("git")), "{:?}", confined.unmet);
+        assert!(
+            says(&home.join("dotfiles/gitconfig")),
+            "{:?}",
+            confined.unmet
+        );
+        let ran = std::process::Command::new(&confined.spec.program)
+            .args(&confined.spec.args)
+            .envs(confined.spec.env.iter().map(|(k, v)| (k, v)))
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&ran.stdout).contains("shim-ran"),
+            "the shim ran under the strict profile: {ran:?}"
+        );
+
+        let session = PlatformSandbox.confine(spec(), &SandboxPolicy::default());
+        assert_eq!(
+            session.enforcement,
+            Enforcement::Full,
+            "{:?}",
+            session.unmet
+        );
+
+        let report = base::interface::exec::ConfinementReport::probe(
+            &PlatformSandbox,
+            spec(),
+            &SandboxPolicy::default(),
+            true,
+            false,
+        );
+        assert_eq!(report.strict, Enforcement::Partial);
+        assert_eq!(report.strict_unmet, confined.unmet);
+        assert_eq!(report.session, Enforcement::Full);
+        assert!(report.session_unmet.is_empty(), "{report:?}");
     }
 
     /// `command` under the real backend, in `cwd`, with `env` added.
