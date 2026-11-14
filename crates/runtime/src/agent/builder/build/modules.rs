@@ -92,6 +92,7 @@ impl Builder {
                 scene,
                 model,
                 pending_permissions,
+                elicitation: self.ext.elicitation.as_ref(),
                 hooks,
                 hook_ambient: ambient,
                 events,

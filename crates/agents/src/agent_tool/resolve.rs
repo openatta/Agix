@@ -82,8 +82,13 @@ impl Delegator {
             },
             elicitation: Arc::new(ParentElicitation {
                 delegate_id: delegate_id.to_string(),
-                events: env.parent.events.clone(),
-                pending: env.parent.pending_permissions.clone(),
+                route: match &env.parent.asks_upstream {
+                    Some(upstream) => QuestionRoute::Upstream(upstream.clone()),
+                    None => QuestionRoute::Channel {
+                        events: env.parent.events.clone(),
+                        pending: env.parent.pending_permissions.clone(),
+                    },
+                },
                 task,
             }),
         }

@@ -5,6 +5,7 @@
 use std::sync::{Arc, Weak};
 
 use base::context::{EngineConfig, SessionState};
+use base::interface::elicitation::Elicitation;
 use base::interface::mcp_servers::McpServers;
 use base::interface::model::Model;
 use base::interface::scene::SceneSpec;
@@ -39,6 +40,10 @@ pub(crate) struct ParentSession {
     pub(crate) state: Arc<SessionState>,
     pub(crate) events: EventSender,
     pub(crate) pending_permissions: PendingPermissions,
+    /// Set when the parent is a delegate itself: its own questions go on up
+    /// through this, and so must its delegates', since no host watches its
+    /// channel.
+    pub(crate) asks_upstream: Option<Arc<dyn Elicitation>>,
     pub(crate) ended: CancellationToken,
 }
 
@@ -51,6 +56,7 @@ impl DelegateEnv {
                 state: cx.session_state.clone(),
                 events: cx.events.clone(),
                 pending_permissions: cx.pending_permissions.clone(),
+                asks_upstream: cx.elicitation.filter(|_| cx.depth > 0).cloned(),
                 ended: cx.session_ended(),
             },
             hooks: Arc::downgrade(cx.hooks),

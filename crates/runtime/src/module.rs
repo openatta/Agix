@@ -72,6 +72,10 @@ pub struct SessionContext<'a> {
     /// accounted to this session.
     pub model: &'a Arc<dyn Model>,
     pub pending_permissions: &'a PendingPermissions,
+    /// What the session was handed to put its questions to a person
+    /// (`Builder::elicitation`), if anything: for a delegate, its way to the
+    /// host its parent answers to.
+    pub elicitation: Option<&'a Arc<dyn base::interface::elicitation::Elicitation>>,
     pub hooks: &'a Arc<hooks::HookRunner>,
     /// What a hook payload this module fires starts from: the session's id,
     /// cwd and current permission mode.

@@ -290,6 +290,49 @@ async fn a_sub_agents_local_permit_always_is_written_to_the_project() {
     );
 }
 
+/// A sub-agent's sub-agent asks the host watching the root session, which
+/// answers it there like any other prompt.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grandchild_agents_question_reaches_the_root_sessions_host() {
+    let daemon = Daemon::start(
+        Setup {
+            global: json!({"execution": {"permission_prompt_timeout_secs": 5}}),
+            ..Setup::default()
+        },
+        |_, _| {},
+    )
+    .await;
+    let delegate = |id: &str| {
+        tool_round(
+            id,
+            "Agent",
+            json!({"description": "go down", "prompt": "go down",
+                   "subagent_type": "general-purpose"}),
+        )
+    };
+    daemon.model.push_turn(delegate("toolu_child"));
+    daemon.model.push_turn(delegate("toolu_grandchild"));
+    daemon.model.push_turn(tool_round(
+        "toolu_touch",
+        "Bash",
+        json!({"command": "touch grandchild.txt"}),
+    ));
+    daemon.model.push_turn(text_round("touched"));
+    daemon.model.push_turn(text_round("relayed"));
+    daemon.model.push_turn(text_round("done"));
+
+    let prompts = daemon.turn(|_| Some(json!({"type": "permit"}))).await;
+    assert_eq!(
+        prompts.len(),
+        1,
+        "the grandchild's question never reached the root's host: {prompts:?}"
+    );
+    assert!(
+        daemon.work.join("grandchild.txt").exists(),
+        "the answer given on the root session did not reach the grandchild"
+    );
+}
+
 #[derive(Default)]
 struct RecordsOptions(Mutex<Vec<Vec<String>>>);
 

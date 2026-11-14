@@ -64,12 +64,25 @@ impl PermissionPolicy for DelegateRelay {
 /// ahead of turn dispatch, so it lands even while the parent's turn is blocked
 /// in the call that spawned the delegate. How the question ended goes out on
 /// the parent's channel too, as the parent's own would.
+///
+/// A parent that is a delegate itself has no host watching its channel; its
+/// delegates' questions go on up the way its own do, each level adding its
+/// `[sub-agent <id>]`.
 pub(crate) struct ParentElicitation {
     pub(crate) delegate_id: String,
-    pub(crate) events: runtime::agent::EventSender,
-    pub(crate) pending: runtime::agent::PendingPermissions,
+    pub(crate) route: QuestionRoute,
     /// Shown as waiting while a question of the delegate's is open.
     pub(crate) task: Option<Arc<base::context::RunningTask>>,
+}
+
+pub(crate) enum QuestionRoute {
+    /// The parent is the session its host watches.
+    Channel {
+        events: runtime::agent::EventSender,
+        pending: runtime::agent::PendingPermissions,
+    },
+    /// The parent is a delegate: how it asks its own questions.
+    Upstream(Arc<dyn Elicitation>),
 }
 
 #[async_trait]
@@ -101,72 +114,68 @@ impl ParentElicitation {
     ) -> Option<ElicitOutcome> {
         let ElicitKind::Authorization {
             tool_name, paths, ..
-        } = request.kind
+        } = &request.kind
         else {
             return Some(ElicitOutcome::declined(
                 "a sub-agent can put only permission questions to the person, through its \
                  parent session",
             ));
         };
+        let _waiting = Waiting::begin(self.task.as_deref(), request.id.clone());
+        let message = format!("[sub-agent {}] {}", self.delegate_id, request.message);
+        let (events, pending) = match &self.route {
+            QuestionRoute::Upstream(upstream) => {
+                let mut request = request.clone();
+                request.message = message;
+                return upstream.ask_within(request, within).await;
+            }
+            QuestionRoute::Channel { events, pending } => (events, pending),
+        };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut open = OpenQuestion::register(self, &request.id, tx);
+        let mut open =
+            runtime::elicitation::OpenPrompt::register(&request.id, pending, tx, events.clone());
         let prompt = base::event::AgentEvent::PermissionPrompt {
             prompt_id: request.id.clone(),
-            tool_name,
-            message: format!("[sub-agent {}] {}", self.delegate_id, request.message),
-            paths,
+            tool_name: tool_name.clone(),
+            message,
+            paths: paths.clone(),
             turn_id: String::new(),
             tool_use_id: None,
             task_id: self.task.as_ref().map(|task| task.task_id.clone()),
         };
-        if self.events.send(prompt).is_err() {
+        if events.send(prompt).is_err() {
             return Some(ElicitOutcome::declined(format!(
                 "the parent session closed before it could answer. Original prompt: {}",
                 request.message
             )));
         }
-        Some(match open.open.wait(rx, within).await? {
+        Some(match open.wait(rx, within).await? {
             Ok(decision) => ElicitOutcome::answered(&decision),
             Err(_) => ElicitOutcome::declined("permission request closed without an answer"),
         })
     }
 }
 
-/// A question registered with the parent and its task shown as waiting, both
-/// undone when the ask ends however it ends.
-struct OpenQuestion<'a> {
-    asker: &'a ParentElicitation,
-    prompt_id: &'a str,
-    open: runtime::elicitation::OpenPrompt<runtime::agent::PermissionDecision>,
+/// The delegate's task shown as waiting on a question, until the ask ends
+/// however it ends.
+struct Waiting<'a> {
+    task: Option<&'a base::context::RunningTask>,
+    prompt_id: String,
 }
 
-impl<'a> OpenQuestion<'a> {
-    fn register(
-        asker: &'a ParentElicitation,
-        prompt_id: &'a str,
-        tx: tokio::sync::oneshot::Sender<runtime::agent::PermissionDecision>,
-    ) -> Self {
-        let open = runtime::elicitation::OpenPrompt::register(
-            prompt_id,
-            &asker.pending,
-            tx,
-            asker.events.clone(),
-        );
-        if let Some(task) = &asker.task {
-            task.begin_waiting(prompt_id);
+impl<'a> Waiting<'a> {
+    fn begin(task: Option<&'a base::context::RunningTask>, prompt_id: String) -> Self {
+        if let Some(task) = task {
+            task.begin_waiting(&prompt_id);
         }
-        Self {
-            asker,
-            prompt_id,
-            open,
-        }
+        Self { task, prompt_id }
     }
 }
 
-impl Drop for OpenQuestion<'_> {
+impl Drop for Waiting<'_> {
     fn drop(&mut self) {
-        if let Some(task) = &self.asker.task {
-            task.end_waiting(self.prompt_id);
+        if let Some(task) = self.task {
+            task.end_waiting(&self.prompt_id);
         }
     }
 }

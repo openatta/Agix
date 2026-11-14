@@ -103,6 +103,7 @@ impl TestParent {
                 state: self.state,
                 events,
                 pending_permissions: self.pending,
+                asks_upstream: None,
                 ended: self.ended,
             },
             hooks: self.hooks,
