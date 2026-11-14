@@ -122,12 +122,8 @@ struct Checkpoint {
 }
 
 impl Agent {
-    /// Build the summarizer used by compaction's FullCompact layer.
-    ///
-    /// Routed through the task-model router under the `"compact"` task type,
-    /// so a `task_models.compact` entry can point summarization at a
-    /// cheaper/faster model than the conversation. With no router configured
-    /// it uses the conversation's own model and model name.
+    /// Routed under the `"compact"` task type, so `task_models.compact` can
+    /// point summarization at another model.
     pub(super) fn compaction_summarizer(&self) -> Option<compaction::llm_summary::LlmSummarizer> {
         let (model, model_name) = self.model_for_task("compact");
         if model_name.is_empty() {
@@ -404,11 +400,8 @@ impl Agent {
         }
     }
 
-    /// One compaction, start to finish: the `PreCompact` hook, an LLM summary
-    /// when one is wanted, the compactor's own cascade otherwise, recovery of
-    /// what the summary cannot carry, the transcript marker, the event and
-    /// `PostCompact`. Every trigger takes this path, so what a compaction has
-    /// to put right afterwards is put right whichever one ran.
+    /// Every trigger takes this path, so what a compaction has to put right
+    /// afterwards is put right whichever one ran.
     ///
     /// `target` is what the conversation is cut to before recovery goes back
     /// in front of it. A compaction that leaves the conversation no smaller —
@@ -506,21 +499,10 @@ impl Agent {
         trigger: CompactTrigger,
         cancel: &CancellationToken,
     ) -> Result<SummaryAttempt, NotCompacted> {
-        // Layer 0: FullCompact — LLM summary, before anything is dropped.
-        //
-        // Placed ahead of the DefaultCompactor cascade because every layer
-        // in that cascade destroys information: Snip drops whole rounds,
-        // MicroCompact blanks tool results, CollapseContext truncates each
-        // text block to 200 bytes. A summary written after any of them
-        // could only describe the wreckage. Summarize, then drop.
-        //
-        // Not unconditional: `should_summarize` requires that compaction is
-        // genuinely about to discard a meaningful amount of history, so a
-        // marginal compaction doesn't buy an API round-trip of latency on
-        // the user's turn. Every failure mode (no summarizer configured,
-        // strategy declines, model errors, timeout, empty response) falls
-        // through to the non-LLM cascade below, so this can never fail a
-        // turn — it can only fail to help.
+        // Ahead of the cascade because every cascade layer destroys
+        // information; a summary written after any of them could only
+        // describe the wreckage. Every failure falls through to the cascade,
+        // so the summary can fail to help but never fails a turn.
         let compactor = self.compaction.compactor.clone();
         Ok(match self.compaction_summarizer() {
             Some(summarizer)
@@ -622,15 +604,11 @@ impl Agent {
         self.compaction.compact_warning_issued = false;
         self.compaction.auto_backoff = AutoCompactBackoff::default();
 
-        // Two pieces of context are injected once per session, as
-        // `<system-reminder>` user messages, and are therefore ordinary
-        // compaction victims: the opening context message — session facts and
-        // the project instructions — gated by `session_context_injected`, and
-        // recalled memories, whose names go into `frozen.already_surfaced` so
-        // they are not re-injected turn after turn. Neither is part of the
-        // recovery above. Resetting both re-injects nothing here; it makes the
-        // next turn's injection paths eligible again. A strategy that kept the
-        // opening message keeps the flag.
+        // The opening context message and recalled memories are ordinary
+        // compaction victims and not part of the recovery above. Resetting
+        // their flags injects nothing here; it makes the next turn's
+        // injection paths eligible again. A strategy that kept the opening
+        // message keeps its flag.
         self.prompt
             .reset_context(holds_session_context(&self.session.messages));
 

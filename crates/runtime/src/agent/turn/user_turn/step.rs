@@ -64,18 +64,13 @@ impl Agent {
         }
         self.after_reply(&call, cancel).await;
 
-        // A PostToolUse hook can request the turn end right here — every
-        // tool_use emitted in this round already has its tool_result in
-        // the session (execute_stream writes the reply together with all
-        // of its results once the round is over), so there's no risk of
-        // a dangling tool_use block without a matching result. Mirrors the Stop hook's
-        // discontinue path below, just triggered from a different point.
+        // Safe to end here: `execute_stream` writes the reply together with
+        // all its tool results, so no tool_use is left without a result.
         if call.discontinued.load(std::sync::atomic::Ordering::Relaxed) {
             tracing::info!("PostToolUse hook discontinued the turn");
             return Ok(ControlFlow::Break(StopReason::ToolHookDiscontinued));
         }
 
-        // Structured output retry limit.
         state.structured_output_calls += self
             .session
             .messages
@@ -98,7 +93,6 @@ impl Agent {
             return Ok(ControlFlow::Break(StopReason::BudgetExceeded));
         }
 
-        // If tools were executed during streaming, continue to next API call.
         if call.result.has_tool_uses {
             self.between_tool_steps(state, cancel).await;
             return Ok(ControlFlow::Continue(()));
@@ -108,9 +102,8 @@ impl Agent {
     }
 
     async fn checkpoint(&mut self) {
-        // Every step starts from a transcript that is on disk, so a
-        // process that dies mid-turn loses at most the step in flight.
-        // Here every tool_use already has its tool_result next to it.
+        // A process that dies mid-turn loses at most the step in flight;
+        // every tool_use here already has its tool_result.
         if let Err(e) = self.session.persist().await {
             tracing::warn!(error = %e, "failed to persist session");
         }
@@ -118,9 +111,8 @@ impl Agent {
     }
 
     fn over_hard_cap(&self) -> bool {
-        // A ceiling compaction was unable to get under. Ending the turn is
-        // the only honest answer left: the request that would go out next
-        // is one the deployment said must never be sent.
+        // Compaction could not get under the cap, and the deployment said a
+        // request above it must never be sent.
         if let Some(cap) = self.context_budget().hard_cap {
             let carried = self.context_tokens();
             if carried > cap {
@@ -132,7 +124,6 @@ impl Agent {
     }
 
     async fn start_step(&mut self, state: &mut TurnLoopState) -> (u32, ModelRequest) {
-        // 2. Assemble the request
         let step = state.api_calls;
         state.api_calls += 1;
         self.emit(AgentEvent::StepStart {
@@ -162,16 +153,14 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> Result<ModelCall, TurnError> {
         let (step, mut request) = self.start_step(state).await;
-        // Counted before the request is handed on: the call's own
-        // accounting needs the size of what went out.
+        // Taken before the request is handed on: accounting needs the size
+        // of what went out.
         let sent_message_count = request.messages.len();
         let sent_tool_count = request.tool_defs.len();
 
-        // 3. Call the model and 5. stream its reply, running tools as they
-        //    arrive. 4. A call that fails before anything of it was kept
-        //    goes to the recovery policy, a bounded number of times; the
-        //    doing stays with the loop, because compacting, rebuilding a
-        //    request and sending it are things only it can sequence.
+        // A call that fails before anything of it was kept goes to the
+        // recovery policy; the doing stays here, because only the loop can
+        // sequence compacting, rebuilding a request and sending it.
         let call_started = std::time::Instant::now();
         state.turn_no = self.session.turn_count;
         let discontinued = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -306,10 +295,8 @@ impl Agent {
     }
 
     async fn account_call(&mut self, state: &mut TurnLoopState, call: &ModelCall) {
-        // Any images the round's tools returned ride out-of-band (see
-        // `ToolExecCtx::images`) and get appended to the tool-result message
-        // `execute_stream` just pushed — after every `tool_result` block, as
-        // the API requires.
+        // Tool images ride out-of-band and go after every `tool_result`
+        // block of the message `execute_stream` just pushed, as the API requires.
         let pending_images =
             std::mem::take(&mut *call.images.lock().unwrap_or_else(|e| e.into_inner()));
         if !pending_images.is_empty() {
@@ -336,10 +323,8 @@ impl Agent {
             seq: self.session.messages.len() as u64,
         });
 
-        // One call, accounted for. Every other number the engine reports is
-        // per turn, and a turn is several calls — so this is the event a
-        // cost can be computed from, and the only one that says which model
-        // the spending went to when a turn switched models partway.
+        // The only per-call figure: a cost can be computed from it, and it
+        // says which model the spending went to when a turn switched models.
         self.telemetry
             .record(telemetry::TelemetryEvent::api_request(
                 &self.session.session_id,
@@ -356,26 +341,19 @@ impl Agent {
                     input_message_count: call.sent_message_count,
                     tool_count: call.sent_tool_count,
                     default_model: state.model == self.settings.values.model.model_name,
-                    // A turn's own call. The auxiliary ones are labelled
-                    // by `telemetry::model::TelemetryModel`, which is
-                    // where they are visible at all.
+                    // Auxiliary calls are labelled by `TelemetryModel`.
                     purpose: None,
                     truncated: stream_result.truncated,
                 },
             ));
-        // Added here rather than beside the budget's own counter further
-        // down: a turn can end between the two, and a call that happened
-        // has to be counted whether or not the turn went on to check a
-        // budget.
+        // Not beside the budget check below: a turn can end between the two,
+        // and a call that happened has to be counted.
         state.spent = state.spent.plus(usage);
     }
 
     async fn after_reply(&mut self, call: &ModelCall, cancel: &CancellationToken) {
         let has_tool_uses = call.result.has_tool_uses;
-        // `PostSampling`: one model response has been fully streamed and
-        // is in the transcript. Purely observational: like the other lifecycle hooks, the
-        // response is not modifiable from here (there is no defined
-        // recovery path for a veto at this point).
+        // Observational only: there is no recovery path for a veto here.
         {
             let sr = call.result.stop_reason.clone();
             let out_tokens = call.result.usage.output_tokens;
@@ -387,9 +365,7 @@ impl Agent {
             .await;
         }
 
-        // A git-mutating Bash call this round means the session-start
-        // `FrozenContext` git snapshot (branch/status/log) is now stale
-        // — refresh just that slice.
+        // A git-mutating Bash call makes the frozen git snapshot stale.
         if has_tool_uses
             && self.settings.paths.project_root().is_some()
             && Self::included_git_mutating_bash_call(self.this_step())
@@ -411,13 +387,8 @@ impl Agent {
     }
 
     fn charge_budget(&mut self, state: &TurnLoopState) -> ControlFlow<()> {
-        // Cumulative token budget, checked against the real usage the
-        // provider reported for this call — no per-model price table,
-        // no estimate. At 90% inject a warning; at 100% abort.
-        //
-        // The engine hands over all four figures and does not decide which
-        // of them count as spent; that is the policy's judgement, and the
-        // telemetry below records the reading the engine's own policy uses.
+        // The engine hands the policy all four figures; which count as
+        // spent is its judgement.
         let spend = base::interface::budget_policy::Spend::from(state.spent);
         let total_tokens_used = spend.total_tokens();
         match self.policies.budget_policy().on_usage(&spend) {
@@ -464,10 +435,8 @@ impl Agent {
     }
 
     async fn between_tool_steps(&mut self, state: &mut TurnLoopState, cancel: &CancellationToken) {
-        // Collect async skill discovery prefetch (fired at turn start).
         if let Some(handle) = state.skill_discovery.take() {
-            // Time-bounded wait: if discovery hasn't completed after
-            // tool execution, skip it this turn (it'll run next turn).
+            // Not done in time: skipped this turn, it runs next turn.
             if let Ok(Ok((_discovered, new_names))) =
                 tokio::time::timeout(std::time::Duration::from_millis(500), handle).await
             {
@@ -487,8 +456,6 @@ impl Agent {
             }
         }
 
-        // Activate conditional skills whose `paths` patterns match
-        // files accessed by Read/Write/Edit tool operations this turn.
         {
             let file_paths = Self::extract_tool_file_paths(self.messages_this_turn());
             if !file_paths.is_empty() {

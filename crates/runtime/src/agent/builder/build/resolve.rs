@@ -35,8 +35,6 @@ impl Builder {
             .take()
             .ok_or_else(|| EngineError::Internal("settings required".into()))?;
 
-        // Telemetry: use pre-built handle if injected, else noop (events
-        // silently dropped).
         let telemetry_handle = self
             .host
             .telemetry_handle_override
@@ -45,11 +43,8 @@ impl Builder {
                 let (tx, _rx) = tokio::sync::mpsc::channel(1);
                 TelemetryHandle::new(tx)
             });
-        // Every call this session makes is accounted for, including the
-        // ones no turn asked for — see `telemetry::model::TelemetryModel`.
-        // Wrapped here rather than further down because the sub-agent spawner
-        // built below takes its own copy of the model, and a sub-agent's
-        // memory extraction costs exactly as much as a top-level one's.
+        // Wrapped before the sub-agent spawner takes its own copy of the
+        // model, so a sub-agent's calls are accounted for too.
         let model: Arc<dyn Model> = Arc::new(telemetry::model::TelemetryModel::new(
             model,
             telemetry_handle.clone(),
@@ -112,7 +107,6 @@ impl Builder {
             .instruction_file
             .clone()
             .or(configured_instruction_file);
-        // Pre-read AGENTS.md / CLAUDE.md content for userContext injection.
         let instruction_provider: Arc<
             dyn base::interface::instruction_provider::InstructionProvider,
         > = self.host.instruction_provider.clone().unwrap_or_else(|| {
@@ -145,9 +139,6 @@ impl Builder {
         &self,
         settings: &LoadedSettings,
     ) -> Result<SessionManager, EngineError> {
-        // Session: `self.host.history_store` (set via `Builder::history_store(...)`)
-        // makes this incrementally persisted to disk once per turn; `None`
-        // (the default) keeps it in-memory only.
         let mut session = SessionManager::new(
             self.host.history_store.clone(),
             self.spec.session_id.clone(),
@@ -156,17 +147,10 @@ impl Builder {
         if let Some(counter) = self.host.token_counter.clone() {
             session = session.with_token_counter(counter);
         }
-        // Session-memory sidecar (`session_memory.md`) — only for sessions
-        // that actually persist (matches `resume`'s only being meaningful
-        // with a `HistoryStore`; an in-memory-only session's id doesn't
-        // outlive the process, so a sidecar for it would just be orphaned
-        // disk state nothing ever reads back). File creation itself happens
-        // later, in `warmup()` — this only constructs the handle, no I/O.
-        //
-        // A caller-supplied id that doesn't parse fails the build outright
-        // rather than degrading: `SessionManager::persist` parses the same id
-        // before writing anything, so an unparseable one means transcript
-        // persistence and the sidecar are both dead for the whole session.
+        // Only a persisting session gets a sidecar; an in-memory id does not
+        // outlive the process. An id that does not parse fails the build
+        // rather than degrading: `persist` parses the same id, so both
+        // transcript and sidecar would be dead for the whole session.
         if self.host.history_store.is_some() {
             let sid = base::session::SessionId::parse(session.session_id_str()).map_err(|e| {
                 EngineError::Internal(format!(
@@ -176,9 +160,8 @@ impl Builder {
                     session.session_id_str()
                 ))
             })?;
-            // Every other session sidecar (metadata, input history, prompt
-            // state) resolves through `history::path`, so this has to as well,
-            // or the memory file lands somewhere nothing looks for it.
+            // Through `history::path` like every other sidecar, or nothing
+            // would look where the file lands.
             let roots = history::path::HistoryRoots::under(&settings.paths.global_data_dir);
             let path = history::path::session_memory_file(&roots.sessions, &sid);
             session = session.with_session_memory(SessionMemory::new(path));
@@ -187,27 +170,16 @@ impl Builder {
     }
 }
 
-// Per-session tool registry, seeded from whatever was passed in (a
-// daemon's shared, immutable-after-startup template of built-in
-// tools — see `SessionPool.tools`). Every per-session-stateful tool
-// this function registers below (`Skill`/`Agent`/`TeamCreate`/
-// `TeamDelete`/`TaskStop`/`TaskOutput`/MCP adapters)
-// goes into *this* fresh copy, not the caller-supplied one: in a
-// daemon the caller's `Arc` is shared by every session, and
-// `InMemoryToolRegistry::register` appends without replacing by name.
+// A fresh copy of the template: in a daemon the template is shared by every
+// session, and per-session tools registered later must not land in it.
 pub(super) fn session_registry(
     template: &dyn base::tool::ToolRegistry,
 ) -> Arc<InMemoryToolRegistry> {
     let session_tools = Arc::new(InMemoryToolRegistry::new());
     let mut had_tool_search = false;
     for t in template.list() {
-        // `ToolSearchTool` closes over the registry it searches. The
-        // instance in the incoming template closes over the
-        // *template*, so it would report on the template's tools —
-        // which have none of the engine-state tools registered below.
-        // Drop it and
-        // rebind one to this session's registry instead. (Same `Arc`,
-        // read at call time, so later registrations are visible.)
+        // The template's `ToolSearch` searches the template, which lacks
+        // the engine-state tools; rebind one to this session's registry.
         if t.name() == "ToolSearch" {
             had_tool_search = true;
             continue;

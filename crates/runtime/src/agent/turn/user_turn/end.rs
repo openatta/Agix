@@ -86,10 +86,6 @@ impl Agent {
             state.tool_calls,
             state.started,
         );
-        // TurnComplete — the normal end of a turn. Distinct from the
-        // `Stop` hook above, which fires whenever the model stops calling
-        // tools and can *veto* the stop; this one is a notification that
-        // the turn is over, carrying why.
         self.fire_lifecycle_hook(hooks::HookEvent::TurnComplete, |i| {
             i.with_turn_id(self.current_turn_id.clone())
                 .with_stop_reason(stop_reason)
@@ -100,19 +96,8 @@ impl Agent {
     }
 
     fn spawn_memory_extraction(&mut self) {
-        // Auto-extract durable memories after turn completion.
-        // Only extract if the model produced a complete response (not cancelled/max_turns).
-        // Gated on `memory_enabled` — see the prefetch block above for why this matters
-        // (the flag's whole point is opting out of the memory subsystem entirely, not just
-        // the static prompt injection).
         if self.settings.values.memory_enabled && self.memory.extracts_after_turn() {
             let messages = self.session.messages().to_vec();
-            // `task_models.memory` lets an app point this background
-            // extraction call at a different vendor/model than the main
-            // conversation — same TaskRouter mechanism already proven
-            // for the "subagent" task type (see
-            // `agents::delegate::Delegator::model_for_subagent`). No override
-            // configured → falls back to the main model.
             let (model, model_name) = self.model_for_task("memory");
             self.memory.spawn_extraction(Extraction {
                 messages,
@@ -126,15 +111,10 @@ impl Agent {
     }
 
     async fn remind_stale_session_notes(&mut self) {
-        // Remind the model to update its cross-session notes once they
-        // have gone stale.
         if let Some(ref sm) = self.session.session_memory {
             let current_turn = self.session.turn_count;
-            // If a Write/Edit this turn targeted the sidecar file itself,
-            // the model just updated its notes — reset staleness instead
-            // of nagging again next turn. Compares against the exact
-            // path we tell the model below, so a literal match is enough
-            // (no canonicalization needed).
+            // The path compared is the one the reminder tells the model, so
+            // a literal match needs no canonicalization.
             let updated_this_turn = Self::extract_tool_file_paths(self.messages_this_turn())
                 .iter()
                 .any(|p| p == sm.path());

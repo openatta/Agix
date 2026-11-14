@@ -108,8 +108,7 @@ impl Agent {
         }
     }
 
-    /// Process one input message — the core turn loop.
-    /// Internal turn processing. Consumers should use [`Agent::run`] or [`Agent::run_turn`].
+    /// Consumers use [`Agent::run`] or [`Agent::run_turn`].
     pub(crate) async fn process_turn(
         &mut self,
         msg: InputMessage,
@@ -137,12 +136,8 @@ impl Agent {
                 prompt_id,
                 decision,
             } => {
-                // Normally unreachable via `Agent::run`: its input
-                // demultiplexer intercepts `PermissionResponse` *before*
-                // dispatching here, which is the whole point — see that
-                // function's comment. Kept for direct `process_turn` callers
-                // (tests, embedders driving the engine themselves), sharing
-                // one implementation so the two paths can't diverge.
+                // `Agent::run`'s demultiplexer intercepts this before it gets
+                // here; this arm serves direct `process_turn` callers.
                 self.gate.resolve_permission(prompt_id, decision);
                 Ok(TurnOutcome::default())
             }
@@ -184,16 +179,13 @@ impl Agent {
                 });
                 Ok(TurnOutcome::default())
             }
-            // `content` is the model name. Each turn re-reads
-            // `settings.model.model_name` into its `effective_model`,
-            // so swapping it here is what makes a host's `/model`
-            // change the model the next turn calls.
+            // `content` is the model name; each turn re-reads it into its
+            // `effective_model`.
             EngineCommand::RefreshMcp => {
                 self.tooling.refresh_mcp().await;
                 Ok(TurnOutcome::default())
             }
-            // `CancelTurn` is handled by the input demultiplexer, not
-            // here — see its doc comment on `EngineCommand`.
+            // Handled by the input demultiplexer.
             EngineCommand::CancelTurn { .. } => Ok(TurnOutcome::default()),
         }
     }
@@ -233,7 +225,6 @@ impl Agent {
             content
         };
 
-        // Not a slash command → normal flow
         self.run_user_turn(
             processed_content,
             attachments,
@@ -299,18 +290,10 @@ impl Agent {
     }
 
     async fn mcp_prompt_text(&self, sc: &crate::commands::SlashCommand) -> Option<String> {
-        // `/mcp__<server>__<prompt>` → `prompts/get` on the owning
-        // server; the returned messages become this turn's
-        // content.
-        //
-        // Resolved off the registry when the prompt was registered
-        // there (the normal path — `Builder::build`), otherwise
-        // straight off the live `McpManager`. The fallback is what
-        // keeps this working for a registry built once and shared
-        // across sessions (`Builder::commands_override`, the
+        // The fallback to the live `McpManager` is what makes this work for
+        // a registry shared across sessions (`commands_override`, the
         // daemon's path): that catalog predates this session's MCP
-        // connections, and it also lets prompts picked up by a
-        // later `refresh_prompts` be invocable immediately.
+        // connections and any later `refresh_prompts`.
         let mcp_command: Option<String> = match self.tooling.commands().resolve(&sc.name) {
             Some(crate::commands::Command::McpPrompt { command, .. }) => Some(command),
             Some(_) => None,
@@ -321,13 +304,7 @@ impl Agent {
                 .then(|| sc.name.clone()),
         };
         let command = mcp_command?;
-        // Argument mapping + validation and every failure mode
-        // (unreachable server, prompt handler error, bad
-        // arguments) are handled inside
-        // `invoke_prompt_command`, which always yields text —
-        // a broken MCP server must not fail the user's turn,
-        // it must produce something the model can read and
-        // explain to the user.
+        // Always yields text: a broken MCP server must not fail the turn.
         let invocation = self
             .tooling
             .mcp()
@@ -383,16 +360,9 @@ impl Agent {
             .await
     }
 
-    /// Fire a notification-only lifecycle hook, if any are configured.
-    ///
-    /// Every lifecycle event shares the same three ambient fields (session id,
-    /// cwd, permission mode) and discards the response — none of them has a
-    /// defined recovery path for a hook that wants to veto, so none of them
-    /// offers one. `build` adds whatever the specific event carries.
-    ///
-    /// The `has_hooks_for` guard matters: `HookRunner::run` is an async call
-    /// that ends up spawning processes, and these sites are on the hot path of
-    /// every turn and every tool call.
+    /// The response is discarded: no lifecycle event has a recovery path for
+    /// a veto. The `has_hooks_for` guard matters, since `HookRunner::run`
+    /// spawns processes and these sites are on every turn's hot path.
     ///
     /// The hooks stop when the session ends: this is for an event about the
     /// session, or about a turn that is over.
@@ -420,8 +390,6 @@ impl Agent {
         let _ = self.gate.hooks().run(event, &input, stop).await;
     }
 
-    /// A hook payload for `event` carrying only the session's id, cwd and
-    /// current permission mode.
     pub(crate) fn lifecycle_input(&self, event: String) -> hooks::HookInput {
         hooks::HookInput::lifecycle(
             event,

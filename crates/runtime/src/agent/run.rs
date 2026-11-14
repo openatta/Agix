@@ -181,7 +181,6 @@ impl Agent {
     async fn session_start(&mut self) {
         tracing::info!(scene = %self.scene.id, "Engine started");
 
-        // Emit SystemInit
         let tools: Vec<_> = self
             .tooling
             .tools()
@@ -198,15 +197,9 @@ impl Agent {
             mcp_servers: vec![],
         });
 
-        // `Setup` then `SessionStart`, both fired here rather than in
-        // `Builder::build()`: `build()` is sync, and a `Builder` that is
-        // constructed but never run is not a session. This is the first point
-        // at which the session is genuinely live.
-        //
-        // `Setup` runs *before* `SessionStart` and carries
-        // the resolved environment, so a hook can validate or prepare the
-        // workspace (fetch credentials, warm a cache, refuse to start on a
-        // dirty tree) while there is still nothing to undo.
+        // Fired here, not in the sync `Builder::build()`: a builder that is
+        // never run is not a session. `Setup` comes first so a hook can
+        // refuse to start while there is still nothing to undo.
         {
             let scope = self.settings.paths.scope.clone();
             let model = self.settings.values.model.model_name.clone();
@@ -218,9 +211,8 @@ impl Agent {
         self.fire_lifecycle_hook(hooks::HookEvent::SessionStart, |i| i)
             .await;
 
-        // `CwdChanged`: the session's working directory as resolved at
-        // startup. Nothing in the engine relocates a live session's cwd, so a
-        // single event here reports where work will happen.
+        // Nothing relocates a live session's cwd, so one event at startup
+        // reports where work will happen.
         {
             let cwd = self.settings.paths.working_dir().display().to_string();
             self.fire_lifecycle_hook(hooks::HookEvent::CwdChanged, |i| {
@@ -371,9 +363,7 @@ impl Agent {
         self.memory
             .finish(crate::turn::MEMORY_EXTRACTION_GRACE)
             .await;
-        // SessionEnd — one exit point for all three ways the loop ends
-        // (shutdown command, input channel closed, cancellation), so a hook
-        // that cleans up gets to run regardless of which one happened.
+        // One exit point for shutdown, a closed channel and cancellation.
         self.fire_lifecycle_hook(hooks::HookEvent::SessionEnd, |i| i)
             .await;
 
@@ -416,13 +406,11 @@ impl Agent {
         );
 
         let (frozen, _, _) = tokio::join!(
-            // 1. Pre-compute the frozen environment snapshot (git status, branch, platform, etc.)
             crate::turn::collect_frozen(
                 &self.settings.paths,
                 &*self.policies.environment,
                 &engine_git
             ),
-            // 2. Fire-and-forget pre-connect GET to the API base URL (warms TCP/TLS)
             async move {
                 if !base_url.is_empty() {
                     // Warms anything only while the model client and the
@@ -434,8 +422,6 @@ impl Agent {
                     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), warming).await;
                 }
             },
-            // 3. Create the session-memory sidecar file if this session has
-            // one (see `Builder::build()`) and it doesn't already exist.
             async move {
                 if let Some(sm) = session_memory {
                     if let Err(e) = sm.init_session_memory().await {
@@ -451,14 +437,12 @@ impl Agent {
         tracing::debug!("Startup warmup complete");
     }
 
-    /// List persisted sessions. External interface (read-only, from HistoryStore).
     pub async fn list_sessions(
         &self,
     ) -> Result<Vec<session::session::SessionSummary>, session::session::SessionError> {
         self.session.list_sessions().await
     }
 
-    /// Delete a persisted session from HistoryStore. External interface.
     pub async fn delete_session(&self, id: &str) -> Result<(), session::session::SessionError> {
         self.session.delete_session(id).await
     }
@@ -532,12 +516,10 @@ impl Agent {
         }
     }
 
-    /// Access the performance collector.
     pub fn perf(&self) -> &PerfCollector {
         self.telemetry.perf()
     }
 
-    /// Access the tool registry (read-only).
     pub fn tools(&self) -> &dyn base::tool::ToolRegistry {
         self.tooling.tools().as_ref()
     }
@@ -552,12 +534,10 @@ impl Agent {
         &self.scene
     }
 
-    /// Access the engine settings (read-only).
     pub fn settings(&self) -> &LoadedSettings {
         &self.settings
     }
 
-    /// Access telemetry recorder for external event recording.
     pub fn telemetry(&self) -> &dyn TelemetryRecorder {
         self.telemetry.handle()
     }
@@ -572,7 +552,6 @@ impl Agent {
         self.gate.permission()
     }
 
-    /// Access the memory store (read-only).
     pub fn memory(&self) -> &MemoryStore {
         self.memory.store()
     }
@@ -581,12 +560,10 @@ impl Agent {
         self.tooling.skills().as_ref()
     }
 
-    /// Access the hooks runner (read-only).
     pub fn hooks(&self) -> &HookRunner {
         self.gate.hooks()
     }
 
-    /// Access the MCP manager (read-only).
     pub fn mcp(&self) -> &dyn base::interface::mcp_servers::McpServers {
         self.tooling.mcp()
     }
@@ -618,9 +595,6 @@ impl Agent {
             .ok()
     }
 
-    /// Convenience: run a single turn from a user message string.
-    /// Sends events through the engine's event channel during execution.
-    /// Returns `TurnOutcome` on completion.
     pub async fn run_turn(
         &mut self,
         content: String,

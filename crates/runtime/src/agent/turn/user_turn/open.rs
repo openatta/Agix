@@ -22,30 +22,13 @@ impl Agent {
         attachments: &[crate::agent::Attachment],
         cancel: &CancellationToken,
     ) -> ControlFlow<TurnOutcome, String> {
-        // A script's budget is per turn, and this is where a turn begins.
-        // Without this the counter only ever climbs, so the quota is a
-        // per-session one wearing a per-turn name — and a script bound to a
-        // point that fires per tool call goes quiet in the middle of a long
-        // session with nothing to say why.
+        // A script's budget is per turn; without this reset the counter only
+        // climbs and a script bound to a per-tool-call point goes silent
+        // mid-session.
         self.gate.run_turn_starts();
 
-        // UserPromptSubmit: where a hook sees the message that opens a turn,
-        // before any turn setup (skills rescan, FrozenContext,
-        // CLAUDE.md injection, ...) has touched anything.
-        //
-        // Reuses the same `HookResponse` fields `PreToolUse`/`PostToolUse`
-        // already use, same soft-fail philosophy (a hook that errors/times
-        // out is treated as "ran and said nothing" — `blocked()`/
-        // `updated_input()` just find nothing, turn proceeds unchanged; see
-        // `HookRunner::run`, not special-cased per event):
-        // - `decision: "block"` refuses to process this message at all —
-        //   the turn ends immediately with `stopped_by_hook`, before a
-        //   single model call, exactly like a `PreToolUse` block ends a
-        //   tool call before it runs.
-        // - `updated_input` (a JSON string) rewrites the message content
-        //   that actually gets processed — the same field name
-        //   `PreToolUse` uses for rewriting tool input, repurposed here for
-        //   the one thing there is to rewrite: the prompt text itself.
+        // UserPromptSubmit runs before any turn setup has touched anything. A
+        // hook that errors or times out counts as having said nothing.
         match self
             .screen_user_prompt(content, attachments, PromptDelivery::Turn, cancel)
             .await
@@ -60,17 +43,15 @@ impl Agent {
             }
         }
 
-        // TurnStart — fires after UserPromptSubmit has had its chance to block
-        // or rewrite, so a hook here sees the message that will actually be
+        // After UserPromptSubmit, so the hook sees the message that will be
         // processed. Notification only: the response is discarded.
         self.fire_turn_hook(hooks::HookEvent::TurnStart, cancel, |input| {
             input.with_turn_id(self.current_turn_id.clone())
         })
         .await;
 
-        // Same turn_no every `turn_complete` emitted below this point uses
-        // (`self.session.turn_count` isn't incremented until the very end of
-        // this function, see `increment_turn()`).
+        // `turn_count` is incremented only at the end of the turn, so this
+        // is the turn_no every later `turn_complete` carries.
         self.telemetry.record(telemetry::TelemetryEvent::turn_start(
             &self.session.session_id,
             self.session.turn_count,
@@ -91,10 +72,7 @@ impl Agent {
                 },
             ));
 
-        // A skill's `allowed_tools` (see `SkillTool::call`) pre-approves
-        // tools only for the rest of the turn it was invoked in — clear
-        // whatever the *previous* turn granted before this new user message
-        // starts a fresh one.
+        // A skill's `allowed_tools` last for the turn it was invoked in.
         self.gate.begin_turn().await;
 
         ControlFlow::Continue(content)
@@ -111,10 +89,8 @@ impl Agent {
     }
 
     fn announce_skill_changes(&mut self) {
-        // The catalog may be shared with other sessions and swapped in place
-        // by whoever watches the skill directories, so the diff is against
-        // what this session was last shown, not against the catalog as it
-        // stood a moment ago.
+        // The catalog is shared and swapped in place, so diff against what
+        // this session was last shown, not against the catalog a moment ago.
         let changed = self.tooling.skills().reload_changed();
         if changed > 0 {
             tracing::debug!(count = changed, "Skills reloaded from file changes");
@@ -127,16 +103,9 @@ impl Agent {
             .map(|s| s.name.clone())
             .collect();
         if let Some(skills_before) = self.prompt.replace_announced(skills_now.clone()) {
-            // Surface the diff as a system-reminder in the conversation itself,
-            // not just a rebuilt static "## Available Skills" list — a model
-            // mid-session tends to trust what it already said over a change
-            // buried in a large prompt block it re-reads every turn without
-            // necessarily re-attending to (observed directly: deepseek-v4-flash
-            // kept asserting a just-deleted skill was still available even
-            // with a "this list supersedes what you said earlier" disclaimer
-            // right above the list; a pointed system-reminder about exactly
-            // what changed is a much stronger, harder-to-ignore signal, the
-            // same pattern already used for git-status/memory reminders).
+            // A reminder in the conversation, not only a rebuilt skills block:
+            // a model keeps asserting a just-deleted skill is available
+            // (seen with deepseek-v4-flash) even when the list says otherwise.
             let mut removed: Vec<&String> = skills_before.difference(&skills_now).collect();
             let mut added: Vec<&String> = skills_now.difference(&skills_before).collect();
             removed.sort();
@@ -164,11 +133,8 @@ impl Agent {
                     role: MessageRole::User,
                     content: vec![ModelContentBlock::Text { text: note }],
                 });
-                // The model is told above; the host is told here. Both need
-                // it for the same reason — a skill list they were shown
-                // earlier is now wrong — but a host cannot read the
-                // conversation, and its slash-command view resolves through
-                // the catalog that just changed underneath it.
+                // The host cannot read the conversation, and its slash-command
+                // view resolves through the catalog that just changed.
                 self.emit(AgentEvent::SkillsChanged {
                     added: added.iter().map(|n| (*n).clone()).collect(),
                     removed: removed.iter().map(|n| (*n).clone()).collect(),
@@ -179,8 +145,6 @@ impl Agent {
     }
 
     async fn refresh_frozen_context(&mut self) {
-        // Compute frozen context lazily on first turn. Includes git status,
-        // branch, platform, etc.
         let collected_this_turn = self.prompt.frozen().is_none();
         let engine_git = engine_exec_from(
             &self.config,
@@ -199,14 +163,9 @@ impl Agent {
             );
         }
 
-        // `FrozenContext` is a session snapshot on purpose — but the
-        // reminder below re-injects `gitStatus` on *every* turn, and a stale
-        // status is read by the model as current fact, not as a stale hint.
-        // Commit between two turns and it keeps citing files that are no
-        // longer dirty. So refresh precisely the fields that get re-shown
-        // (see `refresh_git_status`); everything else stays frozen, which is
-        // the point of the type. Skipped on the turn that just collected —
-        // that snapshot is seconds old.
+        // `FrozenContext` is a snapshot on purpose, but the reminder re-shows
+        // `gitStatus` every turn and the model reads a stale one as fact.
+        // Refresh only that; skipped on the turn that just collected.
         if !collected_this_turn {
             if let Some(frozen) = self.prompt.frozen_mut() {
                 frozen.refresh_git_status(&engine_git).await;
@@ -215,11 +174,6 @@ impl Agent {
     }
 
     fn push_system_reminder(&mut self) {
-        // Inject system-reminder: git status + memory summary, via the scene's
-        // `reminders` — each scene decides what belongs here.
-        // Called once per
-        // turn, and the git slice it reads was refreshed just above, so the
-        // status shown is this turn's, not the session's opening snapshot.
         if let Some(frozen) = self.prompt.frozen() {
             let mut ctx = base::interface::scene::ReminderContext::new(
                 self.settings
@@ -245,17 +199,11 @@ impl Agent {
     }
 
     pub(super) fn start_skill_discovery(&self) -> Option<SkillDiscovery> {
-        // Skill discovery prefetch: scan workspace for matching skills as a
-        // background task. Discovery runs while the model streams and tools
-        // execute; the result is consumed post-tool-execution alongside the
-        // memory prefetch.
         let skills = self.tooling.skills().clone();
         let local_dir = self.settings.paths.local_data_dir.clone();
         let invoked_skills: Vec<String> = self.session_state.ledger().invoked_skills.clone();
-        // Only scan when the previous turn produced tool calls that may
-        // have written files that could reveal new skills — skip on
-        // non-write turns. Runs on the first turn too (`last_had_tool_uses`
-        // starts `true`).
+        // Only a previous turn with tool calls can have written new skills;
+        // `last_had_tool_uses` starts `true` so the first turn scans too.
         let should_run = self.last_had_tool_uses;
         if should_run {
             Some(tokio_util::task::AbortOnDropHandle::new(
@@ -280,23 +228,10 @@ impl Agent {
         attachments: &[crate::agent::Attachment],
         origin: history::entry::MessageOrigin,
     ) {
-        // Push user message. Recalled memories are injected right behind it,
-        // below, so they are part of *this* turn's request.
-        //
-        // Attachments become additional blocks in this same message, after the
-        // text, so the model reads the request and then what it refers to.
-        // Images are only reachable this way — there is no other path by which
-        // a user-supplied image enters the conversation.
-        // `@server:scheme://path` references → MCP `resources/read`, inlined
-        // into this same message so the model reads the request and the thing
-        // it points at together. The matcher is deliberately narrow (see
-        // `mcp::resources` for why: `@` is also emails, decorators, npm
-        // scopes), and returns `None` — no work, no allocation — for the
-        // overwhelmingly common message that contains no reference, or for
-        // any session with no MCP servers connected at all.
-        //
-        // A reference that can't be resolved comes back as a visible error
-        // block, never an error that fails the turn.
+        // Images reach the conversation only as attachment blocks. The
+        // `@server:scheme://path` matcher is deliberately narrow (`@` is also
+        // emails, decorators, npm scopes); an unresolvable reference becomes
+        // a visible error block, never a failed turn.
         let mut spans = vec![base::interface::model::InputSpan {
             source: base::interface::model::input_source::USER_PROMPT.into(),
             block: 0,

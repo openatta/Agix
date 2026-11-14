@@ -15,9 +15,8 @@ pub(super) struct PendingRecall {
 
 impl Agent {
     pub(super) fn start_memory_recall(&self, query: &str) -> Option<PendingRecall> {
-        // Memory prefetch: fire LLM-based relevant memory selection as a
-        // background task. The handle aborts it when dropped, so a recall that
-        // misses its budget stops spending on the selection call.
+        // The handle aborts on drop, so a recall that misses its budget
+        // stops spending on the selection call.
         let handle: Option<tokio_util::task::AbortOnDropHandle<Recall>> =
             if !self.settings.values.memory_enabled {
                 None
@@ -36,17 +35,11 @@ impl Agent {
     }
 
     pub(super) async fn inject_recalled_memories(&mut self, pending: PendingRecall) {
-        // Collected before the first API call, not after tool execution, so a
-        // turn the model answers without tools still sees its memories. The
-        // wait is dead air before the user's first token, hence the short
-        // latency budget. In the common case there is no wait at all —
-        // `select_memories_from` returns without a model call when the
-        // store holds no more candidates than the requested maximum.
-        //
-        // `already_surfaced` / `recall_count` are updated here and only here,
-        // at the point the memories are actually placed in the transcript —
-        // recording a memory as "shown to the model" when it was not
-        // permanently suppresses a legitimate future surfacing of it.
+        // Collected before the first API call so a turn answered without
+        // tools still sees its memories; the wait is dead air before the
+        // first token, hence the short budget. `already_surfaced` is updated
+        // only where memories actually enter the transcript — marking one
+        // shown when it was not suppresses it for good.
         const MEMORY_RECALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
         /// Per-entry cap on inlined memory content. Recall carries at most 5
         /// entries, so the whole injection stays bounded; the cap only exists
@@ -84,16 +77,13 @@ impl Agent {
                 .collect()
         };
         if !relevant.is_empty() {
-            // Mark injected memories as surfaced to avoid repeated injection.
             self.prompt
                 .mark_surfaced(relevant.iter().map(|m| m.name.as_str()));
             self.memory
                 .record_recalled(relevant.iter().map(|m| m.name.clone()).collect());
 
-            // Carry the memory body, not just its one-line description:
-            // the description exists to decide relevance, and a model that
-            // only gets the description has to spend a Read round trip to
-            // learn anything. At ≤5 entries this is the cheaper option.
+            // The body goes along, not just the description: with only the
+            // description the model needs a Read round trip to learn anything.
             let mut mem_text =
                 String::from("<system-reminder>\nRelevant memories for this query:\n");
             for m in &relevant {

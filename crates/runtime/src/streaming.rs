@@ -137,7 +137,6 @@ struct StreamState<'a, F, G> {
     failure: Option<ModelError>,
     cancelled: bool,
     truncated: bool,
-    // The reply's closed blocks, in arrival order.
     reply: Vec<ModelContentBlock>,
     pending_text: String,
     // Text of the thinking block currently open. The Anthropic API closes a
@@ -589,8 +588,8 @@ impl ReadAhead {
     }
 }
 
-/// Buffer one finished tool's result. An `Err` (as opposed to a tool
-/// reporting its own failure) cancels the siblings still running.
+/// An `Err` (as opposed to a tool reporting its own failure) cancels the
+/// siblings still running.
 #[allow(clippy::too_many_arguments)]
 fn finish_tool(
     idx: usize,
@@ -623,7 +622,6 @@ fn finish_tool(
     }
 }
 
-/// Wait for every tool in the current concurrent batch and buffer its result.
 #[allow(clippy::too_many_arguments)]
 async fn drain_batch<S>(
     batch: &mut S,
@@ -670,10 +668,8 @@ fn read_outcome(
     }
 }
 
-/// Buffer a tool result (not yet pushed to the session — see `write_reply`)
-/// and emit the live `AgentEvent::ToolResult` for UI feedback immediately.
-/// `idx` is the tool's submission index, used to restore a deterministic
-/// order at write time regardless of real completion order.
+/// `idx` is the submission index, restoring a deterministic order at write
+/// time whatever the completion order was.
 #[allow(clippy::too_many_arguments)]
 fn buffer_result(
     event_tx: &EventSender,
@@ -727,8 +723,6 @@ fn close_text(pending: &mut String, reply: &mut Vec<ModelContentBlock>) {
     }
 }
 
-/// Write the finished reply and, if it asked for tools, the one message that
-/// answers all of them, then whatever messages the tools asked to inject.
 fn write_reply(
     session: &mut session::session::SessionManager,
     reply: Vec<ModelContentBlock>,
@@ -765,10 +759,7 @@ fn write_reply(
     }
 }
 
-/// Inject new messages into the session after a tool result.
-/// Some tools (e.g. SkillTool) return new_messages that should be
-/// injected as user messages into the conversation. The model sees these as new
-/// instructions rather than as tool output.
+/// The model sees these as new instructions, not as tool output.
 fn inject_new_messages(
     session: &mut session::session::SessionManager,
     messages: &[serde_json::Value],

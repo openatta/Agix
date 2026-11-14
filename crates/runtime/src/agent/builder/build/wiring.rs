@@ -77,14 +77,8 @@ impl Builder {
         instruction_file: Option<&PathBuf>,
     ) -> Result<SessionWiring, EngineError> {
         let agent_depth = self.spec.agent_depth;
-        // One `SessionState` for the whole session. It is the session's mutable side: permission mode
-        // (which `EnterPlanMode`/`ExitPlanMode` flip), the read cache that
-        // `Edit`/`Write` consult for read-before-edit staleness, the read
-        // dedup marker, todos, the task
-        // list, running sub-agent tasks, and the accumulated
-        // "allow writes here for this project" paths. Every tool call gets
-        // the same `Arc`; none of that state works if it does not survive
-        // from one call to the next.
+        // One `SessionState` per session, shared by every tool call: none of
+        // its state works unless it survives from one call to the next.
         prepare_scratchpad(&settings.paths.local_data_dir.join("scratchpad"));
         prepare_working_dir(&settings.paths);
         let session_env = session_env(settings, config, scene);

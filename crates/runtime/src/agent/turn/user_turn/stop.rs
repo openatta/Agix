@@ -19,8 +19,6 @@ impl Agent {
         cancel: &CancellationToken,
     ) -> ControlFlow<StopReason> {
         let stop_reason = result.stop_reason;
-        // 6. A reply that stopped early: escalate the output limit, or
-        //    send a paused one back to be continued.
         if self.handle_early_stop(
             &stop_reason,
             &mut state.output_limit_escalations,
@@ -29,7 +27,6 @@ impl Agent {
             return ControlFlow::Continue(());
         }
 
-        // 7. Stop hooks: end the turn, send the model back, or let it stop.
         if let Some(flow) = self.run_stop_hooks(state, cancel).await {
             return flow;
         }
@@ -38,9 +35,8 @@ impl Agent {
             return ControlFlow::Continue(());
         }
 
-        // The model has answered; a message the user sent meanwhile is
-        // answered in the same turn rather than left for one nobody
-        // asked to start.
+        // A message the user sent meanwhile is answered in this turn, not
+        // left for one nobody asked to start.
         if self.deliver_queued_user_messages(true, cancel).await {
             return ControlFlow::Continue(());
         }
@@ -72,11 +68,8 @@ impl Agent {
             .await;
         if hook_result.discontinued() {
             tracing::info!("Stop hook discontinued the turn");
-            // `StopFailure` is the error-shaped sibling of `Stop`
-            // (same relationship `PostToolUseFailure` has to
-            // `PostToolUse`) and had no trigger. A turn cut short by
-            // a hook veto is the case it exists for: `Stop` fired,
-            // but the turn did not finish normally.
+            // `StopFailure` is for exactly this: `Stop` fired but the turn
+            // did not finish normally.
             self.fire_lifecycle_hook(hooks::HookEvent::StopFailure, |i| {
                 i.with_reason("turn discontinued by a Stop hook")
             })
@@ -108,9 +101,6 @@ impl Agent {
     }
 
     fn continue_toward_output_target(&mut self, usage: Usage) -> bool {
-        // 8. Token budget continuation mode.
-        // Continue while accumulated output < 90% of target AND not diminishing
-        // (≥3 continuations, both this & previous delta < 500). No hard cap.
         let target = self.session_state.ledger().token_target.target;
         if let Some(target) = target {
             let this_delta = usage.output_tokens as u64;
@@ -137,7 +127,6 @@ impl Agent {
                 return true;
             }
 
-            // Budget met (≥90%) or diminishing returns — clear budget state.
             let threshold = (target as f64 * 0.9) as u64;
             let budget_met = progress.accumulated >= threshold;
             tracing::info!(

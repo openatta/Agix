@@ -44,9 +44,7 @@ impl Builder {
         });
         tools::register_web_fetch(tools, fetch_extraction);
 
-        // Worktree tools — one `WorktreeRegistry` per session (it holds at
-        // most one active worktree; `EnterWorktree` refuses a second and
-        // `ExitWorktree` cleans up what this session created).
+        // One registry per session: it holds at most one active worktree.
         tools::register_worktree_tools(
             tools,
             Arc::new(tools::worktree_tools::WorktreeRegistry::new()),
@@ -206,9 +204,7 @@ pub(super) fn admit_extra_tools(
 }
 
 pub(super) fn register_task_tools(tools: &InMemoryToolRegistry) {
-    // Register TaskStopTool — stop running background tasks by ID
     tools.register(std::sync::Arc::new(tools::task_stop::TaskStopTool));
-    // Register TaskOutputTool — retrieve output from running/completed tasks
     tools.register(std::sync::Arc::new(tools::task_output::TaskOutputTool));
     tools.register(std::sync::Arc::new(tools::task_wait::TaskWaitTool));
     tools.register(std::sync::Arc::new(tools::task_message::TaskMessageTool));
