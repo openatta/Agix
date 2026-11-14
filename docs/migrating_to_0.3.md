@@ -2247,6 +2247,11 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
 - **`SessionPool::new` 是 `pub(crate)`。** `assembly` 之外不能再直接建池,要池走
   `assembly::assemble::pool`(daemon 里是 `daemon::assemble::pool`);第二份装配在 `assembly` 之外
   编不过。
+- **默认项目只有一个根:`Assembly.cwd`。** 不传 `project_root` 的会话(和显式传这个目录的)以前在
+  `Assembly.cwd` 里干活,项目层设置、`settings.local.json`("总是允许,本项目"写到的地方)、
+  `config.setProvider` / `config.reload` 不带项目时读写的文件却按 `DaemonPaths::project_root` 定。
+  两者不同时现在一律按 `Assembly.cwd`:池按它重读这一对的设置,宿主在内存里改过的值和加的权限规则
+  照样叠上去(规则只叠在这一对上)。两者相同(`agixd` 就是)不受影响。
 - **回合状态收进 `TurnSlot`。** 池内部的 `LiveSession` 不再有 `event_rx`、`idle`、`current_turn`、
   `turn_initiator`、`turn_watcher`、`turn_terminated`,由阶段 `SessionPhase`(`Idle` / `Running` /
   `Rebuilding`)与代际号 `Generation` 取代;这些都是池私有的,通过公开 API 的嵌入方看到的只是上面的

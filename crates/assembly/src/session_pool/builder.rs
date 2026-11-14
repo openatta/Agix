@@ -81,8 +81,9 @@ impl SessionPoolBuilder {
     /// What `host` — the settings the host handed over, before the managed
     /// layer — sets differently from `on_disk`, the same pair read from disk:
     /// laid over every settings this pool loads from disk, so a value the
-    /// host set in memory reaches every project and survives a reload.
-    pub(crate) fn host_changes(mut self, on_disk: &Settings, host: &Settings) -> Self {
+    /// host set in memory reaches every project and survives a reload. The
+    /// rules the host added stay on this daemon's own pair.
+    pub(crate) fn host_changes(mut self, on_disk: &LoadedSettings, host: &LoadedSettings) -> Self {
         self.host_overrides = HostOverrides::between(on_disk, host);
         self
     }
@@ -126,6 +127,13 @@ impl SessionPoolBuilder {
                 self.settings,
             ),
         };
+        let settings = parts::bindings::own_settings_in(
+            &self.cwd,
+            settings,
+            self.paths.as_ref(),
+            &self.host_overrides,
+            managed_settings.clone(),
+        );
         let mcp = McpHub::new(self.mcp, &settings.paths.user_data_dir);
         let _ = std::fs::create_dir_all(&settings.paths.user_data_dir);
         let scheduler = Scheduler::load(settings.paths.user_data_dir.join("scheduled_tasks.json"));

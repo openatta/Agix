@@ -100,6 +100,34 @@ pub(in crate::session_pool) struct BindingCache {
     plugins: Arc<crate::plugins::PluginSubsystem>,
 }
 
+/// The host's settings for this daemon's own pair as the pool serves them:
+/// read again for `cwd` when the host read them for another project, with
+/// what the host changed in memory and `managed` on top, so the pair's project
+/// tier, its `settings.local.json` and the directory its sessions work in are
+/// all `cwd`'s.
+pub(in crate::session_pool) fn own_settings_in(
+    cwd: &Path,
+    host: Arc<LoadedSettings>,
+    paths: &dyn crate::config::DaemonPaths,
+    host_overrides: &HostOverrides,
+    managed: Option<base::managed_settings::ManagedSettings>,
+) -> Arc<LoadedSettings> {
+    if host.paths.workspace.project_root() == Some(cwd) {
+        return host;
+    }
+    let mut loaded = LoadedSettings::load(
+        paths.global_root(),
+        paths.config_root(),
+        cwd.join(".agix"),
+        &host.paths.scope,
+        &host.values.model.model_name,
+    );
+    if loaded.values.model.max_tokens == base::settings::DEFAULT_MAX_TOKENS {
+        loaded.values.model.max_tokens = host.values.model.max_tokens;
+    }
+    Arc::new(host_overrides.apply_to_own(loaded).with_managed(managed))
+}
+
 impl BindingCache {
     #[allow(clippy::too_many_arguments)]
     pub(in crate::session_pool) fn new(
@@ -136,19 +164,6 @@ impl BindingCache {
 
     pub(in crate::session_pool) async fn pool_settings(&self) -> Arc<LoadedSettings> {
         self.settings.read().await.clone()
-    }
-
-    /// This daemon's own settings as its own pair's sessions run on them: in
-    /// `cwd`, which the host may name apart from the project those settings
-    /// were read for (`Assembly::cwd` against `DaemonPaths::project_root`).
-    async fn own_pair_settings(&self) -> Arc<LoadedSettings> {
-        let settings = self.pool_settings().await;
-        if settings.paths.workspace.project_root() == Some(self.cwd.as_path()) {
-            return settings;
-        }
-        let mut in_cwd = (*settings).clone();
-        in_cwd.paths.workspace = base::settings::Workspace::Project(self.cwd.clone());
-        Arc::new(in_cwd)
     }
 
     /// The scene this daemon was started with, as its own settings know it.
@@ -223,7 +238,7 @@ impl BindingCache {
         let stamp = self.begin_build(&key);
         let startup_scene = self.startup_scene().await;
         let settings = if self.is_own_pair(project_root, scene_id).await {
-            self.own_pair_settings().await
+            self.pool_settings().await
         } else {
             let default_model = self.settings.read().await.values.model.model_name.clone();
             let (global_root, scene_root, scene_id, project) = (
@@ -488,14 +503,19 @@ impl BindingCache {
         let (global_root, config_root, local_dir, scene) = (
             self.paths.global_root(),
             self.paths.config_root(),
-            self.paths.project_root().join(".agix"),
+            self.cwd.join(".agix"),
             scene.to_string(),
         );
         let loaded = off_the_runtime(move || {
             LoadedSettings::load(global_root, config_root, local_dir, &scene, &default_model)
         })
         .await;
-        let reloaded = Arc::new(self.with_host_layers(loaded));
+        let reloaded = Arc::new(
+            self.layers
+                .host
+                .apply_to_own(loaded)
+                .with_managed(self.layers.managed.settings.clone()),
+        );
         *self.settings.write().await = reloaded;
     }
 
@@ -523,8 +543,8 @@ impl BindingCache {
     /// daemon's own project when none is named.
     pub(in crate::session_pool) fn settings_path_of(&self, project_root: Option<&Path>) -> PathBuf {
         project_root
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.paths.project_root())
+            .unwrap_or(&self.cwd)
+            .to_path_buf()
             .join(".agix")
             .join(base::settings::SETTINGS_FILE)
     }

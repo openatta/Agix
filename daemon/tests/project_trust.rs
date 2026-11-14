@@ -76,9 +76,21 @@ impl Daemon {
     }
 
     async fn serve(dir: tempfile::TempDir, home: PathBuf, work: PathBuf) -> Self {
+        let configured_project = work.clone();
+        Self::serve_naming(dir, home, work, configured_project).await
+    }
+
+    /// Assembled on `work`, with its configuration paths naming
+    /// `configured_project` as the project.
+    async fn serve_naming(
+        dir: tempfile::TempDir,
+        home: PathBuf,
+        work: PathBuf,
+        configured_project: PathBuf,
+    ) -> Self {
         let sock = dir.path().join("trust.sock");
-        let paths =
-            StaticDaemonPaths::with_project(home.clone(), work.clone()).with_global(home.clone());
+        let paths = StaticDaemonPaths::with_project(home.clone(), configured_project)
+            .with_global(home.clone());
         let mut config = load_daemon_config("claude-sonnet-4-6", 2000, Some(&sock), "code", &paths);
         config.settings.values.memory_enabled = false;
 
@@ -835,4 +847,39 @@ async fn each_mcp_server_starts_in_the_directory_that_declared_it() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(!spawned().contains("work"), "log: {:?}", spawned());
+}
+
+/// The daemon's own project is the one it was assembled on: its settings are
+/// read from there even when the configuration paths name another project.
+#[tokio::test]
+async fn the_default_project_is_configured_from_the_directory_it_works_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, work, configured) = (
+        dir.path().join("home"),
+        dir.path().join("work"),
+        dir.path().join("configured"),
+    );
+    for project in [&work, &configured] {
+        std::fs::create_dir_all(project.join(".agix")).unwrap();
+    }
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        work.join(".agix/settings.json"),
+        json!({"language": "fr"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        configured.join(".agix/settings.json"),
+        json!({"language": "de"}).to_string(),
+    )
+    .unwrap();
+    let daemon = Daemon::serve_naming(dir, home, work.clone(), configured).await;
+
+    let settings = daemon.effective().await;
+    assert_eq!(settings["language"], "fr", "{settings}");
+    assert_eq!(
+        settings["paths"]["local_data_dir"],
+        json!(work.join(".agix")),
+        "{settings}"
+    );
 }
