@@ -2057,10 +2057,13 @@ progress, total, dropped, turn_id }`(每次调用每秒至多一条)。`progress
   凭据**,会话 `TMPDIR` 挖洞挂回;以前逐文件遮挡,rename 重写的密钥文件读得到。
 - **命令之后检查嵌套仓库。** 每条不在严格 profile 里跑的命令(同步命令在结果之前,后台 `Monitor`
   在任务结束时)多跑一次 `git ls-files -s` 和一次有界目录遍历(跳过 `node_modules`、`target` 等依赖
-  与构建目录)。命令在项目里留下未在 `.gitmodules` 声明、`config` 会拉起程序的嵌套仓库时:有人值守
-  问"保留 / 移开",超时、拒答、取消按移开;无人值守或没人可问直接把它的 `.git` 改名为
-  `.git.agix-quarantine-<UTC 时间>`(改回原名即可还原)。两种都在工具结果末尾附一行说明,发
-  `Notification` hook 与 `notification` 帧;无害的嵌套 `.git`、未声明的 gitlink 只提示一次。
+  与构建目录);gitlink 逐层跟进嵌套仓库自己的索引,`.git` 是目录、符号链接或 `gitdir:` 文件都解析。
+  命令在项目里留下(或改出)配置会拉起程序的嵌套仓库时——`config`、`config.worktree` 里的危险键,或
+  `hooks/` 下的非 `*.sample` 文件,在 `.gitmodules` 里声明过也一样查:有人值守问"保留 / 移开",超时、
+  拒答、取消按移开;无人值守或没人可问直接把它的 `.git` 改名为 `.git.agix-quarantine-<UTC 时间>`
+  (改回原名即可还原)。两种都在工具结果末尾附一行说明,发 `Notification` hook 与 `notification` 帧;
+  无害的嵌套 `.git`、未声明的 gitlink 只提示一次。会话第一次工具调用之前已有的嵌套仓库记为基线,
+  配置没变就不问不移(如已有子模块的 `filter.lfs.*`、pre-commit hook),变了才按上面处理。
   skill 里的内联命令(`!` 前缀)跑完同样检查,它无人可问,危险的直接移开。改名走会话的
   `exec.filesystem`,远程执行环境里改的是远端那份。
 - **外部内容围栏按可达范围统一加。** MCP 工具的结果(含错误)、`WebFetch` / `Ping` 的结果(含 HTTP

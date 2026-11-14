@@ -1387,17 +1387,28 @@ git 依赖、测试里建临时仓库一起弄坏,而且在别处建好再挪进
 人批准的、规则或 hook 放行的、无人值守放行的、bypass 下的——在 `call` 返回之后、`PostToolUse` 之前(后台命令
 在它的任务结束时)由 runtime 调 `tools::nested_repos::scan`:
 
-1. 用会话沙箱里的引擎 git 跑 `git ls-files -s -z`,取 mode 160000 的 gitlink;
-2. 没在 `.gitmodules` 里声明、git 目录又在工作树里(`sub/.git` 是目录)的,读它的 `config`,查会让 git
-   起程序的键:`core.fsmonitor`(非布尔值)、`core.hooksPath`、`core.sshCommand`、`core.pager`、`core.editor`、
-   `diff.external`、`sequence.editor`、`credential.helper`、`include.path`、`includeIf.*`、`gpg.program`、
-   `uploadpack.packObjectsHook`、`filter.*.{clean,smudge,process}`;
+1. 用会话沙箱里的引擎 git 跑 `git ls-files -s -z`,取 mode 160000 的 gitlink;用户的 `git status` 会进
+   嵌套仓库再进它自己的 gitlink,所以对每个嵌套仓库同样列一次,逐层往下(最多 8 层、256 个仓库);
+2. 按 git 的方式解析每个 gitlink 的 `.git`:目录本身、符号链接指向的目录、`gitdir:` 文件指向的目录(相对
+   路径按 `.git` 所在目录算,包括指到 `.git/modules/<名>` 的),在解析出的 git 目录里查会让 git 起程序的
+   东西——`config` 与 `config.worktree` 里的 `core.fsmonitor`(非布尔值)、`core.hooksPath`、`core.sshCommand`、
+   `core.pager`、`core.editor`、`core.askPass`、`core.gitProxy`、`core.alternateRefsCommand`、`diff.external`、
+   `diff.*.{command,textconv}`、`merge.*.driver`、`pager.*`(非布尔值)、`sequence.editor`、`credential.helper`、
+   `include.path`、`includeIf.*`、`gpg.program`、`uploadpack.packObjectsHook`、`remote.*.{uploadpack,receivepack}`、
+   `filter.*.{clean,smudge,process}`,以及 `hooks/` 下任何不是 `*.sample` 的文件。配置按字节读,开头的
+   UTF-8 BOM 跳过。`.gitmodules` 是命令写得到的文件,声明与否只决定无害的子模块提不提示,不豁免检查;
 3. 另外经 `exec.filesystem` 有界遍历工作树(深度 8、条目 5 万;`node_modules`、`target`、`.venv` 这类依赖、
    构建与缓存目录不进),找新冒出来的 `.git`,只作提示。
 
-有危险键的:有人值守时问"保留还是移开",没答、超时都按移开;无人值守直接移开——把 `sub/.git` 改名为
-`sub/.git.agix-quarantine-<UTC 时间>`,由引擎在沙箱外执行,改回名字即还原。两种情况都在工具结果后面附一行
-说明并发 `Notification`。没有危险键的只附说明。同一个仓库每个会话只报一次,被保留的要配置变了才再报。
+要防的是命令造出来或改过的仓库,不是用户自己的:会话第一次工具调用执行之前(`tools::nested_repos::take_baseline`,
+每个会话一次),runtime 按第 1、2 步把当时已有的嵌套仓库连同其配置摘要(config、config.worktree、各 hook 的
+名字与内容)记进会话 ledger。之后有危险键、但摘要与这份基线相同的,不问、不移,未声明的只提示一次;新出现
+的仓库、摘要变了的,照下面处理。
+
+有危险键的:有人值守时问"保留还是移开",没答、超时都按移开;无人值守直接移开——把 `sub/.git`(目录、符号
+链接或 gitdir 文件本身,不动它指向的目录)改名为 `sub/.git.agix-quarantine-<UTC 时间>`,由引擎在沙箱外执行,
+改回名字即还原。两种情况都在工具结果后面附一行说明并发 `Notification`。没有危险键的只附说明。同一个仓库
+每个会话只报一次,被保留的要配置变了才再报。
 `Strict` 下的命令除 `TMPDIR` 外什么都写不了,不扫。这道检查挡不住的是命令起了个比它活得久的进程、之后才埋仓库。
 见 `sandbox.rs` 模块头已知逃逸。
 
