@@ -345,26 +345,24 @@ mod tests {
 
     fn ctx() -> ScenePromptContext<'static> {
         use std::borrow::Cow;
-        ScenePromptContext {
-            cwd: Cow::Borrowed("/tmp/proj"),
-            os: Cow::Borrowed("linux"),
-            shell: Cow::Borrowed("bash"),
-            home_dir: Cow::Borrowed("/home/user"),
-            date: Cow::Borrowed("2026-06-10"),
-            model_name: Cow::Borrowed("test-model"),
-            skills_text: Some(Cow::Borrowed("the whole skills inventory")),
-            mcp_instructions: Some(Cow::Borrowed("the whole mcp instructions")),
-            session_memory: Some(Cow::Borrowed("the whole session memory")),
-            is_git: true,
-            git_branch: Some(Cow::Borrowed("lane-s1")),
-            is_worktree: true,
-            git_status: Some(Cow::Borrowed("M secret-work-in-progress.rs")),
-            language: None,
-            scratchpad_dir: None,
-            output_style_content: Some(Cow::Borrowed("the whole output style")),
-            available_tools: Some(Cow::Borrowed("Read,Bash")),
-            tool_results_ever_cleared: true,
-        }
+        let mut c = ScenePromptContext::default();
+        c.cwd = Cow::Borrowed("/tmp/proj");
+        c.os = Cow::Borrowed("linux");
+        c.shell = Cow::Borrowed("bash");
+        c.home_dir = Cow::Borrowed("/home/user");
+        c.date = Cow::Borrowed("2026-06-10");
+        c.model_name = Cow::Borrowed("test-model");
+        c.skills_text = Some(Cow::Borrowed("the whole skills inventory"));
+        c.mcp_instructions = Some(Cow::Borrowed("the whole mcp instructions"));
+        c.session_memory = Some(Cow::Borrowed("the whole session memory"));
+        c.is_git = true;
+        c.git_branch = Some(Cow::Borrowed("lane-s1"));
+        c.is_worktree = true;
+        c.git_status = Some(Cow::Borrowed("M secret-work-in-progress.rs"));
+        c.output_style_content = Some(Cow::Borrowed("the whole output style"));
+        c.available_tools = Some(Cow::Borrowed("Read,Bash"));
+        c.tool_results_ever_cleared = true;
+        c
     }
 
     /// Stands in for the interpreter: the closure sees exactly the JSON a

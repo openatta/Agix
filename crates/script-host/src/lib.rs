@@ -716,26 +716,14 @@ mod binding_tests {
 
     fn ctx() -> base::interface::scene::ScenePromptContext<'static> {
         use std::borrow::Cow;
-        base::interface::scene::ScenePromptContext {
-            cwd: Cow::Borrowed("/tmp"),
-            os: Cow::Borrowed("linux"),
-            shell: Cow::Borrowed("bash"),
-            home_dir: Cow::Borrowed("/home/user"),
-            date: Cow::Borrowed("2026-06-10"),
-            model_name: Cow::Borrowed("test-model"),
-            skills_text: None,
-            mcp_instructions: None,
-            session_memory: None,
-            is_git: false,
-            git_branch: None,
-            is_worktree: false,
-            git_status: None,
-            language: None,
-            scratchpad_dir: None,
-            output_style_content: None,
-            available_tools: None,
-            tool_results_ever_cleared: false,
-        }
+        let mut c = base::interface::scene::ScenePromptContext::default();
+        c.cwd = Cow::Borrowed("/tmp");
+        c.os = Cow::Borrowed("linux");
+        c.shell = Cow::Borrowed("bash");
+        c.home_dir = Cow::Borrowed("/home/user");
+        c.date = Cow::Borrowed("2026-06-10");
+        c.model_name = Cow::Borrowed("test-model");
+        c
     }
 
     fn prompt() -> Vec<PromptBlock> {
@@ -1075,12 +1063,11 @@ mod binding_tests {
 
     fn on_branch(branch: &'static str) -> base::interface::scene::ScenePromptContext<'static> {
         use std::borrow::Cow;
-        base::interface::scene::ScenePromptContext {
-            cwd: Cow::Borrowed("/tmp/proj"),
-            git_branch: Some(Cow::Borrowed(branch)),
-            is_git: true,
-            ..ctx()
-        }
+        let mut c = ctx();
+        c.cwd = Cow::Borrowed("/tmp/proj");
+        c.git_branch = Some(Cow::Borrowed(branch));
+        c.is_git = true;
+        c
     }
 
     /// A fresh directory per call. The counter is load-bearing: two calls in
@@ -1269,12 +1256,7 @@ mod binding_tests {
             prompt_blocks: Vec::new(),
             tool_defs: ["Read", "Write", "Bash"]
                 .into_iter()
-                .map(|name| base::interface::model::ToolDef {
-                    name: name.into(),
-                    description: String::new(),
-                    input_schema: serde_json::json!({}),
-                    source: None,
-                })
+                .map(|name| base::interface::model::ToolDef::new(name, "", serde_json::json!({})))
                 .collect(),
             messages: Vec::new(),
             params: base::interface::model::StreamParams {

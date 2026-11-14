@@ -256,26 +256,14 @@ mod prompt_hook_tests {
 
     fn ctx() -> base::interface::scene::ScenePromptContext<'static> {
         use std::borrow::Cow;
-        base::interface::scene::ScenePromptContext {
-            cwd: Cow::Borrowed("/tmp"),
-            os: Cow::Borrowed("linux"),
-            shell: Cow::Borrowed("bash"),
-            home_dir: Cow::Borrowed("/home/user"),
-            date: Cow::Borrowed("2026-06-10"),
-            model_name: Cow::Borrowed("test-model"),
-            skills_text: None,
-            mcp_instructions: None,
-            session_memory: None,
-            is_git: false,
-            git_branch: None,
-            is_worktree: false,
-            git_status: None,
-            language: None,
-            scratchpad_dir: None,
-            output_style_content: None,
-            available_tools: None,
-            tool_results_ever_cleared: false,
-        }
+        let mut c = base::interface::scene::ScenePromptContext::default();
+        c.cwd = Cow::Borrowed("/tmp");
+        c.os = Cow::Borrowed("linux");
+        c.shell = Cow::Borrowed("bash");
+        c.home_dir = Cow::Borrowed("/home/user");
+        c.date = Cow::Borrowed("2026-06-10");
+        c.model_name = Cow::Borrowed("test-model");
+        c
     }
 
     fn prompt() -> Vec<PromptBlock> {

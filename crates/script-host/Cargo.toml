@@ -27,3 +27,6 @@ rquickjs    = { workspace = true, optional = true }
 [dev-dependencies]
 tokio-util  = { workspace = true }
 tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }
+
+[lints.clippy]
+field_reassign_with_default = "allow"
